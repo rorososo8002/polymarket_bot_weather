@@ -8,7 +8,7 @@ from .edge import executable_buy_price, executable_sell_price, max_absorbable_sh
 from .models import EdgeResult, MarketDecision, OrderBook, PaperPosition, RawMarket, WeatherSignal
 from .paper import PaperBroker, maybe_close_positions, maybe_settle_resolved_positions
 from .polymarket_client import PolymarketClient
-from .probability import estimate_weather_probability
+from .probability import OpenMeteoEnsembleClient, estimate_weather_probability
 from .risk import fractional_kelly_binary
 from .runner_status import utc_now_iso, write_runner_status
 
@@ -283,6 +283,7 @@ def refresh_open_position_edges(
     latest_edges: dict[tuple[str, str], EdgeResult],
     market_by_id: dict[str, RawMarket],
     probability_estimator=estimate_weather_probability,
+    ensemble_client: OpenMeteoEnsembleClient | None = None,
 ) -> None:
     """Refresh model probability and edge for held positions missing from the scan."""
     for pos in broker.state.positions:
@@ -290,7 +291,10 @@ def refresh_open_position_edges(
         if key in latest_edges:
             continue
         market = market_by_id.get(pos.market_id) or _market_from_position(pos)
-        signal = probability_estimator(pos.question, settings=settings)
+        if ensemble_client is None:
+            signal = probability_estimator(pos.question, settings=settings)
+        else:
+            signal = probability_estimator(pos.question, settings=settings, ensemble_client=ensemble_client)
         market_type = str(pos.metadata.get("market_type") or _market_type_from_signal(signal))
         _best, per_side = evaluate_market(
             market,
@@ -320,6 +324,7 @@ def run_cycle(settings: Settings | None = None) -> list[MarketDecision]:
     cycle_started_at = utc_now_iso()
     write_runner_status(settings, "starting", message="starting cycle", cycle_started_at=cycle_started_at)
     client = PolymarketClient(settings.gamma_base, settings.clob_base)
+    ensemble_client = OpenMeteoEnsembleClient()
     broker = PaperBroker(settings)
     try:
         write_runner_status(settings, "discovering", message="discovering markets", cycle_started_at=cycle_started_at)
@@ -352,7 +357,7 @@ def run_cycle(settings: Settings | None = None) -> list[MarketDecision]:
     )
     for idx, market in enumerate(markets, start=1):
         try:
-            signal = estimate_weather_probability(market.question, settings=settings)
+            signal = estimate_weather_probability(market.question, settings=settings, ensemble_client=ensemble_client)
             bankroll_before = broker.current_bankroll_before_entry()
             market_type = _market_type_from_signal(signal)
             result, per_side = evaluate_market(market, signal, client, settings, bankroll_before, market_type)
@@ -415,7 +420,7 @@ def run_cycle(settings: Settings | None = None) -> list[MarketDecision]:
     for msg in settlement_msgs:
         print(msg)
 
-    refresh_open_position_edges(broker, client, settings, latest_edges, market_by_id)
+    refresh_open_position_edges(broker, client, settings, latest_edges, market_by_id, ensemble_client=ensemble_client)
     close_msgs = maybe_close_positions(broker, client, market_by_id, latest_edges)
     for msg in close_msgs:
         print(msg)

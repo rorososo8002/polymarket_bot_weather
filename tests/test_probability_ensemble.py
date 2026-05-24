@@ -1,6 +1,11 @@
 from datetime import date, datetime, timezone
 
+import pytest
+import requests
+
+from weather_bot.config import Settings
 from weather_bot.probability import (
+    OpenMeteoEnsembleClient,
     _extract_member_values,
     _today_for_timezone,
     blend_empirical_and_cdf,
@@ -68,3 +73,80 @@ def test_snow_market_uses_ensemble_snowfall_probability():
     assert signal.source == "open-meteo-ensemble-snow"
     assert signal.p_true > 0.5
     assert signal.confidence > 0.0
+
+
+def test_ensemble_client_caches_identical_forecast_requests(monkeypatch):
+    calls = 0
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"daily": {"time": ["2026-05-25"]}}
+
+    def fake_get(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return FakeResponse()
+
+    monkeypatch.setattr("weather_bot.probability.requests.get", fake_get)
+    client = OpenMeteoEnsembleClient()
+
+    first = client.forecast_daily_ensemble(1.0, 2.0, timezone="UTC", forecast_days=3)
+    second = client.forecast_daily_ensemble(1.0, 2.0, timezone="UTC", forecast_days=3)
+
+    assert first == second
+    assert calls == 1
+
+
+def test_ensemble_rate_limit_is_not_retried_and_disables_later_calls(monkeypatch):
+    calls = 0
+
+    class RateLimitedResponse:
+        status_code = 429
+        text = "Daily API request limit exceeded"
+
+        def raise_for_status(self):
+            err = requests.HTTPError("429 Client Error")
+            err.response = self
+            raise err
+
+    def fake_get(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return RateLimitedResponse()
+
+    monkeypatch.setattr("weather_bot.probability.requests.get", fake_get)
+    client = OpenMeteoEnsembleClient()
+
+    with pytest.raises(requests.HTTPError):
+        client.forecast_daily_ensemble(1.0, 2.0, timezone="UTC", forecast_days=3)
+    assert calls == 1
+    assert client.disabled_reason
+
+    with pytest.raises(RuntimeError, match="disabled"):
+        client.forecast_daily_ensemble(3.0, 4.0, timezone="UTC", forecast_days=3)
+    assert calls == 1
+
+
+def test_temperature_deterministic_fallback_can_meet_min_confidence():
+    class FailingEnsembleClient:
+        models = "fake"
+
+        def forecast_daily_ensemble(self, *_args, **_kwargs):
+            raise RuntimeError("rate limited")
+
+    class FakeDeterministicClient:
+        def forecast_daily(self, *_args, **_kwargs):
+            return {"daily": {"temperature_2m_max": [94.0], "temperature_2m_min": [70.0]}}
+
+    signal = estimate_weather_probability(
+        "Will Austin be 92°F or higher on May 25?",
+        settings=Settings(),
+        client=FakeDeterministicClient(),
+        ensemble_client=FailingEnsembleClient(),
+    )
+
+    assert signal.source == "open-meteo-deterministic-fallback"
+    assert signal.confidence == 0.50

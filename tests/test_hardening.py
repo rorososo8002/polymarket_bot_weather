@@ -7,7 +7,7 @@ import requests
 
 from weather_bot.config import Settings
 from weather_bot.edge import no_net_edge, yes_net_edge
-from weather_bot.live_paper_runner import _sleep_seconds_until_next_cycle, evaluate_market, refresh_open_position_edges
+from weather_bot.live_paper_runner import _sleep_seconds_until_next_cycle, evaluate_market, refresh_open_position_edges, run_cycle
 from weather_bot.models import EdgeResult, OrderBook, OrderLevel, PaperPosition, PaperState, RawMarket, WeatherSignal
 from weather_bot.paper import PaperBroker, maybe_close_positions, maybe_settle_resolved_positions
 from weather_bot.polymarket_client import PolymarketClient
@@ -316,6 +316,48 @@ def test_held_positions_are_re_evaluated_even_when_not_in_scan_results():
     )
 
     assert latest_edges[("held", "YES")].p_true == 0.1
+
+
+def test_run_cycle_reuses_one_ensemble_client_for_all_markets(monkeypatch, tmp_path):
+    settings = Settings(
+        state_path=str(tmp_path / "state.json"),
+        trades_csv_path=str(tmp_path / "trades.csv"),
+        decisions_csv_path=str(tmp_path / "decisions.csv"),
+        raw_snapshots_path=str(tmp_path / "raw.jsonl"),
+        min_net_edge=999.0,
+        require_date_hint_for_trade=False,
+    )
+    markets = [
+        RawMarket("m1", "Will NYC reach 90 F on May 25?", "m1", True, False, "yes1", "no1"),
+        RawMarket("m2", "Will NYC reach 80 F on May 25?", "m2", True, False, "yes2", "no2"),
+    ]
+    ensemble_ids: list[int] = []
+
+    class FakeClient:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def discover_weather_markets(self, limit: int):
+            return markets[:limit]
+
+        def get_order_book(self, token_id: str) -> OrderBook:
+            return book(token_id, bid=0.40, ask=0.50, bid_size=100.0, ask_size=100.0)
+
+        def get_market(self, market_id: str) -> RawMarket:
+            return next(m for m in markets if m.market_id == market_id)
+
+    def fake_estimator(question, settings=None, client=None, ensemble_client=None):
+        assert ensemble_client is not None
+        ensemble_ids.append(id(ensemble_client))
+        return temp_signal(p_true=0.5)
+
+    monkeypatch.setattr("weather_bot.live_paper_runner.PolymarketClient", FakeClient)
+    monkeypatch.setattr("weather_bot.live_paper_runner.estimate_weather_probability", fake_estimator)
+
+    run_cycle(settings)
+
+    assert len(ensemble_ids) == 2
+    assert len(set(ensemble_ids)) == 1
 
 
 def test_resolved_market_settles_to_binary_payout():

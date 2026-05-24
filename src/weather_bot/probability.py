@@ -12,7 +12,7 @@ from typing import Any, Iterable
 from zoneinfo import ZoneInfo
 
 import requests
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 from .config import Settings
 from .models import ParsedWeatherQuestion, WeatherSignal
@@ -240,8 +240,15 @@ class OpenMeteoEnsembleClient:
         self.timeout = timeout
         self.base_url = os.getenv("OPEN_METEO_ENSEMBLE_BASE", "https://ensemble-api.open-meteo.com/v1/ensemble")
         self.models = os.getenv("OPEN_METEO_ENSEMBLE_MODELS", DEFAULT_ENSEMBLE_MODELS)
+        self.disabled_reason = ""
+        self._cache: dict[tuple[float, float, str, int, str], dict[str, Any]] = {}
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=0.5, min=0.5, max=4))
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=0.5, min=0.5, max=4),
+        retry=retry_if_exception(lambda exc: not _is_rate_limited(exc)),
+        reraise=True,
+    )
     def forecast_daily_ensemble(
         self,
         latitude: float,
@@ -249,6 +256,11 @@ class OpenMeteoEnsembleClient:
         timezone: str = "auto",
         forecast_days: int = 7,
     ) -> dict[str, Any]:
+        if self.disabled_reason:
+            raise RuntimeError(f"ensemble disabled for cycle: {self.disabled_reason}")
+        cache_key = (round(latitude, 4), round(longitude, 4), timezone, int(forecast_days), self.models)
+        if cache_key in self._cache:
+            return self._cache[cache_key]
         params = {
             "latitude": latitude,
             "longitude": longitude,
@@ -259,8 +271,21 @@ class OpenMeteoEnsembleClient:
             "forecast_days": forecast_days,
         }
         resp = requests.get(self.base_url, params=params, timeout=self.timeout)
-        resp.raise_for_status()
-        return resp.json()
+        try:
+            resp.raise_for_status()
+        except requests.HTTPError as exc:
+            if _is_rate_limited(exc):
+                body = getattr(resp, "text", "") or str(exc)
+                self.disabled_reason = f"Open-Meteo rate limited: {body[:160]}"
+            raise
+        data = resp.json()
+        self._cache[cache_key] = data
+        return data
+
+
+def _is_rate_limited(exc: BaseException) -> bool:
+    response = getattr(exc, "response", None)
+    return isinstance(exc, requests.HTTPError) and getattr(response, "status_code", None) == 429
 
 
 WEEKDAY_INDEX = {
@@ -562,7 +587,7 @@ def estimate_weather_probability(
             fallback = _fallback_deterministic_probability(parsed, settings, client)
             return WeatherSignal(
                 p_true=fallback.p_true,
-                confidence=min(fallback.confidence, 0.35),
+                confidence=min(fallback.confidence, settings.deterministic_temperature_fallback_max_confidence),
                 source=fallback.source,
                 note=f"Ensemble model unavailable: {exc}. {fallback.note}",
                 parsed=parsed,
