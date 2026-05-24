@@ -74,6 +74,10 @@ def test_discovery_rejects_non_weather_questions_with_ambiguous_words_and_dates(
         "Will Mamdani freeze NYC rents before 2027?",
         "Will Waymo launch in Washington DC by June 30 2026?",
         "Will Waymo operate in 6 cities on June 30 2026?",
+        "Will the Democrats win the New York governor race in 2026?",
+        "Will Boston Breach finish in the top 4 of the CDL Regular Season?",
+        "Will the Chicago White Sox win the 2026 World Series?",
+        "Will Seattle Sounders FC win the 2026 MLS Cup?",
     ]
 
     for question in false_positives:

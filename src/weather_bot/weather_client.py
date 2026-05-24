@@ -78,8 +78,14 @@ def c_to_f(c: float) -> float:
 
 def _extract_temp_threshold(q: str) -> tuple[float | None, str, str | None]:
     """Return threshold in Fahrenheit, original unit, and comparison operator."""
-    high_words = r"(?:above|over|at least|exceed(?:s)?|reach(?:es)?|hit(?:s)?|higher than|>=|high|\uc774\uc0c1)"
-    low_words = r"(?:below|under|less than|at most|lower than|<=|low|\uc774\ud558|\ubbf8\ub9cc)"
+    high_words = (
+        r"(?:\babove\b|\bover\b|\bat\s+least\b|\bexceed(?:s)?\b|\breach(?:es)?\b|"
+        r"\bhit(?:s)?\b|\bhigher(?:\s+than)?\b|\bor\s+higher\b|>=|\bhigh\b|\uc774\uc0c1)"
+    )
+    low_words = (
+        r"(?:\bbelow\b|\bunder\b|\bless\s+than\b|\bat\s+most\b|\blower\s+than\b|"
+        r"<=|\blow(?:er)?\b|\bor\s+lower\b|\bor\s+less\b|\uc774\ud558|\ubbf8\ub9cc)"
+    )
     degree = r"(?:\s*(?:\u00b0|\u00ba|\u02da|\uc9f8)\s*)?"
     unit_pattern = r"(?P<unit>f|c|fahrenheit|celsius|degrees?|degree|\u2103|\u2109|\ub3c4)"
 
