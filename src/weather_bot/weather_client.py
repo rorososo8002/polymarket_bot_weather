@@ -89,24 +89,12 @@ def _extract_temp_threshold(q: str) -> tuple[float | None, str, str | None]:
     degree = r"(?:\s*(?:\u00b0|\u00ba|\u02da|\uc9f8)\s*)?"
     unit_pattern = r"(?P<unit>f|c|fahrenheit|celsius|degrees?|degree|\u2103|\u2109|\ub3c4)"
 
-    comparison_match = re.search(
-        rf"(?P<op>{high_words}|{low_words})[^\d]{{0,30}}(?P<value>\d{{1,3}}(?:\.\d+)?)"
-        rf"(?:{degree}{unit_pattern}\b)?",
+    unit_match = re.search(
+        rf"(?P<value>\d{{1,3}}(?:\.\d+)?){degree}{unit_pattern}\b",
         q,
         re.IGNORECASE,
     )
-    if comparison_match:
-        threshold_raw = float(comparison_match.group("value"))
-        unit_text = (comparison_match.group("unit") or "").lower()
-        operator = "<=" if re.search(low_words, comparison_match.group("op"), re.IGNORECASE) else ">="
-    else:
-        unit_match = re.search(
-            rf"(?P<value>\d{{1,3}}(?:\.\d+)?){degree}{unit_pattern}\b",
-            q,
-            re.IGNORECASE,
-        )
-        if not unit_match:
-            return None, "UNKNOWN", None
+    if unit_match:
         threshold_raw = float(unit_match.group("value"))
         unit_text = (unit_match.group("unit") or "").lower()
         window = q[max(0, unit_match.start() - 40):unit_match.end() + 30]
@@ -116,6 +104,17 @@ def _extract_temp_threshold(q: str) -> tuple[float | None, str, str | None]:
             operator = ">="
         else:
             return None, "UNKNOWN", None
+    else:
+        comparison_match = re.search(
+            rf"(?P<op>{high_words}|{low_words})[^\d]{{0,30}}(?P<value>\d{{1,3}}(?:\.\d+)?)",
+            q,
+            re.IGNORECASE,
+        )
+        if not comparison_match:
+            return None, "UNKNOWN", None
+        threshold_raw = float(comparison_match.group("value"))
+        unit_text = ""
+        operator = "<=" if re.search(low_words, comparison_match.group("op"), re.IGNORECASE) else ">="
 
     if unit_text in {"c", "celsius", "\u2103", "\ub3c4"}:
         return c_to_f(threshold_raw), "C", operator
