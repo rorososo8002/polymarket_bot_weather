@@ -1,0 +1,27 @@
+[Unit]
+Description=Polymarket weather live paper trading bot
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=polymarket
+Group=polymarket
+WorkingDirectory=/opt/polymarket-weather-bot
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=/etc/polymarket-weather-bot/live-paper.env
+ExecStart=/opt/polymarket-weather-bot/.venv/bin/live-paper-bot
+Restart=always
+RestartSec=30
+KillSignal=SIGINT
+TimeoutStopSec=30
+
+# Keep the service paper-only and scoped to its app directory.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/polymarket-weather-bot
+
+[Install]
+WantedBy=multi-user.target
