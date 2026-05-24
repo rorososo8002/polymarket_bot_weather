@@ -13,6 +13,7 @@ dependencies = [
 
 [project.scripts]
 live-paper-bot = "weather_bot.live_paper_runner:main"
+weather-dashboard = "weather_bot.dashboard:main"
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

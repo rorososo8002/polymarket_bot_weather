@@ -1,0 +1,26 @@
+[Unit]
+Description=Polymarket weather paper dashboard
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=polymarket
+Group=polymarket
+WorkingDirectory=/opt/polymarket-weather-bot
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=/etc/polymarket-weather-bot/dashboard.env
+ExecStart=/opt/polymarket-weather-bot/.venv/bin/weather-dashboard
+Restart=always
+RestartSec=10
+TimeoutStopSec=20
+
+# Read-only dashboard; runtime data remains in the app data directory.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/polymarket-weather-bot
+
+[Install]
+WantedBy=multi-user.target

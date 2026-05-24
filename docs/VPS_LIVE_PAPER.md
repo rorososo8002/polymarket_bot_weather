@@ -16,7 +16,9 @@ chain.
   pyproject.toml
 
 /etc/polymarket-weather-bot/live-paper.env
+/etc/polymarket-weather-bot/dashboard.env
 /etc/systemd/system/polymarket-weather-bot.service
+/etc/systemd/system/polymarket-weather-dashboard.service
 ```
 
 ## 1. Create Service User
@@ -92,12 +94,44 @@ sudo -u polymarket tail -n 20 /opt/polymarket-weather-bot/data/paper_decisions.c
 sudo -u polymarket tail -n 5 /opt/polymarket-weather-bot/data/paper_raw_snapshots.jsonl
 ```
 
-## 7. Stop, Restart, Update
+## 7. Install 24h Dashboard
+
+The dashboard is a read-only HTTP service. It reads the same paper files as the
+bot and refreshes the browser every few seconds. Leaving the page open does not
+use Codex tokens.
+
+```bash
+sudo cp /opt/polymarket-weather-bot/deploy/systemd/dashboard.env.example /etc/polymarket-weather-bot/dashboard.env
+sudo cp /opt/polymarket-weather-bot/deploy/systemd/polymarket-weather-dashboard.service /etc/systemd/system/polymarket-weather-dashboard.service
+sudo chown root:root /etc/polymarket-weather-bot/dashboard.env
+sudo chmod 0600 /etc/polymarket-weather-bot/dashboard.env
+sudo nano /etc/polymarket-weather-bot/dashboard.env
+```
+
+Set a long random `DASHBOARD_TOKEN` before exposing the dashboard.
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now polymarket-weather-dashboard
+sudo systemctl status polymarket-weather-dashboard --no-pager
+```
+
+Open:
+
+```text
+http://SERVER_IP:8787/?token=YOUR_DASHBOARD_TOKEN
+```
+
+If the page does not load, open inbound TCP port `8787` in the VPS firewall or
+change `DASHBOARD_PORT` to a port you already allow.
+
+## 8. Stop, Restart, Update
 
 ```bash
 sudo systemctl stop polymarket-weather-bot
 sudo systemctl restart polymarket-weather-bot
 sudo systemctl disable --now polymarket-weather-bot
+sudo systemctl restart polymarket-weather-dashboard
 ```
 
 After updating code:
@@ -107,6 +141,7 @@ sudo systemctl stop polymarket-weather-bot
 sudo -u polymarket /opt/polymarket-weather-bot/.venv/bin/pip install -e /opt/polymarket-weather-bot
 sudo -u polymarket /opt/polymarket-weather-bot/.venv/bin/python -m pytest -q /opt/polymarket-weather-bot
 sudo systemctl start polymarket-weather-bot
+sudo systemctl restart polymarket-weather-dashboard
 ```
 
 ## Readiness Checklist
@@ -117,4 +152,6 @@ Before letting it run unattended:
 - `journalctl -u polymarket-weather-bot -n 100` has no repeated API errors.
 - `/opt/polymarket-weather-bot/data/paper_decisions.csv` is growing.
 - `/opt/polymarket-weather-bot/data/paper_raw_snapshots.jsonl` is growing.
+- `systemctl status polymarket-weather-dashboard` shows `active (running)`.
+- Dashboard URL requires a non-empty token.
 - No private key or wallet secret exists anywhere in the service environment.
