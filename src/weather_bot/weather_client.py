@@ -78,52 +78,41 @@ def c_to_f(c: float) -> float:
 
 def _extract_temp_threshold(q: str) -> tuple[float | None, str, str | None]:
     """Return threshold in Fahrenheit, original unit, and comparison operator."""
-    high_words = r"above|over|at least|exceed|exceeds|reach|reaches|hit|hits|higher than|>=|이상"
-    low_words = r"below|under|less than|at most|lower than|<=|이하|미만"
-    degree = r"(?:[°º˚째]|도)?"
-    unit_pattern = r"(c|f|celsius|fahrenheit|℃|℉|degrees|degree)?"
+    high_words = r"(?:above|over|at least|exceed(?:s)?|reach(?:es)?|hit(?:s)?|higher than|>=|high|\uc774\uc0c1)"
+    low_words = r"(?:below|under|less than|at most|lower than|<=|low|\uc774\ud558|\ubbf8\ub9cc)"
+    degree = r"(?:\s*(?:\u00b0|\u00ba|\u02da|\uc9f8)\s*)?"
+    unit_pattern = r"(?P<unit>f|c|fahrenheit|celsius|degrees?|degree|\u2103|\u2109|\ub3c4)"
 
-    match = re.search(
-        rf"(?:{high_words}|{low_words})\s*\$?(\d{{1,3}}(?:\.\d+)?)\s*{degree}\s*{unit_pattern}",
+    comparison_match = re.search(
+        rf"(?P<op>{high_words}|{low_words})[^\d]{{0,30}}(?P<value>\d{{1,3}}(?:\.\d+)?)"
+        rf"(?:{degree}{unit_pattern}\b)?",
         q,
         re.IGNORECASE,
     )
-    if match:
-        threshold_raw = float(match.group(1))
-        unit_text = (match.group(2) or "").lower()
-        prefix = match.group(0).lower()
-        operator = "<=" if re.search(low_words, prefix, re.IGNORECASE) else ">="
+    if comparison_match:
+        threshold_raw = float(comparison_match.group("value"))
+        unit_text = (comparison_match.group("unit") or "").lower()
+        operator = "<=" if re.search(low_words, comparison_match.group("op"), re.IGNORECASE) else ">="
     else:
-        match = re.search(
-            rf"(\d{{1,3}}(?:\.\d+)?)\s*{degree}\s*{unit_pattern}\s*(이상|이하|미만)?",
+        unit_match = re.search(
+            rf"(?P<value>\d{{1,3}}(?:\.\d+)?){degree}{unit_pattern}\b",
             q,
             re.IGNORECASE,
         )
-        if not match or not (match.group(2) or match.group(3)):
-            legacy_match = re.search(r"(\d{1,3}(?:\.\d+)?)\s*�+", q)
-            if legacy_match:
-                threshold_raw = float(legacy_match.group(1))
-                operator = "<=" if "�̸" in q or "����" in q else ">="
-                return c_to_f(threshold_raw), "C", operator
+        if not unit_match:
             return None, "UNKNOWN", None
-        threshold_raw = float(match.group(1))
-        unit_text = (match.group(2) or "").lower()
-        after_word = (match.group(3) or "").lower()
-        tail = q[match.end():match.end() + 24].lower()
-        operator = "<=" if after_word in {"이하", "미만"} or "or lower" in tail or "or less" in tail else ">="
+        threshold_raw = float(unit_match.group("value"))
+        unit_text = (unit_match.group("unit") or "").lower()
+        window = q[max(0, unit_match.start() - 40):unit_match.end() + 30]
+        operator = "<=" if re.search(low_words, window, re.IGNORECASE) else ">="
 
-    if unit_text in {"c", "celsius", "℃"}:
+    if unit_text in {"c", "celsius", "\u2103", "\ub3c4"}:
         return c_to_f(threshold_raw), "C", operator
-    if unit_text in {"f", "fahrenheit", "℉", "degrees", "degree"}:
-        return threshold_raw, "F", operator
-    if "도" in match.group(0):
-        return c_to_f(threshold_raw), "C", operator
-
     return threshold_raw, "F", operator
 
 
 def _extract_precip_threshold(q: str) -> float | None:
-    high_words = r"above|over|at least|exceed|exceeds|more than|greater than|이상|초과"
+    high_words = r"above|over|at least|exceed|exceeds|more than|greater than"
     match = re.search(rf"(?:{high_words})\s*(\d+(?:\.\d+)?)\s*(mm|millimeter|inch|inches)\b", q, re.IGNORECASE)
     if match:
         value = float(match.group(1))
@@ -149,9 +138,9 @@ def parse_weather_question(question: str) -> ParsedWeatherQuestion:
             break
 
     variable = "temperature"
-    if "rain" in q or "precip" in q or "wet" in q or "강수" in q or "비" in q:
+    if re.search(r"\b(rain|rainfall|precip(?:itation)?|wet)\b", q) or "\uac15\uc218" in q or "\ube44" in q:
         variable = "precipitation"
-    elif "snow" in q or "눈" in q:
+    elif re.search(r"\b(snow|snowfall)\b", q) or "\ub208" in q:
         variable = "snow"
 
     threshold_f = threshold_original = None
@@ -174,9 +163,9 @@ def parse_weather_question(question: str) -> ParsedWeatherQuestion:
         weekday_match = re.search(r"\b(" + "|".join(WEEKDAY_NAMES) + r")\b", q)
         if weekday_match:
             date_hint = weekday_match.group(1)
-    if date_hint is None and ("today" in q or "오늘" in q):
+    if date_hint is None and ("today" in q or "\uc624\ub298" in q):
         date_hint = "today"
-    elif date_hint is None and ("tomorrow" in q or "내일" in q):
+    elif date_hint is None and ("tomorrow" in q or "\ub0b4\uc77c" in q):
         date_hint = "tomorrow"
 
     confidence = 0.0

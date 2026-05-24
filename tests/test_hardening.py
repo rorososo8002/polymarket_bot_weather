@@ -67,6 +67,30 @@ def test_discovery_uses_weather_question_shape_and_paginates():
     assert [m.market_id for m in markets] == ["m1"]
 
 
+def test_discovery_rejects_non_weather_questions_with_ambiguous_words_and_dates():
+    false_positives = [
+        "Will the Carolina Hurricanes win the 2026 NHL Stanley Cup?",
+        "Zelenskyy out as Ukraine president by end of 2026?",
+        "Will Mamdani freeze NYC rents before 2027?",
+        "Will Waymo launch in Washington DC by June 30 2026?",
+        "Will Waymo operate in 6 cities on June 30 2026?",
+    ]
+
+    for question in false_positives:
+        assert not PolymarketClient._is_weather_market({"question": question})
+
+
+def test_discovery_keeps_supported_weather_question_shapes():
+    true_weather_questions = [
+        "Will NYC reach 90 F on May 25?",
+        "Will it rain in NYC on Friday?",
+        "Will Chicago get more than 0.5 inches of rain on May 25?",
+    ]
+
+    for question in true_weather_questions:
+        assert PolymarketClient._is_weather_market({"question": question})
+
+
 def test_vwap_slippage_is_not_subtracted_twice():
     assert abs(yes_net_edge(0.60, 0.55, 0.0, 0.05, 0.0, 0.0) - 0.05) < 1e-12
     assert abs(no_net_edge(0.40, 0.55, 0.0, 0.05, 0.0, 0.0) - 0.05) < 1e-12

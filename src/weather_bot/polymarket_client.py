@@ -82,26 +82,34 @@ class PolymarketClient:
                         parts.append(str(value))
         return " ".join(parts).lower()
 
+    @staticmethod
+    def _flatten_metadata_text(row: dict[str, Any]) -> str:
+        parts: list[str] = []
+        for key in ("category", "subcategory"):
+            value = row.get(key)
+            if value:
+                parts.append(str(value))
+        for key in ("tags", "categories"):
+            values = row.get(key) or []
+            if isinstance(values, list):
+                for value in values:
+                    if isinstance(value, dict):
+                        parts.extend(str(value.get(name, "")) for name in ("label", "name", "slug"))
+                    else:
+                        parts.append(str(value))
+        return " ".join(parts).lower()
+
     @classmethod
     def _is_weather_market(cls, row: dict[str, Any]) -> bool:
-        text = cls._flatten_market_text(row)
-        weather_words = (
-            "weather", "temperature", "rain", "snow", "hurricane", "storm",
-            "precipitation", "rainfall", "snowfall", "flood", "drought",
-            "record high", "record low", "heat wave", "cold snap", "wind chill",
-            "heat index", "freeze", "frost", "fog", "hail", "tornado", "typhoon",
-            "humidity", "wind speed",
-        )
-        if any(word in text for word in weather_words):
-            return True
-
         question = str(row.get("question") or row.get("title") or "")
         parsed = parse_weather_question(question)
         if parsed.city and parsed.variable == "temperature" and parsed.threshold_f is not None and parsed.operator:
             return True
         if parsed.city and parsed.variable in {"precipitation", "snow"}:
             return True
-        return bool(re.search(r"\b(reach|hit|above|below|over|under|high|low)\b.*\d{1,3}\s*[°º˚]?\s*[fc]\b", text))
+        metadata = cls._flatten_metadata_text(row)
+        supported_metadata = re.search(r"\b(weather|climate|temperature|rainfall|snowfall|precipitation)\b", metadata)
+        return bool(supported_metadata and parsed.city and parsed.confidence >= 0.70)
 
     def _parse_market(self, row: dict[str, Any]) -> RawMarket:
         tokens = row.get("tokens") or row.get("clobTokenIds") or []
