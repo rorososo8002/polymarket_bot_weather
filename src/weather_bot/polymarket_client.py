@@ -5,7 +5,7 @@ import re
 from typing import Any
 
 import requests
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import RetryError, retry, stop_after_attempt, wait_exponential
 
 from .models import OrderBook, OrderLevel, RawMarket
 from .weather_client import parse_weather_question
@@ -23,21 +23,28 @@ class PolymarketClient:
         resp.raise_for_status()
         return resp.json()
 
-    def discover_weather_markets(self, limit: int = 20) -> list[RawMarket]:
+    def discover_weather_markets(self, limit: int = 20, max_pages: int | None = None) -> list[RawMarket]:
         """Fetch active markets and keep likely weather-related questions."""
         url = f"{self.gamma_base}/markets"
         page_size = max(limit * 5, 50)
+        page_limit = max_pages if max_pages is not None else max(4, min(limit, 8))
         offset = 0
+        pages_scanned = 0
         markets: list[RawMarket] = []
 
-        while len(markets) < limit:
+        while len(markets) < limit and pages_scanned < page_limit:
             params = {
                 "active": "true",
                 "closed": "false",
                 "limit": str(page_size),
                 "offset": str(offset),
             }
-            data = self._get(url, params=params)
+            try:
+                data = self._get(url, params=params)
+            except (requests.HTTPError, RetryError):
+                if pages_scanned > 0 or markets:
+                    break
+                raise
             if isinstance(data, dict):
                 rows = data.get("markets") or data.get("data") or []
             else:
@@ -55,6 +62,7 @@ class PolymarketClient:
                     break
 
             offset += page_size
+            pages_scanned += 1
         return markets
 
     def get_market(self, market_id: str) -> RawMarket:

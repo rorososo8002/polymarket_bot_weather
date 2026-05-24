@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 
+import requests
+
 from weather_bot.config import Settings
 from weather_bot.edge import no_net_edge, yes_net_edge
 from weather_bot.live_paper_runner import evaluate_market, refresh_open_position_edges
@@ -93,6 +95,36 @@ def test_discovery_keeps_supported_weather_question_shapes():
 
     for question in true_weather_questions:
         assert PolymarketClient._is_weather_market({"question": question})
+
+
+def test_discovery_stops_at_page_limit_without_fetching_deep_offsets():
+    seen_offsets: list[int] = []
+
+    class PagingClient(FakePolymarketClient):
+        def _get(self, url: str, params: dict | None = None):
+            offset = int((params or {}).get("offset", 0))
+            seen_offsets.append(offset)
+            if offset >= 100:
+                raise AssertionError("deep page should not be fetched")
+            return [{"id": str(offset), "question": "Will unrelated thing happen?", "clobTokenIds": json.dumps(["yes", "no"])}]
+
+    markets = PagingClient().discover_weather_markets(limit=1, max_pages=2)
+
+    assert markets == []
+    assert seen_offsets == [0, 50]
+
+
+def test_discovery_returns_partial_results_when_later_gamma_page_errors():
+    class FlakyClient(FakePolymarketClient):
+        def _get(self, url: str, params: dict | None = None):
+            offset = int((params or {}).get("offset", 0))
+            if offset == 0:
+                return [{"id": "m1", "question": "Will NYC reach 90 F on May 25?", "clobTokenIds": json.dumps(["yes", "no"])}]
+            raise requests.HTTPError("later page failed")
+
+    markets = FlakyClient().discover_weather_markets(limit=2)
+
+    assert [market.market_id for market in markets] == ["m1"]
 
 
 def test_vwap_slippage_is_not_subtracted_twice():
