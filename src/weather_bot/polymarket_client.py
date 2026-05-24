@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 from typing import Any
+from urllib.parse import quote
 
 import requests
 from tenacity import RetryError, retry, stop_after_attempt, wait_exponential
@@ -16,6 +17,7 @@ class PolymarketClient:
         self.gamma_base = gamma_base.rstrip("/")
         self.clob_base = clob_base.rstrip("/")
         self.timeout = timeout
+        self.web_base = "https://polymarket.com"
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=0.5, min=0.5, max=4))
     def _get(self, url: str, params: dict[str, Any] | None = None) -> Any:
@@ -25,12 +27,16 @@ class PolymarketClient:
 
     def discover_weather_markets(self, limit: int = 20, max_pages: int | None = None) -> list[RawMarket]:
         """Fetch active markets and keep likely weather-related questions."""
+        markets = self._discover_weather_markets_from_category_pages(limit)
+        if len(markets) >= limit:
+            return markets[:limit]
+
+        seen_ids = {market.market_id for market in markets}
         url = f"{self.gamma_base}/markets"
         page_size = max(limit * 5, 50)
         page_limit = max_pages if max_pages is not None else max(4, min(limit, 8))
         offset = 0
         pages_scanned = 0
-        markets: list[RawMarket] = []
 
         while len(markets) < limit and pages_scanned < page_limit:
             params = {
@@ -56,14 +62,67 @@ class PolymarketClient:
                 if not isinstance(row, dict) or not self._is_weather_market(row):
                     continue
                 market = self._parse_market(row)
-                if market.yes_token_id or market.no_token_id:
+                if market.market_id not in seen_ids and (market.yes_token_id or market.no_token_id):
                     markets.append(market)
+                    seen_ids.add(market.market_id)
                 if len(markets) >= limit:
                     break
 
             offset += page_size
             pages_scanned += 1
         return markets
+
+    def _discover_weather_markets_from_category_pages(self, limit: int) -> list[RawMarket]:
+        slugs: list[str] = []
+        for path in ("/weather/temperature", "/weather/high-temperature", "/weather/low-temperature", "/weather/precipitation"):
+            try:
+                slugs.extend(self._event_slugs_from_page(path))
+            except (requests.HTTPError, RetryError, requests.RequestException):
+                continue
+
+        markets: list[RawMarket] = []
+        seen_ids: set[str] = set()
+        for slug in dict.fromkeys(slugs):
+            try:
+                event = self._get(f"{self.gamma_base}/events/slug/{quote(slug, safe='')}")
+            except (requests.HTTPError, RetryError, requests.RequestException, ValueError):
+                continue
+            rows = event.get("markets") if isinstance(event, dict) else None
+            if not isinstance(rows, list):
+                continue
+            for row in rows:
+                if not isinstance(row, dict) or not self._is_weather_market(row):
+                    continue
+                market = self._parse_market(row)
+                if market.market_id in seen_ids or not (market.yes_token_id or market.no_token_id):
+                    continue
+                markets.append(market)
+                seen_ids.add(market.market_id)
+                if len(markets) >= limit:
+                    return markets
+        return markets
+
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=0.5, min=0.5, max=4))
+    def _get_web_text(self, path: str) -> str:
+        resp = requests.get(f"{self.web_base}{path}", timeout=self.timeout)
+        resp.raise_for_status()
+        return resp.text
+
+    def _event_slugs_from_page(self, path: str) -> list[str]:
+        html = self._get_web_text(path)
+        slugs = re.findall(r'href=["\']/event/([^"\'?#]+)', html)
+        return [slug for slug in dict.fromkeys(slugs) if self._looks_like_weather_event_slug(slug)]
+
+    @staticmethod
+    def _looks_like_weather_event_slug(slug: str) -> bool:
+        return bool(
+            re.search(
+                r"(^|-)("
+                r"highest-temperature|lowest-temperature|temperature|rainfall|rain|precipitation|snowfall|snow"
+                r")($|-)",
+                slug,
+            )
+        )
 
     def get_market(self, market_id: str) -> RawMarket:
         data = self._get(f"{self.gamma_base}/markets/{market_id}")

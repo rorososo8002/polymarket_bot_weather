@@ -110,7 +110,12 @@ def _extract_temp_threshold(q: str) -> tuple[float | None, str, str | None]:
         threshold_raw = float(unit_match.group("value"))
         unit_text = (unit_match.group("unit") or "").lower()
         window = q[max(0, unit_match.start() - 40):unit_match.end() + 30]
-        operator = "<=" if re.search(low_words, window, re.IGNORECASE) else ">="
+        if re.search(low_words, window, re.IGNORECASE):
+            operator = "<="
+        elif re.search(high_words, window, re.IGNORECASE):
+            operator = ">="
+        else:
+            return None, "UNKNOWN", None
 
     if unit_text in {"c", "celsius", "\u2103", "\ub3c4"}:
         return c_to_f(threshold_raw), "C", operator

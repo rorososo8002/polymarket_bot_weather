@@ -25,6 +25,9 @@ class FakePolymarketClient(PolymarketClient):
         offset = int((params or {}).get("offset", 0))
         return self.pages.get(offset, [])
 
+    def _get_web_text(self, path: str) -> str:
+        return ""
+
     def get_order_book(self, token_id: str) -> OrderBook:
         return self.books[token_id]
 
@@ -69,6 +72,36 @@ def test_discovery_uses_weather_question_shape_and_paginates():
     assert [m.market_id for m in markets] == ["m1"]
 
 
+def test_discovery_uses_polymarket_weather_category_event_slugs():
+    class CategoryClient(FakePolymarketClient):
+        def _get_web_text(self, path: str) -> str:
+            if path == "/weather/temperature":
+                return '<a href="/event/highest-temperature-in-seoul-on-may-25-2026">Seoul</a>'
+            return ""
+
+        def _get(self, url: str, params: dict | None = None):
+            if "/events/slug/highest-temperature-in-seoul-on-may-25-2026" in url:
+                return {
+                    "markets": [
+                        {
+                            "id": "m1",
+                            "question": "Will the highest temperature in Seoul be 27\u00b0C or higher on May 25?",
+                            "clobTokenIds": json.dumps(["yes", "no"]),
+                        },
+                        {
+                            "id": "m2",
+                            "question": "Will the highest temperature in Seoul be 26\u00b0C on May 25?",
+                            "clobTokenIds": json.dumps(["yes2", "no2"]),
+                        },
+                    ]
+                }
+            return []
+
+    markets = CategoryClient().discover_weather_markets(limit=5)
+
+    assert [market.market_id for market in markets] == ["m1"]
+
+
 def test_discovery_rejects_non_weather_questions_with_ambiguous_words_and_dates():
     false_positives = [
         "Will the Carolina Hurricanes win the 2026 NHL Stanley Cup?",
@@ -89,12 +122,20 @@ def test_discovery_rejects_non_weather_questions_with_ambiguous_words_and_dates(
 def test_discovery_keeps_supported_weather_question_shapes():
     true_weather_questions = [
         "Will NYC reach 90 F on May 25?",
+        "Will the highest temperature in Seoul be 27\u00b0C or higher on May 25?",
+        "Will the highest temperature in London be 26\u00b0C or below on May 25?",
         "Will it rain in NYC on Friday?",
         "Will Chicago get more than 0.5 inches of rain on May 25?",
     ]
 
     for question in true_weather_questions:
         assert PolymarketClient._is_weather_market({"question": question})
+
+
+def test_discovery_rejects_exact_temperature_bucket_until_model_supports_ranges():
+    assert not PolymarketClient._is_weather_market(
+        {"question": "Will the highest temperature in Seoul be 26\u00b0C on May 25?"}
+    )
 
 
 def test_discovery_stops_at_page_limit_without_fetching_deep_offsets():
