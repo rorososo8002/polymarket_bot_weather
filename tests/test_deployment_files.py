@@ -1,4 +1,5 @@
 from pathlib import Path
+import tomllib
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -58,3 +59,10 @@ def test_vps_deployment_doc_warns_that_service_is_paper_only():
     assert "systemctl enable --now polymarket-weather-dashboard" in text
     assert "does not\nuse Codex tokens" in text
     assert "journalctl -u polymarket-weather-bot -f" in text
+
+
+def test_pytest_is_a_dev_dependency_not_runtime_dependency():
+    data = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+
+    assert not any(dep.startswith("pytest") for dep in data["project"]["dependencies"])
+    assert any(dep.startswith("pytest") for dep in data["project"]["optional-dependencies"]["dev"])

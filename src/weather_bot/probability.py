@@ -112,25 +112,60 @@ def _today_for_timezone(timezone_name: str = "auto", now: datetime | None = None
                 current = current.astimezone(zone)
             return current.date()
         except Exception:
-            fallback_offsets = {
-                "America/New_York": -4,
-                "America/Chicago": -5,
-                "America/Los_Angeles": -7,
-                "America/Denver": -6,
-                "America/Phoenix": -7,
-                "Asia/Seoul": 9,
-                "Asia/Tokyo": 9,
-                "Europe/London": 1,
-                "Europe/Paris": 2,
-            }
-            if timezone_name in fallback_offsets:
-                zone = timezone(timedelta(hours=fallback_offsets[timezone_name]))
-                current = now or datetime.now(timezone.utc)
-                if current.tzinfo is None:
-                    current = current.replace(tzinfo=timezone.utc)
+            current = now or datetime.now(timezone.utc)
+            if current.tzinfo is None:
+                current = current.replace(tzinfo=timezone.utc)
+            offset = _fallback_offset_hours(timezone_name, current)
+            if offset is not None:
+                zone = timezone(timedelta(hours=offset))
                 return current.astimezone(zone).date()
     current = now or datetime.now()
     return current.date()
+
+
+def _nth_weekday(year: int, month: int, weekday: int, n: int) -> date:
+    first = date(year, month, 1)
+    days_ahead = (weekday - first.weekday()) % 7
+    return first + timedelta(days=days_ahead + 7 * (n - 1))
+
+
+def _last_weekday(year: int, month: int, weekday: int) -> date:
+    last = date(year, month + 1, 1) - timedelta(days=1) if month < 12 else date(year, 12, 31)
+    days_back = (last.weekday() - weekday) % 7
+    return last - timedelta(days=days_back)
+
+
+def _fallback_offset_hours(timezone_name: str, now: datetime) -> int | None:
+    current = now.astimezone(timezone.utc)
+    current_date = current.date()
+    us_dst_zones = {
+        "America/New_York": (-5, -4),
+        "America/Chicago": (-6, -5),
+        "America/Los_Angeles": (-8, -7),
+        "America/Denver": (-7, -6),
+    }
+    if timezone_name in us_dst_zones:
+        standard, daylight = us_dst_zones[timezone_name]
+        starts = _nth_weekday(current.year, 3, 6, 2)
+        ends = _nth_weekday(current.year, 11, 6, 1)
+        return daylight if starts <= current_date < ends else standard
+
+    european_dst_zones = {
+        "Europe/London": (0, 1),
+        "Europe/Paris": (1, 2),
+    }
+    if timezone_name in european_dst_zones:
+        standard, daylight = european_dst_zones[timezone_name]
+        starts = _last_weekday(current.year, 3, 6)
+        ends = _last_weekday(current.year, 10, 6)
+        return daylight if starts <= current_date < ends else standard
+
+    fixed_offsets = {
+        "America/Phoenix": -7,
+        "Asia/Seoul": 9,
+        "Asia/Tokyo": 9,
+    }
+    return fixed_offsets.get(timezone_name)
 
 
 def _lead_time_days(target: date, timezone_name: str = "auto", now: datetime | None = None) -> float:
@@ -217,7 +252,7 @@ class OpenMeteoEnsembleClient:
         params = {
             "latitude": latitude,
             "longitude": longitude,
-            "daily": "temperature_2m_max,temperature_2m_min,precipitation_sum",
+            "daily": "temperature_2m_max,temperature_2m_min,precipitation_sum,snowfall_sum",
             "models": self.models,
             "temperature_unit": "fahrenheit",
             "timezone": timezone,
@@ -347,6 +382,23 @@ def _fallback_deterministic_probability(
             note=f"{parsed.city}; {_format_threshold(parsed)}; {ref_label}={reference:.1f}F; fixed sigma={settings.default_temperature_sigma_f:.1f}F. Ensemble failed/unavailable.",
             parsed=parsed,
         )
+    if parsed.variable in {"precipitation", "snow"}:
+        variable = "snowfall_sum" if parsed.variable == "snow" else "precipitation_sum"
+        label = "snow" if parsed.variable == "snow" else "precip"
+        unit = "cm" if parsed.variable == "snow" else "mm"
+        threshold = parsed.threshold_precip_mm if parsed.threshold_precip_mm is not None else 0.1
+        values = [float(x) for x in (daily.get(variable) or []) if x is not None]
+        if not values:
+            return WeatherSignal(0.5, 0.0, "fallback", f"No deterministic {label} values returned.", parsed)
+        reference = max(values)
+        p = 0.75 if reference >= threshold else 0.25
+        return WeatherSignal(
+            p_true=clamp_probability(p),
+            confidence=max(0.05, parsed.confidence * 0.40),
+            source="open-meteo-deterministic-fallback",
+            note=f"{parsed.city}; {label}>={threshold:.1f}{unit}; max forecast={reference:.2f}{unit}. Ensemble failed/unavailable.",
+            parsed=parsed,
+        )
     return WeatherSignal(0.5, 0.0, "fallback", "Unsupported fallback market.", parsed)
 
 
@@ -371,8 +423,11 @@ def _ensemble_precipitation_probability(
     target = _target_date_from_hint(parsed, timezone_name=station.timezone)
     lead_days = _lead_time_days(target, timezone_name=station.timezone)
     # 파싱된 임계값이 없으면 0.1mm 기본값 (어떤 비든)
-    threshold_mm = parsed.threshold_precip_mm if parsed.threshold_precip_mm is not None else 0.1
-    variable = "precipitation_sum"
+    is_snow = parsed.variable == "snow"
+    threshold_amount = parsed.threshold_precip_mm if parsed.threshold_precip_mm is not None else 0.1
+    variable = "snowfall_sum" if is_snow else "precipitation_sum"
+    label = "snow" if is_snow else "precip"
+    unit = "cm" if is_snow else "mm"
 
     data = ensemble_client.forecast_daily_ensemble(
         station.latitude,
@@ -389,7 +444,7 @@ def _ensemble_precipitation_probability(
         raise ValueError(f"강수 앙상블 멤버 부족: {len(member_values)}개")
 
     # 경험적 투표 (threshold_mm 이상인 멤버 비율)
-    votes = [x >= threshold_mm for x in member_values]
+    votes = [x >= threshold_amount for x in member_values]
     empirical_p = sum(votes) / len(votes)
 
     # 확률 계산: 80% 실험적 투표 + 20% 기본율(0.5) 블렌드
@@ -418,15 +473,15 @@ def _ensemble_precipitation_probability(
     ]
     note = (
         f"{station.station_name} [{station.station_id}] target_date={date_used}; "
-        f"precip>={threshold_mm:.1f}mm; members={len(member_values)}; "
+        f"{label}>={threshold_amount:.1f}{unit}; members={len(member_values)}; "
         f"vote={empirical_p:.3f}; nonzero={nonzero_count}; "
-        f"mean={mean_precip:.2f}mm; lead={lead_days:.0f}days; "
+        f"mean={mean_precip:.2f}{unit}; lead={lead_days:.0f}days; "
         f"models={ensemble_client.models}. {station.note}"
     )
     return WeatherSignal(
         p_true=clamp_probability(p),
         confidence=confidence,
-        source="open-meteo-ensemble-precipitation",
+        source="open-meteo-ensemble-snow" if is_snow else "open-meteo-ensemble-precipitation",
         note=note,
         parsed=parsed,
     )
@@ -513,7 +568,7 @@ def estimate_weather_probability(
                 parsed=parsed,
             )
 
-    if parsed.variable == "precipitation":
+    if parsed.variable in {"precipitation", "snow"}:
         # 앙상블 기반 강수 확률 모델 (개선된 버전)
         try:
             return _ensemble_precipitation_probability(

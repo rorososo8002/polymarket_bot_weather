@@ -1,3 +1,5 @@
+import inspect
+
 from weather_bot.edge import no_net_edge, vwap_for_size, yes_net_edge
 from weather_bot.models import OrderLevel
 
@@ -22,7 +24,6 @@ def test_yes_net_edge():
         p_true=0.60,
         p_exec=0.50,
         fee_per_share=0.01,
-        slippage=0.01,
         model_error_margin=0.02,
         resolution_error_margin=0.01,
     )
@@ -34,8 +35,12 @@ def test_no_net_edge():
         p_true=0.40,
         p_exec_no=0.50,
         fee_per_share=0.01,
-        slippage=0.01,
         model_error_margin=0.02,
         resolution_error_margin=0.01,
     )
     assert abs(edge - 0.06) < 1e-9
+
+
+def test_edge_functions_do_not_accept_separate_slippage_parameter():
+    assert "slippage" not in inspect.signature(yes_net_edge).parameters
+    assert "slippage" not in inspect.signature(no_net_edge).parameters

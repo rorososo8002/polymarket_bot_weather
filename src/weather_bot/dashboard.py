@@ -11,6 +11,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from .config import Settings, load_settings
+from .runner_status import read_runner_status
 
 
 HTML = r"""<!doctype html>
@@ -228,6 +229,7 @@ HTML = r"""<!doctype html>
     <div class="brand">WEATHER BOT OPS</div>
     <div class="statusline">
       <span>SYS <b id="sys-status">SYNC</b></span>
+      <span>BOT <b id="bot-status">--</b></span>
       <span>MODE <b>PAPER</b></span>
       <span>UPDATED <b id="updated">--</b></span>
     </div>
@@ -297,6 +299,13 @@ function money(v) {
 }
 function pct(v) { return ((v || 0) * 100).toFixed(1) + "%"; }
 function price(v) { return (v === null || v === undefined || isNaN(v)) ? "--" : Number(v).toFixed(2) + "E"; }
+function duration(sec) {
+  sec = Math.max(0, Math.round(Number(sec || 0)));
+  if (sec < 60) return sec + "s";
+  const min = Math.floor(sec / 60);
+  const rem = sec % 60;
+  return rem ? min + "m " + rem + "s" : min + "m";
+}
 function shortTime(ts) {
   if (!ts) return "--";
   const d = new Date(ts);
@@ -407,6 +416,11 @@ function drawChart(payload) {
 function render(payload) {
   document.getElementById("lock").style.display = "none";
   setText("sys-status", payload.security.auth_required ? "LOCKED" : "OPEN");
+  const bot = payload.bot || {};
+  const phase = bot.phase ? bot.phase.toUpperCase() : (bot.status || "--");
+  const progress = bot.markets_total ? " " + (bot.markets_done || 0) + "/" + bot.markets_total : "";
+  const next = bot.next_scan_in_seconds > 0 ? " next " + duration(bot.next_scan_in_seconds) : "";
+  setText("bot-status", phase + progress + " " + duration(bot.age_seconds) + next);
   setText("updated", shortTime(payload.generated_at));
   setText("m-initial", money(payload.summary.initial_bankroll));
   setText("m-pnl", money(payload.summary.total_pnl));
@@ -498,6 +512,18 @@ def _float(value: Any, default: float = 0.0) -> float:
 
 def _parse_ts(row: dict[str, Any]) -> str:
     return str(row.get("ts") or row.get("opened_at") or "")
+
+
+def _parse_datetime(value: str) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def _sorted_recent(rows: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
@@ -593,11 +619,63 @@ def _events(trades: list[dict[str, str]], decisions: list[dict[str, str]]) -> li
     return _sorted_recent(events, 120)
 
 
+def _bot_status(
+    settings: Settings,
+    trades: list[dict[str, str]],
+    decisions: list[dict[str, str]],
+    positions: list[dict[str, Any]],
+    runner_status: dict[str, Any],
+) -> dict[str, Any]:
+    timestamps = [_parse_ts(row) for row in trades + decisions]
+    timestamps.extend(str(pos.get("opened_at") or "") for pos in positions)
+    runner_updated_at = str(runner_status.get("updated_at") or "")
+    timestamps.append(runner_updated_at)
+    parsed = [dt for dt in (_parse_datetime(ts) for ts in timestamps) if dt is not None]
+    if not parsed:
+        return {
+            "status": "NO DATA",
+            "last_event_at": "",
+            "age_seconds": 0,
+            "scan_interval_seconds": settings.scan_interval_seconds,
+            "next_scan_in_seconds": settings.scan_interval_seconds,
+            "phase": "",
+            "message": "",
+            "markets_done": 0,
+            "markets_total": 0,
+        }
+    last_event = max(parsed)
+    now = datetime.now(timezone.utc)
+    age = max(0, int((now - last_event).total_seconds()))
+    interval = max(1, int(settings.scan_interval_seconds))
+    phase = str(runner_status.get("phase") or "")
+    if age <= interval * 1.5:
+        status = "RUNNING" if phase in {"starting", "discovering", "evaluating", "closing"} and runner_updated_at else "WAIT"
+    elif age <= interval * 3:
+        status = "LATE"
+    else:
+        status = "STALE"
+    next_scan_at = _parse_datetime(str(runner_status.get("next_scan_at") or ""))
+    next_scan_in = max(0, int((next_scan_at - now).total_seconds())) if next_scan_at is not None else max(0, interval - age)
+    return {
+        "status": status,
+        "last_event_at": last_event.replace(microsecond=0).isoformat(),
+        "age_seconds": age,
+        "scan_interval_seconds": interval,
+        "next_scan_in_seconds": next_scan_in,
+        "phase": phase,
+        "message": str(runner_status.get("message") or ""),
+        "markets_done": int(_float(runner_status.get("markets_done"))),
+        "markets_total": int(_float(runner_status.get("markets_total"))),
+        "next_scan_at": str(runner_status.get("next_scan_at") or ""),
+    }
+
+
 def build_dashboard_payload(settings: Settings | None = None, auth_required: bool = False) -> dict[str, Any]:
     settings = settings or load_settings()
     state = _read_json(Path(settings.state_path))
     trades = _read_csv(Path(settings.trades_csv_path), 800)
     decisions = _read_csv(Path(settings.decisions_csv_path), 800)
+    runner_status = read_runner_status(settings)
     positions = [_position_payload(p) for p in state.get("positions", []) if isinstance(p, dict)]
     cash = _float(state.get("cash_usd"), settings.bankroll_usd)
     realized = _float(state.get("realized_pnl_usd"))
@@ -619,6 +697,7 @@ def build_dashboard_payload(settings: Settings | None = None, auth_required: boo
     return {
         "generated_at": _now_iso(),
         "security": {"auth_required": auth_required},
+        "bot": _bot_status(settings, trades, decisions, positions, runner_status),
         "summary": {
             "initial_bankroll": settings.bankroll_usd,
             "cash": cash,
@@ -694,9 +773,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
 def run_dashboard(settings: Settings | None = None) -> None:
     settings = settings or load_settings()
-    host = os.getenv("DASHBOARD_HOST", "127.0.0.1")
-    port = int(os.getenv("DASHBOARD_PORT", "8787"))
-    token = os.getenv("DASHBOARD_TOKEN", "").strip()
+    host = settings.dashboard_host
+    port = settings.dashboard_port
+    token = settings.dashboard_token
     server = ThreadingHTTPServer((host, port), DashboardHandler)
     server.settings = settings  # type: ignore[attr-defined]
     server.dashboard_token = token  # type: ignore[attr-defined]

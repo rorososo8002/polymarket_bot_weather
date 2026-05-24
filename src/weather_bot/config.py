@@ -18,6 +18,9 @@ class Settings:
     trades_csv_path: str = "paper_trades.csv"
     decisions_csv_path: str = "paper_decisions.csv"
     raw_snapshots_path: str = "paper_raw_snapshots.jsonl"
+    dashboard_host: str = "127.0.0.1"
+    dashboard_port: int = 8787
+    dashboard_token: str = ""
 
     # Strategy thresholds
     min_net_edge: float = 0.05
@@ -102,6 +105,9 @@ def load_settings() -> Settings:
         trades_csv_path=os.getenv("TRADES_CSV_PATH", Settings.trades_csv_path),
         decisions_csv_path=os.getenv("DECISIONS_CSV_PATH", Settings.decisions_csv_path),
         raw_snapshots_path=os.getenv("RAW_SNAPSHOTS_PATH", Settings.raw_snapshots_path),
+        dashboard_host=os.getenv("DASHBOARD_HOST", Settings.dashboard_host),
+        dashboard_port=_int_env("DASHBOARD_PORT", Settings.dashboard_port),
+        dashboard_token=os.getenv("DASHBOARD_TOKEN", Settings.dashboard_token).strip(),
         min_net_edge=_float_env("MIN_NET_EDGE", Settings.min_net_edge),
         exit_net_edge=_float_env("EXIT_NET_EDGE", Settings.exit_net_edge),
         stop_loss_pct=_float_env("STOP_LOSS_PCT", Settings.stop_loss_pct),

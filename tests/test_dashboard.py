@@ -142,5 +142,88 @@ def test_dashboard_payload_summarizes_state_trades_and_decisions(tmp_path):
     assert payload["scanner"]["decisions"] == 2
     assert payload["scanner"]["skips"] == 1
     assert payload["scanner"]["entries"] == 1
+    assert payload["bot"]["last_event_at"] == "2026-05-24T11:00:00+00:00"
+    assert payload["bot"]["scan_interval_seconds"] == 300
     assert payload["positions"][0]["unrealized_pnl"] == 10.0
     assert any(event["label"].startswith("DECISION") for event in payload["events"])
+
+
+def test_dashboard_payload_uses_runner_status_as_bot_heartbeat(tmp_path):
+    state_path = tmp_path / "state.json"
+    trades_path = tmp_path / "trades.csv"
+    decisions_path = tmp_path / "decisions.csv"
+    raw_path = tmp_path / "raw.jsonl"
+    runner_status_path = tmp_path / "paper_runner_status.json"
+    state_path.write_text(json.dumps({"cash_usd": 1000.0, "positions": []}), encoding="utf-8")
+    write_csv(
+        trades_path,
+        [
+            {
+                "ts": "2026-05-24T10:00:00+00:00",
+                "action": "OPEN",
+                "market_id": "m1",
+                "slug": "old",
+                "question": "Old trade",
+                "market_type": "temperature",
+                "side": "YES",
+                "token_id": "yes",
+                "shares": "10",
+                "price": "0.5",
+                "cash_delta_or_pnl": "-5",
+                "reason": "entry",
+            },
+        ],
+    )
+    write_csv(
+        decisions_path,
+        [
+            {
+                "ts": "2026-05-24T10:01:00+00:00",
+                "market_id": "m2",
+                "slug": "old-decision",
+                "question": "Old decision",
+                "market_type": "temperature",
+                "side": "SKIP",
+                "p_true": "0.5",
+                "p_exec": "",
+                "net_edge": "-999",
+                "size_usd": "0",
+                "size_shares": "0",
+                "entry_fraction": "",
+                "stop_loss_price": "",
+                "model_fair_price": "",
+                "target_exit_price": "",
+                "market_heat_score": "",
+                "reason": "old",
+                "note": "",
+            },
+        ],
+    )
+    runner_status_path.write_text(
+        json.dumps(
+            {
+                "updated_at": "2026-05-24T10:05:00+00:00",
+                "phase": "evaluating",
+                "message": "evaluating 3/40",
+                "markets_done": 3,
+                "markets_total": 40,
+            }
+        ),
+        encoding="utf-8",
+    )
+    settings = Settings(
+        bankroll_usd=1000.0,
+        state_path=str(state_path),
+        trades_csv_path=str(trades_path),
+        decisions_csv_path=str(decisions_path),
+        raw_snapshots_path=str(raw_path),
+    )
+
+    payload = build_dashboard_payload(settings)
+
+    assert payload["bot"]["last_event_at"] == "2026-05-24T10:05:00+00:00"
+    assert payload["bot"]["status"] == "STALE"
+    assert payload["bot"]["phase"] == "evaluating"
+    assert payload["bot"]["message"] == "evaluating 3/40"
+    assert payload["bot"]["markets_done"] == 3
+    assert payload["bot"]["markets_total"] == 40

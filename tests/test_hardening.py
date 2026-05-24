@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import requests
 
 from weather_bot.config import Settings
 from weather_bot.edge import no_net_edge, yes_net_edge
-from weather_bot.live_paper_runner import evaluate_market, refresh_open_position_edges
+from weather_bot.live_paper_runner import _sleep_seconds_until_next_cycle, evaluate_market, refresh_open_position_edges
 from weather_bot.models import EdgeResult, OrderBook, OrderLevel, PaperPosition, PaperState, RawMarket, WeatherSignal
 from weather_bot.paper import PaperBroker, maybe_settle_resolved_positions
 from weather_bot.polymarket_client import PolymarketClient
@@ -169,8 +169,8 @@ def test_discovery_returns_partial_results_when_later_gamma_page_errors():
 
 
 def test_vwap_slippage_is_not_subtracted_twice():
-    assert abs(yes_net_edge(0.60, 0.55, 0.0, 0.05, 0.0, 0.0) - 0.05) < 1e-12
-    assert abs(no_net_edge(0.40, 0.55, 0.0, 0.05, 0.0, 0.0) - 0.05) < 1e-12
+    assert abs(yes_net_edge(0.60, 0.55, 0.0, 0.0, 0.0) - 0.05) < 1e-12
+    assert abs(no_net_edge(0.40, 0.55, 0.0, 0.0, 0.0) - 0.05) < 1e-12
 
 
 def test_no_candidate_requires_no_side_exit_liquidity():
@@ -195,6 +195,37 @@ def test_no_candidate_requires_no_side_exit_liquidity():
     assert per_side["NO"].side == "SKIP"
     assert "NO" in per_side["NO"].reason
     assert "liquidity" in per_side["NO"].reason.lower()
+
+
+def test_entry_skips_when_exit_vwap_is_already_below_stop_loss():
+    settings = Settings(
+        min_net_edge=0.01,
+        stop_loss_pct=0.10,
+        min_order_usd=1.0,
+        estimated_fee_per_share=0.0,
+        model_error_margin=0.0,
+        resolution_error_margin=0.0,
+        require_date_hint_for_trade=True,
+    )
+    client = FakePolymarketClient(
+        books={
+            "yes": book("yes", bid=0.08, ask=0.13, bid_size=1000.0, ask_size=1000.0),
+            "no": book("no", bid=0.86, ask=0.87, bid_size=1000.0, ask_size=1000.0),
+        }
+    )
+
+    result, per_side = evaluate_market(temp_market(), temp_signal(p_true=0.25), client, settings, 1000.0, "temperature")
+
+    assert result.side == "SKIP"
+    assert per_side["YES"].side == "SKIP"
+    assert "stop guard" in per_side["YES"].reason
+
+
+def test_forever_loop_sleep_subtracts_cycle_runtime():
+    started_at = datetime(2026, 5, 24, 16, 0, tzinfo=timezone.utc)
+
+    assert _sleep_seconds_until_next_cycle(started_at, 300, now=started_at + timedelta(seconds=180)) == 120
+    assert _sleep_seconds_until_next_cycle(started_at, 300, now=started_at + timedelta(seconds=301)) == 0
 
 
 def test_today_date_uses_station_timezone_not_local_machine_timezone():

@@ -47,3 +47,10 @@ def test_parse_precipitation_market():
     parsed = parse_weather_question("Will it rain in Chicago on Friday?")
     assert parsed.city == "chicago"
     assert parsed.variable == "precipitation"
+
+
+def test_parse_snow_market_and_major_city():
+    parsed = parse_weather_question("Will Dubai get any snow tomorrow?")
+    assert parsed.city == "dubai"
+    assert parsed.variable == "snow"
+    assert parsed.date_hint == "tomorrow"

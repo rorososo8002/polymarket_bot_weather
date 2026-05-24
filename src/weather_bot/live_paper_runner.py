@@ -1,14 +1,16 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 import time
 
 from .config import Settings, load_settings
-from .edge import executable_buy_price, max_absorbable_shares, no_net_edge, yes_net_edge
+from .edge import executable_buy_price, executable_sell_price, max_absorbable_shares, no_net_edge, yes_net_edge
 from .models import EdgeResult, MarketDecision, OrderBook, PaperPosition, RawMarket, WeatherSignal
 from .paper import PaperBroker, maybe_close_positions, maybe_settle_resolved_positions
 from .polymarket_client import PolymarketClient
 from .probability import estimate_weather_probability
 from .risk import fractional_kelly_binary
+from .runner_status import utc_now_iso, write_runner_status
 
 
 def position_size_usd(
@@ -65,6 +67,30 @@ def _side_liquidity_reason(side: str, book: OrderBook, market_type: str) -> str 
     return None
 
 
+def _entry_stop_guard_reason(
+    side: str,
+    book: OrderBook,
+    p_exec: float,
+    size_usd: float,
+    settings: Settings,
+    market_type: str,
+) -> str | None:
+    if p_exec <= 0 or size_usd <= 0:
+        return None
+    shares = size_usd / p_exec
+    exit_vwap, _slip = executable_sell_price(book, shares)
+    if exit_vwap is None:
+        return f"{side} stop guard: insufficient bid depth to exit proposed {shares:.2f} shares [{market_type}]"
+    stop_price = max(0.01, p_exec * (1.0 - settings.stop_loss_pct))
+    if exit_vwap <= stop_price:
+        immediate_loss = (exit_vwap - p_exec) / p_exec
+        return (
+            f"{side} stop guard: exit_vwap {exit_vwap:.4f} <= stop {stop_price:.4f} "
+            f"(entry {p_exec:.4f}, immediate={immediate_loss:.1%}) [{market_type}]"
+        )
+    return None
+
+
 def _fetch_books(market: RawMarket, client: PolymarketClient) -> tuple[dict[str, OrderBook], str | None]:
     books: dict[str, OrderBook] = {}
     try:
@@ -112,7 +138,6 @@ def _side_result(
             signal.p_true,
             p_exec,
             settings.estimated_fee_per_share,
-            slip,
             settings.model_error_margin,
             settings.resolution_error_margin,
         )
@@ -122,7 +147,6 @@ def _side_result(
             signal.p_true,
             p_exec,
             settings.estimated_fee_per_share,
-            slip,
             settings.model_error_margin,
             settings.resolution_error_margin,
         )
@@ -139,6 +163,10 @@ def _side_result(
         min_edge=min_edge,
     )
     is_trade = edge > min_edge and size_usd >= settings.min_order_usd
+    if is_trade:
+        guard_reason = _entry_stop_guard_reason(side, book, p_exec, size_usd, settings, market_type)
+        if guard_reason:
+            return EdgeResult("SKIP", signal.p_true, p_exec, edge, 0.0, 0.0, guard_reason)
     return EdgeResult(
         side=side if is_trade else "SKIP",
         p_true=signal.p_true,
@@ -196,7 +224,18 @@ def evaluate_market(
         if result.net_edge > best_result.net_edge:
             best_result = result
 
-    if best_result.net_edge <= min_edge or best_result.side == "SKIP":
+    if best_result.side == "SKIP":
+        prefix = "trade blocked" if best_result.net_edge > min_edge else f"edge below {min_edge:.2%}"
+        best_result = EdgeResult(
+            side="SKIP",
+            p_true=signal.p_true,
+            p_exec=best_result.p_exec,
+            net_edge=best_result.net_edge,
+            size_usd=0.0,
+            size_shares=0.0,
+            reason=f"{prefix} [{market_type}]. {best_result.reason}",
+        )
+    elif best_result.net_edge <= min_edge:
         best_result = EdgeResult(
             side="SKIP",
             p_true=signal.p_true,
@@ -210,7 +249,7 @@ def evaluate_market(
 
 
 def _market_type_from_signal(signal: WeatherSignal) -> str:
-    if signal.parsed is not None and signal.parsed.variable == "precipitation":
+    if signal.parsed is not None and signal.parsed.variable in {"precipitation", "snow"}:
         return "precipitation"
     return "temperature"
 
@@ -225,6 +264,12 @@ def _market_from_position(pos: PaperPosition) -> RawMarket:
         yes_token_id=pos.token_id if pos.side == "YES" else None,
         no_token_id=pos.token_id if pos.side == "NO" else None,
     )
+
+
+def _sleep_seconds_until_next_cycle(started_at: datetime, interval_seconds: int, now: datetime | None = None) -> float:
+    now = now or datetime.now(timezone.utc)
+    elapsed = (now - started_at).total_seconds()
+    return max(0.0, float(interval_seconds) - elapsed)
 
 
 def refresh_open_position_edges(
@@ -268,11 +313,15 @@ def _hydrate_open_position_markets(client: PolymarketClient, broker: PaperBroker
 
 def run_cycle(settings: Settings | None = None) -> list[MarketDecision]:
     settings = settings or load_settings()
+    cycle_started_at = utc_now_iso()
+    write_runner_status(settings, "starting", message="starting cycle", cycle_started_at=cycle_started_at)
     client = PolymarketClient(settings.gamma_base, settings.clob_base)
     broker = PaperBroker(settings)
     try:
+        write_runner_status(settings, "discovering", message="discovering markets", cycle_started_at=cycle_started_at)
         markets = client.discover_weather_markets(limit=settings.max_markets)
     except Exception as exc:  # noqa: BLE001
+        write_runner_status(settings, "error", message=f"market discovery failed: {exc}", cycle_started_at=cycle_started_at)
         print(f"DATA ERROR: could not fetch live Polymarket markets: {exc}")
         print("Check internet/DNS/VPN, then run live-paper-bot again.")
         return []
@@ -286,7 +335,18 @@ def run_cycle(settings: Settings | None = None) -> list[MarketDecision]:
         f"cash=${broker.state.cash_usd:.2f} | exposure=${broker.total_exposure():.2f} | "
         f"bankroll=${broker.current_bankroll_before_entry():.2f} | open_positions={len(broker.state.positions)}"
     )
-    for market in markets:
+    write_runner_status(
+        settings,
+        "evaluating",
+        message=f"evaluating 0/{len(markets)}",
+        cycle_started_at=cycle_started_at,
+        markets_done=0,
+        markets_total=len(markets),
+        cash_usd=round(broker.state.cash_usd, 2),
+        exposure_usd=round(broker.total_exposure(), 2),
+        open_positions=len(broker.state.positions),
+    )
+    for idx, market in enumerate(markets, start=1):
         try:
             signal = estimate_weather_probability(market.question, settings=settings)
             bankroll_before = broker.current_bankroll_before_entry()
@@ -332,7 +392,20 @@ def run_cycle(settings: Settings | None = None) -> list[MarketDecision]:
             print("-" * 100)
             print(f"Q: {market.question}")
             print(f"ERROR: {exc}")
+        write_runner_status(
+            settings,
+            "evaluating",
+            message=f"evaluating {idx}/{len(markets)}",
+            cycle_started_at=cycle_started_at,
+            markets_done=idx,
+            markets_total=len(markets),
+            last_market=market.question,
+            cash_usd=round(broker.state.cash_usd, 2),
+            exposure_usd=round(broker.total_exposure(), 2),
+            open_positions=len(broker.state.positions),
+        )
 
+    write_runner_status(settings, "closing", message="checking settlements and exits", cycle_started_at=cycle_started_at, markets_done=len(markets), markets_total=len(markets))
     _hydrate_open_position_markets(client, broker, market_by_id)
     settlement_msgs = maybe_settle_resolved_positions(broker, market_by_id)
     for msg in settlement_msgs:
@@ -347,15 +420,30 @@ def run_cycle(settings: Settings | None = None) -> list[MarketDecision]:
         f"exposure=${broker.total_exposure():.2f} bankroll=${broker.current_bankroll_before_entry():.2f}"
     )
     print(broker.stats_summary())
+    write_runner_status(
+        settings,
+        "cycle_complete",
+        message=f"cycle complete {len(decisions)}/{len(markets)}",
+        cycle_started_at=cycle_started_at,
+        markets_done=len(markets),
+        markets_total=len(markets),
+        cash_usd=round(broker.state.cash_usd, 2),
+        exposure_usd=round(broker.total_exposure(), 2),
+        open_positions=len(broker.state.positions),
+    )
     return decisions
 
 
 def run_forever(settings: Settings | None = None) -> None:
     settings = settings or load_settings()
     while True:
+        cycle_started_at = datetime.now(timezone.utc)
         run_cycle(settings)
-        print(f"Sleeping {settings.scan_interval_seconds}s. Ctrl+C to stop.")
-        time.sleep(settings.scan_interval_seconds)
+        sleep_seconds = _sleep_seconds_until_next_cycle(cycle_started_at, settings.scan_interval_seconds)
+        next_scan_at = (datetime.now(timezone.utc) + timedelta(seconds=sleep_seconds)).replace(microsecond=0).isoformat()
+        write_runner_status(settings, "sleeping", message=f"sleeping {int(sleep_seconds)}s", next_scan_at=next_scan_at)
+        print(f"Sleeping {int(sleep_seconds)}s. Ctrl+C to stop.")
+        time.sleep(sleep_seconds)
 
 
 def main() -> None:

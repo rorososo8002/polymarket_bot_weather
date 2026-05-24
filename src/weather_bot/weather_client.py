@@ -17,9 +17,12 @@ CITY_COORDS: dict[str, tuple[float, float]] = {
     "beijing": (39.9042, 116.4074),
     "shanghai": (31.2304, 121.4737),
     "hong kong": (22.3193, 114.1694),
+    "taipei": (25.0330, 121.5654),
     "singapore": (1.3521, 103.8198),
     "bangkok": (13.7563, 100.5018),
     "manila": (14.5995, 120.9842),
+    "dubai": (25.2048, 55.2708),
+    "mumbai": (19.0760, 72.8777),
     "sydney": (-33.8688, 151.2093),
     "melbourne": (-37.8136, 144.9631),
     "new york": (40.7789, -73.9692),
@@ -62,7 +65,7 @@ class OpenMeteoClient:
         params = {
             "latitude": latitude,
             "longitude": longitude,
-            "daily": "temperature_2m_max,temperature_2m_min,precipitation_probability_max,precipitation_sum",
+            "daily": "temperature_2m_max,temperature_2m_min,precipitation_probability_max,precipitation_sum,snowfall_sum",
             "temperature_unit": "fahrenheit",
             "timezone": "auto",
             "forecast_days": forecast_days,
@@ -186,7 +189,7 @@ def parse_weather_question(question: str) -> ParsedWeatherQuestion:
         notes.append("city not parsed")
     if variable == "temperature" and threshold_f is not None and operator is not None:
         confidence += 0.45
-    elif variable == "precipitation":
+    elif variable in {"precipitation", "snow"}:
         confidence += 0.35
     else:
         notes.append("event condition not fully parsed")

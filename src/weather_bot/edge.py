@@ -86,7 +86,6 @@ def yes_net_edge(
     p_true: float,
     p_exec: float,
     fee_per_share: float,
-    slippage: float,
     model_error_margin: float,
     resolution_error_margin: float,
 ) -> float:
@@ -103,7 +102,6 @@ def no_net_edge(
     p_true: float,
     p_exec_no: float,
     fee_per_share: float,
-    slippage: float,
     model_error_margin: float,
     resolution_error_margin: float,
 ) -> float:
