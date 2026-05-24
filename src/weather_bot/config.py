@@ -21,12 +21,14 @@ class Settings:
     dashboard_host: str = "127.0.0.1"
     dashboard_port: int = 8787
     dashboard_token: str = ""
+    enable_precipitation_markets: bool = False
 
     # Strategy thresholds
     min_net_edge: float = 0.05
     exit_net_edge: float = 0.00
     # Exit policy: stop is fixed from entry; profit is model-fair-value based.
     stop_loss_pct: float = 0.10
+    price_stop_confirmation_cycles: int = 2
     min_profit_pct: float = 0.03
     take_profit_to_fair_ratio: float = 0.70
     overheat_margin: float = 0.02
@@ -108,9 +110,11 @@ def load_settings() -> Settings:
         dashboard_host=os.getenv("DASHBOARD_HOST", Settings.dashboard_host),
         dashboard_port=_int_env("DASHBOARD_PORT", Settings.dashboard_port),
         dashboard_token=os.getenv("DASHBOARD_TOKEN", Settings.dashboard_token).strip(),
+        enable_precipitation_markets=_bool_env("ENABLE_PRECIPITATION_MARKETS", Settings.enable_precipitation_markets),
         min_net_edge=_float_env("MIN_NET_EDGE", Settings.min_net_edge),
         exit_net_edge=_float_env("EXIT_NET_EDGE", Settings.exit_net_edge),
         stop_loss_pct=_float_env("STOP_LOSS_PCT", Settings.stop_loss_pct),
+        price_stop_confirmation_cycles=_int_env("PRICE_STOP_CONFIRMATION_CYCLES", Settings.price_stop_confirmation_cycles),
         min_profit_pct=_float_env("MIN_PROFIT_PCT", Settings.min_profit_pct),
         take_profit_to_fair_ratio=_float_env("TAKE_PROFIT_TO_FAIR_RATIO", Settings.take_profit_to_fair_ratio),
         overheat_margin=_float_env("OVERHEAT_MARGIN", Settings.overheat_margin),

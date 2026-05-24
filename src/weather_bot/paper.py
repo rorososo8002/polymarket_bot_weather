@@ -483,7 +483,21 @@ def maybe_close_positions(
             pos.metadata["last_exit_assessment"] = assessment.reason
 
             if not assessment.should_close:
+                pos.metadata["price_stop_breach_cycles"] = 0
                 continue
+
+            if assessment.reason.startswith("stop loss:"):
+                required_cycles = max(1, int(broker.settings.price_stop_confirmation_cycles))
+                cycles = int(pos.metadata.get("price_stop_breach_cycles", 0)) + 1
+                pos.metadata["price_stop_breach_cycles"] = cycles
+                if cycles < required_cycles:
+                    messages.append(
+                        f"HOLD_PRICE_STOP_CONFIRM {pos.side} cycles={cycles}/{required_cycles} "
+                        f"reason={assessment.reason}"
+                    )
+                    continue
+            else:
+                pos.metadata["price_stop_breach_cycles"] = 0
 
             # ── 4단계: 실제 청산 실행 ─────────────────────────────────────────
             if can_fully_close:

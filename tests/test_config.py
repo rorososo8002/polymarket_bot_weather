@@ -11,3 +11,13 @@ def test_load_settings_reads_dashboard_env(monkeypatch):
     assert settings.dashboard_host == "0.0.0.0"
     assert settings.dashboard_port == 9999
     assert settings.dashboard_token == "secret"
+
+
+def test_load_settings_reads_conservative_strategy_controls(monkeypatch):
+    monkeypatch.setenv("ENABLE_PRECIPITATION_MARKETS", "true")
+    monkeypatch.setenv("PRICE_STOP_CONFIRMATION_CYCLES", "3")
+
+    settings = load_settings()
+
+    assert settings.enable_precipitation_markets is True
+    assert settings.price_stop_confirmation_cycles == 3

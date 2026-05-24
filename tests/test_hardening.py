@@ -9,7 +9,7 @@ from weather_bot.config import Settings
 from weather_bot.edge import no_net_edge, yes_net_edge
 from weather_bot.live_paper_runner import _sleep_seconds_until_next_cycle, evaluate_market, refresh_open_position_edges
 from weather_bot.models import EdgeResult, OrderBook, OrderLevel, PaperPosition, PaperState, RawMarket, WeatherSignal
-from weather_bot.paper import PaperBroker, maybe_settle_resolved_positions
+from weather_bot.paper import PaperBroker, maybe_close_positions, maybe_settle_resolved_positions
 from weather_bot.polymarket_client import PolymarketClient
 from weather_bot.probability import _target_date_from_hint
 from weather_bot.weather_client import parse_weather_question
@@ -219,6 +219,42 @@ def test_entry_skips_when_exit_vwap_is_already_below_stop_loss():
     assert result.side == "SKIP"
     assert per_side["YES"].side == "SKIP"
     assert "stop guard" in per_side["YES"].reason
+
+
+def test_price_stop_requires_consecutive_confirmation_cycles(tmp_path):
+    settings = Settings(
+        state_path=str(tmp_path / "state.json"),
+        trades_csv_path=str(tmp_path / "trades.csv"),
+        decisions_csv_path=str(tmp_path / "decisions.csv"),
+        raw_snapshots_path=str(tmp_path / "raw.jsonl"),
+        price_stop_confirmation_cycles=2,
+    )
+    broker = PaperBroker(settings)
+    pos = PaperPosition(
+        position_id="p1",
+        market_id="m1",
+        question="Will NYC reach 90 F on May 25?",
+        token_id="yes",
+        side="YES",
+        entry_price=0.50,
+        shares=10.0,
+        cost_usd=5.0,
+        opened_at=datetime.now(timezone.utc).isoformat(),
+        metadata={"entry_p_true": 0.70, "stop_loss_price": 0.45},
+    )
+    broker.state.positions = [pos]
+    broker.state.cash_usd = 995.0
+    client = FakePolymarketClient(books={"yes": book("yes", bid=0.45, ask=0.50, bid_size=100.0)})
+    latest_edges = {("m1", "YES"): EdgeResult("YES", 0.70, 0.50, 0.01, 0.0, 0.0, "latest")}
+
+    first = maybe_close_positions(broker, client, {"m1": temp_market()}, latest_edges)
+    assert first == ["HOLD_PRICE_STOP_CONFIRM YES cycles=1/2 reason=stop loss: mark 0.4500 <= stop 0.4500 (-10.0%)"]
+    assert len(broker.state.positions) == 1
+    assert broker.state.positions[0].metadata["price_stop_breach_cycles"] == 1
+
+    second = maybe_close_positions(broker, client, {"m1": temp_market()}, latest_edges)
+    assert any(msg.startswith("CLOSE YES") for msg in second)
+    assert broker.state.positions == []
 
 
 def test_forever_loop_sleep_subtracts_cycle_runtime():

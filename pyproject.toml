@@ -18,6 +18,7 @@ dev = [
 [project.scripts]
 live-paper-bot = "weather_bot.live_paper_runner:main"
 weather-dashboard = "weather_bot.dashboard:main"
+paper-report = "weather_bot.analyze_paper:main"
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

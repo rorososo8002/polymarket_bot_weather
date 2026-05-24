@@ -189,6 +189,10 @@ def evaluate_market(
     """Evaluate live YES/NO books and return the best executable paper result."""
     min_confidence, min_edge, entry_fraction_override = _market_params(settings, market_type)
 
+    if market_type == "precipitation" and not settings.enable_precipitation_markets:
+        result = EdgeResult("SKIP", signal.p_true, None, -999.0, 0.0, 0.0, "precipitation/snow markets disabled by config")
+        return result, {}
+
     if settings.require_parse_for_trade and signal.confidence < min_confidence:
         result = EdgeResult("SKIP", signal.p_true, None, -999.0, 0.0, 0.0, f"confidence too low: {signal.confidence:.2f} < {min_confidence:.2f} [{market_type}]")
         return result, {}
