@@ -45,6 +45,17 @@ def temp_signal(p_true: float = 0.2) -> WeatherSignal:
     return WeatherSignal(p_true=p_true, confidence=0.9, source="test", note="", parsed=parsed)
 
 
+def fallback_temp_signal(p_true: float = 0.9) -> WeatherSignal:
+    parsed = parse_weather_question("Will NYC reach 90째F on May 25?")
+    return WeatherSignal(
+        p_true=p_true,
+        confidence=0.5,
+        source="open-meteo-deterministic-fallback",
+        note="Ensemble model unavailable",
+        parsed=parsed,
+    )
+
+
 def temp_market() -> RawMarket:
     return RawMarket(
         market_id="m1",
@@ -219,6 +230,36 @@ def test_entry_skips_when_exit_vwap_is_already_below_stop_loss():
     assert result.side == "SKIP"
     assert per_side["YES"].side == "SKIP"
     assert "stop guard" in per_side["YES"].reason
+
+
+def test_temperature_fallback_signals_do_not_trade_by_default():
+    settings = Settings(
+        min_net_edge=0.01,
+        min_order_usd=1.0,
+        estimated_fee_per_share=0.0,
+        model_error_margin=0.0,
+        resolution_error_margin=0.0,
+        require_date_hint_for_trade=True,
+    )
+    client = FakePolymarketClient(
+        books={
+            "yes": book("yes", bid=0.40, ask=0.41, bid_size=100.0, ask_size=100.0),
+            "no": book("no", bid=0.58, ask=0.59, bid_size=100.0, ask_size=100.0),
+        }
+    )
+
+    result, per_side = evaluate_market(
+        temp_market(),
+        fallback_temp_signal(p_true=0.90),
+        client,
+        settings,
+        1000.0,
+        "temperature",
+    )
+
+    assert result.side == "SKIP"
+    assert per_side == {}
+    assert "deterministic fallback trading disabled" in result.reason
 
 
 def test_price_stop_requires_consecutive_confirmation_cycles(tmp_path):

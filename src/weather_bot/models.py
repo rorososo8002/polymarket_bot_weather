@@ -62,6 +62,7 @@ class ParsedWeatherQuestion:
     confidence: float = 0.0
     note: str = ""
     threshold_precip_mm: float | None = None  # 강수 질문에서 파싱된 mm 임계값 (None=어떤 비든, 0.1mm 기본값)
+    temperature_metric: Literal["max", "min"] = "max"
 
 
 @dataclass(frozen=True)

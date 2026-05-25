@@ -159,10 +159,13 @@ def parse_weather_question(question: str) -> ParsedWeatherQuestion:
     threshold_f = threshold_original = None
     threshold_unit: str = "UNKNOWN"
     operator = None
+    temperature_metric = "max"
     if variable == "temperature":
         threshold_f, threshold_unit, operator = _extract_temp_threshold(q)
         if threshold_f is not None:
             threshold_original = (threshold_f - 32.0) * 5.0 / 9.0 if threshold_unit == "C" else threshold_f
+        if re.search(r"\b(lowest|minimum|min(?:imum)?|overnight\s+low|low\s+temperature)\b", q):
+            temperature_metric = "min"
 
     threshold_precip_mm: float | None = None
     if variable in {"precipitation", "snow"}:
@@ -211,4 +214,5 @@ def parse_weather_question(question: str) -> ParsedWeatherQuestion:
         confidence=min(confidence, 0.90),
         note="; ".join(notes),
         threshold_precip_mm=threshold_precip_mm,
+        temperature_metric=temperature_metric,  # type: ignore[arg-type]
     )

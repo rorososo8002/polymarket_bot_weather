@@ -375,36 +375,53 @@ def _format_threshold(parsed: ParsedWeatherQuestion) -> str:
     return f"{parsed.threshold_f:.1f}F"
 
 
+def _temperature_daily_variable(parsed: ParsedWeatherQuestion) -> str:
+    return "temperature_2m_min" if parsed.temperature_metric == "min" else "temperature_2m_max"
+
+
+def _temperature_reference_label(parsed: ParsedWeatherQuestion) -> str:
+    return "target forecast low" if parsed.temperature_metric == "min" else "target forecast high"
+
+
 def _fallback_deterministic_probability(
     parsed: ParsedWeatherQuestion,
     settings: Settings,
     client: OpenMeteoClient | None,
+    timezone_name: str = "auto",
 ) -> WeatherSignal:
     """Original simple model kept as a safe fallback when ensemble API fails."""
     if parsed.latitude is None or parsed.longitude is None:
         return WeatherSignal(0.5, 0.0, "fallback", "No coordinates for deterministic fallback.", parsed)
 
     client = client or OpenMeteoClient()
-    data = client.forecast_daily(parsed.latitude, parsed.longitude)
+    target = _target_date_from_hint(parsed, timezone_name=timezone_name)
+    forecast_days = max(3, min(16, int(_lead_time_days(target, timezone_name=timezone_name)) + 2))
+    data = client.forecast_daily(parsed.latitude, parsed.longitude, forecast_days=forecast_days)
     daily = data.get("daily") or {}
     if parsed.variable == "temperature" and parsed.threshold_f is not None and parsed.operator is not None:
-        max_values = [float(x) for x in (daily.get("temperature_2m_max") or []) if x is not None]
-        min_values = [float(x) for x in (daily.get("temperature_2m_min") or []) if x is not None]
-        if not max_values and not min_values:
+        variable = _temperature_daily_variable(parsed)
+        series = daily.get(variable) or []
+        idx = _date_index(daily, target)
+        if idx >= len(series) or series[idx] is None:
             return WeatherSignal(0.5, 0.0, "fallback", "No deterministic temperature values returned.", parsed)
+        reference = float(series[idx])
         if parsed.operator == ">=":
-            reference = max(max_values)
             p = probability_temperature_ge(parsed.threshold_f, reference, settings.default_temperature_sigma_f)
-            ref_label = "max forecast high"
         else:
-            reference = min(min_values or max_values)
             p = normal_cdf((parsed.threshold_f - reference) / settings.default_temperature_sigma_f)
-            ref_label = "min forecast low"
+        ref_label = _temperature_reference_label(parsed)
+        date_used = (daily.get("time") or [target.isoformat()])[
+            min(idx, max(0, len(daily.get("time") or []) - 1))
+        ]
         return WeatherSignal(
             p_true=clamp_probability(p),
             confidence=max(0.05, parsed.confidence * 0.60),
             source="open-meteo-deterministic-fallback",
-            note=f"{parsed.city}; {_format_threshold(parsed)}; {ref_label}={reference:.1f}F; fixed sigma={settings.default_temperature_sigma_f:.1f}F. Ensemble failed/unavailable.",
+            note=(
+                f"{parsed.city}; target_date={date_used}; {_format_threshold(parsed)}; "
+                f"{ref_label}={reference:.1f}F; fixed sigma={settings.default_temperature_sigma_f:.1f}F. "
+                "Ensemble failed/unavailable."
+            ),
             parsed=parsed,
         )
     if parsed.variable in {"precipitation", "snow"}:
@@ -541,7 +558,7 @@ def estimate_weather_probability(
 
     if parsed.variable == "temperature" and parsed.threshold_f is not None and parsed.operator is not None:
         target = _target_date_from_hint(parsed, timezone_name=station.timezone)
-        variable = "temperature_2m_max" if parsed.operator == ">=" else "temperature_2m_min"
+        variable = _temperature_daily_variable(parsed)
         bias_f = bias_for(station, variable)
         ensemble_client = ensemble_client or OpenMeteoEnsembleClient()
 
@@ -584,7 +601,7 @@ def estimate_weather_probability(
             )
             return WeatherSignal(p_true=clamp_probability(p), confidence=confidence, source="open-meteo-ensemble-station", note=note, parsed=parsed)
         except Exception as exc:  # noqa: BLE001
-            fallback = _fallback_deterministic_probability(parsed, settings, client)
+            fallback = _fallback_deterministic_probability(parsed, settings, client, station.timezone)
             return WeatherSignal(
                 p_true=fallback.p_true,
                 confidence=min(fallback.confidence, settings.deterministic_temperature_fallback_max_confidence),

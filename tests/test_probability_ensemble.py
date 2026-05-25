@@ -150,3 +150,63 @@ def test_temperature_deterministic_fallback_can_meet_min_confidence():
 
     assert signal.source == "open-meteo-deterministic-fallback"
     assert signal.confidence == 0.50
+
+
+def test_temperature_fallback_uses_target_date_not_horizon_extreme():
+    class FailingEnsembleClient:
+        models = "fake"
+
+        def forecast_daily_ensemble(self, *_args, **_kwargs):
+            raise RuntimeError("rate limited")
+
+    class FakeDeterministicClient:
+        def forecast_daily(self, *_args, **_kwargs):
+            return {
+                "daily": {
+                    "time": ["2026-05-25", "2026-05-26"],
+                    "temperature_2m_max": [95.0, 77.0],
+                    "temperature_2m_min": [70.0, 60.0],
+                }
+            }
+
+    signal = estimate_weather_probability(
+        "Will the highest temperature in Seoul be 25°C or higher on May 26?",
+        settings=Settings(),
+        client=FakeDeterministicClient(),
+        ensemble_client=FailingEnsembleClient(),
+    )
+
+    assert signal.source == "open-meteo-deterministic-fallback"
+    assert 0.49 <= signal.p_true <= 0.51
+    assert "target_date=2026-05-26" in signal.note
+
+
+def test_highest_temperature_below_uses_daily_max_not_daily_min():
+    target = _today_for_timezone("Europe/London")
+
+    class FakeEnsembleClient:
+        models = "fake"
+
+        def forecast_daily_ensemble(self, *_args, **_kwargs):
+            return {
+                "daily": {
+                    "time": [target.isoformat()],
+                    "temperature_2m_max": [80.0],
+                    "temperature_2m_max_member01": [81.0],
+                    "temperature_2m_max_member02": [82.0],
+                    "temperature_2m_max_member03": [83.0],
+                    "temperature_2m_min": [55.0],
+                    "temperature_2m_min_member01": [56.0],
+                    "temperature_2m_min_member02": [57.0],
+                    "temperature_2m_min_member03": [58.0],
+                }
+            }
+
+    signal = estimate_weather_probability(
+        "Will the highest temperature in London be 21°C or below today?",
+        settings=Settings(),
+        ensemble_client=FakeEnsembleClient(),
+    )
+
+    assert signal.source == "open-meteo-ensemble-station"
+    assert signal.p_true < 0.20
