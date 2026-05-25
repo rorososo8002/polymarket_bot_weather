@@ -134,23 +134,6 @@ class PolymarketClient:
         return self._parse_market(data)
 
     @staticmethod
-    def _flatten_market_text(row: dict[str, Any]) -> str:
-        parts: list[str] = []
-        for key in ("question", "title", "slug", "description", "category", "subcategory"):
-            value = row.get(key)
-            if value:
-                parts.append(str(value))
-        for key in ("tags", "categories"):
-            values = row.get(key) or []
-            if isinstance(values, list):
-                for value in values:
-                    if isinstance(value, dict):
-                        parts.extend(str(value.get(name, "")) for name in ("label", "name", "slug"))
-                    else:
-                        parts.append(str(value))
-        return " ".join(parts).lower()
-
-    @staticmethod
     def _flatten_metadata_text(row: dict[str, Any]) -> str:
         parts: list[str] = []
         for key in ("category", "subcategory"):

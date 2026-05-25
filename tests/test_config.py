@@ -1,4 +1,9 @@
-from weather_bot.config import load_settings
+from weather_bot.config import Settings, load_settings
+from weather_bot.stations import SUPPORTED_CITY_COUNT
+
+
+def test_default_max_markets_tracks_supported_city_count():
+    assert Settings.max_markets == SUPPORTED_CITY_COUNT
 
 
 def test_load_settings_reads_dashboard_env(monkeypatch):

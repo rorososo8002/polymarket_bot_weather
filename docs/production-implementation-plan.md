@@ -1,70 +1,81 @@
-# Production Implementation Plan
+# Production Implementation Summary
 
-## Strategy
+## Goal
 
-The bot targets Polymarket weather markets only when the settlement station is explicit and mapped locally. It should avoid resolution ambiguity first, then look for executable edge using live YES/NO order books, conservative fees, model margin, and resolution margin.
+Run a conservative paper-trading bot for Polymarket weather markets using only verified settlement stations.
 
-The current execution mode remains paper trading. Production readiness means the paper bot behaves like a live strategy would: station-gated market discovery, 30-minute forecast refreshes, real-time order-book stream handling, exposure caps, probability-based stops, and durable logs.
+## Non-Negotiable Rules
 
-## Core Rules
-
-- Trade only the 41 verified cities in `src/weather_bot/stations.py`.
-- Use the Polymarket rule station, not the city center.
+- Trade only the 41 cities in `src/weather_bot/stations.py`.
+- Use `STATION_MAP` as the single source of truth for settlement stations.
 - Skip any weather market whose parsed city is not in `STATION_MAP`.
-- Cache forecast API responses for 30 minutes by default.
-- Monitor Polymarket order books through the CLOB WebSocket market stream by default.
-- Continue using `PaperBroker` until live wallet execution is explicitly requested.
+- Refresh Open-Meteo forecast data no more often than every 30 minutes by default.
+- Monitor order books through the Polymarket CLOB WebSocket market stream by default.
+- Keep paper-trading behavior intact unless live execution is explicitly requested.
 
-## Implemented Plan
+## Architecture
 
-1. Add a single station registry:
-   - `src/weather_bot/stations.py`
-   - Contains 41 verified city/station records from current Polymarket weather rules.
-   - Exposes `CITY_COORDS` for parsing and `STATION_MAP` for trading gates.
+```text
+Polymarket discovery
+  -> parse weather question against supported city registry
+  -> reject unmapped cities and unsupported question shapes
+  -> estimate station-based weather probability
+  -> stream CLOB order-book updates
+  -> compute executable YES/NO VWAP edge
+  -> apply risk, exposure, and probability-stop rules
+  -> open/close paper positions
+  -> write state, decisions, trades, raw snapshots, and runner heartbeat
+```
 
-2. Wire station gating through the bot:
-   - `weather_client.py` parses only verified station cities.
-   - `polymarket_client.py` rejects markets outside `STATION_MAP`.
-   - `probability.py` returns `unsupported-station` if a city somehow lacks a verified Polymarket station.
+## Code Map
 
-3. Refresh forecasts on the correct cadence:
-   - `FORECAST_CACHE_TTL_SECONDS=1800`
-   - `FORECAST_REFRESH_INTERVAL_SECONDS=1800`
-   - `OpenMeteoEnsembleClient.from_settings()` continues to use the cache TTL so repeated order-book stream evaluations reuse forecast data.
+```text
+src/weather_bot/stations.py           41-city station registry and supported count
+src/weather_bot/weather_client.py     question parser backed by station coordinates
+src/weather_bot/polymarket_client.py  Gamma discovery and CLOB REST book parsing
+src/weather_bot/realtime_orderbook.py CLOB WebSocket order-book cache
+src/weather_bot/probability.py        station-based Open-Meteo ensemble model
+src/weather_bot/live_paper_runner.py  paper loop and realtime stream orchestration
+src/weather_bot/paper.py              paper broker, logs, settlements, exits
+src/weather_bot/exit_policy.py        probability stop and profit exits
+src/weather_bot/dashboard.py          local read-only dashboard
+```
 
-4. Monitor order books in real time:
-   - `ORDERBOOK_STREAM_ENABLED=true`
-   - `ORDERBOOK_STREAM_URL=wss://ws-subscriptions-clob.polymarket.com/ws/market`
-   - `run_forever()` enters the WebSocket-backed realtime runner by default.
-   - WebSocket `book`, `price_change`, `best_bid_ask`, and tick-size events update the in-memory order-book cache.
-   - Each relevant order-book event re-evaluates executable YES/NO VWAP against cached 30-minute forecast signals.
+## Runtime Defaults
 
-5. Preserve paper-trading risk controls:
-   - Existing edge thresholds, exposure caps, probability stops, and exit policies remain active.
-   - No private-key or live order path is added in this change.
+```text
+ORDERBOOK_STREAM_ENABLED=true
+ORDERBOOK_STREAM_URL=wss://ws-subscriptions-clob.polymarket.com/ws/market
+FORECAST_REFRESH_INTERVAL_SECONDS=1800
+FORECAST_CACHE_TTL_SECONDS=1800
+MAX_MARKETS=41
+ENABLE_PRECIPITATION_MARKETS=false
+ALLOW_DETERMINISTIC_FALLBACK_TRADES=false
+REQUIRE_DATE_HINT_FOR_TRADE=true
+```
 
-## Next Production Shape
+`MAX_MARKETS=41` matches the current station registry. In code, the default is derived from `SUPPORTED_CITY_COUNT`; environment files keep the explicit value so deployment config is easy to inspect.
 
-The current architecture separates slow market/forecast refresh from order-book monitoring inside one long-running process. Market discovery and station-based forecast signals refresh every 30 minutes. Between refreshes, the CLOB WebSocket market stream updates the in-memory order-book cache and triggers event-driven paper-trade evaluation.
+## Verification
 
-The next architecture step is operational hardening: stream stale-snapshot alarms, reconnect metrics, startup snapshot coverage checks, and a clear kill-switch before any live-wallet execution path is considered.
+```powershell
+$env:PYTHONPATH='src'
+$env:TMP=(Resolve-Path '.pytest-tmp-all').Path
+$env:TEMP=$env:TMP
+python -m pytest -q
+```
 
-## Verification Plan
+For a local paper service start on Windows, run:
 
-- Focused tests:
-  - Station allowlist count and known station IDs.
-  - Unverified cities are not parsed as supported trading cities.
-  - Discovery rejects weather-shaped markets outside the verified station set.
-  - Settings load 30-minute forecast refresh and WebSocket order-book stream controls.
-  - WebSocket book and price-change messages update cached YES/NO order books.
-  - `run_forever()` uses realtime WebSocket mode by default.
+```powershell
+$env:PYTHONPATH='src'
+python -m weather_bot.live_paper_runner
+```
 
-- Broad tests:
-  - Run the full pytest suite with `PYTHONPATH=src`.
-  - Run a dry start if available.
+For VPS deployment, use `docs/VPS_LIVE_PAPER.md`.
 
 ## Source Notes
 
-- Polymarket weather event descriptions and `resolutionSource` fields were used to identify stations.
-- Hong Kong is resolved by the Hong Kong Observatory Daily Extract rather than a Wunderground airport station.
-- The public CLAUDE.md guidance linked by the user was not copied verbatim; `AGENTS.md` contains a local 65-line rewrite.
+- Station choices come from Polymarket weather rule text and resolution sources.
+- Hong Kong uses the Hong Kong Observatory daily extract.
+- Live wallet execution is intentionally absent and requires a separate production-safety design.

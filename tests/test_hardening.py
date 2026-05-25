@@ -46,7 +46,7 @@ def temp_signal(p_true: float = 0.2) -> WeatherSignal:
 
 
 def fallback_temp_signal(p_true: float = 0.9) -> WeatherSignal:
-    parsed = parse_weather_question("Will NYC reach 90째F on May 25?")
+    parsed = parse_weather_question("Will NYC reach 90°F on May 25?")
     return WeatherSignal(
         p_true=p_true,
         confidence=0.5,

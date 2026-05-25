@@ -4,6 +4,8 @@ from dataclasses import dataclass
 import os
 from dotenv import load_dotenv
 
+from .stations import SUPPORTED_CITY_COUNT
+
 
 @dataclass(frozen=True)
 class Settings:
@@ -17,7 +19,7 @@ class Settings:
     orderbook_stream_heartbeat_seconds: int = 10
     orderbook_stream_reconnect_seconds: int = 2
     forecast_refresh_interval_seconds: int = 1800
-    max_markets: int = 41
+    max_markets: int = SUPPORTED_CITY_COUNT
     state_path: str = "paper_state.json"
     trades_csv_path: str = "paper_trades.csv"
     decisions_csv_path: str = "paper_decisions.csv"

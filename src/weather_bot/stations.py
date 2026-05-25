@@ -84,3 +84,5 @@ CITY_COORDS: dict[str, tuple[float, float]] = {
     city: (station.latitude, station.longitude)
     for city, station in STATION_MAP.items()
 }
+
+SUPPORTED_CITY_COUNT = len(STATION_MAP)

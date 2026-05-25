@@ -1,51 +1,57 @@
-# Production Progress
+# Production Status
 
-## Completed
+## Current Operating Contract
 
-- Added `AGENTS.md` with local workflow notes, production bot guardrails, and a 65-line concise-work rule set.
-- Added `src/weather_bot/stations.py` as the single source of truth for 41 verified Polymarket weather settlement cities.
-- Updated parsing so only verified station cities are recognized as supported bot cities.
-- Updated Polymarket market discovery to reject weather-shaped markets outside the verified station set.
-- Updated probability estimation to return `unsupported-station` instead of using city-centroid fallbacks.
-- Changed default forecast cache TTL to 30 minutes.
-- Added `FORECAST_REFRESH_INTERVAL_SECONDS=1800`.
-- Added WebSocket order-book stream settings:
-  - `ORDERBOOK_STREAM_ENABLED=true`
-  - `ORDERBOOK_STREAM_URL=wss://ws-subscriptions-clob.polymarket.com/ws/market`
-  - `ORDERBOOK_STREAM_HEARTBEAT_SECONDS=10`
-  - `ORDERBOOK_STREAM_RECONNECT_SECONDS=2`
-- Added `src/weather_bot/realtime_orderbook.py` for Polymarket CLOB market-channel order-book caching.
-- Updated `run_forever()` to use realtime WebSocket mode by default.
-- Added event-driven evaluation for WebSocket order-book updates while reusing 30-minute forecast signals.
-- Replaced fixed price stops with probability stops:
-  - `PROBABILITY_STOP_DROP_THRESHOLD=0.10`
-  - decision logs now use `probability_stop_threshold`
-- Updated `.env.example` and `deploy/systemd/live-paper.env.example`.
-- Added focused regression tests for station gating, forecast settings, WebSocket order-book cache updates, and realtime runner selection.
-- Added production handoff docs:
-  - `docs/production-implementation-plan.md`
-  - `docs/production-progress.md`
-  - `docs/production-decisions.md`
+- The bot is a live-data paper-trading service.
+- The supported universe is exactly the 41 cities in `src/weather_bot/stations.py`.
+- `STATION_MAP` is the settlement-station source of truth.
+- `Settings.max_markets` defaults to `SUPPORTED_CITY_COUNT`, so the scan size follows the station registry.
+- Forecasts use the mapped settlement station, not city-center coordinates.
+- Forecast data refreshes every 30 minutes by default.
+- Order books stream through the Polymarket CLOB WebSocket market channel by default.
+- Execution is paper-only through `PaperBroker`; no wallet keys, signing, or live order submission are present.
 
-## In Progress
+## Implemented
 
-- WebSocket order-book monitoring is implemented as the default path.
-- Execution remains paper trading through `PaperBroker`; there is no live wallet order submission path.
-- Station coordinates are mapped to the Polymarket settlement station for forecasting, but forecast bias calibration is still neutral.
-- Stream health handling is basic; reconnects exist, but stale-stream alerting and operational metrics are not yet implemented.
-- Probability-stop calibration is still a default rule; it needs paper-trading calibration against resolved markets.
+- Station allowlist and station coordinates for 41 verified Polymarket weather cities.
+- Parser gating so unsupported cities are not treated as tradable markets.
+- Polymarket discovery gating so weather-shaped markets outside `STATION_MAP` are skipped.
+- Probability estimation that returns `unsupported-station` for unmapped settlement stations.
+- 30-minute Open-Meteo forecast cache TTL and refresh cadence.
+- WebSocket-backed order-book cache and event-driven paper evaluations.
+- Probability-based stop policy instead of fixed token-price stop loss.
+- Exposure caps for market, city, and city-date concentration.
+- Runner heartbeat file for dashboard-visible progress.
+- VPS systemd examples for the paper bot and dashboard.
 
-## Next Work
+## Verification Focus
 
-- Add tests that prove forecast calls do not happen inside WebSocket order-book update callbacks.
-- Add stream health telemetry: startup snapshot coverage, last-event age, reconnect count, and stale-stream alerts.
-- Calibrate `PROBABILITY_STOP_DROP_THRESHOLD` by market type after enough resolved paper trades exist.
-- Add station-level forecast bias files after enough paper-trading and resolved-weather data exists.
-- Decide explicitly whether to keep paper-only operation or add a live execution broker.
-- If live execution is requested, add signing, key isolation, order validation, and kill-switch docs before any real order path.
+Run these before changing production behavior:
 
-## For The Next AI
+```powershell
+$env:PYTHONPATH='src'
+$env:TMP=(Resolve-Path '.pytest-tmp-all').Path
+$env:TEMP=$env:TMP
+python -m pytest -q
+```
 
-[처음부터 다시 설계하지 말고 이 문서의 “진행 중”과 “다음 작업”부터 이어갑니다. 완료된 항목을 다시 구현하지 않고, 코드와 문서가 맞지 않으면 차이를 기록한 뒤 진행합니다.]
+Important coverage already in the suite:
 
-Start by reading `AGENTS.md`, this file, and `docs/production-decisions.md`. Then run the focused tests around station gating, settings, and WebSocket order-book behavior before editing.
+- `len(STATION_MAP) == 41`
+- `Settings.max_markets == SUPPORTED_CITY_COUNT`
+- unverified cities are not parsed or traded
+- discovery rejects non-weather false positives
+- realtime WebSocket mode is required by `run_forever()`
+- forecast cache avoids repeated Open-Meteo calls
+- deterministic forecast fallback does not trade by default
+
+## Remaining Production Hardening
+
+- Add stream health telemetry for reconnect count, stale book age, and startup snapshot coverage.
+- Calibrate `PROBABILITY_STOP_DROP_THRESHOLD` after enough resolved paper trades exist.
+- Add station-level forecast bias files after enough station evidence exists.
+- Keep live-wallet execution out of scope until a separate key-isolation and kill-switch design is requested.
+
+## Handoff
+
+Start with `AGENTS.md`, `README.md`, and `docs/production-decisions.md`. Treat `src/weather_bot/stations.py` as the source of truth when code and docs disagree.

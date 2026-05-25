@@ -41,7 +41,7 @@ python -m pytest -q
 
 The bot must fail closed around settlement ambiguity.
 
-`src/weather_bot/stations.py` is the single source of truth for supported cities. Market discovery, parsing, and probability estimation should all use that same 41-city station set. If a market city is not in `STATION_MAP`, the bot should not discover, price, or trade it.
+`src/weather_bot/stations.py` is the single source of truth for supported cities. Market discovery, parsing, probability estimation, and the default scan count all use that same 41-city station set. If a market city is not in `STATION_MAP`, the bot should not discover, price, or trade it.
 
 Current cadence:
 
@@ -54,6 +54,8 @@ FORECAST_REFRESH_INTERVAL_SECONDS=1800
 FORECAST_CACHE_TTL_SECONDS=1800
 MAX_MARKETS=41
 ```
+
+`MAX_MARKETS=41` is explicit in deployment env files for readability. In code, the default comes from `SUPPORTED_CITY_COUNT = len(STATION_MAP)`.
 
 The order-book path is event-driven from the Polymarket CLOB WebSocket market channel. Forecast and market snapshots are refreshed every 30 minutes; forecast requests should not run on every order-book update.
 
