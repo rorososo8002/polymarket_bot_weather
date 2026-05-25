@@ -12,14 +12,16 @@ class Settings:
     clob_base: str = "https://clob.polymarket.com"
 
     # Paper-trading loop
-    scan_interval_seconds: int = 300
-    max_markets: int = 40
+    scan_interval_seconds: int = 5
+    orderbook_poll_interval_seconds: int = 5
+    forecast_refresh_interval_seconds: int = 1800
+    max_markets: int = 41
     state_path: str = "paper_state.json"
     trades_csv_path: str = "paper_trades.csv"
     decisions_csv_path: str = "paper_decisions.csv"
     raw_snapshots_path: str = "paper_raw_snapshots.jsonl"
     forecast_cache_path: str = ""
-    forecast_cache_ttl_seconds: int = 21600
+    forecast_cache_ttl_seconds: int = 1800
     dashboard_host: str = "127.0.0.1"
     dashboard_port: int = 8787
     dashboard_token: str = ""
@@ -106,6 +108,8 @@ def load_settings() -> Settings:
         gamma_base=os.getenv("POLYMARKET_GAMMA_BASE", Settings.gamma_base),
         clob_base=os.getenv("POLYMARKET_CLOB_BASE", Settings.clob_base),
         scan_interval_seconds=_int_env("SCAN_INTERVAL_SECONDS", Settings.scan_interval_seconds),
+        orderbook_poll_interval_seconds=_int_env("ORDERBOOK_POLL_INTERVAL_SECONDS", Settings.orderbook_poll_interval_seconds),
+        forecast_refresh_interval_seconds=_int_env("FORECAST_REFRESH_INTERVAL_SECONDS", Settings.forecast_refresh_interval_seconds),
         max_markets=_int_env("MAX_MARKETS", Settings.max_markets),
         state_path=os.getenv("STATE_PATH", Settings.state_path),
         trades_csv_path=os.getenv("TRADES_CSV_PATH", Settings.trades_csv_path),

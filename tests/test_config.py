@@ -25,9 +25,19 @@ def test_load_settings_reads_conservative_strategy_controls(monkeypatch):
 
 def test_load_settings_reads_forecast_cache_controls(monkeypatch):
     monkeypatch.setenv("FORECAST_CACHE_PATH", "data/custom_forecast_cache.json")
-    monkeypatch.setenv("FORECAST_CACHE_TTL_SECONDS", "7200")
+    monkeypatch.setenv("FORECAST_CACHE_TTL_SECONDS", "1800")
 
     settings = load_settings()
 
     assert settings.forecast_cache_path == "data/custom_forecast_cache.json"
-    assert settings.forecast_cache_ttl_seconds == 7200
+    assert settings.forecast_cache_ttl_seconds == 1800
+
+
+def test_load_settings_reads_realtime_orderbook_polling(monkeypatch):
+    monkeypatch.setenv("ORDERBOOK_POLL_INTERVAL_SECONDS", "3")
+    monkeypatch.setenv("FORECAST_REFRESH_INTERVAL_SECONDS", "1800")
+
+    settings = load_settings()
+
+    assert settings.orderbook_poll_interval_seconds == 3
+    assert settings.forecast_refresh_interval_seconds == 1800

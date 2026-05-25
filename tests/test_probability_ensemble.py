@@ -6,12 +6,15 @@ import requests
 from weather_bot.config import Settings
 from weather_bot.probability import (
     OpenMeteoEnsembleClient,
+    STATION_MAP,
     _extract_member_values,
+    _station_for,
     _today_for_timezone,
     blend_empirical_and_cdf,
     dynamic_sigma_f,
     estimate_weather_probability,
 )
+from weather_bot.weather_client import parse_weather_question
 
 
 def test_extract_member_values_accepts_suffixed_keys_and_bias():
@@ -24,6 +27,21 @@ def test_extract_member_values_accepts_suffixed_keys_and_bias():
     }
     vals = _extract_member_values(daily, "temperature_2m_max", 0, bias_f=1.0)
     assert vals == [79.0, 81.0, 83.0]
+
+
+def test_station_map_contains_only_verified_polymarket_cities():
+    assert len(STATION_MAP) == 41
+    assert STATION_MAP["seoul"].station_id == "RKSI"
+    assert STATION_MAP["london"].station_id == "EGLC"
+    assert STATION_MAP["nyc"].station_id == "KLGA"
+    assert STATION_MAP["hong kong"].station_name == "Hong Kong Observatory"
+
+
+def test_unverified_city_is_not_mapped_for_trading():
+    parsed = parse_weather_question("Will Austin be 92 F or higher on May 25?")
+
+    assert parsed is not None
+    assert _station_for(parsed) is None
 
 
 def test_dynamic_sigma_has_floor_and_uses_spread():
@@ -222,7 +240,7 @@ def test_temperature_deterministic_fallback_can_meet_min_confidence():
             return {"daily": {"temperature_2m_max": [94.0], "temperature_2m_min": [70.0]}}
 
     signal = estimate_weather_probability(
-        "Will Austin be 92°F or higher on May 25?",
+        "Will Dallas be 92°F or higher on May 25?",
         settings=Settings(),
         client=FakeDeterministicClient(),
         ensemble_client=FailingEnsembleClient(),

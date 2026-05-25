@@ -464,7 +464,8 @@ def run_forever(settings: Settings | None = None) -> None:
     while True:
         cycle_started_at = datetime.now(timezone.utc)
         run_cycle(settings)
-        sleep_seconds = _sleep_seconds_until_next_cycle(cycle_started_at, settings.scan_interval_seconds)
+        interval_seconds = settings.orderbook_poll_interval_seconds or settings.scan_interval_seconds
+        sleep_seconds = _sleep_seconds_until_next_cycle(cycle_started_at, interval_seconds)
         next_scan_at = (datetime.now(timezone.utc) + timedelta(seconds=sleep_seconds)).replace(microsecond=0).isoformat()
         write_runner_status(settings, "sleeping", message=f"sleeping {int(sleep_seconds)}s", next_scan_at=next_scan_at)
         print(f"Sleeping {int(sleep_seconds)}s. Ctrl+C to stop.")

@@ -5,7 +5,6 @@ import math
 import os
 import re
 import statistics
-from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
@@ -16,58 +15,16 @@ from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponen
 
 from .config import Settings
 from .models import ParsedWeatherQuestion, WeatherSignal
+from .stations import STATION_MAP, StationMeta
 from .weather_client import OpenMeteoClient, parse_weather_question
 
 
 # ---------------------------------------------------------------------------
 # 1) Station mapping
 # ---------------------------------------------------------------------------
-# Do not trade a weather market until the settlement source in the Polymarket
-# rules is mapped here.  The city aliases below are only defaults for common
-# markets; exact market rules must override them when they differ.
-
-@dataclass(frozen=True)
-class StationMeta:
-    city: str
-    station_id: str
-    station_name: str
-    latitude: float
-    longitude: float
-    timezone: str = "auto"
-    elevation_m: float | None = None
-    note: str = ""
-
-
-STATION_MAP: dict[str, StationMeta] = {
-    # US weather markets often resolve against NWS/airport or city official sites.
-    # Verify each market's resolution rule before live trading.
-    "new york": StationMeta("new york", "USW00094728", "New York Central Park", 40.7789, -73.9692, "America/New_York", 39, "NYC official climate station used by NWS daily climate reports."),
-    "nyc": StationMeta("nyc", "USW00094728", "New York Central Park", 40.7789, -73.9692, "America/New_York", 39, "Alias for New York Central Park."),
-    "jfk": StationMeta("jfk", "USW00094789", "New York JFK Airport", 40.6398, -73.7789, "America/New_York", 4, "Use only when rules specify JFK."),
-    "chicago": StationMeta("chicago", "USW00094846", "Chicago O'Hare", 41.9950, -87.9336, "America/Chicago", 204, "Common Chicago official airport climate station."),
-    "los angeles": StationMeta("los angeles", "USW00093134", "Los Angeles Downtown USC", 34.0236, -118.2911, "America/Los_Angeles", 54, "LA city climate station, not LAX."),
-    "miami": StationMeta("miami", "USW00012839", "Miami International Airport", 25.7959, -80.2870, "America/New_York", 3),
-    "austin": StationMeta("austin", "USW00013958", "Austin Bergstrom", 30.1945, -97.6699, "America/Chicago", 165),
-    "las vegas": StationMeta("las vegas", "USW00023169", "Las Vegas Harry Reid Airport", 36.0719, -115.1634, "America/Los_Angeles", 664),
-    "philadelphia": StationMeta("philadelphia", "USW00013739", "Philadelphia International Airport", 39.8733, -75.2267, "America/New_York", 2),
-    "boston": StationMeta("boston", "USW00014739", "Boston Logan Airport", 42.3606, -71.0096, "America/New_York", 6),
-    "washington dc": StationMeta("washington dc", "USW00013743", "Washington Reagan National", 38.8483, -77.0342, "America/New_York", 4),
-    "washington": StationMeta("washington", "USW00013743", "Washington Reagan National", 38.8483, -77.0342, "America/New_York", 4),
-    "dallas": StationMeta("dallas", "USW00003927", "Dallas/Fort Worth Airport", 32.8998, -97.0403, "America/Chicago", 185),
-    "phoenix": StationMeta("phoenix", "USW00023183", "Phoenix Sky Harbor", 33.4278, -112.0038, "America/Phoenix", 337),
-    "seattle": StationMeta("seattle", "USW00024233", "Seattle-Tacoma Airport", 47.4447, -122.3136, "America/Los_Angeles", 112),
-    "denver": StationMeta("denver", "USW00003017", "Denver International Airport", 39.8561, -104.6737, "America/Denver", 1655),
-    "atlanta": StationMeta("atlanta", "USW00013874", "Atlanta Hartsfield-Jackson", 33.6407, -84.4277, "America/New_York", 313),
-    "orlando": StationMeta("orlando", "USW00012815", "Orlando International Airport", 28.4312, -81.3081, "America/New_York", 29),
-    "san francisco": StationMeta("san francisco", "USW00023234", "San Francisco Downtown", 37.7706, -122.4269, "America/Los_Angeles", 46),
-    "houston": StationMeta("houston", "USW00012960", "Houston Intercontinental", 29.9844, -95.3414, "America/Chicago", 29),
-    # Non-US defaults.  Replace with exact Polymarket rule station where available.
-    "seoul": StationMeta("seoul", "KMA-108", "Seoul ASOS", 37.5714, 126.9658, "Asia/Seoul", 85, "KMA Seoul station; verify market rules."),
-    "busan": StationMeta("busan", "KMA-159", "Busan ASOS", 35.1047, 129.0320, "Asia/Seoul", 69),
-    "tokyo": StationMeta("tokyo", "JMA-47662", "Tokyo Observatory", 35.6917, 139.7500, "Asia/Tokyo", 25),
-    "london": StationMeta("london", "EGLL", "London Heathrow", 51.4775, -0.4614, "Europe/London", 25),
-    "paris": StationMeta("paris", "LFPG", "Paris Charles de Gaulle", 49.0097, 2.5479, "Europe/Paris", 119),
-}
+# Do not trade a weather market until the exact Polymarket settlement source is
+# in `stations.py`.  The active registry intentionally contains only verified
+# cities from the current weather resolution rules.
 
 
 # Default model set.  If Open-Meteo changes a model id, override with:
@@ -143,6 +100,7 @@ def _fallback_offset_hours(timezone_name: str, now: datetime) -> int | None:
         "America/Chicago": (-6, -5),
         "America/Los_Angeles": (-8, -7),
         "America/Denver": (-7, -6),
+        "America/Toronto": (-5, -4),
     }
     if timezone_name in us_dst_zones:
         standard, daylight = us_dst_zones[timezone_name]
@@ -153,6 +111,12 @@ def _fallback_offset_hours(timezone_name: str, now: datetime) -> int | None:
     european_dst_zones = {
         "Europe/London": (0, 1),
         "Europe/Paris": (1, 2),
+        "Europe/Amsterdam": (1, 2),
+        "Europe/Berlin": (1, 2),
+        "Europe/Helsinki": (2, 3),
+        "Europe/Madrid": (1, 2),
+        "Europe/Rome": (1, 2),
+        "Europe/Warsaw": (1, 2),
     }
     if timezone_name in european_dst_zones:
         standard, daylight = european_dst_zones[timezone_name]
@@ -161,9 +125,23 @@ def _fallback_offset_hours(timezone_name: str, now: datetime) -> int | None:
         return daylight if starts <= current_date < ends else standard
 
     fixed_offsets = {
+        "Africa/Johannesburg": 2,
+        "America/Argentina/Buenos_Aires": -3,
+        "America/Panama": -5,
         "America/Phoenix": -7,
+        "Asia/Hong_Kong": 8,
+        "Asia/Jerusalem": 2,
+        "Asia/Karachi": 5,
+        "Asia/Manila": 8,
+        "Asia/Riyadh": 3,
         "Asia/Seoul": 9,
+        "Asia/Shanghai": 8,
+        "Asia/Singapore": 8,
+        "Asia/Taipei": 8,
         "Asia/Tokyo": 9,
+        "Europe/Istanbul": 3,
+        "Europe/Moscow": 3,
+        "Pacific/Auckland": 12,
     }
     return fixed_offsets.get(timezone_name)
 
@@ -207,8 +185,9 @@ def blend_empirical_and_cdf(empirical_p: float, mean_f: float, threshold_f: floa
 
 DEFAULT_BIAS_F: dict[str, dict[str, float]] = {
     # Keep defaults conservative/neutral until you have backtest evidence.
-    "USW00094728": {"temperature_2m_max": 0.0, "temperature_2m_min": 0.0},
-    "KMA-108": {"temperature_2m_max": 0.0, "temperature_2m_min": 0.0},
+    "KLGA": {"temperature_2m_max": 0.0, "temperature_2m_min": 0.0},
+    "RKSI": {"temperature_2m_max": 0.0, "temperature_2m_min": 0.0},
+    "EGLC": {"temperature_2m_max": 0.0, "temperature_2m_min": 0.0},
 }
 
 
@@ -562,7 +541,7 @@ def _ensemble_precipitation_probability(
     p = clamp_probability(0.80 * empirical_p + 0.20 * 0.5)
 
     # 신뢰도 계산
-    station_bonus = 0.08 if station.station_id.startswith(("US", "KMA", "JMA", "EG", "LF")) else 0.0
+    station_bonus = 0.08
     member_bonus = min(0.08, len(member_values) / 500.0)
     # 리드타임 페널티: 강수는 2일 이후부터 하루당 6%씩 하락
     lead_penalty = min(0.25, max(0.0, lead_days - 1) * 0.06)
@@ -621,8 +600,13 @@ def estimate_weather_probability(
 
     station = _station_for(parsed)
     if station is None:
-        # Do not pretend city-center coordinates equal settlement station quality.
-        station = StationMeta(parsed.city, f"CITY-{parsed.city}", f"{parsed.city} city centroid", parsed.latitude, parsed.longitude, "auto", None, "No official station mapping; lower confidence.")
+        return WeatherSignal(
+            0.5,
+            0.0,
+            "unsupported-station",
+            f"{parsed.city} is not in the verified Polymarket settlement-station allowlist.",
+            parsed,
+        )
 
     if parsed.variable == "temperature" and parsed.threshold_f is not None and parsed.operator is not None:
         target = _target_date_from_hint(parsed, timezone_name=station.timezone)
@@ -654,7 +638,7 @@ def estimate_weather_probability(
             p = blend_empirical_and_cdf(empirical_p, mean_f, parsed.threshold_f, sigma_f, parsed.operator)
 
             # Confidence: station mapped + enough members + low ambiguity.  Wider spread lowers confidence.
-            station_bonus = 0.12 if station.station_id.startswith(("US", "KMA", "JMA", "EG", "LF")) else 0.0
+            station_bonus = 0.12
             member_bonus = min(0.18, len(member_values) / 250.0)
             spread_penalty = min(0.20, max(0.0, spread_f - 3.0) / 20.0)
             confidence = clamp_probability(parsed.confidence + station_bonus + member_bonus - spread_penalty)

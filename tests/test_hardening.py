@@ -149,6 +149,12 @@ def test_discovery_rejects_exact_temperature_bucket_until_model_supports_ranges(
     )
 
 
+def test_discovery_rejects_weather_markets_outside_verified_station_set():
+    assert not PolymarketClient._is_weather_market(
+        {"question": "Will the highest temperature in Austin be 34\u00b0C or higher on May 25?"}
+    )
+
+
 def test_discovery_stops_at_page_limit_without_fetching_deep_offsets():
     seen_offsets: list[int] = []
 

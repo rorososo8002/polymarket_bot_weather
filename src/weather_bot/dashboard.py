@@ -632,12 +632,13 @@ def _bot_status(
     timestamps.append(runner_updated_at)
     parsed = [dt for dt in (_parse_datetime(ts) for ts in timestamps) if dt is not None]
     if not parsed:
+        interval = max(1, int(settings.orderbook_poll_interval_seconds or settings.scan_interval_seconds))
         return {
             "status": "NO DATA",
             "last_event_at": "",
             "age_seconds": 0,
-            "scan_interval_seconds": settings.scan_interval_seconds,
-            "next_scan_in_seconds": settings.scan_interval_seconds,
+            "scan_interval_seconds": interval,
+            "next_scan_in_seconds": interval,
             "phase": "",
             "message": "",
             "markets_done": 0,
@@ -646,7 +647,7 @@ def _bot_status(
     last_event = max(parsed)
     now = datetime.now(timezone.utc)
     age = max(0, int((now - last_event).total_seconds()))
-    interval = max(1, int(settings.scan_interval_seconds))
+    interval = max(1, int(settings.orderbook_poll_interval_seconds or settings.scan_interval_seconds))
     phase = str(runner_status.get("phase") or "")
     if age <= interval * 1.5:
         status = "RUNNING" if phase in {"starting", "discovering", "evaluating", "closing"} and runner_updated_at else "WAIT"
