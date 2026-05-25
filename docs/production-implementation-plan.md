@@ -4,7 +4,7 @@
 
 The bot targets Polymarket weather markets only when the settlement station is explicit and mapped locally. It should avoid resolution ambiguity first, then look for executable edge using live YES/NO order books, conservative fees, model margin, and resolution margin.
 
-The current execution mode remains paper trading. Production readiness means the paper bot behaves like a live strategy would: station-gated market discovery, fresh-enough forecasts, fast order-book checks, exposure caps, stop guards, and durable logs.
+The current execution mode remains paper trading. Production readiness means the paper bot behaves like a live strategy would: station-gated market discovery, 30-minute forecast refreshes, real-time order-book stream handling, exposure caps, stop guards, and durable logs.
 
 ## Core Rules
 
@@ -12,7 +12,7 @@ The current execution mode remains paper trading. Production readiness means the
 - Use the Polymarket rule station, not the city center.
 - Skip any weather market whose parsed city is not in `STATION_MAP`.
 - Cache forecast API responses for 30 minutes by default.
-- Poll Polymarket order books every 5 seconds by default.
+- Monitor Polymarket order books through the CLOB WebSocket market stream by default.
 - Continue using `PaperBroker` until live wallet execution is explicitly requested.
 
 ## Implemented Plan
@@ -23,19 +23,21 @@ The current execution mode remains paper trading. Production readiness means the
    - Exposes `CITY_COORDS` for parsing and `STATION_MAP` for trading gates.
 
 2. Wire station gating through the bot:
-   - `weather_client.py` parses verified and known unverified cities.
+   - `weather_client.py` parses only verified station cities.
    - `polymarket_client.py` rejects markets outside `STATION_MAP`.
-   - `probability.py` returns `unsupported-station` for parsed cities without a verified Polymarket station.
+   - `probability.py` returns `unsupported-station` if a city somehow lacks a verified Polymarket station.
 
 3. Refresh forecasts on the correct cadence:
    - `FORECAST_CACHE_TTL_SECONDS=1800`
    - `FORECAST_REFRESH_INTERVAL_SECONDS=1800`
-   - `OpenMeteoEnsembleClient.from_settings()` continues to use the cache TTL so repeated order-book cycles reuse forecast data.
+   - `OpenMeteoEnsembleClient.from_settings()` continues to use the cache TTL so repeated order-book stream evaluations reuse forecast data.
 
-4. Monitor order books quickly:
-   - `ORDERBOOK_POLL_INTERVAL_SECONDS=5`
-   - `run_forever()` sleeps using the order-book polling interval.
-   - Each fast cycle re-evaluates executable YES/NO VWAP against cached forecasts.
+4. Monitor order books in real time:
+   - `ORDERBOOK_STREAM_ENABLED=true`
+   - `ORDERBOOK_STREAM_URL=wss://ws-subscriptions-clob.polymarket.com/ws/market`
+   - `run_forever()` enters the WebSocket-backed realtime runner by default.
+   - WebSocket `book`, `price_change`, `best_bid_ask`, and tick-size events update the in-memory order-book cache.
+   - Each relevant order-book event re-evaluates executable YES/NO VWAP against cached 30-minute forecast signals.
 
 5. Preserve paper-trading risk controls:
    - Existing edge thresholds, exposure caps, stop guards, and exit policies remain active.
@@ -43,15 +45,19 @@ The current execution mode remains paper trading. Production readiness means the
 
 ## Next Production Shape
 
-The next architecture step is to separate slow market/forecast refresh from fast order-book polling inside one long-running process. The current version already avoids repeated forecast API calls through the 30-minute cache, but it still refreshes market discovery inside `run_cycle()`. A later production pass should keep a 30-minute signal snapshot in memory and run a tighter order-book-only loop between refreshes.
+The current architecture separates slow market/forecast refresh from order-book monitoring inside one long-running process. Market discovery and station-based forecast signals refresh every 30 minutes. Between refreshes, the CLOB WebSocket market stream updates the in-memory order-book cache and triggers event-driven paper-trade evaluation.
+
+The next architecture step is operational hardening: stream stale-snapshot alarms, reconnect metrics, startup snapshot coverage checks, and a clear kill-switch before any live-wallet execution path is considered.
 
 ## Verification Plan
 
 - Focused tests:
   - Station allowlist count and known station IDs.
-  - Unverified cities are parsed but not mapped for trading.
+  - Unverified cities are not parsed as supported trading cities.
   - Discovery rejects weather-shaped markets outside the verified station set.
-  - Settings load 30-minute forecast and fast order-book intervals.
+  - Settings load 30-minute forecast refresh and WebSocket order-book stream controls.
+  - WebSocket book and price-change messages update cached YES/NO order books.
+  - `run_forever()` uses realtime WebSocket mode by default.
 
 - Broad tests:
   - Run the full pytest suite with `PYTHONPATH=src`.

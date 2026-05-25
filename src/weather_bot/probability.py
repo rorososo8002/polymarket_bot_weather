@@ -180,8 +180,8 @@ def blend_empirical_and_cdf(empirical_p: float, mean_f: float, threshold_f: floa
 # 3) Bias correction
 # ---------------------------------------------------------------------------
 # Bias is additive in Fahrenheit: corrected_forecast = raw_forecast - bias.
-# Example: if GFS/ECMWF at KMA-108 usually over-forecasts high temp by +1.2F,
-# set {"KMA-108": {"temperature_2m_max": 1.2}}.
+# Example: if GFS/ECMWF at RKSI usually over-forecasts high temp by +1.2F,
+# set {"RKSI": {"temperature_2m_max": 1.2}}.
 
 DEFAULT_BIAS_F: dict[str, dict[str, float]] = {
     # Keep defaults conservative/neutral until you have backtest evidence.

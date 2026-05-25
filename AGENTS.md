@@ -13,7 +13,7 @@
 - Treat `STATION_MAP` as the single source of truth for Polymarket weather settlement stations.
 - If a Polymarket weather market city is not in `STATION_MAP`, skip discovery/trading.
 - Refresh forecast data through the Open-Meteo cache no more often than every 30 minutes by default.
-- Poll Polymarket order books quickly; default HTTP polling is every 5 seconds.
+- Monitor Polymarket order books through the CLOB WebSocket market stream by default.
 - Do not add private keys or live-wallet execution without an explicit user request.
 - Keep paper-trading behavior intact unless the user explicitly asks for live execution.
 - If code and production docs disagree, update the docs or record the drift before continuing.
@@ -62,7 +62,7 @@ The linked CLAUDE.md is a compact public guideline document. Do not copy it verb
 38. Unknown stations are skips, not city centroids.
 39. Rate limits should degrade gracefully.
 40. Cache external forecasts intentionally.
-41. Poll market prices separately from slow forecasts.
+41. Stream market prices separately from slow forecasts.
 42. Prefer paper validation before real money.
 43. Risk controls are part of the feature.
 44. Logs should explain skipped trades.

@@ -143,7 +143,8 @@ def test_dashboard_payload_summarizes_state_trades_and_decisions(tmp_path):
     assert payload["scanner"]["skips"] == 1
     assert payload["scanner"]["entries"] == 1
     assert payload["bot"]["last_event_at"] == "2026-05-24T11:00:00+00:00"
-    assert payload["bot"]["scan_interval_seconds"] == 5
+    assert payload["bot"]["scan_interval_seconds"] == 1800
+    assert payload["bot"]["orderbook_mode"] == "websocket"
     assert payload["positions"][0]["unrealized_pnl"] == 10.0
     assert any(event["label"].startswith("DECISION") for event in payload["events"])
 

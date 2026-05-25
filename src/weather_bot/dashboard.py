@@ -526,6 +526,10 @@ def _parse_datetime(value: str) -> datetime | None:
     return parsed.astimezone(timezone.utc)
 
 
+def _status_interval_seconds(settings: Settings) -> int:
+    return max(1, int(settings.forecast_refresh_interval_seconds))
+
+
 def _sorted_recent(rows: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
     return sorted(rows, key=_parse_ts, reverse=True)[:limit]
 
@@ -631,13 +635,15 @@ def _bot_status(
     runner_updated_at = str(runner_status.get("updated_at") or "")
     timestamps.append(runner_updated_at)
     parsed = [dt for dt in (_parse_datetime(ts) for ts in timestamps) if dt is not None]
+    interval = _status_interval_seconds(settings)
+    orderbook_mode = "websocket" if settings.orderbook_stream_enabled else "http_poll"
     if not parsed:
-        interval = max(1, int(settings.orderbook_poll_interval_seconds or settings.scan_interval_seconds))
         return {
             "status": "NO DATA",
             "last_event_at": "",
             "age_seconds": 0,
             "scan_interval_seconds": interval,
+            "orderbook_mode": orderbook_mode,
             "next_scan_in_seconds": interval,
             "phase": "",
             "message": "",
@@ -647,10 +653,9 @@ def _bot_status(
     last_event = max(parsed)
     now = datetime.now(timezone.utc)
     age = max(0, int((now - last_event).total_seconds()))
-    interval = max(1, int(settings.orderbook_poll_interval_seconds or settings.scan_interval_seconds))
     phase = str(runner_status.get("phase") or "")
     if age <= interval * 1.5:
-        status = "RUNNING" if phase in {"starting", "discovering", "evaluating", "closing"} and runner_updated_at else "WAIT"
+        status = "RUNNING" if phase in {"starting", "discovering", "evaluating", "closing", "streaming"} and runner_updated_at else "WAIT"
     elif age <= interval * 3:
         status = "LATE"
     else:
@@ -662,6 +667,7 @@ def _bot_status(
         "last_event_at": last_event.replace(microsecond=0).isoformat(),
         "age_seconds": age,
         "scan_interval_seconds": interval,
+        "orderbook_mode": orderbook_mode,
         "next_scan_in_seconds": next_scan_in,
         "phase": phase,
         "message": str(runner_status.get("message") or ""),

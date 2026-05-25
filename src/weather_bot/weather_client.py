@@ -7,35 +7,7 @@ import requests
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from .models import ParsedWeatherQuestion
-from .stations import CITY_COORDS as VERIFIED_CITY_COORDS
-
-
-UNVERIFIED_CITY_COORDS: dict[str, tuple[float, float]] = {
-    "austin": (30.2672, -97.7431),
-    "bangkok": (13.7563, 100.5018),
-    "berlin": (52.5200, 13.4050),
-    "boston": (42.3601, -71.0589),
-    "dubai": (25.2048, 55.2708),
-    "houston": (29.7604, -95.3698),
-    "las vegas": (36.1699, -115.1398),
-    "melbourne": (-37.8136, 144.9631),
-    "mumbai": (19.0760, 72.8777),
-    "new york": (40.7128, -74.0060),
-    "orlando": (28.5383, -81.3792),
-    "osaka": (34.6937, 135.5023),
-    "philadelphia": (39.9526, -75.1652),
-    "phoenix": (33.4484, -112.0740),
-    "rome": (41.9028, 12.4964),
-    "san francisco": (37.7749, -122.4194),
-    "sydney": (-33.8688, 151.2093),
-    "washington": (38.9072, -77.0369),
-    "washington dc": (38.9072, -77.0369),
-}
-
-CITY_COORDS: dict[str, tuple[float, float]] = {
-    **UNVERIFIED_CITY_COORDS,
-    **VERIFIED_CITY_COORDS,
-}
+from .stations import CITY_COORDS
 
 WEEKDAY_NAMES = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
 

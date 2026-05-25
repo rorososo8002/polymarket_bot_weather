@@ -12,8 +12,10 @@ class Settings:
     clob_base: str = "https://clob.polymarket.com"
 
     # Paper-trading loop
-    scan_interval_seconds: int = 5
-    orderbook_poll_interval_seconds: int = 5
+    orderbook_stream_enabled: bool = True
+    orderbook_stream_url: str = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
+    orderbook_stream_heartbeat_seconds: int = 10
+    orderbook_stream_reconnect_seconds: int = 2
     forecast_refresh_interval_seconds: int = 1800
     max_markets: int = 41
     state_path: str = "paper_state.json"
@@ -107,8 +109,10 @@ def load_settings() -> Settings:
     return Settings(
         gamma_base=os.getenv("POLYMARKET_GAMMA_BASE", Settings.gamma_base),
         clob_base=os.getenv("POLYMARKET_CLOB_BASE", Settings.clob_base),
-        scan_interval_seconds=_int_env("SCAN_INTERVAL_SECONDS", Settings.scan_interval_seconds),
-        orderbook_poll_interval_seconds=_int_env("ORDERBOOK_POLL_INTERVAL_SECONDS", Settings.orderbook_poll_interval_seconds),
+        orderbook_stream_enabled=_bool_env("ORDERBOOK_STREAM_ENABLED", Settings.orderbook_stream_enabled),
+        orderbook_stream_url=os.getenv("ORDERBOOK_STREAM_URL", Settings.orderbook_stream_url),
+        orderbook_stream_heartbeat_seconds=_int_env("ORDERBOOK_STREAM_HEARTBEAT_SECONDS", Settings.orderbook_stream_heartbeat_seconds),
+        orderbook_stream_reconnect_seconds=_int_env("ORDERBOOK_STREAM_RECONNECT_SECONDS", Settings.orderbook_stream_reconnect_seconds),
         forecast_refresh_interval_seconds=_int_env("FORECAST_REFRESH_INTERVAL_SECONDS", Settings.forecast_refresh_interval_seconds),
         max_markets=_int_env("MAX_MARKETS", Settings.max_markets),
         state_path=os.getenv("STATE_PATH", Settings.state_path),

@@ -37,10 +37,10 @@ def test_station_map_contains_only_verified_polymarket_cities():
     assert STATION_MAP["hong kong"].station_name == "Hong Kong Observatory"
 
 
-def test_unverified_city_is_not_mapped_for_trading():
+def test_unverified_city_is_not_parsed_or_mapped_for_trading():
     parsed = parse_weather_question("Will Austin be 92 F or higher on May 25?")
 
-    assert parsed is not None
+    assert parsed.city is None
     assert _station_for(parsed) is None
 
 

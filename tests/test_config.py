@@ -33,11 +33,13 @@ def test_load_settings_reads_forecast_cache_controls(monkeypatch):
     assert settings.forecast_cache_ttl_seconds == 1800
 
 
-def test_load_settings_reads_realtime_orderbook_polling(monkeypatch):
-    monkeypatch.setenv("ORDERBOOK_POLL_INTERVAL_SECONDS", "3")
+def test_load_settings_reads_realtime_orderbook_stream(monkeypatch):
+    monkeypatch.setenv("ORDERBOOK_STREAM_ENABLED", "true")
+    monkeypatch.setenv("ORDERBOOK_STREAM_HEARTBEAT_SECONDS", "10")
     monkeypatch.setenv("FORECAST_REFRESH_INTERVAL_SECONDS", "1800")
 
     settings = load_settings()
 
-    assert settings.orderbook_poll_interval_seconds == 3
+    assert settings.orderbook_stream_enabled is True
+    assert settings.orderbook_stream_heartbeat_seconds == 10
     assert settings.forecast_refresh_interval_seconds == 1800

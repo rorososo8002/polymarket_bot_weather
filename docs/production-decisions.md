@@ -14,7 +14,7 @@ Decision: `estimate_weather_probability()` returns `unsupported-station` with ze
 
 Why: City-centroid forecasts are useful for exploration but unsafe for production trading. Unknown settlement stations must fail closed.
 
-Consequence: Parser support and trading support are intentionally different. The parser may identify Austin or Dubai, but the strategy will not trade them unless they are added to `STATION_MAP`.
+Consequence: Parser support and trading support use the same verified station set. Unmapped cities are not treated as supported bot cities unless they are added to `STATION_MAP`.
 
 ## 2026-05-26: Forecast Cache Refresh Is 30 Minutes
 
@@ -22,15 +22,15 @@ Decision: Default forecast cache TTL is 1800 seconds.
 
 Why: Forecast data is slow-moving compared with order books. Pulling forecasts every fast loop wastes API quota and increases rate-limit risk.
 
-Consequence: Fast order-book cycles reuse cached Open-Meteo ensemble responses until the cache expires.
+Consequence: Order-book stream evaluations reuse cached Open-Meteo ensemble responses until the cache expires.
 
-## 2026-05-26: Fast Order-Book Polling Uses HTTP For Now
+## 2026-05-26: Order Books Use The CLOB WebSocket Stream
 
-Decision: Default order-book polling interval is 5 seconds, implemented through the existing `run_forever()` loop.
+Decision: Default order-book monitoring uses the Polymarket CLOB WebSocket market channel.
 
-Why: This is the smallest safe change that makes order-book checks frequent without introducing websocket state management or live execution risk.
+Why: The user requirement is real-time order-book monitoring. A REST loop is still polling and can miss the intended execution behavior.
 
-Consequence: This is near-real-time polling, not true streaming. A future pass should separate market/forecast refresh from order-book-only checks, then consider CLOB websocket monitoring.
+Consequence: `run_forever()` enters `run_realtime_forever()` by default. Market discovery and forecasts refresh every 30 minutes, while WebSocket `book`, `price_change`, `best_bid_ask`, and tick-size events update the order-book cache and trigger paper-trade evaluation.
 
 ## 2026-05-26: Keep Paper Trading As The Execution Boundary
 

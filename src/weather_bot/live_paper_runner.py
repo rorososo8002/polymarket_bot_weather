@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
+import threading
 import time
 
 from .config import Settings, load_settings
@@ -9,8 +10,18 @@ from .models import EdgeResult, MarketDecision, OrderBook, PaperPosition, RawMar
 from .paper import PaperBroker, maybe_close_positions, maybe_settle_resolved_positions
 from .polymarket_client import PolymarketClient
 from .probability import OpenMeteoEnsembleClient, estimate_weather_probability
+from .realtime_orderbook import OrderBookMarketStream
 from .risk import fractional_kelly_binary
 from .runner_status import utc_now_iso, write_runner_status
+
+
+class StreamBackedPolymarketClient(PolymarketClient):
+    def __init__(self, gamma_base: str, clob_base: str, stream: OrderBookMarketStream) -> None:
+        super().__init__(gamma_base, clob_base)
+        self.stream = stream
+
+    def get_order_book(self, token_id: str) -> OrderBook:
+        return self.stream.get_order_book(token_id)
 
 
 def position_size_usd(
@@ -459,17 +470,152 @@ def run_cycle(settings: Settings | None = None) -> list[MarketDecision]:
     return decisions
 
 
-def run_forever(settings: Settings | None = None) -> None:
+def _market_token_ids(market: RawMarket) -> list[str]:
+    return [token_id for token_id in (market.yes_token_id, market.no_token_id) if token_id]
+
+
+def _open_position_if_needed(
+    broker: PaperBroker,
+    market: RawMarket,
+    signal: WeatherSignal,
+    result: EdgeResult,
+    market_type: str,
+) -> None:
+    if result.side not in {"YES", "NO"}:
+        return
+    token_id = market.yes_token_id if result.side == "YES" else market.no_token_id
+    if broker.has_any_position(market.market_id) or not token_id:
+        return
+    city = signal.parsed.city if signal.parsed is not None else ""
+    date_hint = signal.parsed.date_hint if signal.parsed is not None else ""
+    broker.open_position(market, token_id, result, market_type, city=city or "", date_hint=date_hint or "")
+
+
+def _evaluate_realtime_update(
+    updated_token_ids: set[str],
+    client: StreamBackedPolymarketClient,
+    broker: PaperBroker,
+    settings: Settings,
+    market_by_token: dict[str, RawMarket],
+    signals_by_market: dict[str, WeatherSignal],
+    market_types: dict[str, str],
+    latest_edges: dict[tuple[str, str], EdgeResult],
+) -> None:
+    touched_markets = {
+        market_by_token[token_id].market_id
+        for token_id in updated_token_ids
+        if token_id in market_by_token
+    }
+    market_by_id = {market.market_id: market for market in market_by_token.values()}
+    for market_id in touched_markets:
+        market = market_by_id[market_id]
+        signal = signals_by_market[market_id]
+        market_type = market_types[market_id]
+        result, per_side = evaluate_market(
+            market,
+            signal,
+            client,
+            settings,
+            broker.current_bankroll_before_entry(),
+            market_type,
+        )
+        for side, edge_result in per_side.items():
+            latest_edges[(market.market_id, side)] = edge_result
+        broker.log_decision(market, result, signal.note, market_type)
+        broker.log_raw_snapshot(
+            "realtime_decision",
+            market,
+            {
+                "updated_token_ids": sorted(updated_token_ids),
+                "signal": {
+                    "p_true": signal.p_true,
+                    "confidence": signal.confidence,
+                    "source": signal.source,
+                    "note": signal.note,
+                },
+                "per_side": {side: edge.__dict__ for side, edge in per_side.items()},
+            },
+        )
+        _open_position_if_needed(broker, market, signal, result, market_type)
+    for message in maybe_close_positions(broker, client, market_by_id, latest_edges):
+        print(message)
+
+
+def run_realtime_forever(settings: Settings | None = None) -> None:
     settings = settings or load_settings()
     while True:
-        cycle_started_at = datetime.now(timezone.utc)
-        run_cycle(settings)
-        interval_seconds = settings.orderbook_poll_interval_seconds or settings.scan_interval_seconds
-        sleep_seconds = _sleep_seconds_until_next_cycle(cycle_started_at, interval_seconds)
-        next_scan_at = (datetime.now(timezone.utc) + timedelta(seconds=sleep_seconds)).replace(microsecond=0).isoformat()
-        write_runner_status(settings, "sleeping", message=f"sleeping {int(sleep_seconds)}s", next_scan_at=next_scan_at)
-        print(f"Sleeping {int(sleep_seconds)}s. Ctrl+C to stop.")
-        time.sleep(sleep_seconds)
+        refresh_started_at = datetime.now(timezone.utc)
+        cycle_started_at = utc_now_iso()
+        discovery_client = PolymarketClient(settings.gamma_base, settings.clob_base)
+        ensemble_client = OpenMeteoEnsembleClient.from_settings(settings)
+        broker = PaperBroker(settings)
+        write_runner_status(settings, "discovering", message="discovering markets for websocket stream", cycle_started_at=cycle_started_at)
+        markets = discovery_client.discover_weather_markets(limit=settings.max_markets)
+        market_by_token = {
+            token_id: market
+            for market in markets
+            for token_id in _market_token_ids(market)
+        }
+        signals_by_market: dict[str, WeatherSignal] = {}
+        market_types: dict[str, str] = {}
+        for market in markets:
+            signal = estimate_weather_probability(market.question, settings=settings, ensemble_client=ensemble_client)
+            signals_by_market[market.market_id] = signal
+            market_types[market.market_id] = _market_type_from_signal(signal)
+
+        latest_edges: dict[tuple[str, str], EdgeResult] = {}
+        update_lock = threading.RLock()
+        stream_holder: dict[str, StreamBackedPolymarketClient] = {}
+
+        def on_update(updated_token_ids: set[str]) -> None:
+            with update_lock:
+                stream_client = stream_holder.get("client")
+                if stream_client is not None:
+                    _evaluate_realtime_update(
+                        updated_token_ids,
+                        stream_client,
+                        broker,
+                        settings,
+                        market_by_token,
+                        signals_by_market,
+                        market_types,
+                        latest_edges,
+                    )
+
+        stream = OrderBookMarketStream(
+            settings.orderbook_stream_url,
+            on_update=on_update,
+            heartbeat_seconds=settings.orderbook_stream_heartbeat_seconds,
+            reconnect_seconds=settings.orderbook_stream_reconnect_seconds,
+        )
+        stream_holder["client"] = StreamBackedPolymarketClient(settings.gamma_base, settings.clob_base, stream)
+        stream.start(market_by_token.keys())
+        write_runner_status(
+            settings,
+            "streaming",
+            message=f"websocket streaming {len(market_by_token)} tokens across {len(markets)} markets",
+            cycle_started_at=cycle_started_at,
+            markets_done=0,
+            markets_total=len(markets),
+            cash_usd=round(broker.state.cash_usd, 2),
+            exposure_usd=round(broker.total_exposure(), 2),
+            open_positions=len(broker.state.positions),
+        )
+        try:
+            while True:
+                elapsed = (datetime.now(timezone.utc) - refresh_started_at).total_seconds()
+                if elapsed >= settings.forecast_refresh_interval_seconds:
+                    break
+                time.sleep(1)
+        finally:
+            stream.stop()
+
+
+def run_forever(settings: Settings | None = None) -> None:
+    settings = settings or load_settings()
+    if not settings.orderbook_stream_enabled:
+        raise RuntimeError("ORDERBOOK_STREAM_ENABLED=false disables the required real-time order-book stream.")
+    run_realtime_forever(settings)
 
 
 def main() -> None:
