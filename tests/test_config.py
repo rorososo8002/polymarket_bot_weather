@@ -21,3 +21,13 @@ def test_load_settings_reads_conservative_strategy_controls(monkeypatch):
 
     assert settings.enable_precipitation_markets is True
     assert settings.price_stop_confirmation_cycles == 3
+
+
+def test_load_settings_reads_forecast_cache_controls(monkeypatch):
+    monkeypatch.setenv("FORECAST_CACHE_PATH", "data/custom_forecast_cache.json")
+    monkeypatch.setenv("FORECAST_CACHE_TTL_SECONDS", "7200")
+
+    settings = load_settings()
+
+    assert settings.forecast_cache_path == "data/custom_forecast_cache.json"
+    assert settings.forecast_cache_ttl_seconds == 7200

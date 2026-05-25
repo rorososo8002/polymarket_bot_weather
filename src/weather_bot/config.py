@@ -18,6 +18,8 @@ class Settings:
     trades_csv_path: str = "paper_trades.csv"
     decisions_csv_path: str = "paper_decisions.csv"
     raw_snapshots_path: str = "paper_raw_snapshots.jsonl"
+    forecast_cache_path: str = ""
+    forecast_cache_ttl_seconds: int = 21600
     dashboard_host: str = "127.0.0.1"
     dashboard_port: int = 8787
     dashboard_token: str = ""
@@ -109,6 +111,8 @@ def load_settings() -> Settings:
         trades_csv_path=os.getenv("TRADES_CSV_PATH", Settings.trades_csv_path),
         decisions_csv_path=os.getenv("DECISIONS_CSV_PATH", Settings.decisions_csv_path),
         raw_snapshots_path=os.getenv("RAW_SNAPSHOTS_PATH", Settings.raw_snapshots_path),
+        forecast_cache_path=os.getenv("FORECAST_CACHE_PATH", Settings.forecast_cache_path),
+        forecast_cache_ttl_seconds=_int_env("FORECAST_CACHE_TTL_SECONDS", Settings.forecast_cache_ttl_seconds),
         dashboard_host=os.getenv("DASHBOARD_HOST", Settings.dashboard_host),
         dashboard_port=_int_env("DASHBOARD_PORT", Settings.dashboard_port),
         dashboard_token=os.getenv("DASHBOARD_TOKEN", Settings.dashboard_token).strip(),

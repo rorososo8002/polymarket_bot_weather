@@ -340,7 +340,7 @@ def run_cycle(settings: Settings | None = None) -> list[MarketDecision]:
     cycle_started_at = utc_now_iso()
     write_runner_status(settings, "starting", message="starting cycle", cycle_started_at=cycle_started_at)
     client = PolymarketClient(settings.gamma_base, settings.clob_base)
-    ensemble_client = OpenMeteoEnsembleClient()
+    ensemble_client = OpenMeteoEnsembleClient.from_settings(settings)
     broker = PaperBroker(settings)
     try:
         write_runner_status(settings, "discovering", message="discovering markets", cycle_started_at=cycle_started_at)

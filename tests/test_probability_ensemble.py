@@ -130,6 +130,67 @@ def test_ensemble_rate_limit_is_not_retried_and_disables_later_calls(monkeypatch
     assert calls == 1
 
 
+def test_ensemble_client_persists_successful_forecasts_to_disk(monkeypatch, tmp_path):
+    calls = 0
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"daily": {"time": ["2026-05-25"], "temperature_2m_max": [80.0]}}
+
+    def fake_get(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return FakeResponse()
+
+    cache_path = tmp_path / "forecast_cache.json"
+    monkeypatch.setattr("weather_bot.probability.requests.get", fake_get)
+
+    first_client = OpenMeteoEnsembleClient(cache_path=cache_path, cache_ttl_seconds=21600)
+    first = first_client.forecast_daily_ensemble(1.0, 2.0, timezone="UTC", forecast_days=3)
+
+    def fail_get(*_args, **_kwargs):
+        raise AssertionError("disk cache should avoid network")
+
+    monkeypatch.setattr("weather_bot.probability.requests.get", fail_get)
+    second_client = OpenMeteoEnsembleClient(cache_path=cache_path, cache_ttl_seconds=21600)
+    second = second_client.forecast_daily_ensemble(1.0, 2.0, timezone="UTC", forecast_days=3)
+
+    assert first == second
+    assert calls == 1
+
+
+def test_ensemble_client_can_read_cached_forecast_after_rate_limit(monkeypatch, tmp_path):
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"daily": {"time": ["2026-05-25"], "temperature_2m_max": [80.0]}}
+
+    cache_path = tmp_path / "forecast_cache.json"
+    monkeypatch.setattr("weather_bot.probability.requests.get", lambda *_args, **_kwargs: FakeResponse())
+    client = OpenMeteoEnsembleClient(cache_path=cache_path, cache_ttl_seconds=21600)
+    cached = client.forecast_daily_ensemble(1.0, 2.0, timezone="UTC", forecast_days=3)
+
+    class RateLimitedResponse:
+        status_code = 429
+        text = "Daily API request limit exceeded"
+
+        def raise_for_status(self):
+            err = requests.HTTPError("429 Client Error")
+            err.response = self
+            raise err
+
+    monkeypatch.setattr("weather_bot.probability.requests.get", lambda *_args, **_kwargs: RateLimitedResponse())
+    with pytest.raises(requests.HTTPError):
+        client.forecast_daily_ensemble(3.0, 4.0, timezone="UTC", forecast_days=3)
+
+    assert client.forecast_daily_ensemble(1.0, 2.0, timezone="UTC", forecast_days=3) == cached
+
+
 def test_temperature_deterministic_fallback_can_meet_min_confidence():
     class FailingEnsembleClient:
         models = "fake"

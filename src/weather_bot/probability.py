@@ -236,12 +236,76 @@ def bias_for(station: StationMeta, variable: str) -> float:
 # ---------------------------------------------------------------------------
 
 class OpenMeteoEnsembleClient:
-    def __init__(self, timeout: float = 20.0) -> None:
+    def __init__(
+        self,
+        timeout: float = 20.0,
+        cache_path: str | Path | None = None,
+        cache_ttl_seconds: int = 21600,
+    ) -> None:
         self.timeout = timeout
         self.base_url = os.getenv("OPEN_METEO_ENSEMBLE_BASE", "https://ensemble-api.open-meteo.com/v1/ensemble")
         self.models = os.getenv("OPEN_METEO_ENSEMBLE_MODELS", DEFAULT_ENSEMBLE_MODELS)
+        self.cache_path = Path(cache_path) if cache_path else None
+        self.cache_ttl_seconds = max(0, int(cache_ttl_seconds))
         self.disabled_reason = ""
-        self._cache: dict[tuple[float, float, str, int, str], dict[str, Any]] = {}
+        self._cache: dict[str, dict[str, Any]] = {}
+
+    @classmethod
+    def from_settings(cls, settings: Settings) -> "OpenMeteoEnsembleClient":
+        cache_path = settings.forecast_cache_path or str(Path(settings.state_path).with_name("forecast_cache.json"))
+        return cls(cache_path=cache_path, cache_ttl_seconds=settings.forecast_cache_ttl_seconds)
+
+    def _cache_key(self, latitude: float, longitude: float, timezone: str, forecast_days: int) -> str:
+        return "|".join([
+            f"{round(latitude, 4):.4f}",
+            f"{round(longitude, 4):.4f}",
+            timezone,
+            str(int(forecast_days)),
+            self.models,
+        ])
+
+    def _fresh_cached_data(self, cache_key: str) -> dict[str, Any] | None:
+        if cache_key in self._cache:
+            return self._cache[cache_key]
+        if self.cache_ttl_seconds <= 0 or self.cache_path is None or not self.cache_path.exists():
+            return None
+        try:
+            raw = json.loads(self.cache_path.read_text(encoding="utf-8"))
+            entry = raw.get(cache_key) if isinstance(raw, dict) else None
+            if not isinstance(entry, dict):
+                return None
+            created_at = datetime.fromisoformat(str(entry.get("created_at", "")).replace("Z", "+00:00"))
+            if created_at.tzinfo is None:
+                created_at = created_at.replace(tzinfo=timezone.utc)
+            age_seconds = (datetime.now(timezone.utc) - created_at.astimezone(timezone.utc)).total_seconds()
+            if age_seconds > self.cache_ttl_seconds:
+                return None
+            data = entry.get("data")
+            if isinstance(data, dict):
+                self._cache[cache_key] = data
+                return data
+        except Exception:
+            return None
+        return None
+
+    def _store_cached_data(self, cache_key: str, data: dict[str, Any]) -> None:
+        self._cache[cache_key] = data
+        if self.cache_ttl_seconds <= 0 or self.cache_path is None:
+            return
+        try:
+            self.cache_path.parent.mkdir(parents=True, exist_ok=True)
+            raw: dict[str, Any] = {}
+            if self.cache_path.exists():
+                loaded = json.loads(self.cache_path.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    raw = loaded
+            raw[cache_key] = {
+                "created_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+                "data": data,
+            }
+            self.cache_path.write_text(json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception:
+            pass
 
     @retry(
         stop=stop_after_attempt(3),
@@ -256,11 +320,12 @@ class OpenMeteoEnsembleClient:
         timezone: str = "auto",
         forecast_days: int = 7,
     ) -> dict[str, Any]:
+        cache_key = self._cache_key(latitude, longitude, timezone, forecast_days)
+        cached = self._fresh_cached_data(cache_key)
+        if cached is not None:
+            return cached
         if self.disabled_reason:
             raise RuntimeError(f"ensemble disabled for cycle: {self.disabled_reason}")
-        cache_key = (round(latitude, 4), round(longitude, 4), timezone, int(forecast_days), self.models)
-        if cache_key in self._cache:
-            return self._cache[cache_key]
         params = {
             "latitude": latitude,
             "longitude": longitude,
@@ -279,7 +344,7 @@ class OpenMeteoEnsembleClient:
                 self.disabled_reason = f"Open-Meteo rate limited: {body[:160]}"
             raise
         data = resp.json()
-        self._cache[cache_key] = data
+        self._store_cached_data(cache_key, data)
         return data
 
 
@@ -560,7 +625,7 @@ def estimate_weather_probability(
         target = _target_date_from_hint(parsed, timezone_name=station.timezone)
         variable = _temperature_daily_variable(parsed)
         bias_f = bias_for(station, variable)
-        ensemble_client = ensemble_client or OpenMeteoEnsembleClient()
+        ensemble_client = ensemble_client or OpenMeteoEnsembleClient.from_settings(settings)
 
         try:
             data = ensemble_client.forecast_daily_ensemble(
@@ -614,7 +679,7 @@ def estimate_weather_probability(
         # 앙상블 기반 강수 확률 모델 (개선된 버전)
         try:
             return _ensemble_precipitation_probability(
-                parsed, station, settings, ensemble_client or OpenMeteoEnsembleClient()
+                parsed, station, settings, ensemble_client or OpenMeteoEnsembleClient.from_settings(settings)
             )
         except Exception as exc:  # noqa: BLE001
             fallback = _fallback_deterministic_probability(parsed, settings, client)
