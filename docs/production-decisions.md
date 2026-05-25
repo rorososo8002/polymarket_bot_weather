@@ -39,3 +39,11 @@ Decision: No private keys, signing, or live order submission were added.
 Why: The repository is explicitly structured as a live-data paper-trading bot. Moving to real-money execution requires separate safety work.
 
 Consequence: "Trade" in this implementation means paper open/close through `PaperBroker`. Live execution remains a future explicit project.
+
+## 2026-05-26: Probability Stop Replaces Fixed Price Stop
+
+Decision: The bot no longer uses a fixed entry-price percentage stop. It records `probability_stop_threshold` at entry and closes when the current side probability falls below that threshold.
+
+Why: Weather-market risk is driven more by forecast probability deterioration than by a fixed token-price move. A static price stop can fire on thin bid/ask noise even when the forecast thesis is unchanged.
+
+Consequence: `PROBABILITY_STOP_DROP_THRESHOLD=0.10` is the default. YES positions compare current `p_true` to entry-side probability; NO positions compare `1 - p_true`. Decision logs use `probability_stop_threshold` instead of a price stop column.

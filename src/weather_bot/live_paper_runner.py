@@ -5,7 +5,7 @@ import threading
 import time
 
 from .config import Settings, load_settings
-from .edge import executable_buy_price, executable_sell_price, max_absorbable_shares, no_net_edge, yes_net_edge
+from .edge import executable_buy_price, no_net_edge, yes_net_edge
 from .models import EdgeResult, MarketDecision, OrderBook, PaperPosition, RawMarket, WeatherSignal
 from .paper import PaperBroker, maybe_close_positions, maybe_settle_resolved_positions
 from .polymarket_client import PolymarketClient
@@ -75,30 +75,6 @@ def _side_liquidity_reason(side: str, book: OrderBook, market_type: str) -> str 
     bid_value = _bid_notional(book)
     if bid_value < 10.0:
         return f"{side} liquidity filter: exit bid depth ${bid_value:.1f} < $10 [{market_type}]"
-    return None
-
-
-def _entry_stop_guard_reason(
-    side: str,
-    book: OrderBook,
-    p_exec: float,
-    size_usd: float,
-    settings: Settings,
-    market_type: str,
-) -> str | None:
-    if p_exec <= 0 or size_usd <= 0:
-        return None
-    shares = size_usd / p_exec
-    exit_vwap, _slip = executable_sell_price(book, shares)
-    if exit_vwap is None:
-        return f"{side} stop guard: insufficient bid depth to exit proposed {shares:.2f} shares [{market_type}]"
-    stop_price = max(0.01, p_exec * (1.0 - settings.stop_loss_pct))
-    if exit_vwap <= stop_price:
-        immediate_loss = (exit_vwap - p_exec) / p_exec
-        return (
-            f"{side} stop guard: exit_vwap {exit_vwap:.4f} <= stop {stop_price:.4f} "
-            f"(entry {p_exec:.4f}, immediate={immediate_loss:.1%}) [{market_type}]"
-        )
     return None
 
 
@@ -174,10 +150,6 @@ def _side_result(
         min_edge=min_edge,
     )
     is_trade = edge > min_edge and size_usd >= settings.min_order_usd
-    if is_trade:
-        guard_reason = _entry_stop_guard_reason(side, book, p_exec, size_usd, settings, market_type)
-        if guard_reason:
-            return EdgeResult("SKIP", signal.p_true, p_exec, edge, 0.0, 0.0, guard_reason)
     return EdgeResult(
         side=side if is_trade else "SKIP",
         p_true=signal.p_true,

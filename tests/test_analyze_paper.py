@@ -14,7 +14,7 @@ def test_build_report_summarizes_decisions_edge_buckets_and_resolved_brier(tmp_p
         decisions,
         "\n".join(
             [
-                "ts,market_id,slug,question,market_type,side,p_true,p_exec,net_edge,size_usd,size_shares,entry_fraction,stop_loss_price,model_fair_price,target_exit_price,market_heat_score,reason,note",
+                "ts,market_id,slug,question,market_type,side,p_true,p_exec,net_edge,size_usd,size_shares,entry_fraction,probability_stop_threshold,model_fair_price,target_exit_price,market_heat_score,reason,note",
                 "2026-01-01T00:00:00+00:00,m1,s,q1,temperature,YES,0.700000,0.500000,0.120000,50,100,,,,,,YES edge,",
                 "2026-01-01T00:01:00+00:00,m2,s,q2,temperature,SKIP,0.520000,,0.010000,0,0,,,,,,confidence too low,",
             ]

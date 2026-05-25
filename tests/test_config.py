@@ -15,12 +15,12 @@ def test_load_settings_reads_dashboard_env(monkeypatch):
 
 def test_load_settings_reads_conservative_strategy_controls(monkeypatch):
     monkeypatch.setenv("ENABLE_PRECIPITATION_MARKETS", "true")
-    monkeypatch.setenv("PRICE_STOP_CONFIRMATION_CYCLES", "3")
+    monkeypatch.setenv("PROBABILITY_STOP_DROP_THRESHOLD", "0.08")
 
     settings = load_settings()
 
     assert settings.enable_precipitation_markets is True
-    assert settings.price_stop_confirmation_cycles == 3
+    assert settings.probability_stop_drop_threshold == 0.08
 
 
 def test_load_settings_reads_forecast_cache_controls(monkeypatch):

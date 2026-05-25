@@ -17,6 +17,9 @@
 - Added `src/weather_bot/realtime_orderbook.py` for Polymarket CLOB market-channel order-book caching.
 - Updated `run_forever()` to use realtime WebSocket mode by default.
 - Added event-driven evaluation for WebSocket order-book updates while reusing 30-minute forecast signals.
+- Replaced fixed price stops with probability stops:
+  - `PROBABILITY_STOP_DROP_THRESHOLD=0.10`
+  - decision logs now use `probability_stop_threshold`
 - Updated `.env.example` and `deploy/systemd/live-paper.env.example`.
 - Added focused regression tests for station gating, forecast settings, WebSocket order-book cache updates, and realtime runner selection.
 - Added production handoff docs:
@@ -30,11 +33,13 @@
 - Execution remains paper trading through `PaperBroker`; there is no live wallet order submission path.
 - Station coordinates are mapped to the Polymarket settlement station for forecasting, but forecast bias calibration is still neutral.
 - Stream health handling is basic; reconnects exist, but stale-stream alerting and operational metrics are not yet implemented.
+- Probability-stop calibration is still a default rule; it needs paper-trading calibration against resolved markets.
 
 ## Next Work
 
 - Add tests that prove forecast calls do not happen inside WebSocket order-book update callbacks.
 - Add stream health telemetry: startup snapshot coverage, last-event age, reconnect count, and stale-stream alerts.
+- Calibrate `PROBABILITY_STOP_DROP_THRESHOLD` by market type after enough resolved paper trades exist.
 - Add station-level forecast bias files after enough paper-trading and resolved-weather data exists.
 - Decide explicitly whether to keep paper-only operation or add a live execution broker.
 - If live execution is requested, add signing, key isolation, order validation, and kill-switch docs before any real order path.

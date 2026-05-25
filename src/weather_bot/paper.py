@@ -11,7 +11,7 @@ from uuid import uuid4
 from .config import Settings
 from .models import EdgeResult, PaperPosition, PaperState, RawMarket
 from .edge import executable_sell_price, max_absorbable_shares
-from .exit_policy import assess_exit, build_entry_plan
+from .exit_policy import assess_exit, build_entry_plan, side_true_probability
 from .polymarket_client import PolymarketClient
 
 
@@ -175,9 +175,10 @@ class PaperBroker:
             metadata={
                 "entry_edge": result.net_edge,
                 "entry_p_true": result.p_true,
+                "entry_side_probability": side_true_probability(result.side, result.p_true),
                 "bankroll_before": entry_plan.bankroll_before,
                 "entry_fraction": entry_plan.entry_fraction,
-                "stop_loss_price": entry_plan.stop_loss_price,
+                "probability_stop_threshold": entry_plan.probability_stop_threshold,
                 "model_fair_price": entry_plan.model_fair_price,
                 "target_exit_price": entry_plan.target_exit_price,
                 "market_heat_score": entry_plan.market_heat_score,
@@ -270,18 +271,18 @@ class PaperBroker:
                 fieldnames=[
                     "ts", "market_id", "slug", "question", "market_type", "side", "p_true", "p_exec",
                     "net_edge", "size_usd", "size_shares", "entry_fraction",
-                    "stop_loss_price", "model_fair_price", "target_exit_price",
+                    "probability_stop_threshold", "model_fair_price", "target_exit_price",
                     "market_heat_score", "reason", "note",
                 ],
             )
             if not exists:
                 writer.writeheader()
-            entry_fraction = stop_loss_price = model_fair = target_exit = heat_score = ""
+            entry_fraction = probability_stop = model_fair = target_exit = heat_score = ""
             if result.side in {"YES", "NO"} and result.p_exec is not None and result.size_usd > 0:
                 bankroll_before = self.current_bankroll_before_entry()
                 plan = build_entry_plan(result, bankroll_before, self.settings)
                 entry_fraction = f"{plan.entry_fraction:.6f}"
-                stop_loss_price = f"{plan.stop_loss_price:.6f}"
+                probability_stop = f"{plan.probability_stop_threshold:.6f}"
                 model_fair = f"{plan.model_fair_price:.6f}"
                 target_exit = f"{plan.target_exit_price:.6f}"
                 heat_score = f"{plan.market_heat_score:.6f}"
@@ -298,7 +299,7 @@ class PaperBroker:
                 "size_usd": f"{result.size_usd:.2f}",
                 "size_shares": f"{result.size_shares:.6f}",
                 "entry_fraction": entry_fraction,
-                "stop_loss_price": stop_loss_price,
+                "probability_stop_threshold": probability_stop,
                 "model_fair_price": model_fair,
                 "target_exit_price": target_exit,
                 "market_heat_score": heat_score,
@@ -483,21 +484,7 @@ def maybe_close_positions(
             pos.metadata["last_exit_assessment"] = assessment.reason
 
             if not assessment.should_close:
-                pos.metadata["price_stop_breach_cycles"] = 0
                 continue
-
-            if assessment.reason.startswith("stop loss:"):
-                required_cycles = max(1, int(broker.settings.price_stop_confirmation_cycles))
-                cycles = int(pos.metadata.get("price_stop_breach_cycles", 0)) + 1
-                pos.metadata["price_stop_breach_cycles"] = cycles
-                if cycles < required_cycles:
-                    messages.append(
-                        f"HOLD_PRICE_STOP_CONFIRM {pos.side} cycles={cycles}/{required_cycles} "
-                        f"reason={assessment.reason}"
-                    )
-                    continue
-            else:
-                pos.metadata["price_stop_breach_cycles"] = 0
 
             # ── 4단계: 실제 청산 실행 ─────────────────────────────────────────
             if can_fully_close:

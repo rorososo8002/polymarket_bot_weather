@@ -556,7 +556,7 @@ def _position_payload(pos: dict[str, Any]) -> dict[str, Any]:
         "city": metadata.get("city", ""),
         "date_hint": metadata.get("date_hint", ""),
         "target_exit_price": _float(metadata.get("last_target_exit_price"), _float(metadata.get("target_exit_price"))),
-        "stop_loss_price": _float(metadata.get("stop_loss_price")),
+        "probability_stop_threshold": _float(metadata.get("probability_stop_threshold")),
         "reason": metadata.get("reason", ""),
     }
 

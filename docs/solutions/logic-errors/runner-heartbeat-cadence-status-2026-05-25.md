@@ -60,4 +60,4 @@ The heartbeat separates process liveness from strategy progress. The dashboard n
 - Add regression tests for dashboard heartbeat precedence and wall-clock cadence calculations.
 
 ## Related Issues
-- `docs/solutions/logic-errors/entry-stop-guard-vwap-spread-2026-05-24.md`
+- None.

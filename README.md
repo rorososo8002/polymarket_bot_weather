@@ -112,7 +112,7 @@ Polymarket category/Gamma discovery
   -> Open-Meteo ensemble forecast at settlement station
   -> CLOB WebSocket book/price_change events
   -> cached YES/NO order-book VWAP
-  -> edge, risk, exposure, stop guard
+  -> edge, risk, exposure, probability stop threshold
   -> PaperBroker open/close decision
   -> CSV, state JSON, raw snapshot logs
 ```
@@ -139,7 +139,7 @@ confidence >= required confidence
 date_hint present
 station verified
 exposure caps pass
-entry stop guard pass
+probability stop threshold recorded
 ```
 
 Default sizing is fixed-fraction paper sizing:
@@ -159,7 +159,7 @@ src/weather_bot/realtime_orderbook.py Polymarket CLOB WebSocket order-book cache
 src/weather_bot/live_paper_runner.py  main paper-trading loop
 src/weather_bot/paper.py              local paper broker and logs
 src/weather_bot/edge.py               YES/NO executable edge
-src/weather_bot/exit_policy.py        stop, take-profit, overheat, edge-fade exits
+src/weather_bot/exit_policy.py        probability-stop, take-profit, overheat, edge-fade exits
 src/weather_bot/dashboard.py          local status dashboard
 ```
 
@@ -178,7 +178,7 @@ docs/production-decisions.md
 BANKROLL_USD=1000
 ENTRY_FRACTION=0.05
 MIN_NET_EDGE=0.05
-STOP_LOSS_PCT=0.10
+PROBABILITY_STOP_DROP_THRESHOLD=0.10
 MODEL_ERROR_MARGIN=0.03
 RESOLUTION_ERROR_MARGIN=0.01
 MAX_TOTAL_EXPOSURE_FRACTION=0.30

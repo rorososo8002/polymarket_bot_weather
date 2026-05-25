@@ -4,7 +4,7 @@
 
 The bot targets Polymarket weather markets only when the settlement station is explicit and mapped locally. It should avoid resolution ambiguity first, then look for executable edge using live YES/NO order books, conservative fees, model margin, and resolution margin.
 
-The current execution mode remains paper trading. Production readiness means the paper bot behaves like a live strategy would: station-gated market discovery, 30-minute forecast refreshes, real-time order-book stream handling, exposure caps, stop guards, and durable logs.
+The current execution mode remains paper trading. Production readiness means the paper bot behaves like a live strategy would: station-gated market discovery, 30-minute forecast refreshes, real-time order-book stream handling, exposure caps, probability-based stops, and durable logs.
 
 ## Core Rules
 
@@ -40,7 +40,7 @@ The current execution mode remains paper trading. Production readiness means the
    - Each relevant order-book event re-evaluates executable YES/NO VWAP against cached 30-minute forecast signals.
 
 5. Preserve paper-trading risk controls:
-   - Existing edge thresholds, exposure caps, stop guards, and exit policies remain active.
+   - Existing edge thresholds, exposure caps, probability stops, and exit policies remain active.
    - No private-key or live order path is added in this change.
 
 ## Next Production Shape

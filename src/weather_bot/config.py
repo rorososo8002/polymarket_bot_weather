@@ -32,9 +32,8 @@ class Settings:
     # Strategy thresholds
     min_net_edge: float = 0.05
     exit_net_edge: float = 0.00
-    # Exit policy: stop is fixed from entry; profit is model-fair-value based.
-    stop_loss_pct: float = 0.10
-    price_stop_confirmation_cycles: int = 2
+    # Exit policy: stop is probability-based; profit is model-fair-value based.
+    probability_stop_drop_threshold: float = 0.10
     min_profit_pct: float = 0.03
     take_profit_to_fair_ratio: float = 0.70
     overheat_margin: float = 0.02
@@ -78,9 +77,8 @@ class Settings:
     # 날짜 파싱 불명확 마켓 SKIP: date_hint=None이면 오늘 날짜로 fallback되어
     # 만료 마켓에 잘못 진입할 수 있으므로 기본값 True (SKIP 활성화)
     require_date_hint_for_trade: bool = True
-    # 편더멘탈 손절: 진입 당시 p_true 대비 현재 p_true가 이 값 이상 하락하면 청산
-    # 가격 손절을 기다리지 않고 모델 확률이 크게 달라졌을 때 먼저 나온다
-    p_true_drop_threshold: float = 0.15
+    # Probability stop compares the current side probability with the entry-side
+    # probability. YES uses p_true; NO uses 1 - p_true.
 
 
 def _float_env(name: str, default: float) -> float:
@@ -127,8 +125,10 @@ def load_settings() -> Settings:
         enable_precipitation_markets=_bool_env("ENABLE_PRECIPITATION_MARKETS", Settings.enable_precipitation_markets),
         min_net_edge=_float_env("MIN_NET_EDGE", Settings.min_net_edge),
         exit_net_edge=_float_env("EXIT_NET_EDGE", Settings.exit_net_edge),
-        stop_loss_pct=_float_env("STOP_LOSS_PCT", Settings.stop_loss_pct),
-        price_stop_confirmation_cycles=_int_env("PRICE_STOP_CONFIRMATION_CYCLES", Settings.price_stop_confirmation_cycles),
+        probability_stop_drop_threshold=_float_env(
+            "PROBABILITY_STOP_DROP_THRESHOLD",
+            Settings.probability_stop_drop_threshold,
+        ),
         min_profit_pct=_float_env("MIN_PROFIT_PCT", Settings.min_profit_pct),
         take_profit_to_fair_ratio=_float_env("TAKE_PROFIT_TO_FAIR_RATIO", Settings.take_profit_to_fair_ratio),
         overheat_margin=_float_env("OVERHEAT_MARGIN", Settings.overheat_margin),
@@ -162,5 +162,4 @@ def load_settings() -> Settings:
         require_date_hint_for_trade=_bool_env("REQUIRE_DATE_HINT_FOR_TRADE", Settings.require_date_hint_for_trade),
         max_city_exposure_fraction=_float_env("MAX_CITY_EXPOSURE_FRACTION", Settings.max_city_exposure_fraction),
         max_event_date_exposure_fraction=_float_env("MAX_EVENT_DATE_EXPOSURE_FRACTION", Settings.max_event_date_exposure_fraction),
-        p_true_drop_threshold=_float_env("P_TRUE_DROP_THRESHOLD", Settings.p_true_drop_threshold),
     )

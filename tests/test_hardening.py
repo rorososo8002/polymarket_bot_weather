@@ -214,10 +214,9 @@ def test_no_candidate_requires_no_side_exit_liquidity():
     assert "liquidity" in per_side["NO"].reason.lower()
 
 
-def test_entry_skips_when_exit_vwap_is_already_below_stop_loss():
+def test_entry_does_not_use_fixed_price_drop_guard():
     settings = Settings(
         min_net_edge=0.01,
-        stop_loss_pct=0.10,
         min_order_usd=1.0,
         estimated_fee_per_share=0.0,
         model_error_margin=0.0,
@@ -233,9 +232,9 @@ def test_entry_skips_when_exit_vwap_is_already_below_stop_loss():
 
     result, per_side = evaluate_market(temp_market(), temp_signal(p_true=0.25), client, settings, 1000.0, "temperature")
 
-    assert result.side == "SKIP"
-    assert per_side["YES"].side == "SKIP"
-    assert "stop guard" in per_side["YES"].reason
+    assert result.side == "YES"
+    assert per_side["YES"].side == "YES"
+    assert "YES edge=" in per_side["YES"].reason
 
 
 def test_temperature_fallback_signals_do_not_trade_by_default():
@@ -268,13 +267,13 @@ def test_temperature_fallback_signals_do_not_trade_by_default():
     assert "deterministic fallback trading disabled" in result.reason
 
 
-def test_price_stop_requires_consecutive_confirmation_cycles(tmp_path):
+def test_probability_stop_closes_immediately(tmp_path):
     settings = Settings(
         state_path=str(tmp_path / "state.json"),
         trades_csv_path=str(tmp_path / "trades.csv"),
         decisions_csv_path=str(tmp_path / "decisions.csv"),
         raw_snapshots_path=str(tmp_path / "raw.jsonl"),
-        price_stop_confirmation_cycles=2,
+        probability_stop_drop_threshold=0.10,
     )
     broker = PaperBroker(settings)
     pos = PaperPosition(
@@ -287,20 +286,15 @@ def test_price_stop_requires_consecutive_confirmation_cycles(tmp_path):
         shares=10.0,
         cost_usd=5.0,
         opened_at=datetime.now(timezone.utc).isoformat(),
-        metadata={"entry_p_true": 0.70, "stop_loss_price": 0.45},
+        metadata={"entry_p_true": 0.70, "probability_stop_threshold": 0.60},
     )
     broker.state.positions = [pos]
     broker.state.cash_usd = 995.0
-    client = FakePolymarketClient(books={"yes": book("yes", bid=0.45, ask=0.50, bid_size=100.0)})
-    latest_edges = {("m1", "YES"): EdgeResult("YES", 0.70, 0.50, 0.01, 0.0, 0.0, "latest")}
+    client = FakePolymarketClient(books={"yes": book("yes", bid=0.50, ask=0.52, bid_size=100.0)})
+    latest_edges = {("m1", "YES"): EdgeResult("YES", 0.59, 0.50, -0.01, 0.0, 0.0, "latest")}
 
-    first = maybe_close_positions(broker, client, {"m1": temp_market()}, latest_edges)
-    assert first == ["HOLD_PRICE_STOP_CONFIRM YES cycles=1/2 reason=stop loss: mark 0.4500 <= stop 0.4500 (-10.0%)"]
-    assert len(broker.state.positions) == 1
-    assert broker.state.positions[0].metadata["price_stop_breach_cycles"] == 1
-
-    second = maybe_close_positions(broker, client, {"m1": temp_market()}, latest_edges)
-    assert any(msg.startswith("CLOSE YES") for msg in second)
+    messages = maybe_close_positions(broker, client, {"m1": temp_market()}, latest_edges)
+    assert any("probability stop" in msg for msg in messages)
     assert broker.state.positions == []
 
 
@@ -346,7 +340,7 @@ def test_held_positions_are_re_evaluated_even_when_not_in_scan_results():
                 shares=100.0,
                 cost_usd=50.0,
                 opened_at=datetime.now(timezone.utc).isoformat(),
-                metadata={"entry_p_true": 0.8, "stop_loss_price": 0.45, "city": "nyc", "date_hint": "may 25"},
+                metadata={"entry_p_true": 0.8, "probability_stop_threshold": 0.7, "city": "nyc", "date_hint": "may 25"},
             )
         ],
     )

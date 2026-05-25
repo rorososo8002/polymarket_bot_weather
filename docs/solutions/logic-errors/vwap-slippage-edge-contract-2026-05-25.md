@@ -49,4 +49,3 @@ The edge equation should subtract execution price once. Since `p_exec` is alread
 - Prefer deleting misleading parameters over forcing them into formulas.
 
 ## Related Issues
-- [Entry Stop Guard for Wide Bid Ask Spreads](entry-stop-guard-vwap-spread-2026-05-24.md)
