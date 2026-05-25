@@ -191,6 +191,25 @@ def test_ensemble_client_can_read_cached_forecast_after_rate_limit(monkeypatch, 
     assert client.forecast_daily_ensemble(1.0, 2.0, timezone="UTC", forecast_days=3) == cached
 
 
+def test_ensemble_client_recovers_from_invalid_cache_file(monkeypatch, tmp_path):
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"daily": {"time": ["2026-05-25"], "temperature_2m_max": [80.0]}}
+
+    cache_path = tmp_path / "forecast_cache.json"
+    cache_path.write_text("", encoding="utf-8")
+    monkeypatch.setattr("weather_bot.probability.requests.get", lambda *_args, **_kwargs: FakeResponse())
+
+    client = OpenMeteoEnsembleClient(cache_path=cache_path, cache_ttl_seconds=21600)
+    data = client.forecast_daily_ensemble(1.0, 2.0, timezone="UTC", forecast_days=3)
+
+    assert data["daily"]["temperature_2m_max"] == [80.0]
+    assert "temperature_2m_max" in cache_path.read_text(encoding="utf-8")
+
+
 def test_temperature_deterministic_fallback_can_meet_min_confidence():
     class FailingEnsembleClient:
         models = "fake"

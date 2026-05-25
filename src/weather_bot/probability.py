@@ -296,9 +296,12 @@ class OpenMeteoEnsembleClient:
             self.cache_path.parent.mkdir(parents=True, exist_ok=True)
             raw: dict[str, Any] = {}
             if self.cache_path.exists():
-                loaded = json.loads(self.cache_path.read_text(encoding="utf-8"))
-                if isinstance(loaded, dict):
-                    raw = loaded
+                try:
+                    loaded = json.loads(self.cache_path.read_text(encoding="utf-8"))
+                    if isinstance(loaded, dict):
+                        raw = loaded
+                except Exception:
+                    raw = {}
             raw[cache_key] = {
                 "created_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
                 "data": data,
