@@ -9,7 +9,7 @@ Run a conservative paper-trading bot for Polymarket weather markets using only v
 - Trade only the 41 cities in `src/weather_bot/stations.py`.
 - Use `STATION_MAP` as the single source of truth for settlement stations.
 - Skip any weather market whose parsed city is not in `STATION_MAP`.
-- Refresh Open-Meteo forecast data no more often than every 30 minutes by default.
+- Refresh Open-Meteo forecast data no more often than every 10 minutes by default.
 - Monitor order books through the Polymarket CLOB WebSocket market stream by default.
 - Keep paper-trading behavior intact unless live execution is explicitly requested.
 
@@ -46,8 +46,8 @@ src/weather_bot/dashboard.py          local read-only dashboard
 ```text
 ORDERBOOK_STREAM_ENABLED=true
 ORDERBOOK_STREAM_URL=wss://ws-subscriptions-clob.polymarket.com/ws/market
-FORECAST_REFRESH_INTERVAL_SECONDS=1800
-FORECAST_CACHE_TTL_SECONDS=1800
+FORECAST_REFRESH_INTERVAL_SECONDS=600
+FORECAST_CACHE_TTL_SECONDS=600
 MAX_MARKETS=41
 ENABLE_PRECIPITATION_MARKETS=false
 REQUIRE_DATE_HINT_FOR_TRADE=true

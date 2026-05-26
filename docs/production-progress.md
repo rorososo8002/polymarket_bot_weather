@@ -7,7 +7,7 @@
 - `STATION_MAP` is the settlement-station source of truth.
 - `Settings.max_markets` defaults to `SUPPORTED_CITY_COUNT`, so the scan size follows the station registry.
 - Forecasts use the mapped settlement station, not city-center coordinates.
-- Forecast data refreshes every 30 minutes by default.
+- Forecast data refreshes every 10 minutes by default.
 - Order books stream through the Polymarket CLOB WebSocket market channel by default.
 - Execution is paper-only through `PaperBroker`; no wallet keys, signing, or live order submission are present.
 
@@ -17,7 +17,7 @@
 - Parser gating so unsupported cities are not treated as tradable markets.
 - Polymarket discovery gating so weather-shaped markets outside `STATION_MAP` are skipped.
 - Probability estimation that returns `unsupported-station` for unmapped settlement stations.
-- 30-minute Open-Meteo forecast cache TTL and refresh cadence.
+- 10-minute Open-Meteo forecast cache TTL and refresh cadence.
 - WebSocket-backed order-book cache and event-driven paper evaluations.
 - Probability-based stop policy instead of fixed token-price stop loss.
 - Exposure caps for market, city, and city-date concentration.
