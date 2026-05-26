@@ -272,6 +272,7 @@ HTML = r"""<!doctype html>
       <div class="panel-title">Scanner Intelligence</div>
       <div class="panel-body">
         <div class="right-stat"><span>후보 판단</span><strong id="r-decisions">0</strong></div>
+        <div class="right-stat"><span>NO FORECAST</span><strong id="r-no-forecast">0</strong></div>
         <div class="right-stat"><span>스킵</span><strong id="r-skips">0</strong></div>
         <div class="right-stat"><span>진입 신호</span><strong id="r-entries">0</strong></div>
         <div class="right-stat"><span>열린 포지션</span><strong id="r-open">0</strong></div>
@@ -430,6 +431,7 @@ function render(payload) {
   setText("m-losses", payload.summary.losses);
   setText("m-winrate", pct(payload.summary.win_rate));
   setText("r-decisions", payload.scanner.decisions);
+  setText("r-no-forecast", payload.scanner.forecast_unavailable || 0);
   setText("r-skips", payload.scanner.skips);
   setText("r-entries", payload.scanner.entries);
   setText("r-open", payload.summary.open_positions);
@@ -696,6 +698,11 @@ def build_dashboard_payload(settings: Settings | None = None, auth_required: boo
     closed_total = wins + losses
     skip_count = sum(1 for row in decisions if row.get("side") == "SKIP")
     entry_count = sum(1 for row in decisions if row.get("side") in {"YES", "NO"})
+    forecast_unavailable_count = sum(
+        1
+        for row in decisions
+        if "forecast unavailable" in (row.get("note") or "").lower()
+    )
     recent_decisions = _sorted_recent(decisions, 60)
     pressure_yes = sum(1 for row in decisions[-100:] if row.get("side") == "YES")
     pressure_no = sum(1 for row in decisions[-100:] if row.get("side") == "NO")
@@ -724,6 +731,7 @@ def build_dashboard_payload(settings: Settings | None = None, auth_required: boo
         "recent_decisions": recent_decisions,
         "scanner": {
             "decisions": len(decisions),
+            "forecast_unavailable": forecast_unavailable_count,
             "skips": skip_count,
             "entries": entry_count,
         },

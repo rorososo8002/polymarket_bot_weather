@@ -73,8 +73,6 @@ class Settings:
     # Probability model controls
     probability_shrink_gamma: float = 0.65
     default_temperature_sigma_f: float = 4.5
-    deterministic_temperature_fallback_max_confidence: float = 0.50
-    allow_deterministic_fallback_trades: bool = False
     require_parse_for_trade: bool = True
     # 날짜 파싱 불명확 마켓 SKIP: date_hint=None이면 오늘 날짜로 fallback되어
     # 만료 마켓에 잘못 진입할 수 있으므로 기본값 True (SKIP 활성화)
@@ -152,14 +150,6 @@ def load_settings() -> Settings:
         precip_max_confidence=_float_env("PRECIP_MAX_CONFIDENCE", Settings.precip_max_confidence),
         probability_shrink_gamma=_float_env("PROBABILITY_SHRINK_GAMMA", Settings.probability_shrink_gamma),
         default_temperature_sigma_f=_float_env("DEFAULT_TEMPERATURE_SIGMA_F", Settings.default_temperature_sigma_f),
-        deterministic_temperature_fallback_max_confidence=_float_env(
-            "DETERMINISTIC_TEMPERATURE_FALLBACK_MAX_CONFIDENCE",
-            Settings.deterministic_temperature_fallback_max_confidence,
-        ),
-        allow_deterministic_fallback_trades=_bool_env(
-            "ALLOW_DETERMINISTIC_FALLBACK_TRADES",
-            Settings.allow_deterministic_fallback_trades,
-        ),
         require_parse_for_trade=_bool_env("REQUIRE_PARSE_FOR_TRADE", Settings.require_parse_for_trade),
         require_date_hint_for_trade=_bool_env("REQUIRE_DATE_HINT_FOR_TRADE", Settings.require_date_hint_for_trade),
         max_city_exposure_fraction=_float_env("MAX_CITY_EXPOSURE_FRACTION", Settings.max_city_exposure_fraction),

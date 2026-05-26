@@ -43,7 +43,7 @@ Important coverage already in the suite:
 - discovery rejects non-weather false positives
 - realtime WebSocket mode is required by `run_forever()`
 - forecast cache avoids repeated Open-Meteo calls
-- deterministic forecast fallback does not trade by default
+- unavailable ensemble forecasts are not treated as strategy data
 
 ## Remaining Production Hardening
 

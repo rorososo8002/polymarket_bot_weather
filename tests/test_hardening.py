@@ -45,13 +45,13 @@ def temp_signal(p_true: float = 0.2) -> WeatherSignal:
     return WeatherSignal(p_true=p_true, confidence=0.9, source="test", note="", parsed=parsed)
 
 
-def fallback_temp_signal(p_true: float = 0.9) -> WeatherSignal:
+def unavailable_forecast_signal() -> WeatherSignal:
     parsed = parse_weather_question("Will NYC reach 90°F on May 25?")
     return WeatherSignal(
-        p_true=p_true,
-        confidence=0.5,
-        source="open-meteo-deterministic-fallback",
-        note="Ensemble model unavailable",
+        p_true=0.5,
+        confidence=0.0,
+        source="forecast-unavailable",
+        note="ensemble forecast unavailable",
         parsed=parsed,
     )
 
@@ -237,7 +237,7 @@ def test_entry_does_not_use_fixed_price_drop_guard():
     assert "YES edge=" in per_side["YES"].reason
 
 
-def test_temperature_fallback_signals_do_not_trade_by_default():
+def test_unavailable_forecast_signals_do_not_trade():
     settings = Settings(
         min_net_edge=0.01,
         min_order_usd=1.0,
@@ -255,7 +255,7 @@ def test_temperature_fallback_signals_do_not_trade_by_default():
 
     result, per_side = evaluate_market(
         temp_market(),
-        fallback_temp_signal(p_true=0.90),
+        unavailable_forecast_signal(),
         client,
         settings,
         1000.0,
@@ -264,7 +264,7 @@ def test_temperature_fallback_signals_do_not_trade_by_default():
 
     assert result.side == "SKIP"
     assert per_side == {}
-    assert "deterministic fallback trading disabled" in result.reason
+    assert "confidence too low" in result.reason
 
 
 def test_probability_stop_closes_immediately(tmp_path):

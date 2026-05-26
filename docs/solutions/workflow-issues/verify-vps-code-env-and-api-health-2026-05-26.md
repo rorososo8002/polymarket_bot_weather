@@ -16,7 +16,7 @@ tags: [vps, dashboard, deployment-drift, api-rate-limit, paper-trading]
 
 ## Context
 
-The dashboard was reachable and the systemd service was active, but it showed no entries. The service was running an older deployment: the VPS env still had `MAX_MARKETS=40`, old scan cadence settings, and a code version without the 41-city station module. Separately, Open-Meteo returned `Daily API request limit exceeded`, so the bot safely skipped deterministic fallback trades.
+The dashboard was reachable and the systemd service was active, but it showed no entries. The service was running an older deployment: the VPS env still had `MAX_MARKETS=40`, old scan cadence settings, and a code version without the 41-city station module. Separately, Open-Meteo returned `Daily API request limit exceeded`, so the bot had no valid ensemble forecast data for strategy evaluation.
 
 ## Guidance
 
@@ -40,7 +40,7 @@ Dashboard health means the HTTP UI is alive. Bot health means runner status, cod
 
 ## Why This Matters
 
-An active service can still be running old code or safely skipping all entries due to an upstream API limit. For this bot, `deterministic fallback trading disabled; waiting for ensemble model` is a deliberate safety stop, not a UI bug.
+An active service can still be running old code or safely skipping all entries due to an upstream API limit. For this bot, missing ensemble forecast data means the evaluation is not valid strategy data.
 
 ## When to Apply
 
@@ -66,6 +66,7 @@ External API blocked indicator:
 
 ```text
 Open-Meteo rate limited: Daily API request limit exceeded. Please try again tomorrow.
+source=forecast-unavailable
 ```
 
 ## Related

@@ -176,22 +176,6 @@ def evaluate_market(
         result = EdgeResult("SKIP", signal.p_true, None, -999.0, 0.0, 0.0, "precipitation/snow markets disabled by config")
         return result, {}
 
-    if (
-        market_type == "temperature"
-        and signal.source == "open-meteo-deterministic-fallback"
-        and not settings.allow_deterministic_fallback_trades
-    ):
-        result = EdgeResult(
-            "SKIP",
-            signal.p_true,
-            None,
-            -999.0,
-            0.0,
-            0.0,
-            "deterministic fallback trading disabled; waiting for ensemble model",
-        )
-        return result, {}
-
     if settings.require_parse_for_trade and signal.confidence < min_confidence:
         result = EdgeResult("SKIP", signal.p_true, None, -999.0, 0.0, 0.0, f"confidence too low: {signal.confidence:.2f} < {min_confidence:.2f} [{market_type}]")
         return result, {}

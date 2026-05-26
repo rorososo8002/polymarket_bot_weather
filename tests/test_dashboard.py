@@ -118,7 +118,7 @@ def test_dashboard_payload_summarizes_state_trades_and_decisions(tmp_path):
                 "target_exit_price": "",
                 "market_heat_score": "",
                 "reason": "confidence too low",
-                "note": "",
+                "note": "Ensemble forecast unavailable: rate limited",
             },
         ],
     )
@@ -140,6 +140,7 @@ def test_dashboard_payload_summarizes_state_trades_and_decisions(tmp_path):
     assert payload["summary"]["wins"] == 1
     assert payload["summary"]["losses"] == 1
     assert payload["scanner"]["decisions"] == 2
+    assert payload["scanner"]["forecast_unavailable"] == 1
     assert payload["scanner"]["skips"] == 1
     assert payload["scanner"]["entries"] == 1
     assert payload["bot"]["last_event_at"] == "2026-05-24T11:00:00+00:00"

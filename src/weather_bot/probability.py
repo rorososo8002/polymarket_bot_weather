@@ -16,7 +16,7 @@ from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponen
 from .config import Settings
 from .models import ParsedWeatherQuestion, WeatherSignal
 from .stations import STATION_MAP, StationMeta
-from .weather_client import OpenMeteoClient, parse_weather_question
+from .weather_client import parse_weather_question
 
 
 # ---------------------------------------------------------------------------
@@ -430,66 +430,6 @@ def _temperature_reference_label(parsed: ParsedWeatherQuestion) -> str:
     return "target forecast low" if parsed.temperature_metric == "min" else "target forecast high"
 
 
-def _fallback_deterministic_probability(
-    parsed: ParsedWeatherQuestion,
-    settings: Settings,
-    client: OpenMeteoClient | None,
-    timezone_name: str = "auto",
-) -> WeatherSignal:
-    """Original simple model kept as a safe fallback when ensemble API fails."""
-    if parsed.latitude is None or parsed.longitude is None:
-        return WeatherSignal(0.5, 0.0, "fallback", "No coordinates for deterministic fallback.", parsed)
-
-    client = client or OpenMeteoClient()
-    target = _target_date_from_hint(parsed, timezone_name=timezone_name)
-    forecast_days = max(3, min(16, int(_lead_time_days(target, timezone_name=timezone_name)) + 2))
-    data = client.forecast_daily(parsed.latitude, parsed.longitude, forecast_days=forecast_days)
-    daily = data.get("daily") or {}
-    if parsed.variable == "temperature" and parsed.threshold_f is not None and parsed.operator is not None:
-        variable = _temperature_daily_variable(parsed)
-        series = daily.get(variable) or []
-        idx = _date_index(daily, target)
-        if idx >= len(series) or series[idx] is None:
-            return WeatherSignal(0.5, 0.0, "fallback", "No deterministic temperature values returned.", parsed)
-        reference = float(series[idx])
-        if parsed.operator == ">=":
-            p = probability_temperature_ge(parsed.threshold_f, reference, settings.default_temperature_sigma_f)
-        else:
-            p = normal_cdf((parsed.threshold_f - reference) / settings.default_temperature_sigma_f)
-        ref_label = _temperature_reference_label(parsed)
-        date_used = (daily.get("time") or [target.isoformat()])[
-            min(idx, max(0, len(daily.get("time") or []) - 1))
-        ]
-        return WeatherSignal(
-            p_true=clamp_probability(p),
-            confidence=max(0.05, parsed.confidence * 0.60),
-            source="open-meteo-deterministic-fallback",
-            note=(
-                f"{parsed.city}; target_date={date_used}; {_format_threshold(parsed)}; "
-                f"{ref_label}={reference:.1f}F; fixed sigma={settings.default_temperature_sigma_f:.1f}F. "
-                "Ensemble failed/unavailable."
-            ),
-            parsed=parsed,
-        )
-    if parsed.variable in {"precipitation", "snow"}:
-        variable = "snowfall_sum" if parsed.variable == "snow" else "precipitation_sum"
-        label = "snow" if parsed.variable == "snow" else "precip"
-        unit = "cm" if parsed.variable == "snow" else "mm"
-        threshold = parsed.threshold_precip_mm if parsed.threshold_precip_mm is not None else 0.1
-        values = [float(x) for x in (daily.get(variable) or []) if x is not None]
-        if not values:
-            return WeatherSignal(0.5, 0.0, "fallback", f"No deterministic {label} values returned.", parsed)
-        reference = max(values)
-        p = 0.75 if reference >= threshold else 0.25
-        return WeatherSignal(
-            p_true=clamp_probability(p),
-            confidence=max(0.05, parsed.confidence * 0.40),
-            source="open-meteo-deterministic-fallback",
-            note=f"{parsed.city}; {label}>={threshold:.1f}{unit}; max forecast={reference:.2f}{unit}. Ensemble failed/unavailable.",
-            parsed=parsed,
-        )
-    return WeatherSignal(0.5, 0.0, "fallback", "Unsupported fallback market.", parsed)
-
 
 # ---------------------------------------------------------------------------
 # 5) 강수 앙상블 확률 모델
@@ -583,7 +523,7 @@ def _ensemble_precipitation_probability(
 def estimate_weather_probability(
     question: str,
     settings: Settings | None = None,
-    client: OpenMeteoClient | None = None,
+    client: Any | None = None,
     ensemble_client: OpenMeteoEnsembleClient | None = None,
 ) -> WeatherSignal:
     """Estimate P(YES) for a Polymarket weather question.
@@ -653,12 +593,11 @@ def estimate_weather_probability(
             )
             return WeatherSignal(p_true=clamp_probability(p), confidence=confidence, source="open-meteo-ensemble-station", note=note, parsed=parsed)
         except Exception as exc:  # noqa: BLE001
-            fallback = _fallback_deterministic_probability(parsed, settings, client, station.timezone)
             return WeatherSignal(
-                p_true=fallback.p_true,
-                confidence=min(fallback.confidence, settings.deterministic_temperature_fallback_max_confidence),
-                source=fallback.source,
-                note=f"Ensemble model unavailable: {exc}. {fallback.note}",
+                p_true=0.5,
+                confidence=0.0,
+                source="forecast-unavailable",
+                note=f"Ensemble forecast unavailable: {exc}",
                 parsed=parsed,
             )
 
@@ -669,12 +608,11 @@ def estimate_weather_probability(
                 parsed, station, settings, ensemble_client or OpenMeteoEnsembleClient.from_settings(settings)
             )
         except Exception as exc:  # noqa: BLE001
-            fallback = _fallback_deterministic_probability(parsed, settings, client)
             return WeatherSignal(
-                p_true=fallback.p_true,
-                confidence=min(fallback.confidence, 0.20),
-                source=fallback.source,
-                note=f"강수 앙상블 실패: {exc}. {fallback.note}",
+                p_true=0.5,
+                confidence=0.0,
+                source="forecast-unavailable",
+                note=f"Ensemble precipitation forecast unavailable: {exc}",
                 parsed=parsed,
             )
 

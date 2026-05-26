@@ -228,55 +228,51 @@ def test_ensemble_client_recovers_from_invalid_cache_file(monkeypatch, tmp_path)
     assert "temperature_2m_max" in cache_path.read_text(encoding="utf-8")
 
 
-def test_temperature_deterministic_fallback_can_meet_min_confidence():
+def test_temperature_ensemble_failure_does_not_call_deterministic_fallback():
     class FailingEnsembleClient:
         models = "fake"
 
         def forecast_daily_ensemble(self, *_args, **_kwargs):
             raise RuntimeError("rate limited")
 
-    class FakeDeterministicClient:
+    class ForbiddenDeterministicClient:
         def forecast_daily(self, *_args, **_kwargs):
-            return {"daily": {"temperature_2m_max": [94.0], "temperature_2m_min": [70.0]}}
+            raise AssertionError("deterministic forecast fallback must not be called")
 
     signal = estimate_weather_probability(
         "Will Dallas be 92°F or higher on May 25?",
         settings=Settings(),
-        client=FakeDeterministicClient(),
+        client=ForbiddenDeterministicClient(),
         ensemble_client=FailingEnsembleClient(),
     )
 
-    assert signal.source == "open-meteo-deterministic-fallback"
-    assert signal.confidence == 0.50
+    assert signal.source == "forecast-unavailable"
+    assert signal.confidence == 0.0
+    assert signal.p_true == 0.5
+    assert "rate limited" in signal.note
 
 
-def test_temperature_fallback_uses_target_date_not_horizon_extreme():
+def test_temperature_ensemble_failure_is_not_strategy_data():
     class FailingEnsembleClient:
         models = "fake"
 
         def forecast_daily_ensemble(self, *_args, **_kwargs):
             raise RuntimeError("rate limited")
 
-    class FakeDeterministicClient:
+    class ForbiddenDeterministicClient:
         def forecast_daily(self, *_args, **_kwargs):
-            return {
-                "daily": {
-                    "time": ["2026-05-25", "2026-05-26"],
-                    "temperature_2m_max": [95.0, 77.0],
-                    "temperature_2m_min": [70.0, 60.0],
-                }
-            }
+            raise AssertionError("deterministic forecast fallback must not be called")
 
     signal = estimate_weather_probability(
         "Will the highest temperature in Seoul be 25°C or higher on May 26?",
         settings=Settings(),
-        client=FakeDeterministicClient(),
+        client=ForbiddenDeterministicClient(),
         ensemble_client=FailingEnsembleClient(),
     )
 
-    assert signal.source == "open-meteo-deterministic-fallback"
-    assert 0.49 <= signal.p_true <= 0.51
-    assert "target_date=2026-05-26" in signal.note
+    assert signal.source == "forecast-unavailable"
+    assert signal.confidence == 0.0
+    assert "Ensemble forecast unavailable" in signal.note
 
 
 def test_highest_temperature_below_uses_daily_max_not_daily_min():
