@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import csv
 import json
-import os
 from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -495,12 +494,43 @@ def _read_json(path: Path) -> dict[str, Any]:
 def _read_csv(path: Path, limit: int = 500) -> list[dict[str, str]]:
     if not path.exists():
         return []
+    limit = max(0, limit)
+    if limit == 0:
+        return []
     try:
-        with path.open("r", newline="", encoding="utf-8") as f:
-            rows = list(csv.DictReader(f))
+        header = _read_csv_header(path)
+        if not header:
+            return []
+        rows = _read_csv_tail_rows(path, limit)
+        if not rows:
+            return []
+        reader = csv.DictReader([header, *rows])
+        return [row for row in reader if any((value or "").strip() for value in row.values())][-limit:]
     except OSError:
         return []
-    return rows[-limit:]
+
+
+def _read_csv_header(path: Path) -> str:
+    with path.open("r", newline="", encoding="utf-8") as f:
+        return f.readline().rstrip("\r\n")
+
+
+def _read_csv_tail_rows(path: Path, limit: int) -> list[str]:
+    # Dashboard requests must stay cheap even when runtime CSVs grow to GBs.
+    # Read only the final slice instead of materializing the whole file.
+    max_bytes = max(256 * 1024, min(8 * 1024 * 1024, limit * 4096))
+    size = path.stat().st_size
+    with path.open("rb") as f:
+        start = max(0, size - max_bytes)
+        f.seek(start)
+        chunk = f.read()
+    text = chunk.decode("utf-8", errors="replace")
+    lines = text.splitlines()
+    if start > 0 and lines:
+        lines = lines[1:]
+    if start == 0 and lines:
+        lines = lines[1:]
+    return lines[-limit:]
 
 
 def _float(value: Any, default: float = 0.0) -> float:

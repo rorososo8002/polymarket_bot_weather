@@ -18,6 +18,17 @@
 - Keep paper-trading behavior intact unless the user explicitly asks for live execution.
 - If code and production docs disagree, update the docs or record the drift before continuing.
 
+## Runtime Data Review Rules
+
+- Runtime outputs such as `paper_raw_snapshots.jsonl`, `paper_decisions.csv`, `paper_trades.csv`, `forecast_cache.json`, `paper_state.json`, and `paper_runner_status.json` can be very large.
+- Do not read full runtime data files by default.
+- For normal health checks, bot status checks, recent errors, or "why is it not trading now" questions, inspect only the latest 100 lines by default.
+- Increase the recent window only when needed, and state why.
+- Older runtime data should be read only for a specific investigation, such as backtesting, profit/loss review, Open-Meteo evidence checks, or tracing when a bug started.
+- When older runtime data is needed, filter by time range, market, city, event type, or decision reason instead of loading the whole file.
+- Prefer counts, summaries, tails, and targeted searches over opening large CSV/JSONL files in full.
+- Never feed entire runtime data files into the model context unless the user explicitly asks and the file size has been checked first.
+
 ## Karpathy-Style Work Rules
 
 The linked CLAUDE.md is a compact public guideline document. Do not copy it verbatim into this repo; use this local 65-line rewrite instead.

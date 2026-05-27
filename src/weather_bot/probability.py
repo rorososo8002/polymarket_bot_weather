@@ -426,10 +426,6 @@ def _temperature_daily_variable(parsed: ParsedWeatherQuestion) -> str:
     return "temperature_2m_min" if parsed.temperature_metric == "min" else "temperature_2m_max"
 
 
-def _temperature_reference_label(parsed: ParsedWeatherQuestion) -> str:
-    return "target forecast low" if parsed.temperature_metric == "min" else "target forecast high"
-
-
 
 # ---------------------------------------------------------------------------
 # 5) 강수 앙상블 확률 모델

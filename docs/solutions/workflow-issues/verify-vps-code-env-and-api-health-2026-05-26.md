@@ -57,7 +57,7 @@ Healthy latest deployment indicators:
 station_count=41
 loaded_max=41
 ORDERBOOK_STREAM_ENABLED=true
-FORECAST_CACHE_TTL_SECONDS=600
+FORECAST_CACHE_TTL_SECONDS=1800
 phase=streaming
 message=websocket streaming 82 tokens across 41 markets
 ```

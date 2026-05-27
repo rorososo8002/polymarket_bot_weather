@@ -18,7 +18,7 @@ Consequence: Parser support and trading support use the same verified station se
 
 ## 2026-05-26: Forecast Cache Refresh Is 30 Minutes
 
-Decision: Default forecast cache TTL is 600 seconds.
+Decision: Default forecast cache TTL and refresh interval are 1800 seconds.
 
 Why: Forecast data is slow-moving compared with order books. Pulling forecasts every fast loop wastes API quota and increases rate-limit risk.
 
@@ -30,7 +30,7 @@ Decision: Default order-book monitoring uses the Polymarket CLOB WebSocket marke
 
 Why: The user requirement is real-time order-book monitoring. A REST loop is still polling and can miss the intended execution behavior.
 
-Consequence: `run_forever()` enters `run_realtime_forever()` by default. Market discovery and forecasts refresh every 10 minutes, while WebSocket `book`, `price_change`, `best_bid_ask`, and tick-size events update the order-book cache and trigger paper-trade evaluation.
+Consequence: `run_forever()` enters `run_realtime_forever()` by default. Market discovery and forecasts refresh every 30 minutes, while WebSocket `book`, `price_change`, `best_bid_ask`, and tick-size events update the order-book cache and trigger paper-trade evaluation.
 
 ## 2026-05-26: Keep Paper Trading As The Execution Boundary
 

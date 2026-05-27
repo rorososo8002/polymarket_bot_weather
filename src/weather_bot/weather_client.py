@@ -1,35 +1,11 @@
 from __future__ import annotations
 
 import re
-from typing import Any
-
-import requests
-from tenacity import retry, stop_after_attempt, wait_exponential
 
 from .models import ParsedWeatherQuestion
 from .stations import CITY_COORDS
 
 WEEKDAY_NAMES = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
-
-
-class OpenMeteoClient:
-    def __init__(self, timeout: float = 15.0) -> None:
-        self.timeout = timeout
-
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=0.5, min=0.5, max=4))
-    def forecast_daily(self, latitude: float, longitude: float, forecast_days: int = 7) -> dict[str, Any]:
-        url = "https://api.open-meteo.com/v1/forecast"
-        params = {
-            "latitude": latitude,
-            "longitude": longitude,
-            "daily": "temperature_2m_max,temperature_2m_min,precipitation_probability_max,precipitation_sum,snowfall_sum",
-            "temperature_unit": "fahrenheit",
-            "timezone": "auto",
-            "forecast_days": forecast_days,
-        }
-        resp = requests.get(url, params=params, timeout=self.timeout)
-        resp.raise_for_status()
-        return resp.json()
 
 
 def c_to_f(c: float) -> float:

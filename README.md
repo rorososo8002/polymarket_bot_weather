@@ -6,7 +6,7 @@ This bot is intentionally conservative:
 
 - It trades only the 41 Polymarket weather cities with verified settlement stations.
 - It forecasts at the exact station used by the market rules, not a city center.
-- It refreshes forecast data every 10 minutes by default.
+- It refreshes forecast data every 30 minutes by default.
 - It monitors Polymarket order books through the CLOB WebSocket market stream by default.
 - It is paper-only. No private key is required and no real orders are sent.
 
@@ -50,14 +50,14 @@ ORDERBOOK_STREAM_ENABLED=true
 ORDERBOOK_STREAM_URL=wss://ws-subscriptions-clob.polymarket.com/ws/market
 ORDERBOOK_STREAM_HEARTBEAT_SECONDS=10
 ORDERBOOK_STREAM_RECONNECT_SECONDS=2
-FORECAST_REFRESH_INTERVAL_SECONDS=600
-FORECAST_CACHE_TTL_SECONDS=600
+FORECAST_REFRESH_INTERVAL_SECONDS=1800
+FORECAST_CACHE_TTL_SECONDS=1800
 MAX_MARKETS=41
 ```
 
 `MAX_MARKETS=41` is explicit in deployment env files for readability. In code, the default comes from `SUPPORTED_CITY_COUNT = len(STATION_MAP)`.
 
-The order-book path is event-driven from the Polymarket CLOB WebSocket market channel. Forecast and market snapshots are refreshed every 10 minutes; forecast requests should not run on every order-book update.
+The order-book path is event-driven from the Polymarket CLOB WebSocket market channel. Forecast and market snapshots are refreshed every 30 minutes; forecast requests should not run on every order-book update.
 
 ## Verified City Set
 
@@ -172,6 +172,7 @@ AGENTS.md
 docs/production-implementation-plan.md
 docs/production-progress.md
 docs/production-decisions.md
+docs/oracle-migration-handoff.md
 ```
 
 ## Important Defaults
@@ -193,7 +194,7 @@ Precipitation and snow markets remain disabled by default because they are noisi
 
 ## Current Limitations
 
-- Market discovery and forecast signal snapshots refresh on a 10-minute cycle.
+- Market discovery and forecast signal snapshots refresh on a 30-minute cycle.
 - Forecasts are station-based but station-level bias calibration is still neutral.
 - Execution is paper-only.
 

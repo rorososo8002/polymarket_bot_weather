@@ -4,7 +4,7 @@ import csv
 import json
 
 from weather_bot.config import Settings
-from weather_bot.dashboard import build_dashboard_payload
+from weather_bot.dashboard import _read_csv, build_dashboard_payload
 
 
 def write_csv(path, rows):
@@ -12,6 +12,16 @@ def write_csv(path, rows):
         writer = csv.DictWriter(f, fieldnames=rows[0].keys())
         writer.writeheader()
         writer.writerows(rows)
+
+
+def test_read_csv_uses_tail_without_loading_entire_file(tmp_path):
+    path = tmp_path / "large.csv"
+    rows = [{"ts": f"2026-05-24T10:{idx:02d}:00+00:00", "side": "SKIP", "note": str(idx)} for idx in range(120)]
+    write_csv(path, rows)
+
+    tail = _read_csv(path, limit=3)
+
+    assert [row["note"] for row in tail] == ["117", "118", "119"]
 
 
 def test_dashboard_payload_summarizes_state_trades_and_decisions(tmp_path):
@@ -144,7 +154,7 @@ def test_dashboard_payload_summarizes_state_trades_and_decisions(tmp_path):
     assert payload["scanner"]["skips"] == 1
     assert payload["scanner"]["entries"] == 1
     assert payload["bot"]["last_event_at"] == "2026-05-24T11:00:00+00:00"
-    assert payload["bot"]["scan_interval_seconds"] == 600
+    assert payload["bot"]["scan_interval_seconds"] == 1800
     assert payload["bot"]["orderbook_mode"] == "websocket"
     assert payload["positions"][0]["unrealized_pnl"] == 10.0
     assert any(event["label"].startswith("DECISION") for event in payload["events"])

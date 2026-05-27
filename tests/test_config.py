@@ -6,9 +6,9 @@ def test_default_max_markets_tracks_supported_city_count():
     assert Settings.max_markets == SUPPORTED_CITY_COUNT
 
 
-def test_default_forecast_cadence_is_ten_minutes():
-    assert Settings.forecast_refresh_interval_seconds == 600
-    assert Settings.forecast_cache_ttl_seconds == 600
+def test_default_forecast_cadence_is_thirty_minutes():
+    assert Settings.forecast_refresh_interval_seconds == 1800
+    assert Settings.forecast_cache_ttl_seconds == 1800
 
 
 def test_load_settings_reads_dashboard_env(monkeypatch):
