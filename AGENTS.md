@@ -31,12 +31,18 @@
 ## Runtime Data Review Rules
 
 - Runtime outputs such as `paper_raw_snapshots.jsonl`, `paper_decisions.csv`, `paper_trades.csv`, `forecast_cache.json`, `paper_state.json`, and `paper_runner_status.json` can be very large.
+- Treat these files as token-dangerous and never open them in full in a normal Codex chat:
+  - `runtime/live-paper-bot.restart.out.log` (multi-GB restart log)
+  - `paper_raw_snapshots.jsonl` (multi-GB raw market snapshots)
+  - `paper_decisions.csv` (large cumulative decision log)
 - Do not read full runtime data files by default.
+- Do not run bare `Get-Content`, `cat`, `type`, `more`, or unrestricted `python read_text()` against the token-dangerous files above.
 - For normal health checks, bot status checks, recent errors, or "why is it not trading now" questions, inspect only the latest 100 lines by default.
 - Increase the recent window only when needed, and state why.
 - Older runtime data should be read only for a specific investigation, such as backtesting, profit/loss review, Open-Meteo evidence checks, or tracing when a bug started.
 - When older runtime data is needed, filter by time range, market, city, event type, or decision reason instead of loading the whole file.
 - Prefer counts, summaries, tails, and targeted searches over opening large CSV/JSONL files in full.
+- If a user asks about these large files, answer from file size, line counts, `Select-Object -Last`, `Get-Content -Tail`, `rg` filters, CSV streaming counters, or small sampled windows.
 - Never feed entire runtime data files into the model context unless the user explicitly asks and the file size has been checked first.
 
 ## Karpathy-Style Work Rules
