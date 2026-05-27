@@ -71,6 +71,24 @@ was too low, parsing/date safety failed, liquidity was inadequate, the spread wa
 too wide, prices were extreme, YES+NO asks were abnormal, or no executable side
 could be evaluated.
 
+## Dashboard Contract
+
+The right-side Scanner Intelligence counters are lifetime counters for the
+current `paper_decisions.csv`, not a recent-window sample. `dashboard.py` keeps
+recent decisions and event streams tail-limited for speed, but counts candidate
+judgments, skips, entry signals, and forecast-unavailable decisions from the
+full decision log with an incremental append cache.
+
+Dashboard labels must stay operator-readable:
+
+- `누적 후보 판단`: total rows in `paper_decisions.csv`
+- `예보 없음`: rows whose reason or note says forecast data was unavailable or
+  no forecast could be used
+- `누적 스킵`: total `side=SKIP` decisions
+- `진입 신호`: total `side=YES` plus `side=NO` decisions
+- `총 열린 진입금액`: sum of `cost_usd` for currently open positions
+- `남은 현금`: current `cash_usd` in paper state
+
 ## Exit Policy Contract
 
 Open positions are closed only by these rules:

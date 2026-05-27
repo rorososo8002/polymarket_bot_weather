@@ -4,7 +4,7 @@ import csv
 import json
 
 from weather_bot.config import Settings
-from weather_bot.dashboard import _read_csv, build_dashboard_payload
+from weather_bot.dashboard import HTML, _read_csv, build_dashboard_payload
 
 
 def write_csv(path, rows):
@@ -158,6 +158,139 @@ def test_dashboard_payload_summarizes_state_trades_and_decisions(tmp_path):
     assert payload["bot"]["orderbook_mode"] == "websocket"
     assert payload["positions"][0]["unrealized_pnl"] == 10.0
     assert any(event["label"].startswith("DECISION") for event in payload["events"])
+
+
+def test_dashboard_scanner_counts_all_decisions_not_just_recent_tail(tmp_path):
+    state_path = tmp_path / "state.json"
+    trades_path = tmp_path / "trades.csv"
+    decisions_path = tmp_path / "decisions.csv"
+    raw_path = tmp_path / "raw.jsonl"
+    state_path.write_text(json.dumps({"cash_usd": 1000.0, "positions": []}), encoding="utf-8")
+    write_csv(
+        trades_path,
+        [
+            {
+                "ts": "2026-05-24T10:00:00+00:00",
+                "action": "OPEN",
+                "market_id": "m1",
+                "slug": "seed",
+                "question": "Seed trade",
+                "market_type": "temperature",
+                "side": "YES",
+                "token_id": "yes",
+                "shares": "1",
+                "price": "0.5",
+                "cash_delta_or_pnl": "-0.5",
+                "reason": "seed",
+            },
+        ],
+    )
+    rows = []
+    for idx in range(805):
+        rows.append(
+            {
+                "ts": f"2026-05-24T10:{idx % 60:02d}:00+00:00",
+                "market_id": f"skip-{idx}",
+                "slug": "skip",
+                "question": "Skipped market",
+                "market_type": "temperature",
+                "side": "SKIP",
+                "p_true": "0.5",
+                "p_exec": "",
+                "net_edge": "-999",
+                "size_usd": "0",
+                "size_shares": "0",
+                "entry_fraction": "",
+                "probability_stop_threshold": "",
+                "model_fair_price": "",
+                "target_exit_price": "",
+                "market_heat_score": "",
+                "reason": "edge below",
+                "note": "",
+            }
+        )
+    rows.append(
+        {
+            "ts": "2026-05-24T11:00:00+00:00",
+            "market_id": "entry-1",
+            "slug": "yes",
+            "question": "Entry market",
+            "market_type": "temperature",
+            "side": "YES",
+            "p_true": "0.7",
+            "p_exec": "0.5",
+            "net_edge": "0.1",
+            "size_usd": "50",
+            "size_shares": "100",
+            "entry_fraction": "0.05",
+            "probability_stop_threshold": "0.6",
+            "model_fair_price": "0.64",
+            "target_exit_price": "0.60",
+            "market_heat_score": "-0.1",
+            "reason": "edge ok",
+            "note": "",
+        }
+    )
+    write_csv(decisions_path, rows)
+    settings = Settings(
+        state_path=str(state_path),
+        trades_csv_path=str(trades_path),
+        decisions_csv_path=str(decisions_path),
+        raw_snapshots_path=str(raw_path),
+    )
+
+    payload = build_dashboard_payload(settings)
+
+    assert payload["scanner"]["decisions"] == 806
+    assert payload["scanner"]["skips"] == 805
+    assert payload["scanner"]["entries"] == 1
+    assert len(payload["recent_decisions"]) == 60
+
+
+def test_dashboard_scanner_totals_include_appended_decisions(tmp_path):
+    state_path = tmp_path / "state.json"
+    decisions_path = tmp_path / "decisions.csv"
+    state_path.write_text(json.dumps({"cash_usd": 1000.0, "positions": []}), encoding="utf-8")
+    rows = [
+        {
+            "ts": "2026-05-24T10:00:00+00:00",
+            "side": "SKIP",
+            "reason": "edge below",
+            "note": "",
+        }
+    ]
+    write_csv(decisions_path, rows)
+    settings = Settings(state_path=str(state_path), decisions_csv_path=str(decisions_path))
+
+    first_payload = build_dashboard_payload(settings)
+
+    with decisions_path.open("a", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=rows[0].keys())
+        writer.writerow(
+            {
+                "ts": "2026-05-24T10:01:00+00:00",
+                "side": "YES",
+                "reason": "edge ok",
+                "note": "no forecast fallback available",
+            }
+        )
+    second_payload = build_dashboard_payload(settings)
+
+    assert first_payload["scanner"]["decisions"] == 1
+    assert second_payload["scanner"]["decisions"] == 2
+    assert second_payload["scanner"]["skips"] == 1
+    assert second_payload["scanner"]["entries"] == 1
+    assert second_payload["scanner"]["forecast_unavailable"] == 1
+
+
+def test_dashboard_uses_clear_korean_scanner_labels():
+    assert "누적 후보 판단" in HTML
+    assert "예보 없음" in HTML
+    assert "누적 스킵" in HTML
+    assert "총 열린 진입금액" in HTML
+    assert "남은 현금" in HTML
+    assert "NO FORECAST" not in HTML
+    assert "총 노출" not in HTML
 
 
 def test_dashboard_payload_uses_runner_status_as_bot_heartbeat(tmp_path):

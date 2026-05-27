@@ -63,3 +63,20 @@ Decision: Production strategy work must be documented as an executable specifica
 Why: A fresh AI should be able to open the folder, read the production docs, and reproduce the same bot behavior and research priorities. The core mission is to improve risk-adjusted paper returns through market research, mathematical reasoning, and empirical trade review.
 
 Consequence: Future strategy changes should state the expected-value, calibration, Kelly/fractional-Kelly, liquidity, slippage, forecast-error, or drawdown rationale behind the rule; update production docs alongside code; and keep live-wallet execution out of scope unless explicitly requested.
+
+## 2026-05-28: Dashboard Scanner Counts Are Cumulative
+
+Decision: Scanner Intelligence totals count the full `paper_decisions.csv` log,
+while recent candidate cards, event stream entries, and buy-pressure bars remain
+tail-limited for responsiveness.
+
+Why: The dashboard previously derived candidate judgments and skips from the
+latest 800 decisions, so the numbers changed as older rows fell out of the
+window. Operators need these top-line counts to behave like accumulated service
+telemetry, not a moving sample.
+
+Consequence: `dashboard.py` keeps an incremental append cache for decision
+totals. `예보 없음` replaces the unclear `NO FORECAST` label and counts rows
+whose reason or note says the forecast was unavailable or no forecast could be
+used. `총 열린 진입금액` means open-position entry cost, and `남은 현금` means
+paper cash remaining.

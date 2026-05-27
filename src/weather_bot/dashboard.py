@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import threading
 from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -11,6 +12,10 @@ from urllib.parse import parse_qs, urlparse
 
 from .config import Settings, load_settings
 from .runner_status import read_runner_status
+
+
+_DECISION_TOTALS_LOCK = threading.Lock()
+_DECISION_TOTALS_CACHE: dict[str, dict[str, Any]] = {}
 
 
 HTML = r"""<!doctype html>
@@ -270,13 +275,13 @@ HTML = r"""<!doctype html>
     <aside class="col">
       <div class="panel-title">Scanner Intelligence</div>
       <div class="panel-body">
-        <div class="right-stat"><span>후보 판단</span><strong id="r-decisions">0</strong></div>
-        <div class="right-stat"><span>NO FORECAST</span><strong id="r-no-forecast">0</strong></div>
-        <div class="right-stat"><span>스킵</span><strong id="r-skips">0</strong></div>
+        <div class="right-stat"><span>누적 후보 판단</span><strong id="r-decisions">0</strong></div>
+        <div class="right-stat"><span>예보 없음</span><strong id="r-no-forecast">0</strong></div>
+        <div class="right-stat"><span>누적 스킵</span><strong id="r-skips">0</strong></div>
         <div class="right-stat"><span>진입 신호</span><strong id="r-entries">0</strong></div>
         <div class="right-stat"><span>열린 포지션</span><strong id="r-open">0</strong></div>
-        <div class="right-stat"><span>총 노출</span><strong id="r-exposure">$0</strong></div>
-        <div class="right-stat"><span>현금</span><strong id="r-cash">$0</strong></div>
+        <div class="right-stat"><span>총 열린 진입금액</span><strong id="r-exposure">$0</strong></div>
+        <div class="right-stat"><span>남은 현금</span><strong id="r-cash">$0</strong></div>
       </div>
       <div class="panel-title">Buy Pressure</div>
       <div class="panel-body" id="pressure-bars"></div>
@@ -533,6 +538,127 @@ def _read_csv_tail_rows(path: Path, limit: int) -> list[str]:
     return lines[-limit:]
 
 
+def _empty_decision_totals() -> dict[str, int]:
+    return {"decisions": 0, "forecast_unavailable": 0, "skips": 0, "entries": 0}
+
+
+def _forecast_unavailable(row: dict[str, str]) -> bool:
+    text = f"{row.get('reason') or ''} {row.get('note') or ''}".lower()
+    return "forecast unavailable" in text or "no forecast" in text
+
+
+def _count_decision_row(totals: dict[str, int], row: dict[str, str]) -> None:
+    if not any((value or "").strip() for value in row.values()):
+        return
+    side = (row.get("side") or "").upper()
+    totals["decisions"] += 1
+    if side == "SKIP":
+        totals["skips"] += 1
+    elif side in {"YES", "NO"}:
+        totals["entries"] += 1
+    if _forecast_unavailable(row):
+        totals["forecast_unavailable"] += 1
+
+
+def _split_complete_lines(data: bytes) -> tuple[bytes, bytes]:
+    newline_at = data.rfind(b"\n")
+    if newline_at < 0:
+        return b"", data
+    return data[: newline_at + 1], data[newline_at + 1 :]
+
+
+def _scan_decision_totals(path: Path, stat_size: int, mtime_ns: int) -> dict[str, Any]:
+    totals = _empty_decision_totals()
+    fieldnames: list[str] = []
+    offset = 0
+    pending = b""
+    try:
+        with path.open("rb") as f:
+            header_raw = f.readline()
+            offset += len(header_raw)
+            if not header_raw:
+                return {
+                    "totals": totals,
+                    "fieldnames": fieldnames,
+                    "offset": offset,
+                    "pending": pending,
+                    "mtime_ns": mtime_ns,
+                }
+            header = header_raw.decode("utf-8", errors="replace").rstrip("\r\n")
+            fieldnames = next(csv.reader([header]), [])
+            for raw_line in f:
+                offset += len(raw_line)
+                if not raw_line.endswith(b"\n"):
+                    pending = raw_line
+                    break
+                line = raw_line.decode("utf-8", errors="replace").rstrip("\r\n")
+                for row in csv.DictReader([line], fieldnames=fieldnames):
+                    _count_decision_row(totals, row)
+    except (OSError, csv.Error):
+        return {
+            "totals": _empty_decision_totals(),
+            "fieldnames": [],
+            "offset": 0,
+            "pending": b"",
+            "mtime_ns": 0,
+        }
+    return {
+        "totals": totals,
+        "fieldnames": fieldnames,
+        "offset": min(offset, stat_size),
+        "pending": pending,
+        "mtime_ns": mtime_ns,
+    }
+
+
+def _add_appended_decisions(cache: dict[str, Any], chunk: bytes) -> None:
+    fieldnames = cache.get("fieldnames") or []
+    if not fieldnames:
+        return
+    complete, pending = _split_complete_lines((cache.get("pending") or b"") + chunk)
+    cache["pending"] = pending
+    if not complete:
+        return
+    lines = complete.decode("utf-8", errors="replace").splitlines()
+    if not lines:
+        return
+    totals = cache["totals"]
+    try:
+        for row in csv.DictReader(lines, fieldnames=fieldnames):
+            _count_decision_row(totals, row)
+    except csv.Error:
+        return
+
+
+def _decision_totals(path: Path) -> dict[str, int]:
+    if not path.exists():
+        return _empty_decision_totals()
+    key = str(path.resolve())
+    with _DECISION_TOTALS_LOCK:
+        try:
+            stat = path.stat()
+        except OSError:
+            return _empty_decision_totals()
+        cache = _DECISION_TOTALS_CACHE.get(key)
+        cache_offset = int(cache.get("offset", 0)) if cache else 0
+        cache_mtime_ns = int(cache.get("mtime_ns", 0)) if cache else 0
+        if cache is None or stat.st_size < cache_offset or (stat.st_size == cache_offset and stat.st_mtime_ns != cache_mtime_ns):
+            cache = _scan_decision_totals(path, stat.st_size, stat.st_mtime_ns)
+            _DECISION_TOTALS_CACHE[key] = cache
+            return dict(cache["totals"])
+        if stat.st_size > cache_offset:
+            try:
+                with path.open("rb") as f:
+                    f.seek(cache_offset)
+                    chunk = f.read(stat.st_size - cache_offset)
+            except OSError:
+                return dict(cache["totals"])
+            _add_appended_decisions(cache, chunk)
+            cache["offset"] = stat.st_size
+            cache["mtime_ns"] = stat.st_mtime_ns
+        return dict(cache["totals"])
+
+
 def _float(value: Any, default: float = 0.0) -> float:
     try:
         if value in (None, ""):
@@ -713,7 +839,9 @@ def build_dashboard_payload(settings: Settings | None = None, auth_required: boo
     settings = settings or load_settings()
     state = _read_json(Path(settings.state_path))
     trades = _read_csv(Path(settings.trades_csv_path), 800)
-    decisions = _read_csv(Path(settings.decisions_csv_path), 800)
+    decisions_path = Path(settings.decisions_csv_path)
+    decisions = _read_csv(decisions_path, 800)
+    scanner_totals = _decision_totals(decisions_path)
     runner_status = read_runner_status(settings)
     positions = [_position_payload(p) for p in state.get("positions", []) if isinstance(p, dict)]
     cash = _float(state.get("cash_usd"), settings.bankroll_usd)
@@ -726,13 +854,6 @@ def build_dashboard_payload(settings: Settings | None = None, auth_required: boo
     curve_value = settings.bankroll_usd + total_pnl
     wins, losses, _ = _stats_summary(state, trades)
     closed_total = wins + losses
-    skip_count = sum(1 for row in decisions if row.get("side") == "SKIP")
-    entry_count = sum(1 for row in decisions if row.get("side") in {"YES", "NO"})
-    forecast_unavailable_count = sum(
-        1
-        for row in decisions
-        if "forecast unavailable" in (row.get("note") or "").lower()
-    )
     recent_decisions = _sorted_recent(decisions, 60)
     pressure_yes = sum(1 for row in decisions[-100:] if row.get("side") == "YES")
     pressure_no = sum(1 for row in decisions[-100:] if row.get("side") == "NO")
@@ -760,10 +881,10 @@ def build_dashboard_payload(settings: Settings | None = None, auth_required: boo
         "recent_trades": _sorted_recent(trades, 80),
         "recent_decisions": recent_decisions,
         "scanner": {
-            "decisions": len(decisions),
-            "forecast_unavailable": forecast_unavailable_count,
-            "skips": skip_count,
-            "entries": entry_count,
+            "decisions": scanner_totals["decisions"],
+            "forecast_unavailable": scanner_totals["forecast_unavailable"],
+            "skips": scanner_totals["skips"],
+            "entries": scanner_totals["entries"],
         },
         "pressure": [
             {"label": "YES signals", "value": pressure_yes / denom},
