@@ -132,7 +132,12 @@ def assess_exit(
     if mark_price >= fair + settings.overheat_margin and pnl_pct > 0:
         return ExitAssessment(True, f"take profit: overheated vs model fair {fair:.4f}, heat={heat:.1%}", fair, target, heat)
 
-    if latest_edge is not None and latest_edge.net_edge <= settings.exit_net_edge and pnl_pct >= -settings.edge_fade_max_loss_pct:
+    if (
+        latest_edge is not None
+        and latest_edge.p_exec is not None
+        and latest_edge.net_edge <= settings.exit_net_edge
+        and pnl_pct >= -settings.edge_fade_max_loss_pct
+    ):
         return ExitAssessment(True, f"edge faded: latest_edge={latest_edge.net_edge:.4f}, pnl={pnl_pct:.1%}", fair, target, heat)
 
     if holding_hours >= settings.max_holding_hours:

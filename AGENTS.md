@@ -18,6 +18,16 @@
 - Keep paper-trading behavior intact unless the user explicitly asks for live execution.
 - If code and production docs disagree, update the docs or record the drift before continuing.
 
+## Strategy Research And Optimization Mission
+
+- The primary product mission is to improve risk-adjusted paper-trading returns over time, not merely keep the service running.
+- Treat every strategy change as a research-backed hypothesis: state the market behavior, math, empirical evidence, or paper/finance reference that motivates it.
+- Prefer expected-value, calibration, Kelly/fractional-Kelly, liquidity, slippage, and drawdown-aware reasoning over ad hoc thresholds.
+- Use paper-trading data to learn where profits actually appear: review entries, exits, spreads, forecast error, station bias, market type, city, date horizon, and time-to-resolution.
+- Document strategy rules so a fresh AI can reimplement them from the repo alone. The goal is an executable specification, not a diary of past work.
+- When a trade behaves unexpectedly, update both code and the production docs with the prevention rule before continuing strategy work.
+- Never optimize by adding live-wallet execution, private keys, or real orders unless the user explicitly asks for that separate safety project.
+
 ## Runtime Data Review Rules
 
 - Runtime outputs such as `paper_raw_snapshots.jsonl`, `paper_decisions.csv`, `paper_trades.csv`, `forecast_cache.json`, `paper_state.json`, and `paper_runner_status.json` can be very large.

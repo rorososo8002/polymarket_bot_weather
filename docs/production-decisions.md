@@ -47,3 +47,19 @@ Decision: The bot no longer uses a fixed entry-price percentage stop. It records
 Why: Weather-market risk is driven more by forecast probability deterioration than by a fixed token-price move. A static price stop can fire on thin bid/ask noise even when the forecast thesis is unchanged.
 
 Consequence: `PROBABILITY_STOP_DROP_THRESHOLD=0.10` is the default. YES positions compare current `p_true` to entry-side probability; NO positions compare `1 - p_true`. Decision logs use `probability_stop_threshold` instead of a price stop column.
+
+## 2026-05-28: Invalid Edge Sentinels Are Not Exit Signals
+
+Decision: `edge faded` exits require a fresh executable held-side edge with a non-empty `p_exec`. A sentinel such as `net_edge=-999` with `p_exec=None` means the side could not be evaluated from the current order book and must not close a position by itself.
+
+Why: During Oracle paper trading, a Seoul NO position opened with a model target far above entry, closed about 12 minutes later for only about 0.1% because `latest_edge=-999` satisfied the old edge-faded condition, then immediately reopened when the next valid update showed the NO edge was still strong. That churn was caused by treating an evaluation failure as a real negative edge.
+
+Consequence: Invalid order-book/evaluation updates can still appear as `DECISION SKIP`, but they do not force an edge-faded close. Probability stops, target exits, overheated exits, valid executable edge fades, and max-hold exits still work.
+
+## 2026-05-28: Strategy Changes Must Be Research-Backed And Reproducible
+
+Decision: Production strategy work must be documented as an executable specification, not a chronological activity log.
+
+Why: A fresh AI should be able to open the folder, read the production docs, and reproduce the same bot behavior and research priorities. The core mission is to improve risk-adjusted paper returns through market research, mathematical reasoning, and empirical trade review.
+
+Consequence: Future strategy changes should state the expected-value, calibration, Kelly/fractional-Kelly, liquidity, slippage, forecast-error, or drawdown rationale behind the rule; update production docs alongside code; and keep live-wallet execution out of scope unless explicitly requested.

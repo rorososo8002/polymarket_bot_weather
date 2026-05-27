@@ -20,9 +20,14 @@
 - 30-minute Open-Meteo forecast cache TTL and refresh cadence.
 - WebSocket-backed order-book cache and event-driven paper evaluations.
 - Probability-based stop policy instead of fixed token-price stop loss.
+- Edge-faded exits ignore invalid `net_edge=-999` sentinels when no executable
+  `p_exec` exists, preventing close-and-reopen churn from transient invalid book
+  evaluations.
 - Exposure caps for market, city, and city-date concentration.
 - Runner heartbeat file for dashboard-visible progress.
 - VPS systemd examples for the paper bot and dashboard.
+- Production docs now define decision events and exit rules as an executable
+  handoff contract for future AI agents.
 
 ## Verification Focus
 
@@ -44,12 +49,17 @@ Important coverage already in the suite:
 - realtime WebSocket mode is required by `run_forever()`
 - forecast cache avoids repeated Open-Meteo calls
 - unavailable ensemble forecasts are not treated as strategy data
+- invalid edge sentinels do not trigger edge-faded exits
 
 ## Remaining Production Hardening
 
 - Add stream health telemetry for reconnect count, stale book age, and startup snapshot coverage.
 - Calibrate `PROBABILITY_STOP_DROP_THRESHOLD` after enough resolved paper trades exist.
 - Add station-level forecast bias files after enough station evidence exists.
+- Build a recurring paper-trade review loop that compares realized PnL by city,
+  threshold distance, time-to-resolution, spread, slippage, and forecast error.
+- Research and test sizing/exit upgrades using expected value, calibrated
+  probability, fractional Kelly, liquidity-adjusted edge, and drawdown limits.
 - Keep live-wallet execution out of scope until a separate key-isolation and kill-switch design is requested.
 
 ## Handoff
