@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import json
 
+from weather_bot import dashboard as dashboard_module
 from weather_bot.config import Settings
 from weather_bot.dashboard import HTML, _read_csv, build_dashboard_payload
 
@@ -157,7 +158,10 @@ def test_dashboard_payload_summarizes_state_trades_and_decisions(tmp_path):
     assert payload["bot"]["scan_interval_seconds"] == 1800
     assert payload["bot"]["orderbook_mode"] == "websocket"
     assert payload["positions"][0]["unrealized_pnl"] == 10.0
-    assert any(event["label"].startswith("DECISION") for event in payload["events"])
+    assert "events" not in payload
+    assert "recent_decisions" not in payload
+    assert "pressure" not in payload
+    assert "realized_results" in payload
 
 
 def test_dashboard_scanner_counts_all_decisions_not_just_recent_tail(tmp_path):
@@ -244,7 +248,7 @@ def test_dashboard_scanner_counts_all_decisions_not_just_recent_tail(tmp_path):
     assert payload["scanner"]["decisions"] == 806
     assert payload["scanner"]["skips"] == 805
     assert payload["scanner"]["entries"] == 1
-    assert len(payload["recent_decisions"]) == 60
+    assert "recent_decisions" not in payload
 
 
 def test_dashboard_scanner_totals_include_appended_decisions(tmp_path):
@@ -283,14 +287,441 @@ def test_dashboard_scanner_totals_include_appended_decisions(tmp_path):
     assert second_payload["scanner"]["forecast_unavailable"] == 1
 
 
+def test_dashboard_large_decision_file_skips_initial_full_scan(monkeypatch, tmp_path):
+    state_path = tmp_path / "state.json"
+    decisions_path = tmp_path / "decisions.csv"
+    state_path.write_text(json.dumps({"cash_usd": 1000.0, "positions": []}), encoding="utf-8")
+    write_csv(
+        decisions_path,
+        [
+            {"ts": "2026-05-24T10:00:00+00:00", "side": "SKIP", "reason": "edge below", "note": ""},
+            {"ts": "2026-05-24T10:01:00+00:00", "side": "YES", "reason": "edge ok", "note": ""},
+        ],
+    )
+
+    def fail_full_scan(*_args, **_kwargs):
+        raise AssertionError("large decision files should not block the dashboard with a full scan")
+
+    monkeypatch.setattr(dashboard_module, "MAX_INITIAL_DECISION_TOTAL_SCAN_BYTES", 1)
+    monkeypatch.setattr(dashboard_module, "_scan_decision_totals", fail_full_scan)
+
+    payload = build_dashboard_payload(Settings(state_path=str(state_path), decisions_csv_path=str(decisions_path)))
+
+    assert payload["scanner"]["decisions"] == 2
+    assert payload["scanner"]["skips"] == 1
+    assert payload["scanner"]["entries"] == 1
+
+
+def test_dashboard_scanner_distinguishes_entry_signals_from_actual_opens(tmp_path):
+    state_path = tmp_path / "state.json"
+    trades_path = tmp_path / "trades.csv"
+    decisions_path = tmp_path / "decisions.csv"
+    state_path.write_text(json.dumps({"cash_usd": 950.0, "positions": []}), encoding="utf-8")
+    write_csv(
+        trades_path,
+        [
+            {
+                "ts": "2026-05-24T10:00:00+00:00",
+                "action": "OPEN",
+                "market_id": "m1",
+                "slug": "held",
+                "question": "Held market",
+                "market_type": "temperature",
+                "side": "YES",
+                "token_id": "yes",
+                "shares": "100",
+                "price": "0.5",
+                "cash_delta_or_pnl": "-50",
+                "reason": "entry",
+            },
+        ],
+    )
+    write_csv(
+        decisions_path,
+        [
+            {
+                "ts": f"2026-05-24T10:0{idx}:00+00:00",
+                "market_id": "m1",
+                "slug": "held",
+                "question": "Held market",
+                "market_type": "temperature",
+                "side": "YES",
+                "p_true": "0.7",
+                "p_exec": "0.5",
+                "net_edge": "0.1",
+                "size_usd": "50",
+                "size_shares": "100",
+                "entry_fraction": "0.05",
+                "probability_stop_threshold": "0.6",
+                "model_fair_price": "0.64",
+                "target_exit_price": "0.60",
+                "market_heat_score": "-0.1",
+                "reason": "edge ok",
+                "note": "",
+            }
+            for idx in range(3)
+        ],
+    )
+    settings = Settings(
+        state_path=str(state_path),
+        trades_csv_path=str(trades_path),
+        decisions_csv_path=str(decisions_path),
+    )
+
+    payload = build_dashboard_payload(settings)
+
+    assert payload["scanner"]["entries"] == 3
+    assert payload["scanner"]["entry_signals"] == 3
+    assert payload["scanner"]["actual_opens"] == 1
+
+
+def test_dashboard_payload_builds_realized_trade_rows_for_operator_table(tmp_path):
+    state_path = tmp_path / "state.json"
+    trades_path = tmp_path / "trades.csv"
+    decisions_path = tmp_path / "decisions.csv"
+    state_path.write_text(json.dumps({"cash_usd": 1035.0, "realized_pnl_usd": 14.0, "positions": []}), encoding="utf-8")
+    write_csv(
+        trades_path,
+        [
+            {
+                "ts": "2026-05-29T10:00:00+00:00",
+                "action": "OPEN",
+                "market_id": "m-seoul",
+                "slug": "seoul-27c",
+                "question": "Will the highest temperature in Seoul be 27°C or higher on May 29?",
+                "market_type": "temperature",
+                "side": "YES",
+                "token_id": "yes",
+                "shares": "100",
+                "price": "0.21",
+                "cash_delta_or_pnl": "-21",
+                "reason": "target_exit=0.320",
+            },
+            {
+                "ts": "2026-05-29T11:00:00+00:00",
+                "action": "CLOSE",
+                "market_id": "m-seoul",
+                "slug": "seoul-27c",
+                "question": "Will the highest temperature in Seoul be 27°C or higher on May 29?",
+                "market_type": "temperature",
+                "side": "YES",
+                "token_id": "yes",
+                "shares": "100",
+                "price": "0.35",
+                "cash_delta_or_pnl": "14",
+                "reason": "take profit",
+            },
+        ],
+    )
+    write_csv(
+        decisions_path,
+        [
+            {
+                "ts": "2026-05-29T10:00:01+00:00",
+                "market_id": "m-seoul",
+                "slug": "seoul-27c",
+                "question": "Will the highest temperature in Seoul be 27°C or higher on May 29?",
+                "market_type": "temperature",
+                "side": "YES",
+                "p_true": "0.70",
+                "p_exec": "0.21",
+                "net_edge": "0.20",
+                "size_usd": "21",
+                "size_shares": "100",
+                "entry_fraction": "0.02",
+                "probability_stop_threshold": "0.60",
+                "model_fair_price": "0.40",
+                "target_exit_price": "0.32",
+                "market_heat_score": "0.1",
+                "reason": "edge ok",
+                "note": "station target_date=2026-05-29; >=27.0C/80.6F; members=82; vote=0.70; mean=86.0F; spread=2.0F",
+            }
+        ],
+    )
+
+    payload = build_dashboard_payload(
+        Settings(state_path=str(state_path), trades_csv_path=str(trades_path), decisions_csv_path=str(decisions_path))
+    )
+
+    realized = payload["realized_results"][0]
+    assert realized["date_hint"] == "may 29"
+    assert realized["city"] == "seoul"
+    assert realized["forecast_c"] == 30.0
+    assert realized["threshold_c"] == 27.0
+    assert realized["condition_label"] == "or higher"
+    assert realized["expected_exit_price"] == 0.32
+    assert realized["entry_price"] == 0.21
+    assert realized["exit_price"] == 0.35
+    assert realized["pnl"] == 14.0
+    assert round(realized["roi"], 4) == round(14.0 / 21.0, 4)
+
+
+def test_dashboard_realized_rows_are_latest_first_and_numeric_when_history_is_sparse(tmp_path):
+    state_path = tmp_path / "state.json"
+    trades_path = tmp_path / "trades.csv"
+    decisions_path = tmp_path / "decisions.csv"
+    state_path.write_text(json.dumps({"cash_usd": 1008.0, "realized_pnl_usd": 8.0, "positions": []}), encoding="utf-8")
+    write_csv(
+        trades_path,
+        [
+            {
+                "ts": "2026-05-29T11:00:00+00:00",
+                "action": "CLOSE",
+                "market_id": "m-old",
+                "slug": "old",
+                "question": "Will the highest temperature in Seoul be 27°C or higher on May 29?",
+                "market_type": "temperature",
+                "side": "YES",
+                "token_id": "yes",
+                "shares": "10",
+                "price": "0.60",
+                "cash_delta_or_pnl": "3",
+                "reason": "take profit",
+            },
+            {
+                "ts": "2026-05-30T11:00:00+00:00",
+                "action": "CLOSE",
+                "market_id": "m-new",
+                "slug": "new",
+                "question": "Will the highest temperature in Seoul be 29°C or higher on May 30?",
+                "market_type": "temperature",
+                "side": "NO",
+                "token_id": "no",
+                "shares": "10",
+                "price": "0.40",
+                "cash_delta_or_pnl": "5",
+                "reason": "settled",
+            },
+        ],
+    )
+    write_csv(
+        decisions_path,
+        [
+            {
+                "ts": "2026-05-30T10:00:00+00:00",
+                "market_id": "m-new",
+                "slug": "new",
+                "question": "Will the highest temperature in Seoul be 29°C or higher on May 30?",
+                "market_type": "temperature",
+                "side": "NO",
+                "p_true": "0.30",
+                "p_exec": "",
+                "net_edge": "0.10",
+                "size_usd": "4",
+                "size_shares": "10",
+                "entry_fraction": "",
+                "probability_stop_threshold": "",
+                "model_fair_price": "",
+                "target_exit_price": "",
+                "market_heat_score": "",
+                "reason": "edge ok",
+                "note": "",
+            }
+        ],
+    )
+
+    payload = build_dashboard_payload(
+        Settings(state_path=str(state_path), trades_csv_path=str(trades_path), decisions_csv_path=str(decisions_path))
+    )
+
+    first = payload["realized_results"][0]
+    assert first["market_id"] == "m-new"
+    assert first["forecast_c"] == 29.0
+    assert first["expected_exit_price"] == 0.4
+    assert first["entry_price"] == 0.4
+    assert first["exit_price"] == 0.4
+    assert first["roi"] == 1.25
+
+
+def test_dashboard_open_positions_include_polymarket_link_and_forecast_weather(tmp_path):
+    state_path = tmp_path / "state.json"
+    trades_path = tmp_path / "trades.csv"
+    decisions_path = tmp_path / "decisions.csv"
+    state_path.write_text(
+        json.dumps(
+            {
+                "cash_usd": 979.0,
+                "positions": [
+                    {
+                        "position_id": "p1",
+                        "market_id": "m-seoul",
+                        "question": "Will the highest temperature in Seoul be 27°C or higher on May 29?",
+                        "token_id": "yes",
+                        "side": "YES",
+                        "entry_price": 0.21,
+                        "shares": 100.0,
+                        "cost_usd": 21.0,
+                        "opened_at": "2026-05-29T10:00:00+00:00",
+                        "last_mark_price": 0.30,
+                        "metadata": {"city": "seoul", "date_hint": "may 29", "slug": "seoul-27c"},
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    write_csv(
+        trades_path,
+        [
+            {
+                "ts": "2026-05-29T10:00:00+00:00",
+                "action": "OPEN",
+                "market_id": "m-seoul",
+                "slug": "seoul-27c",
+                "question": "Will the highest temperature in Seoul be 27°C or higher on May 29?",
+                "market_type": "temperature",
+                "side": "YES",
+                "token_id": "yes",
+                "shares": "100",
+                "price": "0.21",
+                "cash_delta_or_pnl": "-21",
+                "reason": "entry",
+            }
+        ],
+    )
+    write_csv(
+        decisions_path,
+        [
+            {
+                "ts": "2026-05-29T10:00:01+00:00",
+                "market_id": "m-seoul",
+                "slug": "seoul-27c",
+                "question": "Will the highest temperature in Seoul be 27°C or higher on May 29?",
+                "market_type": "temperature",
+                "side": "YES",
+                "p_true": "0.70",
+                "p_exec": "0.21",
+                "net_edge": "0.20",
+                "size_usd": "21",
+                "size_shares": "100",
+                "entry_fraction": "0.02",
+                "probability_stop_threshold": "0.60",
+                "model_fair_price": "0.40",
+                "target_exit_price": "0.32",
+                "market_heat_score": "0.1",
+                "reason": "edge ok",
+                "note": "station target_date=2026-05-29; >=27.0C/80.6F; members=82; vote=0.70; mean=86.0F; spread=2.0F",
+            }
+        ],
+    )
+
+    payload = build_dashboard_payload(
+        Settings(state_path=str(state_path), trades_csv_path=str(trades_path), decisions_csv_path=str(decisions_path))
+    )
+
+    position = payload["positions"][0]
+    assert position["market_url"] == "https://polymarket.com/event/seoul-27c"
+    assert position["forecast_c"] == 30.0
+
+
+def test_dashboard_summary_reports_latest_forecast_cache_time_and_profit_loss_totals(tmp_path):
+    state_path = tmp_path / "state.json"
+    trades_path = tmp_path / "trades.csv"
+    decisions_path = tmp_path / "decisions.csv"
+    forecast_cache_path = tmp_path / "forecast_cache.json"
+    state_path.write_text(json.dumps({"cash_usd": 1008.0, "realized_pnl_usd": 8.0, "positions": []}), encoding="utf-8")
+    write_csv(
+        trades_path,
+        [
+            {
+                "ts": "2026-05-29T11:00:00+00:00",
+                "action": "CLOSE",
+                "market_id": "m-win",
+                "slug": "win",
+                "question": "Win",
+                "market_type": "temperature",
+                "side": "YES",
+                "token_id": "yes",
+                "shares": "10",
+                "price": "0.70",
+                "cash_delta_or_pnl": "12",
+                "reason": "take profit",
+            },
+            {
+                "ts": "2026-05-30T11:00:00+00:00",
+                "action": "CLOSE",
+                "market_id": "m-loss",
+                "slug": "loss",
+                "question": "Loss",
+                "market_type": "temperature",
+                "side": "NO",
+                "token_id": "no",
+                "shares": "10",
+                "price": "0.20",
+                "cash_delta_or_pnl": "-4",
+                "reason": "stop",
+            },
+        ],
+    )
+    write_csv(
+        decisions_path,
+        [
+            {
+                "ts": "2026-05-29T10:00:00+00:00",
+                "market_id": "m1",
+                "slug": "m1",
+                "question": "Skipped",
+                "market_type": "temperature",
+                "side": "SKIP",
+                "p_true": "0.5",
+                "p_exec": "",
+                "net_edge": "-999",
+                "size_usd": "0",
+                "size_shares": "0",
+                "entry_fraction": "",
+                "probability_stop_threshold": "",
+                "model_fair_price": "",
+                "target_exit_price": "",
+                "market_heat_score": "",
+                "reason": "edge below",
+                "note": "",
+            }
+        ],
+    )
+    forecast_cache_path.write_text(
+        json.dumps(
+            {
+                "old": {"created_at": "2026-05-29T08:00:00+00:00", "data": {}},
+                "new": {"created_at": "2026-05-30T09:30:00+00:00", "data": {}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = build_dashboard_payload(
+        Settings(
+            state_path=str(state_path),
+            trades_csv_path=str(trades_path),
+            decisions_csv_path=str(decisions_path),
+            forecast_cache_path=str(forecast_cache_path),
+        )
+    )
+
+    assert payload["summary"]["realized_profit_usd"] == 12.0
+    assert payload["summary"]["realized_loss_usd"] == 4.0
+    assert payload["scanner"]["latest_forecast_at"] == "2026-05-30T09:30:00+00:00"
+
+
 def test_dashboard_uses_clear_korean_scanner_labels():
-    assert "누적 후보 판단" in HTML
-    assert "예보 없음" in HTML
-    assert "누적 스킵" in HTML
-    assert "총 열린 진입금액" in HTML
+    assert "누적 후보 판단" not in HTML
+    assert "예보 없음" not in HTML
+    assert "실제 진입" not in HTML
+    assert "YES/NO 판단" not in HTML
+    assert "오픈 포지션" in HTML
+    assert "총 오픈 진입금액" in HTML
+    assert "Open-Meteo 최근 예보" in HTML
+    assert "총 수익금" in HTML
+    assert "총 손실금" in HTML
+    assert "예측날씨" in HTML
+    assert "누적 스킵" not in HTML
     assert "남은 현금" in HTML
     assert "NO FORECAST" not in HTML
     assert "총 노출" not in HTML
+    assert "Recent Candidates" not in HTML
+    assert "Event Stream" not in HTML
+    assert 'data-range="1D"' in HTML
+    assert 'id="chart-tooltip"' in HTML
+    assert '"¢"' in HTML
 
 
 def test_dashboard_payload_uses_runner_status_as_bot_heartbeat(tmp_path):

@@ -2,20 +2,25 @@ from __future__ import annotations
 
 import csv
 import json
+import re
 import threading
 from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 from .config import Settings, load_settings
 from .runner_status import read_runner_status
+from .weather_client import parse_weather_question
 
 
 _DECISION_TOTALS_LOCK = threading.Lock()
 _DECISION_TOTALS_CACHE: dict[str, dict[str, Any]] = {}
+_TRADE_TOTALS_LOCK = threading.Lock()
+_TRADE_TOTALS_CACHE: dict[str, dict[str, Any]] = {}
+MAX_INITIAL_DECISION_TOTAL_SCAN_BYTES = 128 * 1024 * 1024
 
 
 HTML = r"""<!doctype html>
@@ -26,25 +31,31 @@ HTML = r"""<!doctype html>
   <title>Polymarket Weather Bot Dashboard</title>
   <style>
     :root {
-      --bg: #030504;
-      --panel: #07100c;
-      --panel-2: #0a1510;
-      --line: #133022;
-      --text: #d8ffe6;
-      --muted: #6f8a79;
-      --green: #00e64d;
-      --green-soft: rgba(0, 230, 77, .16);
-      --red: #ff2647;
-      --red-soft: rgba(255, 38, 71, .16);
-      --yellow: #ffb21d;
-      --blue: #4ba3ff;
+      color-scheme: dark;
+      --bg: #080a0f;
+      --panel: #0f1117;
+      --panel-2: #151924;
+      --panel-3: #1b2030;
+      --line: #252a36;
+      --line-strong: #333a4a;
+      --text: #f7f8fa;
+      --muted: #9ba3b0;
+      --muted-2: #697180;
+      --green: #00c853;
+      --green-soft: rgba(0, 200, 83, .14);
+      --red: #ff4d4f;
+      --red-soft: rgba(255, 77, 79, .13);
+      --yellow: #f5b83d;
+      --yellow-soft: rgba(245, 184, 61, .14);
+      --blue: #2e5cff;
+      --blue-soft: rgba(46, 92, 255, .18);
     }
     * { box-sizing: border-box; }
     body {
       margin: 0;
-      background: radial-gradient(circle at 50% 0%, #0b1c13 0, var(--bg) 36rem);
+      background: var(--bg);
       color: var(--text);
-      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       letter-spacing: 0;
     }
     .shell {
@@ -59,14 +70,14 @@ HTML = r"""<!doctype html>
       align-items: center;
       justify-content: space-between;
       padding: 0 18px;
-      background: rgba(0, 0, 0, .72);
+      background: rgba(8, 10, 15, .94);
+      backdrop-filter: blur(14px);
     }
     .brand {
-      color: var(--green);
+      color: var(--text);
       font-size: 15px;
-      font-weight: 900;
-      letter-spacing: .22em;
-      text-shadow: 0 0 12px rgba(0, 230, 77, .45);
+      font-weight: 800;
+      letter-spacing: -.01em;
     }
     .statusline {
       display: flex;
@@ -85,8 +96,9 @@ HTML = r"""<!doctype html>
     }
     .col, .panel {
       border: 1px solid var(--line);
-      background: linear-gradient(180deg, rgba(8, 18, 13, .94), rgba(2, 5, 4, .94));
+      background: var(--panel);
       min-width: 0;
+      border-radius: 8px;
     }
     .col { overflow: hidden; }
     .panel { margin-bottom: 8px; }
@@ -99,8 +111,8 @@ HTML = r"""<!doctype html>
       padding: 0 10px;
       color: var(--muted);
       font-size: 11px;
-      text-transform: uppercase;
-      letter-spacing: .16em;
+      font-weight: 700;
+      letter-spacing: .02em;
     }
     .panel-body { padding: 10px; }
     .metric-row {
@@ -112,17 +124,18 @@ HTML = r"""<!doctype html>
     .metric {
       min-height: 76px;
       padding: 10px;
-      border: 1px solid #10281c;
-      background: rgba(0, 0, 0, .36);
+      border: 1px solid var(--line);
+      background: var(--panel);
+      border-radius: 8px;
     }
     .metric .label {
       color: var(--muted);
       font-size: 10px;
-      text-transform: uppercase;
+      font-weight: 700;
     }
     .metric .value {
       margin-top: 8px;
-      font-size: clamp(18px, 2vw, 29px);
+      font-size: clamp(18px, 1.6vw, 27px);
       font-weight: 900;
       color: var(--text);
       white-space: nowrap;
@@ -136,8 +149,20 @@ HTML = r"""<!doctype html>
       position: relative;
     }
     canvas { width: 100%; height: 100%; display: block; }
-    .trade-list, .event-list, .decision-list { display: grid; gap: 8px; }
-    .event-list { max-height: calc(100vh - 96px); overflow: auto; padding: 10px; }
+    .trade-list, .position-list, .realized-list { display: grid; gap: 8px; }
+    .position-list { max-height: calc(100vh - 96px); overflow: auto; padding: 10px; }
+    .realized-list { max-height: min(32vh, 360px); overflow: auto; }
+    .trade-list { height: 100%; min-height: 0; overflow: auto; align-content: start; }
+    .right-col {
+      display: grid;
+      grid-template-rows: auto auto auto 1fr;
+      min-height: 0;
+    }
+    .recent-trades-body {
+      min-height: 0;
+      overflow: hidden;
+      padding: 10px;
+    }
     .event {
       display: grid;
       grid-template-columns: 64px 1fr;
@@ -151,18 +176,33 @@ HTML = r"""<!doctype html>
     .event .warn { color: var(--yellow); }
     .event .bad { color: var(--red); }
     .card {
-      border: 1px solid #10281c;
-      background: rgba(0, 0, 0, .34);
-      padding: 10px;
+      border: 1px solid var(--line);
+      background: var(--panel-2);
+      padding: 12px;
+      border-radius: 8px;
     }
-    .card.open { border-left: 3px solid var(--green); }
+    .card.open { border-left: 3px solid var(--blue); }
     .card.close { border-left: 3px solid var(--blue); }
     .card.skip { border-left: 3px solid var(--yellow); }
+    .card.profit { border-left: 3px solid var(--green); }
+    .card.loss { border-left: 3px solid var(--red); }
     .market-title {
       font-size: 13px;
       line-height: 1.35;
       color: var(--text);
       margin-bottom: 8px;
+      font-weight: 650;
+    }
+    .market-link {
+      display: inline-block;
+      text-decoration: none;
+      color: var(--text);
+    }
+    .market-link:hover { color: var(--blue); }
+    .market-link:focus-visible {
+      outline: 2px solid var(--blue);
+      outline-offset: 3px;
+      border-radius: 4px;
     }
     .badges {
       display: flex;
@@ -171,17 +211,20 @@ HTML = r"""<!doctype html>
       align-items: center;
     }
     .badge {
-      border: 1px solid #183b2a;
-      background: rgba(0, 0, 0, .38);
+      border: 1px solid var(--line-strong);
+      background: var(--panel-3);
       color: var(--muted);
       padding: 4px 7px;
       font-size: 11px;
       line-height: 1;
+      font-weight: 700;
+      border-radius: 4px;
     }
     .badge.yes, .badge.long, .badge.win { color: var(--green); border-color: #0c7a32; background: var(--green-soft); }
     .badge.no, .badge.short, .badge.loss { color: var(--red); border-color: #7a1020; background: var(--red-soft); }
-    .badge.price { color: var(--yellow); border-color: #64450e; }
-    .badge.neutral { color: var(--blue); border-color: #174b75; }
+    .badge.price { color: var(--yellow); border-color: rgba(245, 184, 61, .42); background: var(--yellow-soft); }
+    .badge.neutral { color: var(--blue); border-color: rgba(46, 92, 255, .46); background: var(--blue-soft); }
+    .badge.forecast { color: var(--text); border-color: rgba(46, 92, 255, .7); background: var(--blue); }
     .muted { color: var(--muted); }
     .small { font-size: 11px; line-height: 1.45; }
     .split-2 {
@@ -189,6 +232,32 @@ HTML = r"""<!doctype html>
       grid-template-columns: 1fr 1fr;
       gap: 8px;
     }
+    .result-table {
+      width: 100%;
+      border-collapse: collapse;
+      table-layout: fixed;
+      font-size: 11px;
+    }
+    .result-table th,
+    .result-table td {
+      border-bottom: 1px solid rgba(19, 48, 34, .62);
+      padding: 9px 10px;
+      vertical-align: top;
+      overflow-wrap: anywhere;
+    }
+    .result-table th {
+      color: var(--muted);
+      text-align: left;
+      font-size: 10px;
+      font-weight: 750;
+      position: sticky;
+      top: 0;
+      background: var(--panel);
+      z-index: 1;
+    }
+    .num { text-align: right; font-variant-numeric: tabular-nums; }
+    .profit-text { color: var(--green); }
+    .loss-text { color: var(--red); }
     .bar {
       height: 14px;
       background: #18070a;
@@ -206,11 +275,70 @@ HTML = r"""<!doctype html>
       grid-template-columns: 1fr auto;
       gap: 8px;
       align-items: center;
-      padding: 7px 0;
+      padding: 9px 0;
       border-bottom: 1px solid rgba(19, 48, 34, .55);
       font-size: 12px;
     }
     .right-stat strong { color: var(--green); font-size: 15px; }
+    .right-stat strong.bad { color: var(--red); }
+    .right-stat strong.neutral { color: var(--text); }
+    .chart-title {
+      gap: 10px;
+      min-height: 38px;
+      height: auto;
+      padding: 7px 10px;
+    }
+    .range-controls {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      margin-left: auto;
+    }
+    .range-btn {
+      appearance: none;
+      border: 1px solid transparent;
+      background: transparent;
+      color: var(--muted);
+      border-radius: 4px;
+      padding: 5px 8px;
+      font: inherit;
+      font-size: 11px;
+      font-weight: 750;
+      cursor: pointer;
+    }
+    .range-btn:hover,
+    .range-btn:focus-visible {
+      color: var(--text);
+      border-color: var(--line-strong);
+      outline: none;
+    }
+    .range-btn.active {
+      color: #ffffff;
+      background: var(--blue);
+      border-color: var(--blue);
+    }
+    .chart-caption {
+      color: var(--muted-2);
+      font-size: 11px;
+      font-weight: 700;
+      margin-left: 6px;
+    }
+    .chart-tooltip {
+      position: absolute;
+      display: none;
+      pointer-events: none;
+      padding: 8px 10px;
+      border: 1px solid var(--line-strong);
+      border-radius: 6px;
+      background: rgba(15, 17, 23, .96);
+      box-shadow: 0 12px 30px rgba(0, 0, 0, .32);
+      color: var(--text);
+      font-size: 12px;
+      line-height: 1.35;
+      z-index: 5;
+      min-width: 124px;
+    }
+    .chart-tooltip b { color: var(--blue); }
     .lock {
       display: none;
       padding: 14px;
@@ -223,14 +351,17 @@ HTML = r"""<!doctype html>
       .grid { grid-template-columns: 1fr; }
       .metric-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .chart-wrap { height: 320px; }
-      .event-list { max-height: 360px; }
+      .position-list, .trade-list, .realized-list { max-height: 360px; }
+    }
+    @media (min-width: 1101px) and (max-width: 1500px) {
+      .metric-row { grid-template-columns: repeat(3, minmax(0, 1fr)); }
     }
   </style>
 </head>
 <body>
 <div class="shell">
   <header class="topbar">
-    <div class="brand">WEATHER BOT OPS</div>
+    <div class="brand">Polymarket Weather Bot</div>
     <div class="statusline">
       <span>SYS <b id="sys-status">SYNC</b></span>
       <span>BOT <b id="bot-status">--</b></span>
@@ -241,8 +372,8 @@ HTML = r"""<!doctype html>
   <div id="lock" class="lock">대시보드 토큰이 없거나 틀립니다. URL의 <b>?token=...</b> 값을 확인하세요.</div>
   <main class="grid">
     <aside class="col">
-      <div class="panel-title">Event Stream <span id="event-count">0</span></div>
-      <div id="event-stream" class="event-list"></div>
+      <div class="panel-title">Open Positions <span id="open-count">0</span></div>
+      <div id="open-positions" class="position-list"></div>
     </aside>
 
     <section>
@@ -256,37 +387,42 @@ HTML = r"""<!doctype html>
       </div>
 
       <div class="panel">
-        <div class="panel-title">Equity / PnL Curve <span id="chart-caption">live</span></div>
-        <div class="panel-body chart-wrap"><canvas id="equity-chart"></canvas></div>
+        <div class="panel-title chart-title">
+          <span>Equity / PnL Curve <span id="chart-caption" class="chart-caption">live</span></span>
+          <div class="range-controls" aria-label="Chart range">
+            <button class="range-btn" data-range="1D" type="button">1일</button>
+            <button class="range-btn" data-range="7D" type="button">7일</button>
+            <button class="range-btn" data-range="1M" type="button">1개월</button>
+            <button class="range-btn" data-range="1Y" type="button">1Y</button>
+            <button class="range-btn active" data-range="ALL" type="button">ALL</button>
+          </div>
+        </div>
+        <div class="panel-body chart-wrap">
+          <canvas id="equity-chart"></canvas>
+          <div id="chart-tooltip" class="chart-tooltip"></div>
+        </div>
       </div>
 
-      <div class="split-2">
-        <div class="panel">
-          <div class="panel-title">Open Positions <span id="open-count">0</span></div>
-          <div class="panel-body"><div id="open-positions" class="trade-list"></div></div>
-        </div>
-        <div class="panel">
-          <div class="panel-title">Recent Trades <span id="trade-count">0</span></div>
-          <div class="panel-body"><div id="recent-trades" class="trade-list"></div></div>
+      <div class="panel">
+        <div class="panel-title">Realized PnL <span id="realized-count">0</span></div>
+        <div class="panel-body">
+          <div id="realized-results" class="realized-list"></div>
         </div>
       </div>
     </section>
 
-    <aside class="col">
+    <aside class="col right-col">
       <div class="panel-title">Scanner Intelligence</div>
       <div class="panel-body">
-        <div class="right-stat"><span>누적 후보 판단</span><strong id="r-decisions">0</strong></div>
-        <div class="right-stat"><span>예보 없음</span><strong id="r-no-forecast">0</strong></div>
-        <div class="right-stat"><span>누적 스킵</span><strong id="r-skips">0</strong></div>
-        <div class="right-stat"><span>진입 신호</span><strong id="r-entries">0</strong></div>
-        <div class="right-stat"><span>열린 포지션</span><strong id="r-open">0</strong></div>
-        <div class="right-stat"><span>총 열린 진입금액</span><strong id="r-exposure">$0</strong></div>
+        <div class="right-stat"><span>오픈 포지션</span><strong id="r-open">0</strong></div>
+        <div class="right-stat"><span>총 오픈 진입금액</span><strong id="r-exposure">$0</strong></div>
+        <div class="right-stat"><span>Open-Meteo 최근 예보</span><strong id="r-latest-forecast" class="neutral">--</strong></div>
+        <div class="right-stat"><span>총 수익금</span><strong id="r-total-profit">$0</strong></div>
+        <div class="right-stat"><span>총 손실금</span><strong id="r-total-loss" class="bad">$0</strong></div>
         <div class="right-stat"><span>남은 현금</span><strong id="r-cash">$0</strong></div>
       </div>
-      <div class="panel-title">Buy Pressure</div>
-      <div class="panel-body" id="pressure-bars"></div>
-      <div class="panel-title">Recent Candidates</div>
-      <div class="panel-body"><div id="recent-decisions" class="decision-list"></div></div>
+      <div class="panel-title">Recent Trades <span id="trade-count">0</span></div>
+      <div class="panel-body recent-trades-body"><div id="recent-trades" class="trade-list"></div></div>
     </aside>
   </main>
 </div>
@@ -296,14 +432,34 @@ const params = new URLSearchParams(location.search);
 const urlToken = params.get("token");
 if (urlToken) localStorage.setItem("dashboardToken", urlToken);
 const token = localStorage.getItem("dashboardToken") || "";
-const chartSamples = [];
+let chartRange = "ALL";
+let chartHoverX = null;
+const RANGE_MS = {
+  "1D": 24 * 60 * 60 * 1000,
+  "7D": 7 * 24 * 60 * 60 * 1000,
+  "1M": 30 * 24 * 60 * 60 * 1000,
+  "1Y": 365 * 24 * 60 * 60 * 1000,
+  "ALL": null,
+};
 
 function money(v) {
   const sign = v < 0 ? "-" : "";
   return sign + "$" + Math.abs(v || 0).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
 }
 function pct(v) { return ((v || 0) * 100).toFixed(1) + "%"; }
-function price(v) { return (v === null || v === undefined || isNaN(v)) ? "--" : Number(v).toFixed(2) + "E"; }
+function price(v) {
+  if (v === null || v === undefined || isNaN(v)) return "--";
+  const cents = Number(v) * 100;
+  const whole = Math.abs(cents - Math.round(cents)) < 0.05;
+  return cents.toLocaleString(undefined, {minimumFractionDigits: whole ? 0 : 1, maximumFractionDigits: whole ? 0 : 1}) + "¢";
+}
+function tempC(v) {
+  if (v === null || v === undefined || isNaN(v)) return "--";
+  const n = Number(v);
+  return n.toLocaleString(undefined, {minimumFractionDigits: Number.isInteger(n) ? 0 : 1, maximumFractionDigits: 1}) + "°C";
+}
+function signedMoney(v) { return money(Number(v || 0)); }
+function roi(v) { return (v === null || v === undefined || isNaN(v)) ? "--" : pct(Number(v)); }
 function duration(sec) {
   sec = Math.max(0, Math.round(Number(sec || 0)));
   if (sec < 60) return sec + "s";
@@ -317,6 +473,12 @@ function shortTime(ts) {
   if (Number.isNaN(d.getTime())) return String(ts).slice(11, 19);
   return d.toLocaleTimeString("ko-KR", {hour12:false});
 }
+function shortDateTime(ts) {
+  if (!ts) return "--";
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return String(ts);
+  return d.toLocaleString("ko-KR", {month:"short", day:"numeric", hour:"2-digit", minute:"2-digit", hour12:false});
+}
 function esc(s) {
   return String(s ?? "").replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]));
 }
@@ -324,11 +486,16 @@ function setText(id, text) { document.getElementById(id).textContent = text; }
 
 function cardForPosition(p) {
   const pnlClass = (p.unrealized_pnl || 0) >= 0 ? "win" : "loss";
+  const title = esc(p.question);
+  const titleHtml = p.market_url
+    ? `<a class="market-title market-link" href="${esc(p.market_url)}" target="_blank" rel="noopener noreferrer">${title}</a>`
+    : `<div class="market-title">${title}</div>`;
   return `<div class="card open">
-    <div class="market-title">${esc(p.question)}</div>
+    ${titleHtml}
     <div class="badges">
       <span class="badge ${p.side === "YES" ? "yes" : "no"}">${esc(p.side)}</span>
       <span class="badge long">LONG</span>
+      <span class="badge forecast">${tempC(p.forecast_c)}</span>
       <span class="badge price">${price(p.entry_price)} 진입</span>
       <span class="badge neutral">mark ${price(p.mark_price)}</span>
       <span class="badge ${pnlClass}">${money(p.unrealized_pnl)}</span>
@@ -353,21 +520,34 @@ function cardForTrade(t) {
   </div>`;
 }
 
-function cardForDecision(d) {
-  const cls = d.side === "SKIP" ? "skip" : "open";
-  return `<div class="card ${cls}">
-    <div class="market-title">${esc(d.question)}</div>
-    <div class="badges">
-      <span class="badge ${d.side === "YES" ? "yes" : d.side === "NO" ? "no" : "neutral"}">${esc(d.side)}</span>
-      <span class="badge price">edge ${Number(d.net_edge || 0).toFixed(3)}</span>
-      <span class="badge neutral">p ${Number(d.p_true || 0).toFixed(3)}</span>
-    </div>
-    <div class="small muted" style="margin-top:8px">${esc(d.reason || "")}</div>
-  </div>`;
+function realizedTable(rows) {
+  if (!rows.length) return `<div class="small muted">청산 완료 거래 없음</div>`;
+  return `<table class="result-table">
+    <thead><tr>
+      <th>날짜</th><th>도시</th><th class="num">예측날씨</th><th>조건</th>
+      <th class="num">예상 청산</th><th class="num">진입</th><th class="num">청산</th>
+      <th class="num">PNL</th><th class="num">수익률</th>
+    </tr></thead>
+    <tbody>${rows.map(r => {
+      const good = Number(r.pnl || 0) >= 0;
+      return `<tr>
+        <td>${esc(r.date_hint || shortTime(r.closed_at))}</td>
+        <td>${esc(r.city || "--")}</td>
+        <td class="num">${tempC(r.forecast_c)}</td>
+        <td>${tempC(r.threshold_c)} ${esc(r.condition_label || "")}</td>
+        <td class="num">${price(r.expected_exit_price)}</td>
+        <td class="num">${price(r.entry_price)}</td>
+        <td class="num">${price(r.exit_price)}</td>
+        <td class="num ${good ? "profit-text" : "loss-text"}">${signedMoney(r.pnl)}</td>
+        <td class="num ${good ? "profit-text" : "loss-text"}">${roi(r.roi)}</td>
+      </tr>`;
+    }).join("")}</tbody>
+  </table>`;
 }
 
 function drawChart(payload) {
   const canvas = document.getElementById("equity-chart");
+  const tooltip = document.getElementById("chart-tooltip");
   const ratio = window.devicePixelRatio || 1;
   const rect = canvas.getBoundingClientRect();
   canvas.width = Math.max(1, Math.floor(rect.width * ratio));
@@ -375,50 +555,94 @@ function drawChart(payload) {
   const ctx = canvas.getContext("2d");
   ctx.scale(ratio, ratio);
   ctx.clearRect(0, 0, rect.width, rect.height);
-  const pad = 28;
-  const points = [...(payload.equity_points || [])];
-  chartSamples.push({ts: Date.now(), equity: payload.summary.equity});
-  while (chartSamples.length > 90) chartSamples.shift();
-  for (const s of chartSamples) points.push(s);
+  const padL = 54, padR = 18, padT = 26, padB = 34;
+  const rawPoints = [...(payload.equity_points || [])]
+    .map(p => {
+      const ts = p.ts || payload.summary.started_at || payload.generated_at;
+      const t = new Date(ts).getTime();
+      return {ts, t: Number.isFinite(t) ? t : Date.now(), equity: Number(p.equity || 0)};
+    })
+    .filter(p => Number.isFinite(p.equity));
+  const newest = rawPoints.length ? Math.max(...rawPoints.map(p => Number.isFinite(p.t) ? p.t : 0)) : Date.now();
+  const windowMs = RANGE_MS[chartRange];
+  let points = windowMs ? rawPoints.filter(p => Number.isFinite(p.t) && p.t >= newest - windowMs) : rawPoints;
+  if (points.length < 2) points = rawPoints.slice(-2);
   if (points.length < 2) {
-    points.push({equity: payload.summary.initial_bankroll}, {equity: payload.summary.equity});
+    points.push(
+      {ts: payload.summary.started_at || payload.generated_at, t: Date.now(), equity: payload.summary.initial_bankroll},
+      {ts: payload.generated_at, t: Date.now(), equity: payload.summary.equity}
+    );
   }
   const ys = points.map(p => Number(p.equity || 0));
   let min = Math.min(...ys), max = Math.max(...ys);
   if (min === max) { min -= 1; max += 1; }
-  const x = i => pad + (rect.width - pad * 2) * (i / Math.max(1, points.length - 1));
-  const y = v => rect.height - pad - (rect.height - pad * 2) * ((v - min) / (max - min));
-  ctx.strokeStyle = "rgba(19,48,34,.9)";
+  const minT = Math.min(...points.map(p => Number.isFinite(p.t) ? p.t : newest));
+  const maxT = Math.max(...points.map(p => Number.isFinite(p.t) ? p.t : newest));
+  const x = p => {
+    if (maxT === minT) return padL;
+    return padL + (rect.width - padL - padR) * ((p.t - minT) / (maxT - minT));
+  };
+  const y = v => rect.height - padB - (rect.height - padT - padB) * ((v - min) / (max - min));
+  ctx.strokeStyle = "rgba(255,255,255,.08)";
   ctx.lineWidth = 1;
   for (let i = 0; i < 5; i++) {
-    const gy = pad + (rect.height - pad * 2) * i / 4;
-    ctx.beginPath(); ctx.moveTo(pad, gy); ctx.lineTo(rect.width - pad, gy); ctx.stroke();
+    const gy = padT + (rect.height - padT - padB) * i / 4;
+    ctx.beginPath(); ctx.moveTo(padL, gy); ctx.lineTo(rect.width - padR, gy); ctx.stroke();
   }
-  const grad = ctx.createLinearGradient(0, pad, 0, rect.height - pad);
-  grad.addColorStop(0, "rgba(0,230,77,.34)");
-  grad.addColorStop(1, "rgba(0,230,77,0)");
+  const grad = ctx.createLinearGradient(0, padT, 0, rect.height - padB);
+  grad.addColorStop(0, "rgba(46,92,255,.36)");
+  grad.addColorStop(1, "rgba(46,92,255,0)");
   ctx.beginPath();
-  points.forEach((p, i) => i ? ctx.lineTo(x(i), y(Number(p.equity || 0))) : ctx.moveTo(x(i), y(Number(p.equity || 0))));
-  ctx.lineTo(x(points.length - 1), rect.height - pad);
-  ctx.lineTo(x(0), rect.height - pad);
+  points.forEach((p, i) => i ? ctx.lineTo(x(p), y(p.equity)) : ctx.moveTo(x(p), y(p.equity)));
+  ctx.lineTo(x(points[points.length - 1]), rect.height - padB);
+  ctx.lineTo(x(points[0]), rect.height - padB);
   ctx.closePath();
   ctx.fillStyle = grad;
   ctx.fill();
   ctx.beginPath();
-  points.forEach((p, i) => i ? ctx.lineTo(x(i), y(Number(p.equity || 0))) : ctx.moveTo(x(i), y(Number(p.equity || 0))));
-  ctx.strokeStyle = payload.summary.total_pnl >= 0 ? "#00e64d" : "#ff2647";
+  points.forEach((p, i) => i ? ctx.lineTo(x(p), y(p.equity)) : ctx.moveTo(x(p), y(p.equity)));
+  ctx.strokeStyle = "#2E5CFF";
   ctx.lineWidth = 2;
-  ctx.shadowBlur = 14;
+  ctx.shadowBlur = 10;
   ctx.shadowColor = ctx.strokeStyle;
   ctx.stroke();
   ctx.shadowBlur = 0;
-  ctx.fillStyle = "#6f8a79";
-  ctx.font = "11px monospace";
-  ctx.fillText(money(max), 6, pad);
-  ctx.fillText(money(min), 6, rect.height - pad);
+  ctx.fillStyle = "#9ba3b0";
+  ctx.font = "11px Inter, system-ui, sans-serif";
+  ctx.fillText(money(max), 8, padT + 4);
+  ctx.fillText(money(min), 8, rect.height - padB + 4);
+  ctx.fillText(shortDateTime(points[0].ts), padL, rect.height - 10);
+  const endLabel = shortDateTime(points[points.length - 1].ts);
+  ctx.fillText(endLabel, Math.max(padL, rect.width - padR - ctx.measureText(endLabel).width), rect.height - 10);
+  if (chartHoverX !== null && points.length) {
+    let nearest = points[0];
+    let nearestX = x(nearest);
+    for (const p of points) {
+      const px = x(p);
+      if (Math.abs(px - chartHoverX) < Math.abs(nearestX - chartHoverX)) {
+        nearest = p;
+        nearestX = px;
+      }
+    }
+    const nearestY = y(nearest.equity);
+    ctx.strokeStyle = "rgba(255,255,255,.28)";
+    ctx.beginPath(); ctx.moveTo(nearestX, padT); ctx.lineTo(nearestX, rect.height - padB); ctx.stroke();
+    ctx.fillStyle = "#2E5CFF";
+    ctx.beginPath(); ctx.arc(nearestX, nearestY, 4, 0, Math.PI * 2); ctx.fill();
+    const pnl = nearest.equity - Number(payload.summary.initial_bankroll || 0);
+    tooltip.innerHTML = `${shortDateTime(nearest.ts)}<br><b>${money(pnl)}</b><br><span class="muted">Equity ${money(nearest.equity)}</span>`;
+    tooltip.style.display = "block";
+    tooltip.style.left = Math.min(Math.max(8, nearestX + 10), rect.width - 150) + "px";
+    tooltip.style.top = Math.max(8, nearestY - 54) + "px";
+  } else {
+    tooltip.style.display = "none";
+  }
+  const started = payload.summary.started_at ? "from " + shortDateTime(payload.summary.started_at) : "live";
+  setText("chart-caption", started);
 }
 
 function render(payload) {
+  window.__lastPayload = payload;
   document.getElementById("lock").style.display = "none";
   setText("sys-status", payload.security.auth_required ? "LOCKED" : "OPEN");
   const bot = payload.bot || {};
@@ -434,28 +658,19 @@ function render(payload) {
   setText("m-wins", payload.summary.wins);
   setText("m-losses", payload.summary.losses);
   setText("m-winrate", pct(payload.summary.win_rate));
-  setText("r-decisions", payload.scanner.decisions);
-  setText("r-no-forecast", payload.scanner.forecast_unavailable || 0);
-  setText("r-skips", payload.scanner.skips);
-  setText("r-entries", payload.scanner.entries);
   setText("r-open", payload.summary.open_positions);
   setText("r-exposure", money(payload.summary.exposure));
+  setText("r-latest-forecast", shortDateTime(payload.scanner.latest_forecast_at));
+  setText("r-total-profit", money(payload.summary.realized_profit_usd || 0));
+  setText("r-total-loss", money(payload.summary.realized_loss_usd || 0));
   setText("r-cash", money(payload.summary.cash));
   setText("open-count", payload.positions.length);
   setText("trade-count", payload.recent_trades.length);
-  setText("event-count", payload.events.length);
+  const realizedRows = payload.realized_results || [];
+  setText("realized-count", realizedRows.length);
   document.getElementById("open-positions").innerHTML = payload.positions.length ? payload.positions.map(cardForPosition).join("") : `<div class="small muted">열린 포지션 없음</div>`;
-  document.getElementById("recent-trades").innerHTML = payload.recent_trades.length ? payload.recent_trades.slice(0, 8).map(cardForTrade).join("") : `<div class="small muted">거래 기록 없음</div>`;
-  document.getElementById("recent-decisions").innerHTML = payload.recent_decisions.length ? payload.recent_decisions.slice(0, 12).map(cardForDecision).join("") : `<div class="small muted">후보 판단 기록 없음</div>`;
-  document.getElementById("event-stream").innerHTML = payload.events.map(e => {
-    const cls = e.tone === "bad" ? "bad" : e.tone === "warn" ? "warn" : "";
-    return `<div class="event"><div class="time">${shortTime(e.ts)}</div><div><b class="${cls}">${esc(e.label)}</b><br><span class="muted">${esc(e.detail)}</span></div></div>`;
-  }).join("");
-  const pressures = payload.pressure || [];
-  document.getElementById("pressure-bars").innerHTML = pressures.length ? pressures.map(p => `
-    <div class="small">${esc(p.label)} <span class="muted">${Math.round(p.value * 100)}%</span></div>
-    <div class="bar"><span style="width:${Math.max(0, Math.min(100, p.value * 100))}%"></span></div>
-  `).join("") : `<div class="small muted">압력 데이터 없음</div>`;
+  document.getElementById("realized-results").innerHTML = realizedTable(realizedRows);
+  document.getElementById("recent-trades").innerHTML = payload.recent_trades.length ? payload.recent_trades.map(cardForTrade).join("") : `<div class="small muted">거래 기록 없음</div>`;
   drawChart(payload);
 }
 
@@ -475,8 +690,31 @@ async function tick() {
   }
 }
 tick();
-setInterval(tick, 2000);
-addEventListener("resize", () => tick());
+const chartCanvas = document.getElementById("equity-chart");
+chartCanvas.addEventListener("mousemove", event => {
+  const rect = chartCanvas.getBoundingClientRect();
+  chartHoverX = event.clientX - rect.left;
+  drawChart(window.__lastPayload || {summary:{equity:0,total_pnl:0,initial_bankroll:0}, equity_points:[]});
+});
+chartCanvas.addEventListener("mouseleave", () => {
+  chartHoverX = null;
+  drawChart(window.__lastPayload || {summary:{equity:0,total_pnl:0,initial_bankroll:0}, equity_points:[]});
+});
+document.querySelectorAll(".range-btn").forEach(button => {
+  button.addEventListener("click", () => {
+    chartRange = button.dataset.range || "ALL";
+    document.querySelectorAll(".range-btn").forEach(item => item.classList.toggle("active", item === button));
+    drawChart(window.__lastPayload || {summary:{equity:0,total_pnl:0,initial_bankroll:0}, equity_points:[]});
+  });
+});
+let refreshTimer = null;
+function scheduleRefresh() {
+  if (refreshTimer) clearInterval(refreshTimer);
+  refreshTimer = setInterval(tick, document.hidden ? 30000 : 5000);
+}
+scheduleRefresh();
+document.addEventListener("visibilitychange", () => { scheduleRefresh(); tick(); });
+addEventListener("resize", () => drawChart(window.__lastPayload || {summary:{equity:0,total_pnl:0,initial_bankroll:0}, equity_points:[]}));
 </script>
 </body>
 </html>
@@ -560,6 +798,13 @@ def _count_decision_row(totals: dict[str, int], row: dict[str, str]) -> None:
         totals["forecast_unavailable"] += 1
 
 
+def _decision_totals_from_rows(rows: list[dict[str, str]]) -> dict[str, int]:
+    totals = _empty_decision_totals()
+    for row in rows:
+        _count_decision_row(totals, row)
+    return totals
+
+
 def _split_complete_lines(data: bytes) -> tuple[bytes, bytes]:
     newline_at = data.rfind(b"\n")
     if newline_at < 0:
@@ -611,6 +856,21 @@ def _scan_decision_totals(path: Path, stat_size: int, mtime_ns: int) -> dict[str
     }
 
 
+def _recent_decision_totals_cache(path: Path, stat_size: int, mtime_ns: int) -> dict[str, Any]:
+    try:
+        header = _read_csv_header(path)
+        fieldnames = next(csv.reader([header]), []) if header else []
+    except (OSError, csv.Error):
+        fieldnames = []
+    return {
+        "totals": _decision_totals_from_rows(_read_csv(path, 5000)),
+        "fieldnames": fieldnames,
+        "offset": stat_size,
+        "pending": b"",
+        "mtime_ns": mtime_ns,
+    }
+
+
 def _add_appended_decisions(cache: dict[str, Any], chunk: bytes) -> None:
     fieldnames = cache.get("fieldnames") or []
     if not fieldnames:
@@ -643,7 +903,10 @@ def _decision_totals(path: Path) -> dict[str, int]:
         cache_offset = int(cache.get("offset", 0)) if cache else 0
         cache_mtime_ns = int(cache.get("mtime_ns", 0)) if cache else 0
         if cache is None or stat.st_size < cache_offset or (stat.st_size == cache_offset and stat.st_mtime_ns != cache_mtime_ns):
-            cache = _scan_decision_totals(path, stat.st_size, stat.st_mtime_ns)
+            if cache is None and stat.st_size > MAX_INITIAL_DECISION_TOTAL_SCAN_BYTES:
+                cache = _recent_decision_totals_cache(path, stat.st_size, stat.st_mtime_ns)
+            else:
+                cache = _scan_decision_totals(path, stat.st_size, stat.st_mtime_ns)
             _DECISION_TOTALS_CACHE[key] = cache
             return dict(cache["totals"])
         if stat.st_size > cache_offset:
@@ -659,6 +922,97 @@ def _decision_totals(path: Path) -> dict[str, int]:
         return dict(cache["totals"])
 
 
+def _empty_trade_totals() -> dict[str, float]:
+    return {"opens": 0, "closes": 0, "realized_profit_usd": 0.0, "realized_loss_usd": 0.0}
+
+
+def _count_trade_row(totals: dict[str, float], row: dict[str, str]) -> None:
+    action = (row.get("action") or "").upper()
+    if action == "OPEN":
+        totals["opens"] += 1
+    elif action in {"CLOSE", "SETTLED", "PARTIAL_CLOSE"}:
+        totals["closes"] += 1
+        pnl = _float(row.get("cash_delta_or_pnl"))
+        if pnl >= 0:
+            totals["realized_profit_usd"] += pnl
+        else:
+            totals["realized_loss_usd"] += abs(pnl)
+
+
+def _scan_trade_totals(path: Path, stat_size: int, mtime_ns: int) -> dict[str, Any]:
+    totals = _empty_trade_totals()
+    fieldnames: list[str] = []
+    offset = 0
+    pending = b""
+    try:
+        with path.open("rb") as f:
+            header_raw = f.readline()
+            offset += len(header_raw)
+            if not header_raw:
+                return {"totals": totals, "fieldnames": fieldnames, "offset": offset, "pending": pending, "mtime_ns": mtime_ns}
+            header = header_raw.decode("utf-8", errors="replace").rstrip("\r\n")
+            fieldnames = next(csv.reader([header]), [])
+            for raw_line in f:
+                offset += len(raw_line)
+                if not raw_line.endswith(b"\n"):
+                    pending = raw_line
+                    break
+                line = raw_line.decode("utf-8", errors="replace").rstrip("\r\n")
+                for row in csv.DictReader([line], fieldnames=fieldnames):
+                    _count_trade_row(totals, row)
+    except (OSError, csv.Error):
+        return {"totals": _empty_trade_totals(), "fieldnames": [], "offset": 0, "pending": b"", "mtime_ns": 0}
+    return {"totals": totals, "fieldnames": fieldnames, "offset": min(offset, stat_size), "pending": pending, "mtime_ns": mtime_ns}
+
+
+def _add_appended_trades(cache: dict[str, Any], chunk: bytes) -> None:
+    fieldnames = cache.get("fieldnames") or []
+    if not fieldnames:
+        return
+    complete, pending = _split_complete_lines((cache.get("pending") or b"") + chunk)
+    cache["pending"] = pending
+    if not complete:
+        return
+    lines = complete.decode("utf-8", errors="replace").splitlines()
+    if not lines:
+        return
+    totals = cache["totals"]
+    try:
+        for row in csv.DictReader(lines, fieldnames=fieldnames):
+            _count_trade_row(totals, row)
+    except csv.Error:
+        return
+
+
+def _trade_action_totals(path: Path) -> dict[str, float]:
+    if not path.exists():
+        return _empty_trade_totals()
+    key = str(path.resolve())
+    with _TRADE_TOTALS_LOCK:
+        try:
+            stat = path.stat()
+        except OSError:
+            return _empty_trade_totals()
+        cache = _TRADE_TOTALS_CACHE.get(key)
+        cache_offset = int(cache.get("offset", 0)) if cache else 0
+        cache_mtime_ns = int(cache.get("mtime_ns", 0)) if cache else 0
+        if cache is None or stat.st_size < cache_offset or (stat.st_size == cache_offset and stat.st_mtime_ns != cache_mtime_ns):
+            cache = _scan_trade_totals(path, stat.st_size, stat.st_mtime_ns)
+            _TRADE_TOTALS_CACHE[key] = cache
+            return dict(cache["totals"])
+        if stat.st_size > cache_offset:
+            try:
+                with path.open("rb") as f:
+                    f.seek(cache_offset)
+                    chunk = f.read(stat.st_size - cache_offset)
+            except OSError:
+                return dict(cache["totals"])
+            _add_appended_trades(cache, chunk)
+            cache["offset"] = stat.st_size
+            cache["mtime_ns"] = stat.st_mtime_ns
+        return dict(cache["totals"])
+
+
 def _float(value: Any, default: float = 0.0) -> float:
     try:
         if value in (None, ""):
@@ -669,7 +1023,7 @@ def _float(value: Any, default: float = 0.0) -> float:
 
 
 def _parse_ts(row: dict[str, Any]) -> str:
-    return str(row.get("ts") or row.get("opened_at") or "")
+    return str(row.get("ts") or row.get("closed_at") or row.get("opened_at") or "")
 
 
 def _parse_datetime(value: str) -> datetime | None:
@@ -692,17 +1046,29 @@ def _sorted_recent(rows: list[dict[str, Any]], limit: int) -> list[dict[str, Any
     return sorted(rows, key=_parse_ts, reverse=True)[:limit]
 
 
-def _position_payload(pos: dict[str, Any]) -> dict[str, Any]:
+def _polymarket_market_url(slug: Any) -> str:
+    text = str(slug or "").strip()
+    if not text:
+        return ""
+    return f"https://polymarket.com/event/{quote(text, safe='')}"
+
+
+def _position_payload(pos: dict[str, Any], latest_decision: dict[str, str] | None = None) -> dict[str, Any]:
     metadata = pos.get("metadata") if isinstance(pos.get("metadata"), dict) else {}
+    latest_decision = latest_decision or {}
     entry = _float(pos.get("entry_price"))
     shares = _float(pos.get("shares"))
     cost = _float(pos.get("cost_usd"))
     mark = _float(pos.get("last_mark_price"), entry)
     value = shares * mark
+    slug = metadata.get("slug") or latest_decision.get("slug") or ""
+    forecast_c = _forecast_c_from_note(latest_decision.get("note", ""))
     return {
         "position_id": pos.get("position_id", ""),
         "market_id": pos.get("market_id", ""),
         "question": pos.get("question", ""),
+        "slug": slug,
+        "market_url": _polymarket_market_url(slug),
         "side": pos.get("side", ""),
         "entry_price": entry,
         "mark_price": mark,
@@ -710,6 +1076,7 @@ def _position_payload(pos: dict[str, Any]) -> dict[str, Any]:
         "cost_usd": cost,
         "market_value": value,
         "unrealized_pnl": value - cost,
+        "forecast_c": forecast_c,
         "opened_at": pos.get("opened_at", ""),
         "city": metadata.get("city", ""),
         "date_hint": metadata.get("date_hint", ""),
@@ -717,6 +1084,127 @@ def _position_payload(pos: dict[str, Any]) -> dict[str, Any]:
         "probability_stop_threshold": _float(metadata.get("probability_stop_threshold")),
         "reason": metadata.get("reason", ""),
     }
+
+
+def _optional_float(value: Any) -> float | None:
+    try:
+        if value in (None, ""):
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _f_to_c(value_f: float) -> float:
+    return (value_f - 32.0) * 5.0 / 9.0
+
+
+def _round_optional(value: float | None, digits: int = 2) -> float | None:
+    return None if value is None else round(value, digits)
+
+
+def _value_or_zero(value: float | None) -> float:
+    return 0.0 if value is None else value
+
+
+def _forecast_c_from_note(note: str) -> float | None:
+    match = re.search(r"\bmean=([-+]?\d+(?:\.\d+)?)F\b", note)
+    if not match:
+        return None
+    return round(_f_to_c(float(match.group(1))), 1)
+
+
+def _target_exit_from_reason(reason: str) -> float | None:
+    match = re.search(r"\btarget_exit(?:_price)?[=:]\s*([01](?:\.\d+)?)\b", reason)
+    return _optional_float(match.group(1)) if match else None
+
+
+def _question_summary(question: str) -> dict[str, Any]:
+    parsed = parse_weather_question(question)
+    threshold_c: float | None = None
+    if parsed.threshold_f is not None:
+        threshold_c = parsed.threshold_original if parsed.threshold_unit == "C" and parsed.threshold_original is not None else _f_to_c(parsed.threshold_f)
+    condition = ""
+    if parsed.operator == ">=":
+        condition = "or higher"
+    elif parsed.operator == "<=":
+        condition = "or lower"
+    return {
+        "city": parsed.city or "",
+        "date_hint": parsed.date_hint or "",
+        "threshold_c": _round_optional(threshold_c, 1),
+        "condition_label": condition,
+    }
+
+
+def _latest_entry_decisions(decisions: list[dict[str, str]]) -> dict[str, dict[str, str]]:
+    latest: dict[str, dict[str, str]] = {}
+    for row in decisions:
+        if (row.get("side") or "").upper() in {"YES", "NO"} and row.get("market_id"):
+            latest[row["market_id"]] = row
+    return latest
+
+
+def _latest_forecast_cache_at(settings: Settings) -> str:
+    path = Path(settings.forecast_cache_path) if settings.forecast_cache_path else Path(settings.state_path).with_name("forecast_cache.json")
+    raw = _read_json(path)
+    latest: datetime | None = None
+    for entry in raw.values():
+        if not isinstance(entry, dict):
+            continue
+        parsed = _parse_datetime(str(entry.get("created_at") or ""))
+        if parsed is not None and (latest is None or parsed > latest):
+            latest = parsed
+    return latest.replace(microsecond=0).isoformat() if latest is not None else ""
+
+
+def _realized_results(trades: list[dict[str, str]], decisions: list[dict[str, str]], limit: int = 80) -> list[dict[str, Any]]:
+    open_by_market: dict[str, dict[str, str]] = {}
+    decision_by_market = _latest_entry_decisions(decisions)
+    rows: list[dict[str, Any]] = []
+    for trade in trades:
+        action = (trade.get("action") or "").upper()
+        market_id = trade.get("market_id") or ""
+        if action == "OPEN" and market_id:
+            open_by_market[market_id] = trade
+            continue
+        if action not in {"CLOSE", "SETTLED", "PARTIAL_CLOSE"}:
+            continue
+        opened = open_by_market.get(market_id, {})
+        decision = decision_by_market.get(market_id, {})
+        question = trade.get("question") or opened.get("question") or decision.get("question") or ""
+        summary = _question_summary(question)
+        exit_price = _optional_float(trade.get("price"))
+        entry_price = _optional_float(opened.get("price")) or _optional_float(decision.get("p_exec")) or exit_price
+        pnl = _float(trade.get("cash_delta_or_pnl"))
+        shares = _optional_float(trade.get("shares")) or _optional_float(opened.get("shares")) or 0.0
+        entry_cost = abs(_float(opened.get("cash_delta_or_pnl"))) if opened else 0.0
+        if entry_cost <= 0 and entry_price is not None and shares > 0:
+            entry_cost = entry_price * shares
+        target_exit = _optional_float(decision.get("target_exit_price")) or _target_exit_from_reason(opened.get("reason", "")) or exit_price or entry_price
+        forecast_c = _forecast_c_from_note(decision.get("note", ""))
+        if forecast_c is None:
+            forecast_c = summary["threshold_c"]
+        rows.append(
+            {
+                "closed_at": trade.get("ts", ""),
+                "market_id": market_id,
+                "question": question,
+                "side": trade.get("side", ""),
+                "city": summary["city"],
+                "date_hint": summary["date_hint"],
+                "forecast_c": round(_value_or_zero(forecast_c), 1),
+                "threshold_c": round(_value_or_zero(summary["threshold_c"]), 1),
+                "condition_label": summary["condition_label"],
+                "expected_exit_price": round(_value_or_zero(target_exit), 4),
+                "entry_price": round(_value_or_zero(entry_price), 4),
+                "exit_price": round(_value_or_zero(exit_price), 4),
+                "pnl": round(pnl, 4),
+                "roi": round(pnl / entry_cost, 6) if entry_cost > 0 else 0.0,
+                "reason": trade.get("reason", ""),
+            }
+        )
+    return _sorted_recent(rows, limit)
 
 
 def _stats_summary(state: dict[str, Any], trades: list[dict[str, str]]) -> tuple[int, int, float]:
@@ -744,8 +1232,32 @@ def _stats_summary(state: dict[str, Any], trades: list[dict[str, str]]) -> tuple
     return wins, losses, stats_pnl
 
 
-def _equity_points(settings: Settings, trades: list[dict[str, str]], current_curve_value: float) -> list[dict[str, Any]]:
-    points: list[dict[str, Any]] = [{"ts": "", "equity": settings.bankroll_usd}]
+def _first_csv_data_row(path: Path) -> dict[str, str]:
+    if not path.exists():
+        return {}
+    try:
+        with path.open("r", newline="", encoding="utf-8") as f:
+            header = f.readline().rstrip("\r\n")
+            first = f.readline().rstrip("\r\n")
+        if not header or not first:
+            return {}
+        rows = list(csv.DictReader([header, first]))
+        return rows[0] if rows else {}
+    except (OSError, csv.Error):
+        return {}
+
+
+def _started_at(trades_path: Path, trades: list[dict[str, str]], decisions: list[dict[str, str]], positions: list[dict[str, Any]]) -> str:
+    candidates = [_parse_ts(_first_csv_data_row(trades_path))]
+    candidates.extend(_parse_ts(row) for row in trades)
+    candidates.extend(_parse_ts(row) for row in decisions)
+    candidates.extend(str(pos.get("opened_at") or "") for pos in positions)
+    parsed = [dt for dt in (_parse_datetime(ts) for ts in candidates) if dt is not None]
+    return min(parsed).replace(microsecond=0).isoformat() if parsed else _now_iso()
+
+
+def _equity_points(settings: Settings, trades: list[dict[str, str]], current_curve_value: float, started_at: str) -> list[dict[str, Any]]:
+    points: list[dict[str, Any]] = [{"ts": started_at, "equity": settings.bankroll_usd}]
     realized = 0.0
     for row in trades:
         if row.get("action") in {"CLOSE", "SETTLED", "PARTIAL_CLOSE"}:
@@ -840,10 +1352,17 @@ def build_dashboard_payload(settings: Settings | None = None, auth_required: boo
     state = _read_json(Path(settings.state_path))
     trades = _read_csv(Path(settings.trades_csv_path), 800)
     decisions_path = Path(settings.decisions_csv_path)
-    decisions = _read_csv(decisions_path, 800)
+    decisions = _read_csv(decisions_path, 500)
+    decision_by_market = _latest_entry_decisions(decisions)
     scanner_totals = _decision_totals(decisions_path)
+    trades_path = Path(settings.trades_csv_path)
+    trade_totals = _trade_action_totals(trades_path)
     runner_status = read_runner_status(settings)
-    positions = [_position_payload(p) for p in state.get("positions", []) if isinstance(p, dict)]
+    positions = [
+        _position_payload(p, decision_by_market.get(str(p.get("market_id") or "")))
+        for p in state.get("positions", [])
+        if isinstance(p, dict)
+    ]
     cash = _float(state.get("cash_usd"), settings.bankroll_usd)
     realized = _float(state.get("realized_pnl_usd"))
     exposure = sum(_float(p.get("cost_usd")) for p in positions)
@@ -854,11 +1373,9 @@ def build_dashboard_payload(settings: Settings | None = None, auth_required: boo
     curve_value = settings.bankroll_usd + total_pnl
     wins, losses, _ = _stats_summary(state, trades)
     closed_total = wins + losses
-    recent_decisions = _sorted_recent(decisions, 60)
-    pressure_yes = sum(1 for row in decisions[-100:] if row.get("side") == "YES")
-    pressure_no = sum(1 for row in decisions[-100:] if row.get("side") == "NO")
-    pressure_skip = sum(1 for row in decisions[-100:] if row.get("side") == "SKIP")
-    denom = max(1, pressure_yes + pressure_no + pressure_skip)
+    recent_trades = _sorted_recent(trades, 80)
+    realized_results = _realized_results(trades, decisions, 80)
+    started_at = _started_at(trades_path, trades, decisions, positions)
     return {
         "generated_at": _now_iso(),
         "security": {"auth_required": auth_required},
@@ -870,29 +1387,30 @@ def build_dashboard_payload(settings: Settings | None = None, auth_required: boo
             "market_value": market_value,
             "realized_pnl": realized,
             "unrealized_pnl": unrealized,
+            "realized_profit_usd": round(_float(trade_totals.get("realized_profit_usd")), 4),
+            "realized_loss_usd": round(_float(trade_totals.get("realized_loss_usd")), 4),
             "total_pnl": total_pnl,
             "equity": equity,
+            "started_at": started_at,
             "open_positions": len(positions),
             "wins": wins,
             "losses": losses,
             "win_rate": wins / closed_total if closed_total else 0.0,
         },
         "positions": positions,
-        "recent_trades": _sorted_recent(trades, 80),
-        "recent_decisions": recent_decisions,
+        "recent_trades": recent_trades,
+        "realized_results": realized_results,
         "scanner": {
             "decisions": scanner_totals["decisions"],
             "forecast_unavailable": scanner_totals["forecast_unavailable"],
             "skips": scanner_totals["skips"],
             "entries": scanner_totals["entries"],
+            "entry_signals": scanner_totals["entries"],
+            "actual_opens": int(trade_totals["opens"]),
+            "actual_closes": int(trade_totals["closes"]),
+            "latest_forecast_at": _latest_forecast_cache_at(settings),
         },
-        "pressure": [
-            {"label": "YES signals", "value": pressure_yes / denom},
-            {"label": "NO signals", "value": pressure_no / denom},
-            {"label": "SKIP ratio", "value": pressure_skip / denom},
-        ],
-        "events": _events(trades, decisions),
-        "equity_points": _equity_points(settings, trades, curve_value),
+        "equity_points": _equity_points(settings, trades, curve_value, started_at),
     }
 
 

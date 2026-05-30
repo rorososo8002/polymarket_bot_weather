@@ -23,10 +23,10 @@
 - Edge-faded exits ignore invalid `net_edge=-999` sentinels when no executable
   `p_exec` exists, preventing close-and-reopen churn from transient invalid book
   evaluations.
-- Dashboard Scanner Intelligence counters are cumulative over
-  `paper_decisions.csv`; only the recent candidate/event panels are tail-limited
-  for speed. The UI uses clear Korean labels for forecast-unavailable decisions,
-  open entry cost, and remaining cash.
+- Dashboard Scanner Intelligence shows open positions, open entry cost, latest
+  Open-Meteo forecast cache time, realized profit/loss totals, and remaining
+  cash. The UI intentionally hides candidate-decision counters so operators do
+  not confuse signals with actual trades.
 - Exposure caps for market, city, and city-date concentration.
 - Runner heartbeat file for dashboard-visible progress.
 - VPS systemd examples for the paper bot and dashboard.

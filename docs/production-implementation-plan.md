@@ -73,21 +73,23 @@ could be evaluated.
 
 ## Dashboard Contract
 
-The right-side Scanner Intelligence counters are lifetime counters for the
-current `paper_decisions.csv`, not a recent-window sample. `dashboard.py` keeps
-recent decisions and event streams tail-limited for speed, but counts candidate
-judgments, skips, entry signals, and forecast-unavailable decisions from the
-full decision log with an incremental append cache.
+The dashboard is a dark Polymarket-style operator surface. Its detailed build
+contract lives in `docs/dashboard-build-spec.md`.
 
-Dashboard labels must stay operator-readable:
+The visible right-side Scanner Intelligence panel must stay focused on current
+operator decisions:
 
-- `누적 후보 판단`: total rows in `paper_decisions.csv`
-- `예보 없음`: rows whose reason or note says forecast data was unavailable or
-  no forecast could be used
-- `누적 스킵`: total `side=SKIP` decisions
-- `진입 신호`: total `side=YES` plus `side=NO` decisions
-- `총 열린 진입금액`: sum of `cost_usd` for currently open positions
+- `오픈 포지션`: current open position count from paper state
+- `총 오픈 진입금액`: sum of `cost_usd` for currently open positions
+- `Open-Meteo 최근 예보`: latest `created_at` in `forecast_cache.json`
+- `총 수익금`: cumulative positive realized PnL from closed trade rows
+- `총 손실금`: cumulative absolute negative realized PnL from closed trade rows
 - `남은 현금`: current `cash_usd` in paper state
+
+Do not show cumulative candidate-judgment, forecast-unavailable, actual-open,
+or YES/NO decision counters in the UI. Decision and trade totals can remain
+internally cached for diagnostics, but the operator panel should not imply that
+candidate signals are the same thing as actual open trades.
 
 ## Exit Policy Contract
 

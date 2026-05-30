@@ -66,17 +66,15 @@ Consequence: Future strategy changes should state the expected-value, calibratio
 
 ## 2026-05-28: Dashboard Scanner Counts Are Cumulative
 
-Decision: Scanner Intelligence totals count the full `paper_decisions.csv` log,
-while recent candidate cards, event stream entries, and buy-pressure bars remain
-tail-limited for responsiveness.
+Decision: `dashboard.py` keeps cached decision and trade totals for diagnostics,
+but the visible Scanner Intelligence panel shows only operator-useful current
+state: open positions, open entry cost, latest Open-Meteo cache time, total
+realized profit, total realized loss, and remaining cash.
 
-Why: The dashboard previously derived candidate judgments and skips from the
-latest 800 decisions, so the numbers changed as older rows fell out of the
-window. Operators need these top-line counts to behave like accumulated service
-telemetry, not a moving sample.
+Why: Candidate decisions, forecast-unavailable rows, and YES/NO decision rows are
+not the same thing as actual open trades. Showing them beside open exposure made
+the dashboard easy to misread during operation.
 
-Consequence: `dashboard.py` keeps an incremental append cache for decision
-totals. `예보 없음` replaces the unclear `NO FORECAST` label and counts rows
-whose reason or note says the forecast was unavailable or no forecast could be
-used. `총 열린 진입금액` means open-position entry cost, and `남은 현금` means
-paper cash remaining.
+Consequence: The UI no longer displays cumulative candidate-judgment,
+forecast-unavailable, actual-open, or YES/NO decision counters. The detailed
+dashboard rebuild contract is documented in `docs/dashboard-build-spec.md`.
