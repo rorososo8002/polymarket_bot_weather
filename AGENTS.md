@@ -3,114 +3,56 @@
 ## Local Codex Workflow Notes
 
 - When Superpowers review workflows finish, run a compound learning check before final completion.
-- Invoke `ce-compound` for non-trivial execution/review-cycle mistakes, repeated review findings, debugging lessons, workflow corrections, or prevention rules.
-- Capture durable lessons under `docs/solutions/` so future runs do not repeat the same mistake.
-- Skip `ce-compound` only when there is no durable learning to capture, and mention that briefly in the final response.
+- Invoke `ce-compound` for durable debugging lessons, workflow corrections, repeated review findings, or prevention rules.
+- Capture durable lessons under `docs/solutions/`. Skip only when there is no durable learning, and mention that briefly in the final response.
+- `docs/solutions/` is a searchable knowledge store organized by category and YAML frontmatter (`module`, `tags`, `problem_type`); it is relevant when implementing, debugging, or making decisions in documented areas.
+- Keep this file short. Read situation-specific rules from `docs/codex/` only when the task needs them.
 
-## Production Bot Guardrails
+## User Communication Rules
 
-- Trade only cities listed in `src/weather_bot/stations.py`.
-- Treat `STATION_MAP` as the single source of truth for Polymarket weather settlement stations.
-- If a Polymarket weather market city is not in `STATION_MAP`, skip discovery/trading.
-- Refresh forecast data through the Open-Meteo cache no more often than every 30 minutes by default.
-- Monitor Polymarket order books through the CLOB WebSocket market stream by default.
-- Do not add private keys or live-wallet execution without an explicit user request.
-- Keep paper-trading behavior intact unless the user explicitly asks for live execution.
+- Always explain to this user in Korean unless the user explicitly asks for another language.
+- Assume the user is a development beginner. Explain jargon in plain Korean and connect it to the practical effect.
+- Before risky security, money, production, deployment, or configuration changes, explain what changes, why, benefits, risks, access scope, verification, and rollback.
+- For public exposure decisions, explain that anyone who knows or finds the URL may access it, including automated scanners.
+- Recommend a default option when useful, but separate the recommendation from the facts.
+- If the user sounds frustrated, acknowledge the concrete mistake first, then fix the workflow that allowed it.
+
+## Safety And Project Guardrails
+
+- Never print, open, copy, commit, or expose private keys, wallet keys, tokens, or secrets.
+- Keep paper-trading behavior intact unless the user explicitly asks for a separate live-execution safety project.
+- Trade only cities listed in `src/weather_bot/stations.py`; treat `STATION_MAP` as the single source of truth.
+- Unknown markets, unknown stations, missing data, and invalid sentinels such as `-999` are skips, not guesses or exit signals.
+- Refresh forecasts through the Open-Meteo cache no more often than every 30 minutes by default.
+- Monitor Polymarket order books through the CLOB WebSocket market stream by default. Do not silently replace realtime streaming with polling.
+- Keep token IDs for open positions subscribed even when discovery rolls forward to newer markets.
 - If code and production docs disagree, update the docs or record the drift before continuing.
 
-## Strategy Research And Optimization Mission
+## Oracle VPS Access Reference
 
-- The primary product mission is to improve risk-adjusted paper-trading returns over time, not merely keep the service running.
-- Treat every strategy change as a research-backed hypothesis: state the market behavior, math, empirical evidence, or paper/finance reference that motivates it.
-- Prefer expected-value, calibration, Kelly/fractional-Kelly, liquidity, slippage, and drawdown-aware reasoning over ad hoc thresholds.
-- Use paper-trading data to learn where profits actually appear: review entries, exits, spreads, forecast error, station bias, market type, city, date horizon, and time-to-resolution.
-- Document strategy rules so a fresh AI can reimplement them from the repo alone. The goal is an executable specification, not a diary of past work.
-- When a trade behaves unexpectedly, update both code and the production docs with the prevention rule before continuing strategy work.
-- Never optimize by adding live-wallet execution, private keys, or real orders unless the user explicitly asks for that separate safety project.
+- The active Oracle VPS is `ubuntu@140.245.69.242`.
+- The canonical local SSH key directory is `C:\Users\wpdla\Documents\오라클ssh`.
+- Use the private key file `C:\Users\wpdla\Documents\오라클ssh\ssh-key-2026-05-25.key` with `ssh -i` or `scp -i`. Do not use the `.pub` file.
+- Never print, open, copy, or commit the key contents. Read `docs/codex/vps-dashboard.md` and `docs/codex/ssh-powershell.md` before VPS work.
 
-## Runtime Data Review Rules
+## Token-Safe Runtime Rules
 
-- Runtime outputs such as `paper_raw_snapshots.jsonl`, `paper_decisions.csv`, `paper_trades.csv`, `forecast_cache.json`, `paper_state.json`, and `paper_runner_status.json` can be very large.
-- Treat these files as token-dangerous and never open them in full in a normal Codex chat:
-  - `runtime/live-paper-bot.restart.out.log` (multi-GB restart log)
-  - `paper_raw_snapshots.jsonl` (multi-GB raw market snapshots)
-  - `paper_decisions.csv` (large cumulative decision log)
-- Do not read full runtime data files by default.
-- Do not run bare `Get-Content`, `cat`, `type`, `more`, or unrestricted `python read_text()` against the token-dangerous files above.
-- For normal health checks, bot status checks, recent errors, or "why is it not trading now" questions, inspect only the latest 100 lines by default.
-- Increase the recent window only when needed, and state why.
-- Older runtime data should be read only for a specific investigation, such as backtesting, profit/loss review, Open-Meteo evidence checks, or tracing when a bug started.
-- When older runtime data is needed, filter by time range, market, city, event type, or decision reason instead of loading the whole file.
-- Prefer counts, summaries, tails, and targeted searches over opening large CSV/JSONL files in full.
-- If a user asks about these large files, answer from file size, line counts, `Select-Object -Last`, `Get-Content -Tail`, `rg` filters, CSV streaming counters, or small sampled windows.
-- Never feed entire runtime data files into the model context unless the user explicitly asks and the file size has been checked first.
+- Do not open runtime outputs or data files in full. Use file sizes, counts, tails, filters, summaries, or small samples.
+- Treat `runtime/`, `paper_raw_snapshots.jsonl`, `paper_decisions.csv`, `paper_trades.csv`, `forecast_cache.json`, `paper_state.json`, and `paper_runner_status.json` as token-dangerous by default.
+- Do not delete local runtime data, `.git/`, or `.antigravitycli/` merely to reduce Codex token usage. Exclude them from normal analysis unless the task needs them.
 
-## Karpathy-Style Work Rules
+## Workflow
 
-The linked CLAUDE.md is a compact public guideline document. Do not copy it verbatim into this repo; use this local 65-line rewrite instead.
+- Think before coding, state assumptions, and touch only files needed for the task.
+- Preserve user changes. Never reset or revert unrelated work.
+- Run focused tests before broad tests and report gaps honestly.
+- Run git mutations serially.
 
-01. Think before coding.
-02. State assumptions before acting.
-03. Ask when uncertainty changes the solution.
-04. Prefer the smallest design that works.
-05. Do not add speculative features.
-06. Avoid abstractions with one caller.
-07. Keep edits tied to the user request.
-08. Match the local code style.
-09. Touch only files needed for the task.
-10. Remove only dead code created by your change.
-11. If 200 lines can be 50, rewrite it.
-12. Senior code is usually shorter.
-13. Tests define success.
-14. Write the failing test first for behavior changes.
-15. Watch the test fail for the right reason.
-16. Implement the minimum green path.
-17. Refactor only after green.
-18. Run the focused tests before broad tests.
-19. Verify with real commands, not vibes.
-20. Report test gaps honestly.
-21. Keep state handoffs explicit.
-22. Record production decisions as they happen.
-23. Do not hide confusing tradeoffs.
-24. Push back on unsafe requirements.
-25. Prefer deterministic behavior over cleverness.
-26. Name functions by what they promise.
-27. Keep functions small enough to scan.
-28. Keep modules focused on one responsibility.
-29. Avoid global behavior changes by accident.
-30. Preserve user changes in the worktree.
-31. Never reset or revert unrelated work.
-32. Use structured parsers over brittle strings.
-33. Keep configuration boring and documented.
-34. Defaults should be safe for production.
-35. External data assumptions need source notes.
-36. Trading code must fail closed.
-37. Unknown markets are skips, not guesses.
-38. Unknown stations are skips, not city centroids.
-39. Rate limits should degrade gracefully.
-40. Cache external forecasts intentionally.
-41. Stream market prices separately from slow forecasts.
-42. Prefer paper validation before real money.
-43. Risk controls are part of the feature.
-44. Logs should explain skipped trades.
-45. Snapshots should preserve raw evidence.
-46. Do not bury important state in comments only.
-47. Code comments should explain why, not what.
-48. Keep docs aligned with code.
-49. A handoff doc should unblock the next agent.
-50. Write progress as facts, not hopes.
-51. Mark incomplete work clearly.
-52. Commit only coherent change sets.
-53. Stage intentionally.
-54. Review diffs before committing.
-55. Use concise commit messages.
-56. Push only after tests pass or gaps are stated.
-57. Avoid broad dependency changes.
-58. Prefer standard library tools where enough.
-59. Do not chase unrelated cleanup.
-60. If a shortcut creates future risk, document it.
-61. Make failure modes observable.
-62. Treat production config as part of the system.
-63. Keep security boundaries visible.
-64. Make the next safe step obvious.
-65. Leave the repo easier to continue than you found it.
+## Situation-Specific Docs
+
+- `docs/codex/vps-dashboard.md`: VPS, dashboard, systemd, public URL, and health checks.
+- `docs/codex/ssh-powershell.md`: Windows PowerShell SSH quoting and remote commands.
+- `docs/codex/runtime-data.md`: large logs, paper data, dashboard readers, and safe investigation.
+- `docs/codex/strategy-research.md`: strategy, EV, calibration, WebSocket, risk, and trading rules.
+- `docs/codex/work-rules.md`: longer engineering rule set.
+- `docs/strategy-upgrade-roadmap.md`: ordered paper-strategy upgrade phases and fresh-chat handoffs.

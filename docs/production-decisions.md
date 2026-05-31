@@ -56,6 +56,22 @@ Why: During Oracle paper trading, a Seoul NO position opened with a model target
 
 Consequence: Invalid order-book/evaluation updates can still appear as `DECISION SKIP`, but they do not force an edge-faded close. Probability stops, target exits, overheated exits, valid executable edge fades, and max-hold exits still work.
 
+## 2026-05-28: Keep Held Position Tokens In WebSocket Subscriptions
+
+Decision: The realtime stream registry combines current discovery markets with every open paper position. If market hydration fails, the runner reconstructs a minimal market from the held position so its token remains subscribed.
+
+Why: Discovery can roll forward to newer dates while an older market position is still open. Dropping that token from the WebSocket subscription leaves mark prices and exit checks stale even though the position still has economic risk.
+
+Consequence: Open positions keep receiving live order-book updates while they remain in paper state. Stream status counts the combined discovery-plus-held registry, so the visible market count can exceed `MAX_MARKETS`.
+
+## 2026-05-28: Explain Two-Sided Liquidity Rejections In SKIP Logs
+
+Decision: When neither YES nor NO has a valid executable liquidity evaluation, the final `DECISION SKIP` reason includes both per-side rejection details.
+
+Why: An opaque `No valid side evaluated.` message cannot tell an operator whether the book lacked bids, lacked asks, had extreme prices, had an excessive spread, or lacked exit depth.
+
+Consequence: Paper decision logs remain fail-closed while exposing the concrete YES and NO liquidity filters that blocked entry.
+
 ## 2026-05-28: Strategy Changes Must Be Research-Backed And Reproducible
 
 Decision: Production strategy work must be documented as an executable specification, not a chronological activity log.
@@ -78,3 +94,21 @@ the dashboard easy to misread during operation.
 Consequence: The UI no longer displays cumulative candidate-judgment,
 forecast-unavailable, actual-open, or YES/NO decision counters. The detailed
 dashboard rebuild contract is documented in `docs/dashboard-build-spec.md`.
+
+## 2026-06-01: Forecast Freshness And WebSocket Health Are Separate Signals
+
+Decision: The runner writes forecast and WebSocket health snapshots to
+`paper_runner_status.json` while streaming. The dashboard shows them separately
+and raises `STALE`, `DEGRADED`, or `FAILED` warnings instead of treating a
+reachable dashboard page as proof that trading inputs are healthy.
+
+Why: A main process can remain open after its WebSocket receiver thread dies.
+An Open-Meteo response can also remain in memory long after its TTL expires.
+Those two failures can leave an apparently normal dashboard backed by old
+prices or old forecasts.
+
+Consequence: Memory and disk forecast caches share the same TTL. Forecast
+diagnostics distinguish fetch attempts, successful forecast timestamps,
+failure reasons, cache age, stale data, and disk-save failures. WebSocket
+diagnostics distinguish receiver-thread death, reconnect churn, any incoming
+message, actual order-book price updates, stale-book age, and stream errors.

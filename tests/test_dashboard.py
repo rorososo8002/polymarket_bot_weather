@@ -803,3 +803,54 @@ def test_dashboard_payload_uses_runner_status_as_bot_heartbeat(tmp_path):
     assert payload["bot"]["message"] == "evaluating 3/40"
     assert payload["bot"]["markets_done"] == 3
     assert payload["bot"]["markets_total"] == 40
+
+
+def test_dashboard_payload_surfaces_forecast_and_websocket_health(tmp_path):
+    state_path = tmp_path / "state.json"
+    runner_status_path = tmp_path / "paper_runner_status.json"
+    state_path.write_text(json.dumps({"cash_usd": 1000.0, "positions": []}), encoding="utf-8")
+    runner_status_path.write_text(
+        json.dumps(
+            {
+                "updated_at": "2026-06-01T00:01:00+00:00",
+                "phase": "stream_error",
+                "message": "websocket thread stopped",
+                "forecast": {
+                    "last_attempt_at": "2026-06-01T00:00:00+00:00",
+                    "last_success_at": "2026-06-01T00:00:00+00:00",
+                    "last_failure_reason": "RuntimeError: rate limited",
+                    "cache_age_seconds": 1801,
+                    "stale": True,
+                    "persistence_error": "OSError: disk full",
+                },
+                "websocket": {
+                    "thread_alive": False,
+                    "reconnect_count": 3,
+                    "last_message_at": "2026-06-01T00:00:30+00:00",
+                    "last_book_at": "2026-06-01T00:00:20+00:00",
+                    "stale_book_age_seconds": 40,
+                    "stale": True,
+                    "last_error": "RuntimeError: websocket stopped",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = build_dashboard_payload(Settings(state_path=str(state_path)))
+
+    assert payload["health"]["forecast"]["status"] == "STALE"
+    assert payload["health"]["forecast"]["cache_age_seconds"] >= 1801
+    assert payload["health"]["forecast"]["persistence_error"] == "OSError: disk full"
+    assert payload["health"]["websocket"]["status"] == "FAILED"
+    assert payload["health"]["websocket"]["thread_alive"] is False
+    assert payload["health"]["websocket"]["reconnect_count"] == 3
+    assert payload["bot"]["status"] == "FAILED"
+
+
+def test_dashboard_html_explains_health_warnings():
+    assert "예보 상태" in HTML
+    assert "마지막 성공" in HTML
+    assert "WebSocket 상태" in HTML
+    assert "재접속" in HTML
+    assert "마지막 주문서" in HTML

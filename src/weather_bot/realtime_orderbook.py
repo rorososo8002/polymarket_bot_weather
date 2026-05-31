@@ -4,11 +4,36 @@ import json
 import threading
 import time
 from collections.abc import Callable, Iterable
+from datetime import datetime, timezone
 from typing import Any
 
 from .models import OrderBook, OrderLevel
 
 MARKET_STREAM_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _utc_iso(value: datetime) -> str:
+    return value.astimezone(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def _safe_error(exc: BaseException) -> str:
+    text = " ".join(str(exc).split())
+    return f"{type(exc).__name__}: {text}"[:240]
+
+
+def _contains_orderbook_price_update(message: str | dict[str, Any] | list[dict[str, Any]]) -> bool:
+    if isinstance(message, str):
+        try:
+            message = json.loads(message)
+        except json.JSONDecodeError:
+            return False
+    if isinstance(message, list):
+        return any(_contains_orderbook_price_update(item) for item in message)
+    return str(message.get("event_type") or "") in {"book", "price_change", "best_bid_ask"}
 
 
 def market_subscription_message(asset_ids: Iterable[str]) -> dict[str, Any]:
@@ -195,16 +220,24 @@ class OrderBookMarketStream:
         on_update: Callable[[set[str]], None] | None = None,
         heartbeat_seconds: int = 10,
         reconnect_seconds: int = 2,
+        stale_seconds: int = 60,
     ) -> None:
         self.url = url
         self.cache = OrderBookStreamCache()
         self.on_update = on_update
         self.heartbeat_seconds = heartbeat_seconds
         self.reconnect_seconds = reconnect_seconds
+        self.stale_seconds = max(1, int(stale_seconds))
         self._asset_ids: list[str] = []
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._ws: Any = None
+        self._health_lock = threading.Lock()
+        self._started_at: datetime | None = None
+        self._last_message_at: datetime | None = None
+        self._last_book_at: datetime | None = None
+        self._reconnect_count = 0
+        self._last_error = ""
 
     def get_order_book(self, token_id: str) -> OrderBook:
         return self.cache.get_order_book(token_id)
@@ -216,6 +249,8 @@ class OrderBookMarketStream:
         if self._thread and self._thread.is_alive():
             return
         self._stop.clear()
+        with self._health_lock:
+            self._started_at = _utc_now()
         self._thread = threading.Thread(target=self._run_forever, name="polymarket-orderbook-ws", daemon=True)
         self._thread.start()
 
@@ -230,29 +265,84 @@ class OrderBookMarketStream:
             self._thread.join(timeout=2)
 
     def apply_message(self, message: str | dict[str, Any] | list[dict[str, Any]]) -> set[str]:
+        now = _utc_now()
+        with self._health_lock:
+            self._last_message_at = now
         updated = self.cache.apply_message(message)
+        if updated and _contains_orderbook_price_update(message):
+            with self._health_lock:
+                self._last_book_at = now
         if updated and self.on_update is not None:
             self.on_update(updated)
         return updated
+
+    def _record_reconnect(self, exc: BaseException | None = None) -> None:
+        with self._health_lock:
+            self._reconnect_count += 1
+            if exc is not None:
+                self._last_error = _safe_error(exc)
+
+    def health_snapshot(self, *, now: datetime | None = None) -> dict[str, object]:
+        current_time = now or _utc_now()
+        thread_alive = bool(self._thread and self._thread.is_alive())
+        with self._health_lock:
+            started_at = self._started_at
+            last_message_at = self._last_message_at
+            last_book_at = self._last_book_at
+            reconnect_count = self._reconnect_count
+            last_error = self._last_error
+
+        stale_book_age_seconds: int | None = None
+        if last_book_at is not None:
+            stale_book_age_seconds = max(0, int((current_time - last_book_at).total_seconds()))
+        waiting_too_long = bool(
+            last_book_at is None
+            and started_at is not None
+            and (current_time - started_at).total_seconds() > self.stale_seconds
+        )
+        stale = (
+            not thread_alive
+            or waiting_too_long
+            or (stale_book_age_seconds is not None and stale_book_age_seconds > self.stale_seconds)
+        )
+        return {
+            "thread_alive": thread_alive,
+            "reconnect_count": reconnect_count,
+            "last_message_at": _utc_iso(last_message_at) if last_message_at else None,
+            "last_book_at": _utc_iso(last_book_at) if last_book_at else None,
+            "stale_book_age_seconds": stale_book_age_seconds,
+            "stale": stale,
+            "last_error": last_error,
+        }
 
     def _run_forever(self) -> None:
         try:
             import websocket  # type: ignore[import-not-found]
         except ImportError as exc:
+            with self._health_lock:
+                self._last_error = _safe_error(exc)
             raise RuntimeError("Install websocket-client to use real-time Polymarket orderbook streaming.") from exc
 
         while not self._stop.is_set():
-            app = websocket.WebSocketApp(
-                self.url,
-                on_open=self._on_open,
-                on_message=lambda _ws, message: self.apply_message(message),
-            )
-            self._ws = app
-            app.run_forever()
+            try:
+                app = websocket.WebSocketApp(
+                    self.url,
+                    on_open=self._on_open,
+                    on_message=lambda _ws, message: self.apply_message(message),
+                    on_error=lambda _ws, error: self._on_error(error),
+                )
+                self._ws = app
+                app.run_forever()
+                if not self._stop.is_set():
+                    self._record_reconnect(RuntimeError("websocket connection closed"))
+            except Exception as exc:  # pragma: no cover - depends on remote network behavior
+                self._record_reconnect(exc)
             if not self._stop.is_set():
                 time.sleep(max(0, self.reconnect_seconds))
 
     def _on_open(self, ws: Any) -> None:
+        with self._health_lock:
+            self._last_error = ""
         ws.send(json.dumps(market_subscription_message(self._asset_ids)))
 
         def heartbeat() -> None:
@@ -264,3 +354,7 @@ class OrderBookMarketStream:
                     return
 
         threading.Thread(target=heartbeat, name="polymarket-orderbook-ping", daemon=True).start()
+
+    def _on_error(self, error: object) -> None:
+        with self._health_lock:
+            self._last_error = str(error)[:240]

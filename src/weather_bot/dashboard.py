@@ -282,6 +282,26 @@ HTML = r"""<!doctype html>
     .right-stat strong { color: var(--green); font-size: 15px; }
     .right-stat strong.bad { color: var(--red); }
     .right-stat strong.neutral { color: var(--text); }
+    .health-box {
+      display: grid;
+      gap: 5px;
+      margin-top: 10px;
+      padding: 9px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--panel-2);
+    }
+    .health-title {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      font-size: 12px;
+      font-weight: 800;
+    }
+    .health-title strong { color: var(--green); }
+    .health-title strong.bad { color: var(--red); }
+    .health-title strong.warn { color: var(--yellow); }
+    .health-detail { color: var(--muted); font-size: 11px; line-height: 1.45; overflow-wrap: anywhere; }
     .chart-title {
       gap: 10px;
       min-height: 38px;
@@ -420,6 +440,22 @@ HTML = r"""<!doctype html>
         <div class="right-stat"><span>총 수익금</span><strong id="r-total-profit">$0</strong></div>
         <div class="right-stat"><span>총 손실금</span><strong id="r-total-loss" class="bad">$0</strong></div>
         <div class="right-stat"><span>남은 현금</span><strong id="r-cash">$0</strong></div>
+        <div class="health-box">
+          <div class="health-title"><span>예보 상태</span><strong id="r-forecast-health">--</strong></div>
+          <div id="r-forecast-success" class="health-detail">마지막 성공 --</div>
+          <div id="r-forecast-attempt" class="health-detail">마지막 시도 --</div>
+          <div id="r-forecast-age" class="health-detail">캐시 나이 --</div>
+          <div id="r-forecast-error" class="health-detail">최근 실패 이유 --</div>
+          <div id="r-forecast-persistence" class="health-detail">디스크 저장 오류 --</div>
+        </div>
+        <div class="health-box">
+          <div class="health-title"><span>WebSocket 상태</span><strong id="r-websocket-health">--</strong></div>
+          <div id="r-websocket-thread" class="health-detail">실시간 수신 스레드 --</div>
+          <div id="r-websocket-reconnects" class="health-detail">재접속 --</div>
+          <div id="r-websocket-message" class="health-detail">마지막 메시지 --</div>
+          <div id="r-websocket-book" class="health-detail">마지막 주문서 --</div>
+          <div id="r-websocket-error" class="health-detail">최근 오류 --</div>
+        </div>
       </div>
       <div class="panel-title">Recent Trades <span id="trade-count">0</span></div>
       <div class="panel-body recent-trades-body"><div id="recent-trades" class="trade-list"></div></div>
@@ -483,6 +519,11 @@ function esc(s) {
   return String(s ?? "").replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]));
 }
 function setText(id, text) { document.getElementById(id).textContent = text; }
+function setHealthStatus(id, status) {
+  const element = document.getElementById(id);
+  element.textContent = status || "--";
+  element.className = status === "FAILED" ? "bad" : (status === "STALE" || status === "DEGRADED" ? "warn" : "");
+}
 
 function cardForPosition(p) {
   const pnlClass = (p.unrealized_pnl || 0) >= 0 ? "win" : "loss";
@@ -646,10 +687,10 @@ function render(payload) {
   document.getElementById("lock").style.display = "none";
   setText("sys-status", payload.security.auth_required ? "LOCKED" : "OPEN");
   const bot = payload.bot || {};
-  const phase = bot.phase ? bot.phase.toUpperCase() : (bot.status || "--");
+  const phase = bot.phase ? " · " + bot.phase.toUpperCase() : "";
   const progress = bot.markets_total ? " " + (bot.markets_done || 0) + "/" + bot.markets_total : "";
   const next = bot.next_scan_in_seconds > 0 ? " next " + duration(bot.next_scan_in_seconds) : "";
-  setText("bot-status", phase + progress + " " + duration(bot.age_seconds) + next);
+  setText("bot-status", (bot.status || "--") + phase + progress + " " + duration(bot.age_seconds) + next);
   setText("updated", shortTime(payload.generated_at));
   setText("m-initial", money(payload.summary.initial_bankroll));
   setText("m-pnl", money(payload.summary.total_pnl));
@@ -664,6 +705,20 @@ function render(payload) {
   setText("r-total-profit", money(payload.summary.realized_profit_usd || 0));
   setText("r-total-loss", money(payload.summary.realized_loss_usd || 0));
   setText("r-cash", money(payload.summary.cash));
+  const forecastHealth = (payload.health || {}).forecast || {};
+  setHealthStatus("r-forecast-health", forecastHealth.status);
+  setText("r-forecast-success", "마지막 성공 " + shortDateTime(forecastHealth.last_success_at));
+  setText("r-forecast-attempt", "마지막 시도 " + shortDateTime(forecastHealth.last_attempt_at));
+  setText("r-forecast-age", "캐시 나이 " + (forecastHealth.cache_age_seconds == null ? "--" : duration(forecastHealth.cache_age_seconds)));
+  setText("r-forecast-error", "최근 실패 이유 " + (forecastHealth.last_failure_reason || "--"));
+  setText("r-forecast-persistence", "디스크 저장 오류 " + (forecastHealth.persistence_error || "--"));
+  const websocketHealth = (payload.health || {}).websocket || {};
+  setHealthStatus("r-websocket-health", websocketHealth.status);
+  setText("r-websocket-thread", "실시간 수신 스레드 " + (websocketHealth.thread_alive === true ? "작동 중" : (websocketHealth.thread_alive === false ? "멈춤" : "--")));
+  setText("r-websocket-reconnects", "재접속 " + Number(websocketHealth.reconnect_count || 0) + "회");
+  setText("r-websocket-message", "마지막 메시지 " + shortDateTime(websocketHealth.last_message_at));
+  setText("r-websocket-book", "마지막 주문서 " + shortDateTime(websocketHealth.last_book_at) + " · 나이 " + (websocketHealth.stale_book_age_seconds == null ? "--" : duration(websocketHealth.stale_book_age_seconds)));
+  setText("r-websocket-error", "최근 오류 " + (websocketHealth.last_error || "--"));
   setText("open-count", payload.positions.length);
   setText("trade-count", payload.recent_trades.length);
   const realizedRows = payload.realized_results || [];
@@ -1158,6 +1213,84 @@ def _latest_forecast_cache_at(settings: Settings) -> str:
     return latest.replace(microsecond=0).isoformat() if latest is not None else ""
 
 
+def _live_age_seconds(timestamp: str, recorded_age: Any = None) -> int | None:
+    parsed = _parse_datetime(timestamp)
+    recorded = int(_float(recorded_age, -1))
+    live = max(0, int((datetime.now(timezone.utc) - parsed).total_seconds())) if parsed is not None else -1
+    age = max(recorded, live)
+    return age if age >= 0 else None
+
+
+def _forecast_health(settings: Settings, runner_status: dict[str, Any]) -> dict[str, Any]:
+    raw = runner_status.get("forecast") if isinstance(runner_status.get("forecast"), dict) else {}
+    last_success_at = str(raw.get("last_success_at") or _latest_forecast_cache_at(settings))
+    cache_age_seconds = _live_age_seconds(last_success_at, raw.get("cache_age_seconds"))
+    stale = bool(raw.get("stale")) or (
+        cache_age_seconds is not None and cache_age_seconds > settings.forecast_cache_ttl_seconds
+    )
+    last_failure_reason = str(raw.get("last_failure_reason") or "")
+    persistence_error = str(raw.get("persistence_error") or "")
+    if last_failure_reason and not last_success_at:
+        status = "FAILED"
+    elif stale:
+        status = "STALE"
+    elif persistence_error or last_failure_reason:
+        status = "DEGRADED"
+    elif last_success_at:
+        status = "HEALTHY"
+    else:
+        status = "WAITING"
+    return {
+        "status": status,
+        "last_attempt_at": str(raw.get("last_attempt_at") or ""),
+        "last_success_at": last_success_at,
+        "last_failure_reason": last_failure_reason,
+        "cache_age_seconds": cache_age_seconds,
+        "stale": stale,
+        "persistence_error": persistence_error,
+    }
+
+
+def _websocket_health(settings: Settings, runner_status: dict[str, Any]) -> dict[str, Any]:
+    raw = runner_status.get("websocket") if isinstance(runner_status.get("websocket"), dict) else {}
+    if not raw:
+        return {
+            "status": "UNKNOWN",
+            "thread_alive": None,
+            "reconnect_count": 0,
+            "last_message_at": "",
+            "last_book_at": "",
+            "stale_book_age_seconds": None,
+            "stale": False,
+            "last_error": "",
+        }
+    last_book_at = str(raw.get("last_book_at") or "")
+    stale_book_age_seconds = _live_age_seconds(last_book_at, raw.get("stale_book_age_seconds"))
+    stale = bool(raw.get("stale")) or (
+        stale_book_age_seconds is not None and stale_book_age_seconds > settings.orderbook_stream_stale_seconds
+    )
+    thread_alive = bool(raw.get("thread_alive"))
+    last_error = str(raw.get("last_error") or "")
+    if not thread_alive:
+        status = "FAILED"
+    elif stale:
+        status = "STALE"
+    elif last_error:
+        status = "DEGRADED"
+    else:
+        status = "HEALTHY"
+    return {
+        "status": status,
+        "thread_alive": thread_alive,
+        "reconnect_count": int(_float(raw.get("reconnect_count"))),
+        "last_message_at": str(raw.get("last_message_at") or ""),
+        "last_book_at": last_book_at,
+        "stale_book_age_seconds": stale_book_age_seconds,
+        "stale": stale,
+        "last_error": last_error,
+    }
+
+
 def _realized_results(trades: list[dict[str, str]], decisions: list[dict[str, str]], limit: int = 80) -> list[dict[str, Any]]:
     open_by_market: dict[str, dict[str, str]] = {}
     decision_by_market = _latest_entry_decisions(decisions)
@@ -1299,6 +1432,7 @@ def _bot_status(
     decisions: list[dict[str, str]],
     positions: list[dict[str, Any]],
     runner_status: dict[str, Any],
+    health: dict[str, Any],
 ) -> dict[str, Any]:
     timestamps = [_parse_ts(row) for row in trades + decisions]
     timestamps.extend(str(pos.get("opened_at") or "") for pos in positions)
@@ -1330,6 +1464,16 @@ def _bot_status(
         status = "LATE"
     else:
         status = "STALE"
+    component_statuses = {
+        str(health.get("forecast", {}).get("status") or ""),
+        str(health.get("websocket", {}).get("status") or ""),
+    }
+    if "FAILED" in component_statuses:
+        status = "FAILED"
+    elif "STALE" in component_statuses:
+        status = "STALE"
+    elif "DEGRADED" in component_statuses:
+        status = "DEGRADED"
     next_scan_at = _parse_datetime(str(runner_status.get("next_scan_at") or ""))
     next_scan_in = max(0, int((next_scan_at - now).total_seconds())) if next_scan_at is not None else max(0, interval - age)
     return {
@@ -1358,6 +1502,10 @@ def build_dashboard_payload(settings: Settings | None = None, auth_required: boo
     trades_path = Path(settings.trades_csv_path)
     trade_totals = _trade_action_totals(trades_path)
     runner_status = read_runner_status(settings)
+    health = {
+        "forecast": _forecast_health(settings, runner_status),
+        "websocket": _websocket_health(settings, runner_status),
+    }
     positions = [
         _position_payload(p, decision_by_market.get(str(p.get("market_id") or "")))
         for p in state.get("positions", [])
@@ -1379,7 +1527,8 @@ def build_dashboard_payload(settings: Settings | None = None, auth_required: boo
     return {
         "generated_at": _now_iso(),
         "security": {"auth_required": auth_required},
-        "bot": _bot_status(settings, trades, decisions, positions, runner_status),
+        "bot": _bot_status(settings, trades, decisions, positions, runner_status, health),
+        "health": health,
         "summary": {
             "initial_bankroll": settings.bankroll_usd,
             "cash": cash,

@@ -32,6 +32,19 @@ from .weather_client import parse_weather_question
 DEFAULT_ENSEMBLE_MODELS = "gfs_seamless,ecmwf_ifs025"
 
 
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _utc_iso(value: datetime) -> str:
+    return value.astimezone(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def _safe_error(exc: BaseException) -> str:
+    text = " ".join(str(exc).split())
+    return f"{type(exc).__name__}: {text}"[:240]
+
+
 # ---------------------------------------------------------------------------
 # 2) Math helpers
 # ---------------------------------------------------------------------------
@@ -228,6 +241,11 @@ class OpenMeteoEnsembleClient:
         self.cache_ttl_seconds = max(0, int(cache_ttl_seconds))
         self.disabled_reason = ""
         self._cache: dict[str, dict[str, Any]] = {}
+        self._last_attempt_at: datetime | None = None
+        self._last_success_at: datetime | None = None
+        self._last_failure_reason = ""
+        self._persistence_error = ""
+        self._latest_cache_created_at: datetime | None = None
 
     @classmethod
     def from_settings(cls, settings: Settings) -> "OpenMeteoEnsembleClient":
@@ -243,9 +261,46 @@ class OpenMeteoEnsembleClient:
             self.models,
         ])
 
+    @staticmethod
+    def _created_at(entry: dict[str, Any]) -> datetime | None:
+        try:
+            created_at = datetime.fromisoformat(str(entry.get("created_at", "")).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
+        return created_at.astimezone(timezone.utc)
+
+    def _remember_cached_data(self, cache_key: str, data: dict[str, Any], created_at: datetime) -> None:
+        self._cache[cache_key] = {
+            "created_at": _utc_iso(created_at),
+            "data": data,
+        }
+        if self._latest_cache_created_at is None or created_at > self._latest_cache_created_at:
+            self._latest_cache_created_at = created_at
+        if self._last_success_at is None or created_at > self._last_success_at:
+            self._last_success_at = created_at
+
+    def _fresh_entry_data(self, entry: dict[str, Any], now: datetime) -> dict[str, Any] | None:
+        if self.cache_ttl_seconds <= 0:
+            return None
+        created_at = self._created_at(entry)
+        if created_at is None:
+            return None
+        age_seconds = (now - created_at).total_seconds()
+        if age_seconds > self.cache_ttl_seconds:
+            return None
+        data = entry.get("data")
+        return data if isinstance(data, dict) else None
+
     def _fresh_cached_data(self, cache_key: str) -> dict[str, Any] | None:
-        if cache_key in self._cache:
-            return self._cache[cache_key]
+        now = _utc_now()
+        memory_entry = self._cache.get(cache_key)
+        if isinstance(memory_entry, dict):
+            data = self._fresh_entry_data(memory_entry, now)
+            if data is not None:
+                return data
+            self._cache.pop(cache_key, None)
         if self.cache_ttl_seconds <= 0 or self.cache_path is None or not self.cache_path.exists():
             return None
         try:
@@ -253,22 +308,20 @@ class OpenMeteoEnsembleClient:
             entry = raw.get(cache_key) if isinstance(raw, dict) else None
             if not isinstance(entry, dict):
                 return None
-            created_at = datetime.fromisoformat(str(entry.get("created_at", "")).replace("Z", "+00:00"))
-            if created_at.tzinfo is None:
-                created_at = created_at.replace(tzinfo=timezone.utc)
-            age_seconds = (datetime.now(timezone.utc) - created_at.astimezone(timezone.utc)).total_seconds()
-            if age_seconds > self.cache_ttl_seconds:
-                return None
-            data = entry.get("data")
-            if isinstance(data, dict):
-                self._cache[cache_key] = data
+            data = self._fresh_entry_data(entry, now)
+            created_at = self._created_at(entry)
+            if data is not None and created_at is not None:
+                self._remember_cached_data(cache_key, data, created_at)
                 return data
-        except Exception:
+        except Exception as exc:
+            self._persistence_error = _safe_error(exc)
             return None
         return None
 
     def _store_cached_data(self, cache_key: str, data: dict[str, Any]) -> None:
-        self._cache[cache_key] = data
+        created_at = _utc_now()
+        self._remember_cached_data(cache_key, data, created_at)
+        self._last_failure_reason = ""
         if self.cache_ttl_seconds <= 0 or self.cache_path is None:
             return
         try:
@@ -279,15 +332,34 @@ class OpenMeteoEnsembleClient:
                     loaded = json.loads(self.cache_path.read_text(encoding="utf-8"))
                     if isinstance(loaded, dict):
                         raw = loaded
-                except Exception:
+                except Exception as exc:
+                    self._persistence_error = _safe_error(exc)
                     raw = {}
             raw[cache_key] = {
-                "created_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+                "created_at": _utc_iso(created_at),
                 "data": data,
             }
             self.cache_path.write_text(json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8")
-        except Exception:
-            pass
+            self._persistence_error = ""
+        except Exception as exc:
+            self._persistence_error = _safe_error(exc)
+
+    def health_snapshot(self, now: datetime | None = None) -> dict[str, Any]:
+        current = (now or _utc_now()).astimezone(timezone.utc)
+        cache_age_seconds: int | None = None
+        if self._latest_cache_created_at is not None:
+            cache_age_seconds = max(0, int((current - self._latest_cache_created_at).total_seconds()))
+        stale = self._last_success_at is None
+        if cache_age_seconds is not None and self.cache_ttl_seconds > 0:
+            stale = cache_age_seconds > self.cache_ttl_seconds
+        return {
+            "last_attempt_at": _utc_iso(self._last_attempt_at) if self._last_attempt_at is not None else "",
+            "last_success_at": _utc_iso(self._last_success_at) if self._last_success_at is not None else "",
+            "last_failure_reason": self._last_failure_reason,
+            "cache_age_seconds": cache_age_seconds,
+            "stale": stale,
+            "persistence_error": self._persistence_error,
+        }
 
     @retry(
         stop=stop_after_attempt(3),
@@ -307,6 +379,7 @@ class OpenMeteoEnsembleClient:
         if cached is not None:
             return cached
         if self.disabled_reason:
+            self._last_failure_reason = self.disabled_reason
             raise RuntimeError(f"ensemble disabled for cycle: {self.disabled_reason}")
         params = {
             "latitude": latitude,
@@ -317,15 +390,26 @@ class OpenMeteoEnsembleClient:
             "timezone": timezone,
             "forecast_days": forecast_days,
         }
-        resp = requests.get(self.base_url, params=params, timeout=self.timeout)
         try:
+            self._last_attempt_at = _utc_now()
+            resp = requests.get(self.base_url, params=params, timeout=self.timeout)
             resp.raise_for_status()
         except requests.HTTPError as exc:
             if _is_rate_limited(exc):
                 body = getattr(resp, "text", "") or str(exc)
                 self.disabled_reason = f"Open-Meteo rate limited: {body[:160]}"
+                self._last_failure_reason = self.disabled_reason
+            else:
+                self._last_failure_reason = _safe_error(exc)
             raise
-        data = resp.json()
+        except Exception as exc:
+            self._last_failure_reason = _safe_error(exc)
+            raise
+        try:
+            data = resp.json()
+        except Exception as exc:
+            self._last_failure_reason = _safe_error(exc)
+            raise
         self._store_cached_data(cache_key, data)
         return data
 

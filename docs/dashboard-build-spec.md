@@ -56,6 +56,16 @@ Do not show `누적 후보 판단`, `예보 없음`, `실제 진입`, or `YES/NO
 Those counters may still exist internally for tests or future diagnostics, but
 they are not dashboard display rows.
 
+Below the summary rows, include two health boxes:
+
+- `예보 상태`: explain the last fresh-request attempt, last successful
+  forecast timestamp, cache age, stale warning, recent failure reason, and
+  disk-save error. A visible dashboard with an old forecast is not healthy.
+- `WebSocket 상태`: explain whether the background receiver thread is alive,
+  reconnect count, last incoming message, last actual order-book price update,
+  stale-book age, and recent stream error. Trade-only or tick-size-only events
+  must not refresh the last order-book timestamp.
+
 ## Open Positions Contract
 
 Each open-position card must include:

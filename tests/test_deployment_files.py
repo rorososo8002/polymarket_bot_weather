@@ -27,6 +27,8 @@ def test_vps_env_example_keeps_runtime_state_under_data_dir():
 
     assert "STATE_PATH=/opt/polymarket-weather-bot/data/paper_state.json" in text
     assert "RAW_SNAPSHOTS_PATH=/opt/polymarket-weather-bot/data/paper_raw_snapshots.jsonl" in text
+    assert "ORDERBOOK_STREAM_STALE_SECONDS=60" in text
+    assert "RUNNER_HEALTH_STATUS_INTERVAL_SECONDS=5" in text
     assert "POLYMARKET_PRIVATE_KEY" not in text
 
 
@@ -50,6 +52,8 @@ def test_dashboard_env_requires_token_and_data_paths():
     assert "DASHBOARD_PORT=8787" in text
     assert "DASHBOARD_TOKEN=change-me-long-random-token" in text
     assert "STATE_PATH=/opt/polymarket-weather-bot/data/paper_state.json" in text
+    assert "FORECAST_CACHE_TTL_SECONDS=1800" in text
+    assert "ORDERBOOK_STREAM_STALE_SECONDS=60" in text
     assert "POLYMARKET_PRIVATE_KEY" not in text
 
 

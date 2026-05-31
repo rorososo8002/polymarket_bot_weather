@@ -161,6 +161,17 @@ def _side_result(
     )
 
 
+def _no_valid_side_reason(base_reason: str, per_side: dict[str, EdgeResult]) -> str:
+    details = [
+        result.reason
+        for side in ("YES", "NO")
+        if (result := per_side.get(side)) is not None and result.reason
+    ]
+    if not details:
+        return base_reason
+    return f"{base_reason} {' | '.join(details)}"
+
+
 def evaluate_market(
     market: RawMarket,
     signal: WeatherSignal,
@@ -213,6 +224,9 @@ def evaluate_market(
 
     if best_result.side == "SKIP":
         prefix = "trade blocked" if best_result.net_edge > min_edge else f"edge below {min_edge:.2%}"
+        reason = best_result.reason
+        if best_result.net_edge <= -999.0:
+            reason = _no_valid_side_reason(reason, per_side)
         best_result = EdgeResult(
             side="SKIP",
             p_true=signal.p_true,
@@ -220,7 +234,7 @@ def evaluate_market(
             net_edge=best_result.net_edge,
             size_usd=0.0,
             size_shares=0.0,
-            reason=f"{prefix} [{market_type}]. {best_result.reason}",
+            reason=f"{prefix} [{market_type}]. {reason}",
         )
     elif best_result.net_edge <= min_edge:
         best_result = EdgeResult(
@@ -300,6 +314,16 @@ def _hydrate_open_position_markets(client: PolymarketClient, broker: PaperBroker
             market_by_id[pos.market_id] = client.get_market(pos.market_id)
         except Exception:
             market_by_id[pos.market_id] = _market_from_position(pos)
+
+
+def _stream_market_registry(
+    client: PolymarketClient,
+    broker: PaperBroker,
+    markets: list[RawMarket],
+) -> dict[str, RawMarket]:
+    market_by_id = {market.market_id: market for market in markets}
+    _hydrate_open_position_markets(client, broker, market_by_id)
+    return market_by_id
 
 
 def run_cycle(settings: Settings | None = None) -> list[MarketDecision]:
@@ -497,6 +521,15 @@ def _evaluate_realtime_update(
         print(message)
 
 
+def _stream_status_phase(websocket_health: dict[str, object], *, token_count: int, market_count: int) -> tuple[str, str]:
+    coverage = f"{token_count} tokens across {market_count} markets"
+    if not websocket_health.get("thread_alive"):
+        return "stream_error", f"websocket thread stopped; {coverage}"
+    if websocket_health.get("stale"):
+        return "stream_stale", f"websocket order book stale; {coverage}"
+    return "streaming", f"websocket streaming {coverage}"
+
+
 def run_realtime_forever(settings: Settings | None = None) -> None:
     settings = settings or load_settings()
     while True:
@@ -507,14 +540,16 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
         broker = PaperBroker(settings)
         write_runner_status(settings, "discovering", message="discovering markets for websocket stream", cycle_started_at=cycle_started_at)
         markets = discovery_client.discover_weather_markets(limit=settings.max_markets)
+        market_by_id = _stream_market_registry(discovery_client, broker, markets)
+        stream_markets = list(market_by_id.values())
         market_by_token = {
             token_id: market
-            for market in markets
+            for market in stream_markets
             for token_id in _market_token_ids(market)
         }
         signals_by_market: dict[str, WeatherSignal] = {}
         market_types: dict[str, str] = {}
-        for market in markets:
+        for market in stream_markets:
             signal = estimate_weather_probability(market.question, settings=settings, ensemble_client=ensemble_client)
             signals_by_market[market.market_id] = signal
             market_types[market.market_id] = _market_type_from_signal(signal)
@@ -543,25 +578,43 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
             on_update=on_update,
             heartbeat_seconds=settings.orderbook_stream_heartbeat_seconds,
             reconnect_seconds=settings.orderbook_stream_reconnect_seconds,
+            stale_seconds=settings.orderbook_stream_stale_seconds,
         )
         stream_holder["client"] = StreamBackedPolymarketClient(settings.gamma_base, settings.clob_base, stream)
         stream.start(market_by_token.keys())
-        write_runner_status(
-            settings,
-            "streaming",
-            message=f"websocket streaming {len(market_by_token)} tokens across {len(markets)} markets",
-            cycle_started_at=cycle_started_at,
-            markets_done=0,
-            markets_total=len(markets),
-            cash_usd=round(broker.state.cash_usd, 2),
-            exposure_usd=round(broker.total_exposure(), 2),
-            open_positions=len(broker.state.positions),
-        )
+
+        def write_stream_status() -> None:
+            websocket_health = stream.health_snapshot()
+            phase, message = _stream_status_phase(
+                websocket_health,
+                token_count=len(market_by_token),
+                market_count=len(stream_markets),
+            )
+            write_runner_status(
+                settings,
+                phase,
+                message=message,
+                cycle_started_at=cycle_started_at,
+                markets_done=0,
+                markets_total=len(stream_markets),
+                cash_usd=round(broker.state.cash_usd, 2),
+                exposure_usd=round(broker.total_exposure(), 2),
+                open_positions=len(broker.state.positions),
+                forecast=ensemble_client.health_snapshot(),
+                websocket=websocket_health,
+            )
+
+        write_stream_status()
+        status_updated_at = datetime.now(timezone.utc)
         try:
             while True:
-                elapsed = (datetime.now(timezone.utc) - refresh_started_at).total_seconds()
+                now = datetime.now(timezone.utc)
+                elapsed = (now - refresh_started_at).total_seconds()
                 if elapsed >= settings.forecast_refresh_interval_seconds:
                     break
+                if (now - status_updated_at).total_seconds() >= settings.runner_health_status_interval_seconds:
+                    write_stream_status()
+                    status_updated_at = now
                 time.sleep(1)
         finally:
             stream.stop()

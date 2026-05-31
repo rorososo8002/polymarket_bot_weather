@@ -9,6 +9,7 @@
 - Forecasts use the mapped settlement station, not city-center coordinates.
 - Forecast data refreshes every 30 minutes by default.
 - Order books stream through the Polymarket CLOB WebSocket market channel by default.
+- Open-position tokens remain in WebSocket subscriptions even after discovery rolls forward to newer markets.
 - Execution is paper-only through `PaperBroker`; no wallet keys, signing, or live order submission are present.
 
 ## Implemented
@@ -18,7 +19,19 @@
 - Polymarket discovery gating so weather-shaped markets outside `STATION_MAP` are skipped.
 - Probability estimation that returns `unsupported-station` for unmapped settlement stations.
 - 30-minute Open-Meteo forecast cache TTL and refresh cadence.
+- In-memory Open-Meteo entries obey the same TTL as disk entries. Forecast
+  health records the latest real fetch attempt, latest successful forecast,
+  recent failure reason, reusable-cache age, stale warning, and disk-persistence
+  error.
 - WebSocket-backed order-book cache and event-driven paper evaluations.
+- WebSocket health records whether the background receiver thread is alive,
+  reconnect count, latest received message, latest order-book price update,
+  stale-book age, stale warning, and recent stream error. Runner status refreshes
+  this health snapshot every 5 seconds while streaming.
+- WebSocket subscription registry combines current discovery markets with open
+  positions, including a position-based fallback when market hydration fails.
+- Invalid two-sided liquidity evaluations log the YES and NO rejection reasons
+  instead of only an opaque no-valid-side message.
 - Probability-based stop policy instead of fixed token-price stop loss.
 - Edge-faded exits ignore invalid `net_edge=-999` sentinels when no executable
   `p_exec` exists, preventing close-and-reopen churn from transient invalid book
@@ -51,6 +64,9 @@ Important coverage already in the suite:
 - unverified cities are not parsed or traded
 - discovery rejects non-weather false positives
 - realtime WebSocket mode is required by `run_forever()`
+- open positions remain subscribed when absent from the latest discovery scan
+- market-hydration failure still reconstructs the held token subscription
+- invalid two-sided liquidity SKIPs include both rejection reasons
 - forecast cache avoids repeated Open-Meteo calls
 - unavailable ensemble forecasts are not treated as strategy data
 - invalid edge sentinels do not trigger edge-faded exits
@@ -58,7 +74,9 @@ Important coverage already in the suite:
 
 ## Remaining Production Hardening
 
-- Add stream health telemetry for reconnect count, stale book age, and startup snapshot coverage.
+- Wire resolved-market settlement checks into the default realtime loop.
+  `run_cycle()` calls `maybe_settle_resolved_positions()`, but the default
+  WebSocket path currently performs price-based close checks only.
 - Calibrate `PROBABILITY_STOP_DROP_THRESHOLD` after enough resolved paper trades exist.
 - Add station-level forecast bias files after enough station evidence exists.
 - Build a recurring paper-trade review loop that compares realized PnL by city,

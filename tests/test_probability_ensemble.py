@@ -1,4 +1,4 @@
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 import requests
@@ -116,6 +116,69 @@ def test_ensemble_client_caches_identical_forecast_requests(monkeypatch):
 
     assert first == second
     assert calls == 1
+
+
+def test_ensemble_client_refreshes_expired_memory_cache(monkeypatch):
+    now = [datetime(2026, 6, 1, 0, 0, tzinfo=timezone.utc)]
+    calls = 0
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"daily": {"time": ["2026-06-01"], "calls": calls}}
+
+    def fake_get(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return FakeResponse()
+
+    monkeypatch.setattr("weather_bot.probability._utc_now", lambda: now[0])
+    monkeypatch.setattr("weather_bot.probability.requests.get", fake_get)
+    client = OpenMeteoEnsembleClient(cache_ttl_seconds=60)
+
+    first = client.forecast_daily_ensemble(1.0, 2.0, timezone="UTC", forecast_days=3)
+    now[0] += timedelta(seconds=59)
+    second = client.forecast_daily_ensemble(1.0, 2.0, timezone="UTC", forecast_days=3)
+    now[0] += timedelta(seconds=2)
+    third = client.forecast_daily_ensemble(1.0, 2.0, timezone="UTC", forecast_days=3)
+
+    assert first == second
+    assert third != second
+    assert calls == 2
+
+
+def test_ensemble_client_health_reports_stale_cache_and_persistence_error(monkeypatch, tmp_path):
+    now = [datetime(2026, 6, 1, 0, 0, tzinfo=timezone.utc)]
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"daily": {"time": ["2026-06-01"]}}
+
+    cache_path = tmp_path / "forecast-cache-dir"
+    cache_path.mkdir()
+    monkeypatch.setattr("weather_bot.probability._utc_now", lambda: now[0])
+    monkeypatch.setattr("weather_bot.probability.requests.get", lambda *_args, **_kwargs: FakeResponse())
+    client = OpenMeteoEnsembleClient(cache_path=cache_path, cache_ttl_seconds=60)
+
+    client.forecast_daily_ensemble(1.0, 2.0, timezone="UTC", forecast_days=3)
+    fresh = client.health_snapshot()
+    now[0] += timedelta(seconds=61)
+    stale = client.health_snapshot()
+
+    assert fresh["last_attempt_at"] == "2026-06-01T00:00:00+00:00"
+    assert fresh["last_success_at"] == "2026-06-01T00:00:00+00:00"
+    assert fresh["last_failure_reason"] == ""
+    assert fresh["cache_age_seconds"] == 0
+    assert fresh["stale"] is False
+    assert fresh["persistence_error"]
+    assert "Error" in fresh["persistence_error"]
+    assert stale["cache_age_seconds"] == 61
+    assert stale["stale"] is True
 
 
 def test_ensemble_rate_limit_is_not_retried_and_disables_later_calls(monkeypatch):

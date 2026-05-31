@@ -11,6 +11,7 @@ Run a conservative paper-trading bot for Polymarket weather markets using only v
 - Skip any weather market whose parsed city is not in `STATION_MAP`.
 - Refresh Open-Meteo forecast data no more often than every 30 minutes by default.
 - Monitor order books through the Polymarket CLOB WebSocket market stream by default.
+- Keep token IDs for open positions subscribed even when discovery rolls forward to newer markets.
 - Keep paper-trading behavior intact unless live execution is explicitly requested.
 
 ## Architecture
@@ -69,7 +70,9 @@ protection, missing token ids, or risk caps. `DECISION SKIP` means the bot saw
 the market but refused to open a trade because the edge was too small, confidence
 was too low, parsing/date safety failed, liquidity was inadequate, the spread was
 too wide, prices were extreme, YES+NO asks were abnormal, or no executable side
-could be evaluated.
+could be evaluated. When both sides fail liquidity validation, the SKIP reason
+includes the YES and NO rejection details so operators can see why neither side
+was executable.
 
 ## Dashboard Contract
 
@@ -85,6 +88,16 @@ operator decisions:
 - `총 수익금`: cumulative positive realized PnL from closed trade rows
 - `총 손실금`: cumulative absolute negative realized PnL from closed trade rows
 - `남은 현금`: current `cash_usd` in paper state
+
+Below those summary rows, show two operational health explanations:
+
+- `예보 상태`: show when a fresh Open-Meteo request was last attempted, when
+  one last succeeded, how old the reusable cache is, why the latest request
+  failed, and whether disk persistence failed.
+- `WebSocket 상태`: show whether the background receiver thread is alive, how
+  many reconnections occurred, when any message last arrived, when a real
+  order-book price update last arrived, how old that book is, and the latest
+  stream error.
 
 Do not show cumulative candidate-judgment, forecast-unavailable, actual-open,
 or YES/NO decision counters in the UI. Decision and trade totals can remain
@@ -116,6 +129,8 @@ reopens when the next valid update arrives.
 ```text
 ORDERBOOK_STREAM_ENABLED=true
 ORDERBOOK_STREAM_URL=wss://ws-subscriptions-clob.polymarket.com/ws/market
+ORDERBOOK_STREAM_STALE_SECONDS=60
+RUNNER_HEALTH_STATUS_INTERVAL_SECONDS=5
 FORECAST_REFRESH_INTERVAL_SECONDS=1800
 FORECAST_CACHE_TTL_SECONDS=1800
 MAX_MARKETS=41

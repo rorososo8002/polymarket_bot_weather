@@ -46,10 +46,14 @@ def test_load_settings_reads_forecast_cache_controls(monkeypatch):
 def test_load_settings_reads_realtime_orderbook_stream(monkeypatch):
     monkeypatch.setenv("ORDERBOOK_STREAM_ENABLED", "true")
     monkeypatch.setenv("ORDERBOOK_STREAM_HEARTBEAT_SECONDS", "10")
+    monkeypatch.setenv("ORDERBOOK_STREAM_STALE_SECONDS", "45")
+    monkeypatch.setenv("RUNNER_HEALTH_STATUS_INTERVAL_SECONDS", "7")
     monkeypatch.setenv("FORECAST_REFRESH_INTERVAL_SECONDS", "600")
 
     settings = load_settings()
 
     assert settings.orderbook_stream_enabled is True
     assert settings.orderbook_stream_heartbeat_seconds == 10
+    assert settings.orderbook_stream_stale_seconds == 45
+    assert settings.runner_health_status_interval_seconds == 7
     assert settings.forecast_refresh_interval_seconds == 600

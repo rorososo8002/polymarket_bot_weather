@@ -4,12 +4,12 @@ Date: 2026-05-28 Asia/Seoul
 
 ## Current State
 
-- Vultr VPS: `141.164.56.246`
-- Vultr services are intentionally stopped and disabled:
-  - `polymarket-weather-bot`
-  - `polymarket-weather-dashboard`
-- No `live-paper-bot` or `weather-dashboard` process should be running on Vultr.
-- Reason for stopping: Open-Meteo daily limit was hit on the Vultr public IP. Do not restart Vultr services unless explicitly asked.
+- Oracle is the only active deployment target.
+- Oracle SSH target: `ubuntu@140.245.69.242`.
+- Canonical private key file: `C:\Users\wpdla\Documents\오라클ssh\ssh-key-2026-05-25.key`.
+- Legacy pre-Oracle VPS helpers, keys, and runtime paths must not be used.
+- Do not connect to retired pre-Oracle hosts while diagnosing the bot, dashboard, or deployment.
+- If `127.0.0.1:8787` does not load, check the Oracle SSH tunnel and Oracle dashboard service only.
 - The bot remains paper-only. Do not add private keys or live-wallet execution.
 
 ## Local Repo State To Preserve
@@ -24,15 +24,12 @@ There are uncommitted local changes that should be reviewed before committing:
 - Some unused code was removed from probability/weather client modules.
 - Relevant tests were updated and `python -m pytest -q` passed after the local changes.
 
-Do not copy old Vultr runtime files to Oracle. Start the Oracle paper run from clean runtime data.
+Do not copy old pre-Oracle runtime files to Oracle. Start the Oracle paper run from clean runtime data.
 
 ## Next Work
 
-1. Get the new Oracle VPS connection details:
-   - public IP
-   - SSH username
-   - private key path
-2. SSH into Oracle and prepare the server:
+1. SSH into Oracle using the fixed target and private key above.
+2. Prepare the server if a rebuild is required:
    - install Python, git, venv, systemd dependencies
    - add 2GB swap if the instance has 1GB RAM
    - open dashboard port only if needed
@@ -40,6 +37,8 @@ Do not copy old Vultr runtime files to Oracle. Start the Oracle paper run from c
 4. Create Oracle env files with safe production defaults:
    - `MAX_MARKETS=41`
    - `ORDERBOOK_STREAM_ENABLED=true`
+   - `ORDERBOOK_STREAM_STALE_SECONDS=60`
+   - `RUNNER_HEALTH_STATUS_INTERVAL_SECONDS=5`
    - `FORECAST_REFRESH_INTERVAL_SECONDS=1800`
    - `FORECAST_CACHE_TTL_SECONDS=1800`
    - paper trading only
@@ -51,6 +50,10 @@ Do not copy old Vultr runtime files to Oracle. Start the Oracle paper run from c
    - dashboard status shows `scan_interval_seconds=1800`
    - bot reaches `phase=streaming`
    - message shows `websocket streaming 82 tokens across 41 markets`
+   - dashboard `예보 상태` shows a recent successful forecast or an explicit
+     stale warning
+   - dashboard `WebSocket 상태` shows a live receiver thread and a recent
+     order-book update
    - decisions either use real forecast data or fail closed with `forecast-unavailable`
 
 ## Important Guardrails
