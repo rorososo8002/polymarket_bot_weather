@@ -1,90 +1,50 @@
-# Production Status
+# Production Progress
 
-## Current Operating Contract
+## 완료
 
-- The bot is a live-data paper-trading service.
-- The supported universe is exactly the 41 cities in `src/weather_bot/stations.py`.
-- `STATION_MAP` is the settlement-station source of truth.
-- `Settings.max_markets` defaults to `SUPPORTED_CITY_COUNT`, so the scan size follows the station registry.
-- Forecasts use the mapped settlement station, not city-center coordinates.
-- Forecast data refreshes every 30 minutes by default.
-- Order books stream through the Polymarket CLOB WebSocket market channel by default.
-- Open-position tokens remain in WebSocket subscriptions even after discovery rolls forward to newer markets.
-- Execution is paper-only through `PaperBroker`; no wallet keys, signing, or live order submission are present.
+- 봇은 실거래 주문을 보내지 않는 paper-trading 전용 서비스입니다.
+- 거래 가능한 도시는 `src/weather_bot/stations.py`의 검증된 41개 도시로
+  제한했습니다. `STATION_MAP`이 정산 관측소의 기준입니다.
+- Open-Meteo 예보는 기본 30분마다 갱신합니다. 메모리 캐시와 디스크
+  캐시에 같은 TTL을 적용하고, 마지막 시도·성공·실패 이유·캐시 나이·
+  오래된 예보 여부·디스크 저장 오류를 대시보드에 표시합니다.
+- 주문서는 Polymarket CLOB WebSocket으로 받습니다. 실시간 수신
+  스레드가 살아 있는지, 재접속 횟수, 마지막 메시지, 마지막 실제
+  주문서 갱신, 주문서 나이, 오류를 대시보드에 표시합니다.
+- 새 마켓 탐색 날짜가 바뀌어도 보유 포지션의 토큰은 WebSocket 구독에
+  남깁니다. 그래야 보유 포지션 가격이 과거 값에서 멈추지 않습니다.
+- YES와 NO 양쪽 모두 거래하기 어려운 경우, SKIP 로그에 양쪽 거절
+  이유를 남깁니다.
+- `net_edge=-999`처럼 계산 실패를 뜻하는 값은 손절 신호로 사용하지
+  않습니다.
+- 대시보드는 현재 포지션, 진입금액, 최근 예보, 실현 수익·손실, 남은
+  현금과 예보·WebSocket 건강 상태를 보여줍니다.
+- Phase 0과 Phase 1은 로컬에서 검증했고 `4ac3cf5`로 커밋했습니다.
 
-## Implemented
+## 진행 중
 
-- Station allowlist and station coordinates for 41 verified Polymarket weather cities.
-- Parser gating so unsupported cities are not treated as tradable markets.
-- Polymarket discovery gating so weather-shaped markets outside `STATION_MAP` are skipped.
-- Probability estimation that returns `unsupported-station` for unmapped settlement stations.
-- 30-minute Open-Meteo forecast cache TTL and refresh cadence.
-- In-memory Open-Meteo entries obey the same TTL as disk entries. Forecast
-  health records the latest real fetch attempt, latest successful forecast,
-  recent failure reason, reusable-cache age, stale warning, and disk-persistence
-  error.
-- WebSocket-backed order-book cache and event-driven paper evaluations.
-- WebSocket health records whether the background receiver thread is alive,
-  reconnect count, latest received message, latest order-book price update,
-  stale-book age, stale warning, and recent stream error. Runner status refreshes
-  this health snapshot every 5 seconds while streaming.
-- WebSocket subscription registry combines current discovery markets with open
-  positions, including a position-based fallback when market hydration fails.
-- Invalid two-sided liquidity evaluations log the YES and NO rejection reasons
-  instead of only an opaque no-valid-side message.
-- Probability-based stop policy instead of fixed token-price stop loss.
-- Edge-faded exits ignore invalid `net_edge=-999` sentinels when no executable
-  `p_exec` exists, preventing close-and-reopen churn from transient invalid book
-  evaluations.
-- Dashboard Scanner Intelligence shows open positions, open entry cost, latest
-  Open-Meteo forecast cache time, realized profit/loss totals, and remaining
-  cash. The UI intentionally hides candidate-decision counters so operators do
-  not confuse signals with actual trades.
-- Exposure caps for market, city, and city-date concentration.
-- Runner heartbeat file for dashboard-visible progress.
-- VPS systemd examples for the paper bot and dashboard.
-- Production docs now define decision events and exit rules as an executable
-  handoff contract for future AI agents.
+- 로컬 코드와 문서 정리는 끝났습니다.
+- Oracle VPS에는 Phase 0과 Phase 1 변경을 아직 배포하지 않았습니다.
+- 배포는 변경 내용, 위험, 검증 방법, 되돌리는 방법을 설명한 뒤 사용자
+  승인을 받아야 합니다.
 
-## Verification Focus
+## 다음 작업
 
-Run these before changing production behavior:
+1. `docs/strategy-upgrade-roadmap.md`의 Phase 2만 진행합니다.
+2. `0.88`에 진입해서 `0.92` 부근에 청산하는 것처럼 비용을 빼면
+   수익이 너무 얇은 거래를 거절합니다.
+3. 공식 Polymarket 수수료 계산, 스프레드, 슬리피지를 반영한 예상
+   순수익률 필터를 테스트부터 추가합니다.
+4. 기존 남은 위험도 보존합니다. 기본 WebSocket 경로에는 해결된
+   시장의 settlement 처리가 아직 연결되지 않았습니다.
 
-```powershell
-$env:PYTHONPATH='src'
-$env:TMP=(Resolve-Path '.pytest-tmp-all').Path
-$env:TEMP=$env:TMP
-python -m pytest -q
-```
+## 이어받는 AI에게
 
-Important coverage already in the suite:
+> 처음부터 다시 설계하지 말고 이 문서의 '진행 중'과 '다음 작업'부터 이어갑니다. 완료된 항목을 다시 구현하지 않고, 코드와 문서가 맞지 않으면 차이를 기록한 뒤 진행합니다.
 
-- `len(STATION_MAP) == 41`
-- `Settings.max_markets == SUPPORTED_CITY_COUNT`
-- unverified cities are not parsed or traded
-- discovery rejects non-weather false positives
-- realtime WebSocket mode is required by `run_forever()`
-- open positions remain subscribed when absent from the latest discovery scan
-- market-hydration failure still reconstructs the held token subscription
-- invalid two-sided liquidity SKIPs include both rejection reasons
-- forecast cache avoids repeated Open-Meteo calls
-- unavailable ensemble forecasts are not treated as strategy data
-- invalid edge sentinels do not trigger edge-faded exits
-- dashboard scanner totals count the full decision log, not only the recent tail
-
-## Remaining Production Hardening
-
-- Wire resolved-market settlement checks into the default realtime loop.
-  `run_cycle()` calls `maybe_settle_resolved_positions()`, but the default
-  WebSocket path currently performs price-based close checks only.
-- Calibrate `PROBABILITY_STOP_DROP_THRESHOLD` after enough resolved paper trades exist.
-- Add station-level forecast bias files after enough station evidence exists.
-- Build a recurring paper-trade review loop that compares realized PnL by city,
-  threshold distance, time-to-resolution, spread, slippage, and forecast error.
-- Research and test sizing/exit upgrades using expected value, calibrated
-  probability, fractional Kelly, liquidity-adjusted edge, and drawdown limits.
-- Keep live-wallet execution out of scope until a separate key-isolation and kill-switch design is requested.
-
-## Handoff
-
-Start with `AGENTS.md`, `README.md`, and `docs/production-decisions.md`. Treat `src/weather_bot/stations.py` as the source of truth when code and docs disagree.
+- 먼저 `AGENTS.md`, `docs/production-implementation-plan.md`,
+  `docs/production-decisions.md`, `docs/strategy-upgrade-roadmap.md`를
+  읽습니다.
+- `src/weather_bot/stations.py`의 `STATION_MAP`을 지원 도시와 정산
+  관측소의 단일 기준으로 취급합니다.
+- 실거래, 지갑 연결, 자동 배포는 별도 승인 없이 추가하지 않습니다.

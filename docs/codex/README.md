@@ -6,4 +6,3 @@
 - `ssh-powershell.md`: safe SSH commands from Windows PowerShell.
 - `runtime-data.md`: large runtime files and dashboard data readers.
 - `strategy-research.md`: strategy research and production trading guardrails.
-- `work-rules.md`: extended engineering rules.

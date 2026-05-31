@@ -112,3 +112,20 @@ diagnostics distinguish fetch attempts, successful forecast timestamps,
 failure reasons, cache age, stale data, and disk-save failures. WebSocket
 diagnostics distinguish receiver-thread death, reconnect churn, any incoming
 message, actual order-book price updates, stale-book age, and stream errors.
+
+## 2026-06-01: Keep The Entrance Guide Short And The Progress File Current
+
+Decision: `AGENTS.md` contains the project-specific safety and handoff rules
+that every new chat needs. Generic long engineering reminders are not duplicated
+in a separate mandatory checklist. `docs/production-progress.md` stays short and
+uses `완료`, `진행 중`, `다음 작업`, and `이어받는 AI에게`.
+
+Why: Reading a long checklist and a chronological progress diary in every new
+chat spends tokens without improving the next decision. The important rules are
+the ones that prevent concrete mistakes: preserve user work, fail closed, test
+behavior changes, expose failures, keep paper trading, and leave a clear next
+step.
+
+Consequence: Old chronological detail belongs in `docs/archive/` when needed,
+while reusable prevention lessons belong in `docs/solutions/`. A fresh AI
+starts from the current handoff instead of redesigning completed work.

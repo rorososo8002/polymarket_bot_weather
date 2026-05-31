@@ -54,6 +54,20 @@ drawdown control, and empirical paper-trade review when deciding whether a rule
 should change. The objective is to increase risk-adjusted paper returns while
 keeping unknown or unverifiable situations fail-closed.
 
+## Planned Phases
+
+The ordered upgrade phases live in `docs/strategy-upgrade-roadmap.md`. Complete
+one phase per fresh chat so each strategy change remains reviewable.
+
+- Phase 0: preserve and verify the existing baseline
+- Phase 1: expose forecast freshness and WebSocket health
+- Phase 2: reject entries with weak executable net return after costs
+- Phase 3: support exact temperature buckets and event-based discovery
+- Phase 4: select city-date portfolios without multiplying correlated risk
+- Phase 5: add verified settlement-station nowcasts
+- Phase 6: recover principal while retaining a limited settlement runner
+- Phase 7: research public whale and external signals in shadow mode only
+
 ## Decision Event Contract
 
 Every order-book update can produce a decision log:
