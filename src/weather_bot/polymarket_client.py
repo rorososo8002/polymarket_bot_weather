@@ -26,20 +26,18 @@ class PolymarketClient:
         resp.raise_for_status()
         return resp.json()
 
-    def discover_weather_markets(self, limit: int = 20, max_pages: int | None = None) -> list[RawMarket]:
-        """Fetch active markets and keep likely weather-related questions."""
-        markets = self._discover_weather_markets_from_category_pages(limit)
-        if len(markets) >= limit:
-            return markets[:limit]
+    def discover_weather_markets(self, max_pages: int = 8, page_size: int = 100) -> list[RawMarket]:
+        """Fetch weather events and expand every supported binary market found."""
+        markets, seen_event_ids = self._discover_weather_markets_from_category_pages()
 
-        seen_ids = {market.market_id for market in markets}
-        url = f"{self.gamma_base}/markets"
-        page_size = max(limit * 5, 50)
-        page_limit = max_pages if max_pages is not None else max(4, min(limit, 8))
+        seen_market_ids = {market.market_id for market in markets}
+        url = f"{self.gamma_base}/events"
+        page_size = max(1, int(page_size))
+        page_limit = max(0, int(max_pages))
         offset = 0
         pages_scanned = 0
 
-        while len(markets) < limit and pages_scanned < page_limit:
+        while pages_scanned < page_limit:
             params = {
                 "active": "true",
                 "closed": "false",
@@ -53,27 +51,30 @@ class PolymarketClient:
                     break
                 raise
             if isinstance(data, dict):
-                rows = data.get("markets") or data.get("data") or []
+                rows = data.get("events") or data.get("data") or []
             else:
                 rows = data
             if not rows:
                 break
 
-            for row in rows:
-                if not isinstance(row, dict) or not self._is_weather_market(row):
+            for event in rows:
+                if not isinstance(event, dict):
                     continue
-                market = self._parse_market(row)
-                if market.market_id not in seen_ids and (market.yes_token_id or market.no_token_id):
+                event_markets, event_id = self._parse_weather_event(event)
+                if not event_markets or event_id in seen_event_ids:
+                    continue
+                for market in event_markets:
+                    if market.market_id in seen_market_ids:
+                        continue
                     markets.append(market)
-                    seen_ids.add(market.market_id)
-                if len(markets) >= limit:
-                    break
+                    seen_market_ids.add(market.market_id)
+                seen_event_ids.add(event_id)
 
             offset += page_size
             pages_scanned += 1
         return markets
 
-    def _discover_weather_markets_from_category_pages(self, limit: int) -> list[RawMarket]:
+    def _discover_weather_markets_from_category_pages(self) -> tuple[list[RawMarket], set[str]]:
         slugs: list[str] = []
         for path in ("/weather/temperature", "/weather/high-temperature", "/weather/low-temperature", "/weather/precipitation"):
             try:
@@ -82,26 +83,43 @@ class PolymarketClient:
                 continue
 
         markets: list[RawMarket] = []
-        seen_ids: set[str] = set()
+        seen_market_ids: set[str] = set()
+        seen_event_ids: set[str] = set()
         for slug in dict.fromkeys(slugs):
             try:
                 event = self._get(f"{self.gamma_base}/events/slug/{quote(slug, safe='')}")
             except (requests.HTTPError, RetryError, requests.RequestException, ValueError):
                 continue
-            rows = event.get("markets") if isinstance(event, dict) else None
-            if not isinstance(rows, list):
+            if not isinstance(event, dict):
                 continue
-            for row in rows:
-                if not isinstance(row, dict) or not self._is_weather_market(row):
-                    continue
-                market = self._parse_market(row)
-                if market.market_id in seen_ids or not (market.yes_token_id or market.no_token_id):
+            event.setdefault("slug", slug)
+            event_markets, event_id = self._parse_weather_event(event)
+            if not event_markets or event_id in seen_event_ids:
+                continue
+            for market in event_markets:
+                if market.market_id in seen_market_ids:
                     continue
                 markets.append(market)
-                seen_ids.add(market.market_id)
-                if len(markets) >= limit:
-                    return markets
-        return markets
+                seen_market_ids.add(market.market_id)
+            seen_event_ids.add(event_id)
+        return markets, seen_event_ids
+
+    def _parse_weather_event(self, event: dict[str, Any]) -> tuple[list[RawMarket], str]:
+        rows = event.get("markets")
+        if not isinstance(rows, list):
+            return [], ""
+        event_id = str(event.get("id") or event.get("eventId") or event.get("slug") or "")
+        event_slug = str(event.get("slug") or "") or None
+        markets: list[RawMarket] = []
+        for row in rows:
+            if not isinstance(row, dict) or not self._is_weather_market(row):
+                continue
+            market = self._parse_market(row, event_id=event_id or None, event_slug=event_slug)
+            if market.yes_token_id or market.no_token_id:
+                markets.append(market)
+        if not event_id and markets:
+            event_id = "|".join(market.market_id for market in markets)
+        return markets, event_id
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=0.5, min=0.5, max=4))
     def _get_web_text(self, path: str) -> str:
@@ -164,7 +182,13 @@ class PolymarketClient:
         supported_metadata = re.search(r"\b(weather|climate|temperature|rainfall|snowfall|precipitation)\b", metadata)
         return bool(supported_metadata and parsed.city and parsed.confidence >= 0.70)
 
-    def _parse_market(self, row: dict[str, Any]) -> RawMarket:
+    def _parse_market(
+        self,
+        row: dict[str, Any],
+        *,
+        event_id: str | None = None,
+        event_slug: str | None = None,
+    ) -> RawMarket:
         tokens = row.get("tokens") or row.get("clobTokenIds") or []
         yes_token_id = None
         no_token_id = None
@@ -197,6 +221,8 @@ class PolymarketClient:
             yes_token_id=yes_token_id,
             no_token_id=no_token_id,
             condition_id=row.get("conditionId") or row.get("condition_id"),
+            event_id=event_id or row.get("eventId") or row.get("event_id"),
+            event_slug=event_slug or row.get("eventSlug") or row.get("event_slug"),
             raw=row,
         )
 

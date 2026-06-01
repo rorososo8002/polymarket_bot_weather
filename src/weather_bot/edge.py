@@ -1,10 +1,115 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from .models import OrderBook, OrderLevel
+
+
+WEATHER_TAKER_FEE_RATE = 0.05
+
+
+@dataclass(frozen=True)
+class ExecutableNetReturnEstimate:
+    route: str
+    shares: float
+    entry_vwap: float
+    expected_exit_price: float
+    executable_exit_price: float
+    expected_gross_profit_usdc: float
+    entry_fee_usdc: float
+    exit_fee_usdc: float
+    exit_market_cost_usdc: float
+    estimated_cost_usdc: float
+    expected_net_profit_usdc: float
+    expected_net_return_pct: float
 
 
 def clamp_probability(x: float) -> float:
     return max(0.0, min(1.0, x))
+
+
+def polymarket_taker_fee_usdc(shares: float, price: float, fee_rate: float = WEATHER_TAKER_FEE_RATE) -> float:
+    """Calculate the Polymarket taker fee for one matched trade.
+
+    Official formula: shares * fee_rate * price * (1 - price).
+    Polymarket rounds the USDC fee to five decimal places.
+    """
+    if shares < 0:
+        raise ValueError("shares must be non-negative")
+    if not 0.0 <= price <= 1.0:
+        raise ValueError("price must be between 0 and 1")
+    if fee_rate < 0:
+        raise ValueError("fee_rate must be non-negative")
+    return round(shares * fee_rate * price * (1.0 - price), 5)
+
+
+def polymarket_taker_fee_per_share(price: float, fee_rate: float = WEATHER_TAKER_FEE_RATE) -> float:
+    """Return the unrounded per-share fee for edge calculations."""
+    if not 0.0 <= price <= 1.0:
+        raise ValueError("price must be between 0 and 1")
+    if fee_rate < 0:
+        raise ValueError("fee_rate must be non-negative")
+    return fee_rate * price * (1.0 - price)
+
+
+def estimate_executable_net_return(
+    *,
+    shares: float,
+    entry_vwap: float,
+    expected_exit_price: float,
+    expected_exit_spread: float = 0.0,
+    expected_exit_slippage: float = 0.0,
+    fee_rate: float = WEATHER_TAKER_FEE_RATE,
+    hold_to_settlement: bool = False,
+) -> ExecutableNetReturnEstimate:
+    """Estimate net return after executable entry and conservative exit costs.
+
+    `entry_vwap` already includes entry spread and slippage. For an early exit,
+    the current spread and observed slippage are used as a conservative future
+    exit haircut. Settlement has no order-book exit or exit taker fee.
+    """
+    if shares <= 0:
+        raise ValueError("shares must be positive")
+    if not 0.0 <= entry_vwap <= 1.0:
+        raise ValueError("entry_vwap must be between 0 and 1")
+    if not 0.0 <= expected_exit_price <= 1.0:
+        raise ValueError("expected_exit_price must be between 0 and 1")
+    if expected_exit_spread < 0 or expected_exit_slippage < 0:
+        raise ValueError("expected exit costs must be non-negative")
+
+    if hold_to_settlement:
+        route = "settlement"
+        executable_exit_price = expected_exit_price
+        exit_market_cost_usdc = 0.0
+        exit_fee_usdc = 0.0
+    else:
+        route = "expected-exit"
+        exit_haircut = expected_exit_spread + expected_exit_slippage
+        executable_exit_price = max(0.0, expected_exit_price - exit_haircut)
+        exit_market_cost_usdc = shares * (expected_exit_price - executable_exit_price)
+        exit_fee_usdc = polymarket_taker_fee_usdc(shares, executable_exit_price, fee_rate)
+
+    expected_gross_profit_usdc = shares * (expected_exit_price - entry_vwap)
+    entry_fee_usdc = polymarket_taker_fee_usdc(shares, entry_vwap, fee_rate)
+    estimated_cost_usdc = entry_fee_usdc + exit_fee_usdc + exit_market_cost_usdc
+    expected_net_profit_usdc = expected_gross_profit_usdc - estimated_cost_usdc
+    invested_usdc = shares * entry_vwap + entry_fee_usdc
+    expected_net_return_pct = expected_net_profit_usdc / invested_usdc if invested_usdc > 0 else -1.0
+
+    return ExecutableNetReturnEstimate(
+        route=route,
+        shares=shares,
+        entry_vwap=entry_vwap,
+        expected_exit_price=expected_exit_price,
+        executable_exit_price=executable_exit_price,
+        expected_gross_profit_usdc=round(expected_gross_profit_usdc, 5),
+        entry_fee_usdc=entry_fee_usdc,
+        exit_fee_usdc=exit_fee_usdc,
+        exit_market_cost_usdc=round(exit_market_cost_usdc, 5),
+        estimated_cost_usdc=round(estimated_cost_usdc, 5),
+        expected_net_profit_usdc=round(expected_net_profit_usdc, 5),
+        expected_net_return_pct=expected_net_return_pct,
+    )
 
 
 def vwap_for_size(levels: list[OrderLevel], shares: float) -> float | None:

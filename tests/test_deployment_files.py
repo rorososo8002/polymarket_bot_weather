@@ -1,5 +1,9 @@
 from pathlib import Path
-import tomllib
+
+try:
+    import tomllib
+except ModuleNotFoundError:
+    import tomli as tomllib
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -22,7 +26,32 @@ def test_vps_env_example_keeps_runtime_state_under_data_dir():
     text = env_example.read_text(encoding="utf-8")
 
     assert "STATE_PATH=/opt/polymarket-weather-bot/data/paper_state.json" in text
+    assert "BANKROLL_USD=100\n" in text
+    assert "PORTFOLIO_DECISIONS_JSONL_PATH=/opt/polymarket-weather-bot/data/paper_event_portfolios.jsonl" in text
     assert "RAW_SNAPSHOTS_PATH=/opt/polymarket-weather-bot/data/paper_raw_snapshots.jsonl" in text
+    assert "STATION_NOWCAST_ENABLED=true" in text
+    assert "STATION_NOWCAST_CACHE_TTL_SECONDS=900" in text
+    assert "STATION_NOWCAST_FRESHNESS_SECONDS=5400" in text
+    assert "PORTFOLIO_DECISIONS_JSONL_PATH=/opt/polymarket-weather-bot/data/paper_event_portfolios.jsonl" in text
+    assert "ORDERBOOK_STREAM_STALE_SECONDS=60" in text
+    assert "RUNNER_HEALTH_STATUS_INTERVAL_SECONDS=5" in text
+    assert "DISCOVERY_MAX_PAGES=8" in text
+    assert "DISCOVERY_PAGE_SIZE=100" in text
+    assert "MAX_EVENTS" not in text
+    assert "MAX_MARKETS" not in text
+    assert "ENTRY_MIN_EXPECTED_NET_RETURN_PCT=0.06" in text
+    assert "WEATHER_TAKER_FEE_RATE=0.05" in text
+    assert "BANKROLL_USD=100\n" in text
+    assert "ENTRY_FRACTION=0.10" in text
+    assert "MAX_SINGLE_MARKET_FRACTION=0.10" in text
+    assert "MAX_TOTAL_EXPOSURE_FRACTION=0.90" in text
+    assert "MAX_CITY_EXPOSURE_FRACTION=0.20" in text
+    assert "MAX_EVENT_DATE_EXPOSURE_FRACTION=0.10" in text
+    assert "LARGE_BANKROLL_EVENT_DATE_EXPOSURE_FRACTION=0.05" in text
+    assert "EVENT_DATE_EXPOSURE_TRANSITION_USD=1000" in text
+    assert "MAX_EVENT_PORTFOLIO_LEGS=2" in text
+    assert "MIN_ORDER_USD=10.00" in text
+    assert "ESTIMATED_FEE_PER_SHARE" not in text
     assert "POLYMARKET_PRIVATE_KEY" not in text
 
 
@@ -46,6 +75,8 @@ def test_dashboard_env_requires_token_and_data_paths():
     assert "DASHBOARD_PORT=8787" in text
     assert "DASHBOARD_TOKEN=change-me-long-random-token" in text
     assert "STATE_PATH=/opt/polymarket-weather-bot/data/paper_state.json" in text
+    assert "FORECAST_CACHE_TTL_SECONDS=1800" in text
+    assert "ORDERBOOK_STREAM_STALE_SECONDS=60" in text
     assert "POLYMARKET_PRIVATE_KEY" not in text
 
 

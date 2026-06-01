@@ -1,0 +1,32 @@
+# Token-safety guide for Codex and AI-assisted review.
+# Keep local operational files on disk, but exclude them from normal analysis.
+
+.git/
+.antigravitycli/
+.venv/
+venv/
+env/
+.pytest_cache/
+.pytest-tmp*/
+.vscode/
+.idea/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+build/
+dist/
+htmlcov/
+
+runtime/
+data/
+*.log
+*.tar
+*.tar.gz
+*.zip
+paper_state.json
+paper_trades.csv
+paper_decisions.csv
+paper_raw_snapshots.jsonl
+paper_runner_status.json
+forecast_cache.json

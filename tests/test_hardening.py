@@ -72,13 +72,13 @@ def temp_market() -> RawMarket:
 def test_discovery_uses_weather_question_shape_and_paginates():
     client = FakePolymarketClient(
         pages={
-            0: [{"id": "x", "question": "Will unrelated thing happen?", "clobTokenIds": json.dumps(["x_yes", "x_no"])}],
-            50: [{"id": "m1", "question": "Will NYC reach 90°F on May 25?", "clobTokenIds": json.dumps(["yes", "no"])}],
+            0: [{"id": "e0", "markets": [{"id": "x", "question": "Will unrelated thing happen?", "clobTokenIds": json.dumps(["x_yes", "x_no"])}]}],
+            50: [{"id": "e1", "markets": [{"id": "m1", "question": "Will NYC reach 90°F on May 25?", "clobTokenIds": json.dumps(["yes", "no"])}]}],
             100: [],
         }
     )
 
-    markets = client.discover_weather_markets(limit=1)
+    markets = client.discover_weather_markets(max_pages=3, page_size=50)
 
     assert [m.market_id for m in markets] == ["m1"]
 
@@ -108,9 +108,42 @@ def test_discovery_uses_polymarket_weather_category_event_slugs():
                 }
             return []
 
-    markets = CategoryClient().discover_weather_markets(limit=5)
+    markets = CategoryClient().discover_weather_markets()
 
-    assert [market.market_id for market in markets] == ["m1"]
+    assert [market.market_id for market in markets] == ["m1", "m2"]
+
+
+def test_category_discovery_does_not_stop_after_supported_city_count():
+    event_count = 42
+
+    class ManyCategoryEventsClient(FakePolymarketClient):
+        def _get_web_text(self, path: str) -> str:
+            if path == "/weather/temperature":
+                return "".join(
+                    f'<a href="/event/highest-temperature-in-seoul-sample-{index}">Seoul</a>'
+                    for index in range(event_count)
+                )
+            return ""
+
+        def _get(self, url: str, params: dict | None = None):
+            if "/events/slug/" in url:
+                slug = url.rsplit("/", 1)[-1]
+                return {
+                    "id": slug,
+                    "slug": slug,
+                    "markets": [
+                        {
+                            "id": f"market-{slug}",
+                            "question": "Will the highest temperature in Seoul be 26\u00b0C on May 25?",
+                            "clobTokenIds": json.dumps([f"yes-{slug}", f"no-{slug}"]),
+                        }
+                    ],
+                }
+            return []
+
+    markets = ManyCategoryEventsClient().discover_weather_markets()
+
+    assert len(markets) == event_count
 
 
 def test_discovery_rejects_non_weather_questions_with_ambiguous_words_and_dates():
@@ -143,8 +176,8 @@ def test_discovery_keeps_supported_weather_question_shapes():
         assert PolymarketClient._is_weather_market({"question": question})
 
 
-def test_discovery_rejects_exact_temperature_bucket_until_model_supports_ranges():
-    assert not PolymarketClient._is_weather_market(
+def test_discovery_keeps_exact_temperature_bucket():
+    assert PolymarketClient._is_weather_market(
         {"question": "Will the highest temperature in Seoul be 26\u00b0C on May 25?"}
     )
 
@@ -166,7 +199,7 @@ def test_discovery_stops_at_page_limit_without_fetching_deep_offsets():
                 raise AssertionError("deep page should not be fetched")
             return [{"id": str(offset), "question": "Will unrelated thing happen?", "clobTokenIds": json.dumps(["yes", "no"])}]
 
-    markets = PagingClient().discover_weather_markets(limit=1, max_pages=2)
+    markets = PagingClient().discover_weather_markets(max_pages=2, page_size=50)
 
     assert markets == []
     assert seen_offsets == [0, 50]
@@ -177,12 +210,57 @@ def test_discovery_returns_partial_results_when_later_gamma_page_errors():
         def _get(self, url: str, params: dict | None = None):
             offset = int((params or {}).get("offset", 0))
             if offset == 0:
-                return [{"id": "m1", "question": "Will NYC reach 90 F on May 25?", "clobTokenIds": json.dumps(["yes", "no"])}]
+                return [{"id": "e1", "markets": [{"id": "m1", "question": "Will NYC reach 90 F on May 25?", "clobTokenIds": json.dumps(["yes", "no"])}]}]
             raise requests.HTTPError("later page failed")
 
-    markets = FlakyClient().discover_weather_markets(limit=2)
+    markets = FlakyClient().discover_weather_markets(max_pages=2, page_size=50)
 
     assert [market.market_id for market in markets] == ["m1"]
+
+
+def test_event_discovery_keeps_every_supported_submarket_without_city_count_truncation():
+    class EventClient(FakePolymarketClient):
+        def _get(self, url: str, params: dict | None = None):
+            if url.endswith("/events"):
+                return [
+                    {
+                        "id": "seoul-may-25",
+                        "slug": "highest-temperature-in-seoul-on-may-25-2026",
+                        "markets": [
+                            {
+                                "id": "lower",
+                                "question": "Will the highest temperature in Seoul be 18°C or below on May 25?",
+                                "clobTokenIds": json.dumps(["lower-yes", "lower-no"]),
+                            },
+                            {
+                                "id": "exact",
+                                "question": "Will the highest temperature in Seoul be 19°C on May 25?",
+                                "clobTokenIds": json.dumps(["exact-yes", "exact-no"]),
+                            },
+                            {
+                                "id": "upper",
+                                "question": "Will the highest temperature in Seoul be 28°C or higher on May 25?",
+                                "clobTokenIds": json.dumps(["upper-yes", "upper-no"]),
+                            },
+                        ],
+                    },
+                    {
+                        "id": "london-may-25",
+                        "markets": [
+                            {
+                                "id": "london",
+                                "question": "Will the highest temperature in London be 24°C on May 25?",
+                                "clobTokenIds": json.dumps(["london-yes", "london-no"]),
+                            }
+                        ],
+                    },
+                ]
+            return []
+
+    markets = EventClient().discover_weather_markets(max_pages=1)
+
+    assert [market.market_id for market in markets] == ["lower", "exact", "upper", "london"]
+    assert {market.event_id for market in markets} == {"seoul-may-25", "london-may-25"}
 
 
 def test_vwap_slippage_is_not_subtracted_twice():
@@ -194,7 +272,7 @@ def test_no_candidate_requires_no_side_exit_liquidity():
     settings = Settings(
         min_net_edge=0.01,
         min_order_usd=1.0,
-        estimated_fee_per_share=0.0,
+        weather_taker_fee_rate=0.0,
         model_error_margin=0.0,
         resolution_error_margin=0.0,
         require_date_hint_for_trade=True,
@@ -214,11 +292,37 @@ def test_no_candidate_requires_no_side_exit_liquidity():
     assert "liquidity" in per_side["NO"].reason.lower()
 
 
+def test_no_valid_side_decision_explains_side_liquidity_filters():
+    settings = Settings(
+        min_net_edge=0.01,
+        min_order_usd=1.0,
+        weather_taker_fee_rate=0.0,
+        model_error_margin=0.0,
+        resolution_error_margin=0.0,
+        require_date_hint_for_trade=True,
+    )
+    client = FakePolymarketClient(
+        books={
+            "yes": book("yes", bid=0.001, ask=0.0, bid_size=1000.0, ask_size=1000.0),
+            "no": book("no", bid=0.98, ask=1.0, bid_size=1000.0, ask_size=1000.0),
+        }
+    )
+
+    result, per_side = evaluate_market(temp_market(), temp_signal(p_true=0.01), client, settings, 1000.0, "temperature")
+
+    assert result.side == "SKIP"
+    assert "No valid side evaluated" in result.reason
+    assert "YES liquidity filter: invalid ask=0.000" in result.reason
+    assert "NO liquidity filter: invalid ask=1.000" in result.reason
+    assert per_side["YES"].reason in result.reason
+    assert per_side["NO"].reason in result.reason
+
+
 def test_entry_does_not_use_fixed_price_drop_guard():
     settings = Settings(
         min_net_edge=0.01,
         min_order_usd=1.0,
-        estimated_fee_per_share=0.0,
+        weather_taker_fee_rate=0.0,
         model_error_margin=0.0,
         resolution_error_margin=0.0,
         require_date_hint_for_trade=True,
@@ -237,11 +341,67 @@ def test_entry_does_not_use_fixed_price_drop_guard():
     assert "YES edge=" in per_side["YES"].reason
 
 
+def test_entry_net_return_filter_rejects_thin_high_price_trade(tmp_path):
+    settings = Settings(
+        state_path=str(tmp_path / "state.json"),
+        trades_csv_path=str(tmp_path / "trades.csv"),
+        decisions_csv_path=str(tmp_path / "decisions.csv"),
+        raw_snapshots_path=str(tmp_path / "raw.jsonl"),
+        min_net_edge=0.01,
+        entry_min_expected_net_return_pct=0.06,
+        weather_taker_fee_rate=0.05,
+        model_error_margin=0.0,
+        resolution_error_margin=0.0,
+        require_date_hint_for_trade=True,
+    )
+    client = FakePolymarketClient(
+        books={
+            "yes": book("yes", bid=0.87, ask=0.88, bid_size=1000.0, ask_size=1000.0),
+            "no": book("no", bid=0.11, ask=0.12, bid_size=1000.0, ask_size=1000.0),
+        }
+    )
+
+    result, per_side = evaluate_market(temp_market(), temp_signal(p_true=0.92), client, settings, 1000.0, "temperature")
+    PaperBroker(settings).log_decision(temp_market(), result, "test", "temperature")
+
+    assert result.side == "SKIP"
+    assert per_side["YES"].net_edge > settings.min_net_edge
+    assert "expected_gross=" in result.reason
+    assert "estimated_cost=" in result.reason
+    assert "expected_net_return=" in result.reason
+    assert "reject=expected net return below 6.00%" in result.reason
+    assert "reject=expected net return below 6.00%" in (tmp_path / "decisions.csv").read_text(encoding="utf-8")
+
+
+def test_entry_net_return_filter_allows_high_price_settlement_candidate():
+    settings = Settings(
+        min_net_edge=0.01,
+        entry_min_expected_net_return_pct=0.06,
+        weather_taker_fee_rate=0.05,
+        model_error_margin=0.0,
+        resolution_error_margin=0.0,
+        require_date_hint_for_trade=True,
+    )
+    client = FakePolymarketClient(
+        books={
+            "yes": book("yes", bid=0.92, ask=0.93, bid_size=1000.0, ask_size=1000.0),
+            "no": book("no", bid=0.06, ask=0.07, bid_size=1000.0, ask_size=1000.0),
+        }
+    )
+
+    result, per_side = evaluate_market(temp_market(), temp_signal(p_true=1.0), client, settings, 1000.0, "temperature")
+
+    assert result.side == "YES"
+    assert per_side["YES"].side == "YES"
+    assert "route=settlement" in result.reason
+    assert "expected_net_return=" in result.reason
+
+
 def test_unavailable_forecast_signals_do_not_trade():
     settings = Settings(
         min_net_edge=0.01,
         min_order_usd=1.0,
-        estimated_fee_per_share=0.0,
+        weather_taker_fee_rate=0.0,
         model_error_margin=0.0,
         resolution_error_margin=0.0,
         require_date_hint_for_trade=True,
@@ -321,7 +481,7 @@ def test_weekday_date_hint_is_parsed():
 def test_held_positions_are_re_evaluated_even_when_not_in_scan_results():
     settings = Settings(
         min_net_edge=0.01,
-        estimated_fee_per_share=0.0,
+        weather_taker_fee_rate=0.0,
         model_error_margin=0.0,
         resolution_error_margin=0.0,
         require_date_hint_for_trade=True,
@@ -378,8 +538,8 @@ def test_run_cycle_reuses_one_ensemble_client_for_all_markets(monkeypatch, tmp_p
         def __init__(self, *_args, **_kwargs):
             pass
 
-        def discover_weather_markets(self, limit: int):
-            return markets[:limit]
+        def discover_weather_markets(self, max_pages: int, page_size: int):
+            return markets
 
         def get_order_book(self, token_id: str) -> OrderBook:
             return book(token_id, bid=0.40, ask=0.50, bid_size=100.0, ask_size=100.0)

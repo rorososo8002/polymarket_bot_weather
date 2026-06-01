@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from .config import Settings
-from .edge import clamp_probability
+from .edge import clamp_probability, polymarket_taker_fee_per_share
 from .models import EdgeResult, PaperPosition
 
 
@@ -36,9 +36,19 @@ def side_true_probability(side: Literal["YES", "NO"] | str, p_true_yes: float) -
 
 def model_fair_price(side: Literal["YES", "NO"] | str, p_true_yes: float, settings: Settings) -> float:
     """Conservative model fair price for the token side."""
-    raw = side_true_probability(side, p_true_yes)
-    fair = raw - settings.estimated_fee_per_share - settings.model_error_margin - settings.resolution_error_margin
+    settlement_value = conservative_settlement_value(side, p_true_yes, settings)
+    fair = settlement_value - polymarket_taker_fee_per_share(
+        settlement_value,
+        settings.weather_taker_fee_rate,
+    )
     return max(0.01, min(0.99, fair))
+
+
+def conservative_settlement_value(side: Literal["YES", "NO"] | str, p_true_yes: float, settings: Settings) -> float:
+    """Return conservative expected settlement payout without order-book exit costs."""
+    raw = side_true_probability(side, p_true_yes)
+    value = raw - settings.model_error_margin - settings.resolution_error_margin
+    return max(0.0, min(1.0, value))
 
 
 def target_exit_price(entry_price: float, fair_price: float, settings: Settings) -> float:
@@ -132,7 +142,12 @@ def assess_exit(
     if mark_price >= fair + settings.overheat_margin and pnl_pct > 0:
         return ExitAssessment(True, f"take profit: overheated vs model fair {fair:.4f}, heat={heat:.1%}", fair, target, heat)
 
-    if latest_edge is not None and latest_edge.net_edge <= settings.exit_net_edge and pnl_pct >= -settings.edge_fade_max_loss_pct:
+    if (
+        latest_edge is not None
+        and latest_edge.p_exec is not None
+        and latest_edge.net_edge <= settings.exit_net_edge
+        and pnl_pct >= -settings.edge_fade_max_loss_pct
+    ):
         return ExitAssessment(True, f"edge faded: latest_edge={latest_edge.net_edge:.4f}, pnl={pnl_pct:.1%}", fair, target, heat)
 
     if holding_hours >= settings.max_holding_hours:

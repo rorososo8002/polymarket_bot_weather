@@ -56,3 +56,25 @@ def test_probability_stop_closes_when_model_probability_drops():
     assessment = assess_exit(pos, 0.50, latest_edge, settings, 1.0)
     assert assessment.should_close
     assert "probability stop" in assessment.reason
+
+
+def test_invalid_edge_sentinel_does_not_trigger_edge_fade_exit():
+    settings = Settings(exit_net_edge=0.0)
+    pos = PaperPosition(
+        position_id="p1",
+        market_id="m1",
+        question="Will Seoul reach 25C?",
+        token_id="t1",
+        side="NO",
+        entry_price=0.50,
+        shares=100,
+        cost_usd=50,
+        opened_at=datetime.now(timezone.utc).isoformat(),
+        metadata={"entry_p_true": 0.20, "probability_stop_threshold": 0.70},
+    )
+    invalid_edge = EdgeResult("SKIP", 0.20, None, -999.0, 0, 0, "No valid side evaluated.")
+
+    assessment = assess_exit(pos, 0.501, invalid_edge, settings, 1.0)
+
+    assert not assessment.should_close
+    assert "hold" in assessment.reason

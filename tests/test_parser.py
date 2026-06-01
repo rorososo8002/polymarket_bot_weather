@@ -6,6 +6,7 @@ def test_parse_temperature_market_fahrenheit():
     assert parsed.city == "nyc"
     assert parsed.variable == "temperature"
     assert parsed.operator == ">="
+    assert parsed.temperature_bucket == "threshold"
     assert parsed.threshold_f == 90
     assert parsed.threshold_unit == "F"
 
@@ -36,11 +37,27 @@ def test_parse_polymarket_celsius_tail_does_not_use_date_as_temperature():
     assert parsed.date_hint == "may 25"
 
 
-def test_parse_exact_temperature_bucket_is_not_directional():
+def test_parse_exact_temperature_bucket():
     parsed = parse_weather_question("Will the highest temperature in Seoul be 26\u00b0C on May 25?")
     assert parsed.city == "seoul"
-    assert parsed.threshold_f is None
-    assert parsed.operator is None
+    assert parsed.operator == "=="
+    assert parsed.temperature_bucket == "exact"
+    assert parsed.threshold_original == 26
+    assert round(parsed.threshold_f, 1) == 78.8
+
+
+def test_parse_lower_tail_temperature_bucket():
+    parsed = parse_weather_question("Will the highest temperature in Seoul be 18\u00b0C or below on May 25?")
+    assert parsed.operator == "<="
+    assert parsed.temperature_bucket == "lower_tail"
+    assert parsed.threshold_original == 18
+
+
+def test_parse_upper_tail_temperature_bucket():
+    parsed = parse_weather_question("Will the highest temperature in Seoul be 28\u00b0C or higher on May 25?")
+    assert parsed.operator == ">="
+    assert parsed.temperature_bucket == "upper_tail"
+    assert parsed.threshold_original == 28
 
 
 def test_parse_precipitation_market():

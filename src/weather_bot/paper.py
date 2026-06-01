@@ -13,6 +13,7 @@ from .models import EdgeResult, PaperPosition, PaperState, RawMarket
 from .edge import executable_sell_price, max_absorbable_shares
 from .exit_policy import assess_exit, build_entry_plan, side_true_probability
 from .polymarket_client import PolymarketClient
+from .portfolio import adaptive_event_cap_fraction, is_complementary_with_positions
 
 
 def utc_now_iso() -> str:
@@ -35,6 +36,7 @@ class PaperBroker:
         self.state_path = Path(settings.state_path)
         self.trades_csv_path = Path(settings.trades_csv_path)
         self.decisions_csv_path = Path(settings.decisions_csv_path)
+        self.portfolio_decisions_jsonl_path = Path(settings.portfolio_decisions_jsonl_path)
         self.raw_snapshots_path = Path(settings.raw_snapshots_path)
         self.state = self.load_state()
 
@@ -121,11 +123,39 @@ class PaperBroker:
             )
         )
 
-    def open_position(self, market: RawMarket, token_id: str, result: EdgeResult, market_type: str = "temperature", city: str = "", date_hint: str = "") -> PaperPosition | None:
+    def event_date_position_count(self, city: str, date_hint: str) -> int:
+        return len(self.event_date_positions(city, date_hint))
+
+    def event_date_positions(self, city: str, date_hint: str) -> list[PaperPosition]:
+        city_lower = city.lower()
+        date_lower = date_hint.lower()
+        return [
+            p
+            for p in self.state.positions
+            if (
+                str(p.metadata.get("city", "")).lower() == city_lower
+                and str(p.metadata.get("date_hint", "")).lower() == date_lower
+            )
+        ]
+
+    def open_position(
+        self,
+        market: RawMarket,
+        token_id: str,
+        result: EdgeResult,
+        market_type: str = "temperature",
+        city: str = "",
+        date_hint: str = "",
+        entry_bankroll_usd: float | None = None,
+    ) -> PaperPosition | None:
         if result.side not in {"YES", "NO"} or result.p_exec is None or result.size_usd <= 0:
             return None
+        if self.has_any_position(market.market_id):
+            self.log_trade("SKIP_SAME_MARKET", market, result.side, token_id, 0, result.p_exec, 0, "same-market position already open")
+            return None
         bankroll_before = self.current_bankroll_before_entry()
-        allowed_exposure = bankroll_before * self.settings.max_total_exposure_fraction
+        risk_bankroll = min(bankroll_before, entry_bankroll_usd) if entry_bankroll_usd is not None else bankroll_before
+        allowed_exposure = risk_bankroll * self.settings.max_total_exposure_fraction
         if self.total_exposure() + result.size_usd > allowed_exposure:
             self.log_trade("SKIP_EXPOSURE_CAP", market, result.side, token_id, 0, result.p_exec, 0, "total exposure cap")
             return None
@@ -133,7 +163,7 @@ class PaperBroker:
         # ── 도시별 중복 노출 한도 체크 ──────────────────────────────────────────
         if city:
             city_exp = self.city_exposure(city)
-            city_limit = bankroll_before * self.settings.max_city_exposure_fraction
+            city_limit = risk_bankroll * self.settings.max_city_exposure_fraction
             if city_exp + result.size_usd > city_limit:
                 reason = (
                     f"SKIP_CITY_CAP: {city} exposure={city_exp:.2f}+{result.size_usd:.2f} "
@@ -144,12 +174,26 @@ class PaperBroker:
 
         # ── 도시+날짜 조합 중복 노출 한도 체크 ──────────────────────────────────
         if city and date_hint:
+            event_positions = self.event_date_positions(city, date_hint)
+            event_leg_count = len(event_positions)
+            if event_leg_count >= self.settings.max_event_portfolio_legs:
+                reason = (
+                    f"SKIP_EVENT_DATE_LEG_CAP: {city}/{date_hint} legs={event_leg_count} "
+                    f">= limit={self.settings.max_event_portfolio_legs}"
+                )
+                self.log_trade("SKIP_EVENT_DATE_LEG_CAP", market, result.side, token_id, 0, result.p_exec, 0, reason)
+                return None
+            if not is_complementary_with_positions(market.question, result.side, event_positions):
+                reason = f"SKIP_EVENT_DATE_CONCENTRATION: {city}/{date_hint} new leg is not complementary"
+                self.log_trade("SKIP_EVENT_DATE_CONCENTRATION", market, result.side, token_id, 0, result.p_exec, 0, reason)
+                return None
             event_exp = self.event_date_exposure(city, date_hint)
-            event_limit = bankroll_before * self.settings.max_event_date_exposure_fraction
+            event_fraction = adaptive_event_cap_fraction(risk_bankroll, self.settings)
+            event_limit = risk_bankroll * event_fraction
             if event_exp + result.size_usd > event_limit:
                 reason = (
                     f"SKIP_EVENT_DATE_CAP: {city}/{date_hint} exposure={event_exp:.2f}+{result.size_usd:.2f} "
-                    f"> limit={event_limit:.2f} ({self.settings.max_event_date_exposure_fraction:.0%} bankroll)"
+                    f"> limit={event_limit:.2f} ({event_fraction:.0%} bankroll)"
                 )
                 self.log_trade("SKIP_EVENT_DATE_CAP", market, result.side, token_id, 0, result.p_exec, 0, reason)
                 return None
@@ -158,8 +202,18 @@ class PaperBroker:
         if spend < self.settings.min_order_usd:
             self.log_trade("SKIP_CASH", market, result.side, token_id, 0, result.p_exec, 0, "not enough cash")
             return None
-        adjusted_result = EdgeResult(result.side, result.p_true, result.p_exec, result.net_edge, spend, spend / result.p_exec, result.reason)
-        entry_plan = build_entry_plan(adjusted_result, bankroll_before, self.settings)
+        expected_profit = result.expected_net_profit_usd * spend / result.size_usd
+        adjusted_result = EdgeResult(
+            result.side,
+            result.p_true,
+            result.p_exec,
+            result.net_edge,
+            spend,
+            spend / result.p_exec,
+            result.reason,
+            expected_profit,
+        )
+        entry_plan = build_entry_plan(adjusted_result, risk_bankroll, self.settings)
         shares = spend / result.p_exec
         pos = PaperPosition(
             position_id=str(uuid4()),
@@ -177,6 +231,7 @@ class PaperBroker:
                 "entry_p_true": result.p_true,
                 "entry_side_probability": side_true_probability(result.side, result.p_true),
                 "bankroll_before": entry_plan.bankroll_before,
+                "entry_bankroll_usd": risk_bankroll,
                 "entry_fraction": entry_plan.entry_fraction,
                 "probability_stop_threshold": entry_plan.probability_stop_threshold,
                 "model_fair_price": entry_plan.model_fair_price,
@@ -352,6 +407,11 @@ class PaperBroker:
             "payload": payload,
         }
         with self.raw_snapshots_path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
+
+    def log_event_portfolio_decision(self, payload: dict[str, Any]) -> None:
+        row = {"ts": utc_now_iso(), **payload}
+        with self.portfolio_decisions_jsonl_path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
 
 

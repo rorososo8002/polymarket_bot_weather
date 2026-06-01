@@ -153,5 +153,10 @@ Before letting it run unattended:
 - `/opt/polymarket-weather-bot/data/paper_decisions.csv` is growing.
 - `/opt/polymarket-weather-bot/data/paper_raw_snapshots.jsonl` is growing.
 - `systemctl status polymarket-weather-dashboard` shows `active (running)`.
+- Dashboard `예보 상태` shows a recent successful forecast or an explicit stale
+  warning. Do not treat an old cached forecast as healthy.
+- Dashboard `WebSocket 상태` shows that the receiver thread is alive and that
+  the last real order-book update is recent. A reachable dashboard page alone
+  is not proof that the stream is healthy.
 - Dashboard URL requires a non-empty token.
 - No private key or wallet secret exists anywhere in the service environment.

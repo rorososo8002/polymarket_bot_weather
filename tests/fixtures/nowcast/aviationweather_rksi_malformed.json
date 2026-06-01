@@ -1,0 +1,13 @@
+[
+  {
+    "icaoId": "RKSI",
+    "obsTime": "not-a-date",
+    "temp": "not-a-number",
+    "rawOb": "METAR RKSI 020700Z AUTO /////"
+  },
+  {
+    "icaoId": "RKSI",
+    "reportTime": "also-not-a-date",
+    "rawOb": "METAR RKSI BAD"
+  }
+]

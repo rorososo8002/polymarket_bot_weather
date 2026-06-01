@@ -2,6 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+FORECAST_SOURCE = "open-meteo-ensemble"
+FORECAST_LOCATION_SOURCE = "settlement_station_coordinates"
+DEFAULT_STATION_VERIFICATION_STATUS = "verified_from_existing_registry"
+DEFAULT_RULE_EVIDENCE_STATUS = "needs_rule_source_url"
+DEFAULT_NOWCAST_PROVIDER_STATUS = "provider_enabled"
+
 
 @dataclass(frozen=True)
 class StationMeta:
@@ -13,6 +19,15 @@ class StationMeta:
     timezone: str = "auto"
     elevation_m: float | None = None
     note: str = ""
+    forecast_source: str = FORECAST_SOURCE
+    forecast_location_source: str = FORECAST_LOCATION_SOURCE
+    station_verification_status: str = DEFAULT_STATION_VERIFICATION_STATUS
+    rule_evidence_status: str = DEFAULT_RULE_EVIDENCE_STATUS
+    polymarket_rule_url: str = ""
+    polymarket_rule_station_text: str = ""
+    nowcast_source_type: str = "metar"
+    nowcast_station_id: str = ""
+    nowcast_provider_status: str = DEFAULT_NOWCAST_PROVIDER_STATUS
 
 
 def _station(
@@ -23,6 +38,9 @@ def _station(
     longitude: float,
     timezone: str,
     elevation_m: float | None = None,
+    nowcast_source_type: str = "metar",
+    nowcast_provider_status: str = DEFAULT_NOWCAST_PROVIDER_STATUS,
+    nowcast_station_id: str | None = None,
 ) -> StationMeta:
     return StationMeta(
         city=city,
@@ -33,6 +51,9 @@ def _station(
         timezone=timezone,
         elevation_m=elevation_m,
         note="Verified from Polymarket weather resolution rules.",
+        nowcast_source_type=nowcast_source_type,
+        nowcast_station_id=nowcast_station_id or station_id,
+        nowcast_provider_status=nowcast_provider_status,
     )
 
 
@@ -50,10 +71,30 @@ STATION_MAP: dict[str, StationMeta] = {
     "dallas": _station("dallas", "KDAL", "Dallas Love Field Station", 32.8471, -96.8518, "America/Chicago", 148),
     "guangzhou": _station("guangzhou", "ZGGG", "Guangzhou Baiyun International Airport Station", 23.3924, 113.2988, "Asia/Shanghai", 15),
     "helsinki": _station("helsinki", "EFHK", "Helsinki Vantaa Airport Station", 60.3172, 24.9633, "Europe/Helsinki", 55),
-    "hong kong": _station("hong kong", "HKO", "Hong Kong Observatory", 22.3022, 114.1744, "Asia/Hong_Kong", 32),
+    "hong kong": _station(
+        "hong kong",
+        "HKO",
+        "Hong Kong Observatory",
+        22.3022,
+        114.1744,
+        "Asia/Hong_Kong",
+        32,
+        nowcast_source_type="hko_maxmin_since_midnight",
+        nowcast_provider_status="provider_enabled",
+    ),
     "istanbul": _station("istanbul", "LTFM", "Istanbul Airport", 41.2613, 28.7419, "Europe/Istanbul", 99),
     "jeddah": _station("jeddah", "OEJN", "King Abdulaziz International Airport Station", 21.6796, 39.1565, "Asia/Riyadh", 15),
-    "karachi": _station("karachi", "OPMR", "Masroor Airbase Station", 24.8936, 66.9388, "Asia/Karachi", 16),
+    "karachi": _station(
+        "karachi",
+        "OPMR",
+        "Masroor Airbase Station",
+        24.8936,
+        66.9388,
+        "Asia/Karachi",
+        16,
+        nowcast_source_type="metar_unavailable",
+        nowcast_provider_status="provider_unavailable",
+    ),
     "london": _station("london", "EGLC", "London City Airport Station", 51.5053, 0.0553, "Europe/London", 6),
     "los angeles": _station("los angeles", "KLAX", "Los Angeles International Airport Station", 33.9416, -118.4085, "America/Los_Angeles", 38),
     "madrid": _station("madrid", "LEMD", "Adolfo Suarez Madrid-Barajas Airport Station", 40.4983, -3.5676, "Europe/Madrid", 610),
@@ -67,7 +108,17 @@ STATION_MAP: dict[str, StationMeta] = {
     "paris": _station("paris", "LFPB", "Paris-Le Bourget Airport Station", 48.9694, 2.4414, "Europe/Paris", 67),
     "qingdao": _station("qingdao", "ZSQD", "Qingdao Jiaodong International Airport Station", 36.3619, 120.0881, "Asia/Shanghai", 11),
     "seattle": _station("seattle", "KSEA", "Seattle-Tacoma International Airport Station", 47.4502, -122.3088, "America/Los_Angeles", 131),
-    "seoul": _station("seoul", "RKSI", "Incheon Intl Airport Station", 37.4602, 126.4407, "Asia/Seoul", 7),
+    "seoul": _station(
+        "seoul",
+        "RKSI",
+        "Incheon Intl Airport Station",
+        37.4602,
+        126.4407,
+        "Asia/Seoul",
+        7,
+        nowcast_source_type="metar",
+        nowcast_provider_status="provider_enabled",
+    ),
     "shanghai": _station("shanghai", "ZSPD", "Shanghai Pudong International Airport Station", 31.1443, 121.8083, "Asia/Shanghai", 4),
     "shenzhen": _station("shenzhen", "ZGSZ", "Shenzhen Bao'an International Airport Station", 22.6393, 113.8107, "Asia/Shanghai", 4),
     "singapore": _station("singapore", "WSSS", "Singapore Changi Airport Station", 1.3644, 103.9915, "Asia/Singapore", 7),
@@ -86,3 +137,27 @@ CITY_COORDS: dict[str, tuple[float, float]] = {
 }
 
 SUPPORTED_CITY_COUNT = len(STATION_MAP)
+
+
+def station_audit_rows() -> list[dict[str, object]]:
+    """Return a compact, user-auditable view of forecast and nowcast coverage."""
+    return [
+        {
+            "city": station.city,
+            "station_id": station.station_id,
+            "station_name": station.station_name,
+            "latitude": station.latitude,
+            "longitude": station.longitude,
+            "timezone": station.timezone,
+            "forecast_source": station.forecast_source,
+            "forecast_location_source": station.forecast_location_source,
+            "station_verification_status": station.station_verification_status,
+            "rule_evidence_status": station.rule_evidence_status,
+            "polymarket_rule_url": station.polymarket_rule_url,
+            "polymarket_rule_station_text": station.polymarket_rule_station_text,
+            "nowcast_source_type": station.nowcast_source_type,
+            "nowcast_station_id": station.nowcast_station_id,
+            "nowcast_provider_status": station.nowcast_provider_status,
+        }
+        for station in STATION_MAP.values()
+    ]

@@ -1,57 +1,122 @@
-# Production Status
+# Production Progress
 
-## Current Operating Contract
+## 완료
 
-- The bot is a live-data paper-trading service.
-- The supported universe is exactly the 41 cities in `src/weather_bot/stations.py`.
-- `STATION_MAP` is the settlement-station source of truth.
-- `Settings.max_markets` defaults to `SUPPORTED_CITY_COUNT`, so the scan size follows the station registry.
-- Forecasts use the mapped settlement station, not city-center coordinates.
-- Forecast data refreshes every 10 minutes by default.
-- Order books stream through the Polymarket CLOB WebSocket market channel by default.
-- Execution is paper-only through `PaperBroker`; no wallet keys, signing, or live order submission are present.
+- 봇은 실거래 주문을 보내지 않는 paper-trading 전용 서비스입니다.
+- 거래 가능한 도시는 `src/weather_bot/stations.py`의 검증된 41개 도시로
+  제한했습니다. `STATION_MAP`이 정산 관측소의 기준입니다.
+- Open-Meteo 예보는 기본 30분마다 갱신합니다. 메모리 캐시와 디스크
+  캐시에 같은 TTL을 적용하고, 마지막 시도·성공·실패 이유·캐시 나이·
+  오래된 예보 여부·디스크 저장 오류를 대시보드에 표시합니다.
+- 주문서는 Polymarket CLOB WebSocket으로 받습니다. 실시간 수신
+  스레드가 살아 있는지, 재접속 횟수, 마지막 메시지, 마지막 실제
+  주문서 갱신, 주문서 나이, 오류를 대시보드에 표시합니다.
+- 새 마켓 탐색 날짜가 바뀌어도 보유 포지션의 토큰은 WebSocket 구독에
+  남깁니다. 그래야 보유 포지션 가격이 과거 값에서 멈추지 않습니다.
+- YES와 NO 양쪽 모두 거래하기 어려운 경우, SKIP 로그에 양쪽 거절
+  이유를 남깁니다.
+- `net_edge=-999`처럼 계산 실패를 뜻하는 값은 손절 신호로 사용하지
+  않습니다.
+- 대시보드는 현재 포지션, 진입금액, 최근 예보, 실현 수익·손실, 남은
+  현금과 예보·WebSocket 건강 상태를 보여줍니다.
+- weather taker 수수료는 공식 곡선
+  `shares * 0.05 * price * (1 - price)`로 계산합니다. 진입 VWAP에는
+  진입 스프레드와 슬리피지가 이미 포함되므로 다시 빼지 않습니다.
+- 기존 `net_edge` 조건과 별도로 예상 순수익률이 기본 `6%` 이상인
+  진입만 허용합니다. 일반 청산 경로와 보수적 정산 보유 경로를
+  평가하며, 고가 진입을 가격만으로 무조건 금지하지 않습니다.
+- decision log의 `reason`에는 예상 총수익, 예상 비용, 예상 순수익률,
+  선택 경로와 거절 이유를 남깁니다.
+- Phase 0과 Phase 1은 로컬에서 검증했고 `4ac3cf5`로 커밋했습니다.
+- Phase 2는 로컬에서 구현하고 테스트한 뒤 `bac9c45`로 커밋했습니다.
+- Phase 3에서는 exact bucket, lower-tail, upper-tail 온도 구간을
+  파싱하고 같은 앙상블 분포에서 서로 겹치지 않는 확률을 계산합니다.
+- `STATION_MAP`의 41개 도시는 공식 관측소가 검증된 거래 허용
+  목록입니다. 도시 수를 event 탐색 중단 기준으로 재사용하지 않습니다.
+- discovery는 날씨 카테고리에서 찾은 지원 가능한 도시·날짜 event를
+  모두 펼칩니다. 각 event 안의 지원 가능한 서브마켓도 모두 유지합니다.
+- fallback Gamma API의 페이지 수와 한 페이지 크기만 별도 안전장치로
+  제한합니다. 이 제한은 도시나 event를 41개에서 자르는 기능이
+  아닙니다.
+- runner 상태는 실제 event, 도시, market, token coverage를 구분해
+  표시합니다.
+- Phase 4에서는 마켓을 하나씩 즉시 열지 않고 도시+날짜 event 단위로
+  후보 조합을 선택합니다. 같은 event의 leg는 독립 베팅이 아니라 하나의
+  공유 예산을 나눠 씁니다.
+- 새 진입 기준금은 `현금 + 기존 진입원금`과 `현금 + 안전하게 청산 가능한
+  보유 포지션 가치` 중 작은 값입니다. 평가이익은 새 위험을 키우지 않고,
+  평가손실은 즉시 반영합니다. 보유 포지션을 안전하게 평가할 주문서가
+  없으면 새 진입을 멈춥니다.
+- 기준금 `$1,000` 미만에서는 같은 도시+날짜 전체 한도를 `10%`,
+  `$1,000` 이상에서는 `5%`로 사용합니다. 한 leg는 최소 `$10`이며
+  강한 한 leg가 event 예산 전부를 쓸 수 있습니다. 같은 도시의 여러
+  날짜 합계는 `20%`, 전체 오픈 포지션은 `90%`입니다.
+- 같은 도시+날짜 event는 최대 2개 leg만 허용합니다. 같은 마켓의
+  `YES+NO` 동시 보유와 겹치는 구간은 막지만, 서로 다른 구간의
+  `YES+YES`, `YES+NO`, `NO+NO`는 모두 후보로 비교합니다.
+- event 포트폴리오는 가능한 최종 기온별 손익표를 만들고, 구간별
+  확률 합을 `100%`로 정규화한 뒤 비용 반영 순이익이 양수인 후보 중
+  기대 로그 성장률이 가장 좋은 조합을 선택합니다.
+- event-level JSONL 로그는 기준금, 한도, 기존·선택 노출, 선택·거절 leg,
+  비용 차감 예상 순이익, 기대 로그 성장률, 정규화된 시나리오 확률과
+  scenario PnL을 남깁니다. 대시보드에서도 최근 event 포트폴리오
+  설명을 볼 수 있습니다.
+- Phase 5에서는 정산 관측소 nowcast를 Seoul/RKSI pilot으로 시작한 뒤,
+  공식 관측 API를 확인해 39개 ICAO 관측소는 Aviation Weather Center METAR,
+  Hong Kong/HKO는 Hong Kong Observatory 자정 이후 최고/최저기온 CSV로
+  확장했습니다. Karachi/OPMR은 AWC에서 최근 자료가 확인되지 않아
+  forecast-only로 남겼습니다.
+- `src/weather_bot/stations.py`에 41개 도시의 예보 출처, 예보 좌표 기준,
+  nowcast 후보 관측소, nowcast 사용 가능 상태, Polymarket 규칙 원문 증거
+  보관 여부를 설명하는 감사 필드를 추가했습니다. 사람이 읽는 표는
+  `docs/station-registry-audit.md`입니다.
+- nowcast 로그는 관측 최고기온, 관측 시각, 출처 URL, 정산 기준 URL,
+  freshness, 원자료 개수, unavailable 이유를 남깁니다. fresh/verified이면
+  `forecast-plus-nowcast`, 없거나 오래됐거나 malformed이거나 미지원이면
+  `forecast-only`로 설명합니다.
+- Windows 로컬 pytest는 별도 `TMP`, `TEMP` 수동 설정 없이도 저장소
+  내부 `.pytest-tmp/`를 자동 사용합니다. 반복 작업의 첫 명령은
+  `docs/codex/known-good-commands.md`에 모았습니다.
 
-## Implemented
+## 진행 중
 
-- Station allowlist and station coordinates for 41 verified Polymarket weather cities.
-- Parser gating so unsupported cities are not treated as tradable markets.
-- Polymarket discovery gating so weather-shaped markets outside `STATION_MAP` are skipped.
-- Probability estimation that returns `unsupported-station` for unmapped settlement stations.
-- 10-minute Open-Meteo forecast cache TTL and refresh cadence.
-- WebSocket-backed order-book cache and event-driven paper evaluations.
-- Probability-based stop policy instead of fixed token-price stop loss.
-- Exposure caps for market, city, and city-date concentration.
-- Runner heartbeat file for dashboard-visible progress.
-- VPS systemd examples for the paper bot and dashboard.
+- Phase 5 로컬 구현과 검증을 마쳤습니다.
+- 현재 same-station observation provider는 40개 도시에서 사용 가능합니다:
+  39개 ICAO METAR + Hong Kong/HKO CSV입니다. Karachi/OPMR은
+  `nowcast-source-unmapped`로 forecast-only입니다.
+- Oracle VPS에는 Phase 0, Phase 1, Phase 2, Phase 3, Phase 4, Phase 5 변경을 아직
+  배포하지 않았습니다.
+- 배포는 변경 내용, 위험, 검증 방법, 되돌리는 방법을 설명한 뒤 사용자
+  승인을 받아야 합니다.
 
-## Verification Focus
+## 다음 작업
 
-Run these before changing production behavior:
+1. 다음 fresh chat에서는 `docs/strategy-upgrade-roadmap.md`의 Phase 6만
+   진행합니다.
+2. Phase 6은 principal recovery와 settlement runner입니다. 강한 저가
+   포지션을 너무 일찍 전량 청산하지 않도록, 원금 회수 tranche와 제한된
+   runner tranche를 paper-only로 설계합니다.
+3. Phase 6에서도 Phase 5 nowcast는 보조 증거일 뿐입니다. 미지원·stale·
+   malformed observation이면 nowcast 의존 로직은 건너뛰고 forecast-only
+   설명을 유지합니다.
+4. 기존 남은 위험도 보존합니다. 기본 WebSocket 경로에는 해결된
+   시장의 settlement 처리가 아직 연결되지 않았습니다.
 
-```powershell
-$env:PYTHONPATH='src'
-$env:TMP=(Resolve-Path '.pytest-tmp-all').Path
-$env:TEMP=$env:TMP
-python -m pytest -q
-```
+## 이어받는 AI에게
 
-Important coverage already in the suite:
+> 처음부터 다시 설계하지 말고 이 문서의 '진행 중'과 '다음 작업'부터 이어갑니다. 완료된 항목을 다시 구현하지 않고, 코드와 문서가 맞지 않으면 차이를 기록한 뒤 진행합니다.
 
-- `len(STATION_MAP) == 41`
-- `Settings.max_markets == SUPPORTED_CITY_COUNT`
-- unverified cities are not parsed or traded
-- discovery rejects non-weather false positives
-- realtime WebSocket mode is required by `run_forever()`
-- forecast cache avoids repeated Open-Meteo calls
-- unavailable ensemble forecasts are not treated as strategy data
-
-## Remaining Production Hardening
-
-- Add stream health telemetry for reconnect count, stale book age, and startup snapshot coverage.
-- Calibrate `PROBABILITY_STOP_DROP_THRESHOLD` after enough resolved paper trades exist.
-- Add station-level forecast bias files after enough station evidence exists.
-- Keep live-wallet execution out of scope until a separate key-isolation and kill-switch design is requested.
-
-## Handoff
-
-Start with `AGENTS.md`, `README.md`, and `docs/production-decisions.md`. Treat `src/weather_bot/stations.py` as the source of truth when code and docs disagree.
+- 먼저 `AGENTS.md`, `docs/production-implementation-plan.md`,
+  `docs/production-decisions.md`, `docs/strategy-upgrade-roadmap.md`를
+  읽습니다.
+- `src/weather_bot/stations.py`의 `STATION_MAP`을 지원 도시와 정산
+  관측소의 단일 기준으로 취급합니다.
+- 실거래, 지갑 연결, 자동 배포는 별도 승인 없이 추가하지 않습니다.
+- 향후 실거래 실행 계층은 `docs/live-trading-safety-plan.md`에서 별도로
+  이어갑니다. paper 전략 Phase와 섞지 않습니다.
+- Phase 6에서는 이번 Phase 4의 event 공유 예산, 한 leg 최소 `$10`,
+  도시 합계 `20%`, 전체 오픈 `90%`, 최대 2개 leg, `YES+NO`와
+  `NO+NO` 비교, 보수적 진입 기준금, Phase 3의 구간 확률과 Phase 2의
+  비용 필터, Phase 5의 verified nowcast/fail-closed 규칙을 유지합니다.
+- 로컬 pytest 또는 Oracle SSH 작업을 시작할 때는
+  `docs/codex/known-good-commands.md`의 검증된 첫 명령을 먼저 사용합니다.

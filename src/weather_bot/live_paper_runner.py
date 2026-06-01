@@ -1,18 +1,55 @@
 from __future__ import annotations
 
+import inspect
 from datetime import datetime, timezone
 import threading
 import time
+from typing import Any
 
 from .config import Settings, load_settings
-from .edge import executable_buy_price, no_net_edge, yes_net_edge
+from .edge import (
+    estimate_executable_net_return,
+    executable_buy_price,
+    no_net_edge,
+    polymarket_taker_fee_per_share,
+    yes_net_edge,
+)
+from .exit_policy import conservative_settlement_value, model_fair_price, target_exit_price
 from .models import EdgeResult, MarketDecision, OrderBook, PaperPosition, RawMarket, WeatherSignal
+from .nowcast import AviationWeatherMetarNowcastProvider
 from .paper import PaperBroker, maybe_close_positions, maybe_settle_resolved_positions
 from .polymarket_client import PolymarketClient
+from .portfolio import (
+    EntryBankrollSnapshot,
+    EventPortfolioDecision,
+    PortfolioCandidate,
+    available_entry_bankroll,
+    select_event_portfolio,
+)
 from .probability import OpenMeteoEnsembleClient, estimate_weather_probability
 from .realtime_orderbook import OrderBookMarketStream
 from .risk import fractional_kelly_binary
 from .runner_status import utc_now_iso, write_runner_status
+from .weather_client import parse_weather_question
+
+
+def _call_probability_estimator(
+    probability_estimator: Any,
+    question: str,
+    *,
+    settings: Settings,
+    ensemble_client: OpenMeteoEnsembleClient | None = None,
+    observation_provider: Any | None = None,
+) -> WeatherSignal:
+    kwargs: dict[str, Any] = {"settings": settings}
+    if ensemble_client is not None:
+        kwargs["ensemble_client"] = ensemble_client
+    if observation_provider is not None:
+        signature = inspect.signature(probability_estimator)
+        accepts_kwargs = any(param.kind == inspect.Parameter.VAR_KEYWORD for param in signature.parameters.values())
+        if accepts_kwargs or "observation_provider" in signature.parameters:
+            kwargs["observation_provider"] = observation_provider
+    return probability_estimator(question, **kwargs)
 
 
 class StreamBackedPolymarketClient(PolymarketClient):
@@ -70,8 +107,10 @@ def _side_liquidity_reason(side: str, book: OrderBook, market_type: str) -> str 
     spread = ask - bid
     if spread > 0.20:
         return f"{side} liquidity filter: spread too wide {spread:.2f} > 0.20 [{market_type}]"
-    if ask > 0.92 or ask < 0.08:
-        return f"{side} liquidity filter: extreme ask={ask:.3f} outside 0.08~0.92 [{market_type}]"
+    if ask >= 1.0 or ask <= 0.0:
+        return f"{side} liquidity filter: invalid ask={ask:.3f} [{market_type}]"
+    if ask < 0.08:
+        return f"{side} liquidity filter: extreme low ask={ask:.3f} below 0.08 [{market_type}]"
     bid_value = _bid_notional(book)
     if bid_value < 10.0:
         return f"{side} liquidity filter: exit bid depth ${bid_value:.1f} < $10 [{market_type}]"
@@ -120,11 +159,12 @@ def _side_result(
     if p_exec is None:
         return EdgeResult("SKIP", signal.p_true, None, -999.0, 0.0, 0.0, f"{side} liquidity filter: insufficient ask depth [{market_type}]")
 
+    entry_fee_per_share = polymarket_taker_fee_per_share(p_exec, settings.weather_taker_fee_rate)
     if side == "YES":
         edge = yes_net_edge(
             signal.p_true,
             p_exec,
-            settings.estimated_fee_per_share,
+            entry_fee_per_share,
             settings.model_error_margin,
             settings.resolution_error_margin,
         )
@@ -133,13 +173,13 @@ def _side_result(
         edge = no_net_edge(
             signal.p_true,
             p_exec,
-            settings.estimated_fee_per_share,
+            entry_fee_per_share,
             settings.model_error_margin,
             settings.resolution_error_margin,
         )
         side_probability = 1.0 - signal.p_true
 
-    p_eff = p_exec + settings.estimated_fee_per_share
+    p_eff = p_exec + entry_fee_per_share
     size_usd = position_size_usd(
         side_probability,
         p_eff,
@@ -149,16 +189,66 @@ def _side_result(
         net_edge=edge,
         min_edge=min_edge,
     )
-    is_trade = edge > min_edge and size_usd >= settings.min_order_usd
+    estimate_shares = size_usd / p_exec if size_usd > 0 else _shares
+    spread = max(0.0, (book.best_ask or p_exec) - (book.best_bid or p_exec))
+    fair = model_fair_price(side, signal.p_true, settings)
+    expected_exit = target_exit_price(p_exec, fair, settings)
+    expected_exit_estimate = estimate_executable_net_return(
+        shares=estimate_shares,
+        entry_vwap=p_exec,
+        expected_exit_price=expected_exit,
+        expected_exit_spread=spread,
+        expected_exit_slippage=slip,
+        fee_rate=settings.weather_taker_fee_rate,
+    )
+    settlement_estimate = estimate_executable_net_return(
+        shares=estimate_shares,
+        entry_vwap=p_exec,
+        expected_exit_price=conservative_settlement_value(side, signal.p_true, settings),
+        fee_rate=settings.weather_taker_fee_rate,
+        hold_to_settlement=True,
+    )
+    return_estimate = max(
+        (expected_exit_estimate, settlement_estimate),
+        key=lambda estimate: estimate.expected_net_return_pct,
+    )
+    return_ok = return_estimate.expected_net_return_pct >= settings.entry_min_expected_net_return_pct
+    is_trade = edge > min_edge and size_usd >= settings.min_order_usd and return_ok
+    rejection = ""
+    if not return_ok:
+        rejection = f", reject=expected net return below {settings.entry_min_expected_net_return_pct:.2%}"
+    reason = (
+        f"{side} edge={edge:.4f}, p_exec_vwap={p_exec:.4f}, route={return_estimate.route}, "
+        f"expected_exit={return_estimate.expected_exit_price:.4f}, "
+        f"expected_gross=${return_estimate.expected_gross_profit_usdc:.4f}, "
+        f"estimated_cost=${return_estimate.estimated_cost_usdc:.4f}, "
+        f"expected_net_return={return_estimate.expected_net_return_pct:.2%}, "
+        f"entry_fee=${return_estimate.entry_fee_usdc:.4f}, "
+        f"exit_fee=${return_estimate.exit_fee_usdc:.4f}, "
+        f"exit_market_cost=${return_estimate.exit_market_cost_usdc:.4f}, "
+        f"spread_audit={spread:.4f}, slip_audit={slip:.4f}{rejection} [{market_type}]"
+    )
     return EdgeResult(
         side=side if is_trade else "SKIP",
         p_true=signal.p_true,
         p_exec=p_exec,
         net_edge=edge,
-        size_usd=size_usd if edge > min_edge else 0.0,
-        size_shares=(size_usd / p_exec) if edge > min_edge and p_exec > 0 else 0.0,
-        reason=f"{side} edge={edge:.4f}, p_exec_vwap={p_exec:.4f}, slip_audit={slip:.4f} [{market_type}]",
+        size_usd=size_usd if edge > min_edge and return_ok else 0.0,
+        size_shares=(size_usd / p_exec) if edge > min_edge and return_ok and p_exec > 0 else 0.0,
+        reason=reason,
+        expected_net_profit_usd=return_estimate.expected_net_profit_usdc if edge > min_edge and return_ok else 0.0,
     )
+
+
+def _no_valid_side_reason(base_reason: str, per_side: dict[str, EdgeResult]) -> str:
+    details = [
+        result.reason
+        for side in ("YES", "NO")
+        if (result := per_side.get(side)) is not None and result.reason
+    ]
+    if not details:
+        return base_reason
+    return f"{base_reason} {' | '.join(details)}"
 
 
 def evaluate_market(
@@ -213,6 +303,9 @@ def evaluate_market(
 
     if best_result.side == "SKIP":
         prefix = "trade blocked" if best_result.net_edge > min_edge else f"edge below {min_edge:.2%}"
+        reason = best_result.reason
+        if best_result.net_edge <= -999.0:
+            reason = _no_valid_side_reason(reason, per_side)
         best_result = EdgeResult(
             side="SKIP",
             p_true=signal.p_true,
@@ -220,7 +313,7 @@ def evaluate_market(
             net_edge=best_result.net_edge,
             size_usd=0.0,
             size_shares=0.0,
-            reason=f"{prefix} [{market_type}]. {best_result.reason}",
+            reason=f"{prefix} [{market_type}]. {reason}",
         )
     elif best_result.net_edge <= min_edge:
         best_result = EdgeResult(
@@ -233,6 +326,21 @@ def evaluate_market(
             reason=f"edge below {min_edge:.2%} [{market_type}]. {best_result.reason}",
         )
     return best_result, per_side
+
+
+def _event_portfolio_candidates(
+    market: RawMarket,
+    signal: WeatherSignal,
+    result: EdgeResult,
+    per_side: dict[str, EdgeResult],
+    market_type: str,
+) -> list[PortfolioCandidate]:
+    executable = [
+        PortfolioCandidate(market, signal, edge_result, market_type)
+        for edge_result in per_side.values()
+        if edge_result.side in {"YES", "NO"}
+    ]
+    return executable or [PortfolioCandidate(market, signal, result, market_type)]
 
 
 def _market_type_from_signal(signal: WeatherSignal) -> str:
@@ -267,6 +375,7 @@ def refresh_open_position_edges(
     market_by_id: dict[str, RawMarket],
     probability_estimator=estimate_weather_probability,
     ensemble_client: OpenMeteoEnsembleClient | None = None,
+    observation_provider: Any | None = None,
 ) -> None:
     """Refresh model probability and edge for held positions missing from the scan."""
     for pos in broker.state.positions:
@@ -274,10 +383,13 @@ def refresh_open_position_edges(
         if key in latest_edges:
             continue
         market = market_by_id.get(pos.market_id) or _market_from_position(pos)
-        if ensemble_client is None:
-            signal = probability_estimator(pos.question, settings=settings)
-        else:
-            signal = probability_estimator(pos.question, settings=settings, ensemble_client=ensemble_client)
+        signal = _call_probability_estimator(
+            probability_estimator,
+            pos.question,
+            settings=settings,
+            ensemble_client=ensemble_client,
+            observation_provider=observation_provider,
+        )
         market_type = str(pos.metadata.get("market_type") or _market_type_from_signal(signal))
         _best, per_side = evaluate_market(
             market,
@@ -302,108 +414,189 @@ def _hydrate_open_position_markets(client: PolymarketClient, broker: PaperBroker
             market_by_id[pos.market_id] = _market_from_position(pos)
 
 
+def _stream_market_registry(
+    client: PolymarketClient,
+    broker: PaperBroker,
+    markets: list[RawMarket],
+) -> dict[str, RawMarket]:
+    market_by_id = {market.market_id: market for market in markets}
+    _hydrate_open_position_markets(client, broker, market_by_id)
+    return market_by_id
+
+
+def _market_event_key(market: RawMarket) -> str:
+    if market.event_id:
+        return market.event_id
+    parsed = parse_weather_question(market.question)
+    return "|".join([
+        parsed.city or "unknown-city",
+        parsed.date_hint or "unknown-date",
+        parsed.variable,
+        parsed.temperature_metric,
+    ])
+
+
+def _group_weather_markets_by_event(markets: list[RawMarket]) -> list[list[RawMarket]]:
+    groups: dict[str, list[RawMarket]] = {}
+    for market in markets:
+        groups.setdefault(_market_event_key(market), []).append(market)
+    return list(groups.values())
+
+
+def _discovery_coverage(markets: list[RawMarket]) -> dict[str, int]:
+    groups = _group_weather_markets_by_event(markets)
+    cities = {
+        parsed.city
+        for market in markets
+        if (parsed := parse_weather_question(market.question)).city
+    }
+    return {"events": len(groups), "cities": len(cities), "markets": len(markets)}
+
+
 def run_cycle(settings: Settings | None = None) -> list[MarketDecision]:
     settings = settings or load_settings()
     cycle_started_at = utc_now_iso()
     write_runner_status(settings, "starting", message="starting cycle", cycle_started_at=cycle_started_at)
     client = PolymarketClient(settings.gamma_base, settings.clob_base)
     ensemble_client = OpenMeteoEnsembleClient.from_settings(settings)
+    observation_provider = AviationWeatherMetarNowcastProvider.from_settings(settings)
     broker = PaperBroker(settings)
     try:
         write_runner_status(settings, "discovering", message="discovering markets", cycle_started_at=cycle_started_at)
-        markets = client.discover_weather_markets(limit=settings.max_markets)
+        discovered_markets = client.discover_weather_markets(
+            max_pages=settings.discovery_max_pages,
+            page_size=settings.discovery_page_size,
+        )
     except Exception as exc:  # noqa: BLE001
         write_runner_status(settings, "error", message=f"market discovery failed: {exc}", cycle_started_at=cycle_started_at)
         print(f"DATA ERROR: could not fetch live Polymarket markets: {exc}")
         print("Check internet/DNS/VPN, then run live-paper-bot again.")
         return []
 
+    event_groups = _group_weather_markets_by_event(discovered_markets)
+    markets = [market for group in event_groups for market in group]
+    coverage = _discovery_coverage(markets)
     market_by_id = {m.market_id: m for m in markets}
     decisions: list[MarketDecision] = []
     latest_edges: dict[tuple[str, str], EdgeResult] = {}
 
     print(
-        f"\nLIVE PAPER CYCLE | markets={len(markets)} | "
+        f"\nLIVE PAPER CYCLE | markets={len(markets)} | events={coverage['events']} | "
+        f"cities={coverage['cities']} | "
         f"cash=${broker.state.cash_usd:.2f} | exposure=${broker.total_exposure():.2f} | "
         f"bankroll=${broker.current_bankroll_before_entry():.2f} | open_positions={len(broker.state.positions)}"
     )
     write_runner_status(
         settings,
         "evaluating",
-        message=f"evaluating 0/{len(markets)}",
+        message=f"evaluating 0/{len(markets)} markets across {coverage['events']} events, {coverage['cities']} cities",
         cycle_started_at=cycle_started_at,
         markets_done=0,
         markets_total=len(markets),
+        events_total=coverage["events"],
+        cities_total=coverage["cities"],
         cash_usd=round(broker.state.cash_usd, 2),
         exposure_usd=round(broker.total_exposure(), 2),
         open_positions=len(broker.state.positions),
     )
-    for idx, market in enumerate(markets, start=1):
-        try:
-            signal = estimate_weather_probability(market.question, settings=settings, ensemble_client=ensemble_client)
-            bankroll_before = broker.current_bankroll_before_entry()
-            market_type = _market_type_from_signal(signal)
-            result, per_side = evaluate_market(market, signal, client, settings, bankroll_before, market_type)
-            for side, edge_result in per_side.items():
-                latest_edges[(market.market_id, side)] = edge_result
-            decisions.append(MarketDecision(market=market, signal=signal, result=result))
-            broker.log_decision(market, result, signal.note, market_type)
-            broker.log_raw_snapshot(
-                "decision",
-                market,
-                {
-                    "market_raw": market.raw,
-                    "signal": {
-                        "p_true": signal.p_true,
-                        "confidence": signal.confidence,
-                        "source": signal.source,
-                        "note": signal.note,
+    markets_done = 0
+    for event_markets in event_groups:
+        entry_bankroll = available_entry_bankroll(broker, client)
+        candidates: list[PortfolioCandidate] = []
+        for market in event_markets:
+            markets_done += 1
+            try:
+                signal = _call_probability_estimator(
+                    estimate_weather_probability,
+                    market.question,
+                    settings=settings,
+                    ensemble_client=ensemble_client,
+                    observation_provider=observation_provider,
+                )
+                market_type = _market_type_from_signal(signal)
+                result, per_side = evaluate_market(
+                    market,
+                    signal,
+                    client,
+                    settings,
+                    entry_bankroll.entry_bankroll,
+                    market_type,
+                )
+                for side, edge_result in per_side.items():
+                    latest_edges[(market.market_id, side)] = edge_result
+                decisions.append(MarketDecision(market=market, signal=signal, result=result))
+                candidates.extend(_event_portfolio_candidates(market, signal, result, per_side, market_type))
+                broker.log_decision(market, result, signal.note, market_type)
+                broker.log_raw_snapshot(
+                    "decision",
+                    market,
+                    {
+                        "market_raw": market.raw,
+                        "signal": {
+                            "p_true": signal.p_true,
+                            "confidence": signal.confidence,
+                            "source": signal.source,
+                            "note": signal.note,
+                            "nowcast": signal.nowcast,
+                        },
+                        "per_side": {side: edge.__dict__ for side, edge in per_side.items()},
                     },
-                    "per_side": {side: edge.__dict__ for side, edge in per_side.items()},
-                },
+                )
+                print("-" * 100)
+                print(f"Q: {market.question}")
+                print(f"P_true={signal.p_true:.3f} confidence={signal.confidence:.2f} source={signal.source}")
+                print(f"Decision={result.side} edge={result.net_edge:.3f} p_exec={result.p_exec} size=${result.size_usd:.2f}")
+                print(f"Reason: {result.reason}")
+                print(f"Note: {signal.note}")
+            except Exception as exc:  # noqa: BLE001
+                print("-" * 100)
+                print(f"Q: {market.question}")
+                print(f"ERROR: {exc}")
+            write_runner_status(
+                settings,
+                "evaluating",
+                message=f"evaluating {markets_done}/{len(markets)}",
+                cycle_started_at=cycle_started_at,
+                markets_done=markets_done,
+                markets_total=len(markets),
+                events_total=coverage["events"],
+                cities_total=coverage["cities"],
+                last_market=market.question,
+                cash_usd=round(broker.state.cash_usd, 2),
+                exposure_usd=round(broker.total_exposure(), 2),
+                open_positions=len(broker.state.positions),
             )
-            print("-" * 100)
-            print(f"Q: {market.question}")
-            print(f"P_true={signal.p_true:.3f} confidence={signal.confidence:.2f} source={signal.source}")
-            print(f"Decision={result.side} edge={result.net_edge:.3f} p_exec={result.p_exec} size=${result.size_usd:.2f}")
-            print(f"Reason: {result.reason}")
-            print(f"Note: {signal.note}")
-            if result.side in {"YES", "NO"}:
-                token_id = market.yes_token_id if result.side == "YES" else market.no_token_id
-                if broker.has_any_position(market.market_id):
-                    existing = [p.side for p in broker.state.positions if p.market_id == market.market_id]
-                    print(f"SKIP hedge block: already holding {existing} in this market")
-                elif token_id:
-                    city = signal.parsed.city if signal.parsed is not None else ""
-                    date_hint = signal.parsed.date_hint if signal.parsed is not None else ""
-                    pos = broker.open_position(market, token_id, result, market_type, city=city or "", date_hint=date_hint or "")
-                    if pos:
-                        city_info = f" [{city}/{date_hint}]" if city else ""
-                        print(f"PAPER OPENED {pos.side}: ${pos.cost_usd:.2f} at {pos.entry_price:.4f}, shares={pos.shares:.4f}{city_info}")
-        except Exception as exc:  # noqa: BLE001
-            print("-" * 100)
-            print(f"Q: {market.question}")
-            print(f"ERROR: {exc}")
-        write_runner_status(
-            settings,
-            "evaluating",
-            message=f"evaluating {idx}/{len(markets)}",
-            cycle_started_at=cycle_started_at,
-            markets_done=idx,
-            markets_total=len(markets),
-            last_market=market.question,
-            cash_usd=round(broker.state.cash_usd, 2),
-            exposure_usd=round(broker.total_exposure(), 2),
-            open_positions=len(broker.state.positions),
+        portfolio = _apply_event_portfolio(broker, candidates, entry_bankroll)
+        print(
+            f"EVENT PORTFOLIO {portfolio.event_key}: selected={len(portfolio.selected)} "
+            f"exposure=${portfolio.selected_exposure_usd:.2f} cap=${portfolio.event_cap_usd:.2f} "
+            f"expected_net_profit=${portfolio.expected_net_profit_usd:.2f}"
         )
 
-    write_runner_status(settings, "closing", message="checking settlements and exits", cycle_started_at=cycle_started_at, markets_done=len(markets), markets_total=len(markets))
+    write_runner_status(
+        settings,
+        "closing",
+        message="checking settlements and exits",
+        cycle_started_at=cycle_started_at,
+        markets_done=len(markets),
+        markets_total=len(markets),
+        events_total=coverage["events"],
+        cities_total=coverage["cities"],
+    )
     _hydrate_open_position_markets(client, broker, market_by_id)
     settlement_msgs = maybe_settle_resolved_positions(broker, market_by_id)
     for msg in settlement_msgs:
         print(msg)
 
-    refresh_open_position_edges(broker, client, settings, latest_edges, market_by_id, ensemble_client=ensemble_client)
+    refresh_open_position_edges(
+        broker,
+        client,
+        settings,
+        latest_edges,
+        market_by_id,
+        ensemble_client=ensemble_client,
+        observation_provider=observation_provider,
+    )
     close_msgs = maybe_close_positions(broker, client, market_by_id, latest_edges)
     for msg in close_msgs:
         print(msg)
@@ -419,6 +612,8 @@ def run_cycle(settings: Settings | None = None) -> list[MarketDecision]:
         cycle_started_at=cycle_started_at,
         markets_done=len(markets),
         markets_total=len(markets),
+        events_total=coverage["events"],
+        cities_total=coverage["cities"],
         cash_usd=round(broker.state.cash_usd, 2),
         exposure_usd=round(broker.total_exposure(), 2),
         open_positions=len(broker.state.positions),
@@ -436,6 +631,7 @@ def _open_position_if_needed(
     signal: WeatherSignal,
     result: EdgeResult,
     market_type: str,
+    entry_bankroll_usd: float | None = None,
 ) -> None:
     if result.side not in {"YES", "NO"}:
         return
@@ -444,7 +640,34 @@ def _open_position_if_needed(
         return
     city = signal.parsed.city if signal.parsed is not None else ""
     date_hint = signal.parsed.date_hint if signal.parsed is not None else ""
-    broker.open_position(market, token_id, result, market_type, city=city or "", date_hint=date_hint or "")
+    broker.open_position(
+        market,
+        token_id,
+        result,
+        market_type,
+        city=city or "",
+        date_hint=date_hint or "",
+        entry_bankroll_usd=entry_bankroll_usd,
+    )
+
+
+def _apply_event_portfolio(
+    broker: PaperBroker,
+    candidates: list[PortfolioCandidate],
+    entry_bankroll: EntryBankrollSnapshot,
+) -> EventPortfolioDecision:
+    decision = select_event_portfolio(broker, candidates, entry_bankroll)
+    broker.log_event_portfolio_decision(decision.to_log_payload())
+    for candidate in decision.selected:
+        _open_position_if_needed(
+            broker,
+            candidate.market,
+            candidate.signal,
+            candidate.result,
+            candidate.market_type,
+            entry_bankroll_usd=entry_bankroll.entry_bankroll,
+        )
+    return decision
 
 
 def _evaluate_realtime_update(
@@ -457,44 +680,67 @@ def _evaluate_realtime_update(
     market_types: dict[str, str],
     latest_edges: dict[tuple[str, str], EdgeResult],
 ) -> None:
-    touched_markets = {
-        market_by_token[token_id].market_id
+    touched_events = {
+        _market_event_key(market_by_token[token_id])
         for token_id in updated_token_ids
         if token_id in market_by_token
     }
     market_by_id = {market.market_id: market for market in market_by_token.values()}
-    for market_id in touched_markets:
-        market = market_by_id[market_id]
-        signal = signals_by_market[market_id]
-        market_type = market_types[market_id]
-        result, per_side = evaluate_market(
-            market,
-            signal,
-            client,
-            settings,
-            broker.current_bankroll_before_entry(),
-            market_type,
-        )
-        for side, edge_result in per_side.items():
-            latest_edges[(market.market_id, side)] = edge_result
-        broker.log_decision(market, result, signal.note, market_type)
-        broker.log_raw_snapshot(
-            "realtime_decision",
-            market,
-            {
-                "updated_token_ids": sorted(updated_token_ids),
-                "signal": {
-                    "p_true": signal.p_true,
-                    "confidence": signal.confidence,
-                    "source": signal.source,
-                    "note": signal.note,
+    event_groups: dict[str, list[RawMarket]] = {}
+    for market in market_by_id.values():
+        event_groups.setdefault(_market_event_key(market), []).append(market)
+    for event_key in touched_events:
+        entry_bankroll = available_entry_bankroll(broker, client)
+        candidates: list[PortfolioCandidate] = []
+        for market in event_groups[event_key]:
+            signal = signals_by_market[market.market_id]
+            market_type = market_types[market.market_id]
+            result, per_side = evaluate_market(
+                market,
+                signal,
+                client,
+                settings,
+                entry_bankroll.entry_bankroll,
+                market_type,
+            )
+            for side, edge_result in per_side.items():
+                latest_edges[(market.market_id, side)] = edge_result
+            candidates.extend(_event_portfolio_candidates(market, signal, result, per_side, market_type))
+            broker.log_decision(market, result, signal.note, market_type)
+            broker.log_raw_snapshot(
+                "realtime_decision",
+                market,
+                {
+                    "updated_token_ids": sorted(updated_token_ids),
+                    "signal": {
+                        "p_true": signal.p_true,
+                        "confidence": signal.confidence,
+                        "source": signal.source,
+                        "note": signal.note,
+                        "nowcast": signal.nowcast,
+                    },
+                    "per_side": {side: edge.__dict__ for side, edge in per_side.items()},
                 },
-                "per_side": {side: edge.__dict__ for side, edge in per_side.items()},
-            },
-        )
-        _open_position_if_needed(broker, market, signal, result, market_type)
+            )
+        _apply_event_portfolio(broker, candidates, entry_bankroll)
     for message in maybe_close_positions(broker, client, market_by_id, latest_edges):
         print(message)
+
+
+def _stream_status_phase(
+    websocket_health: dict[str, object],
+    *,
+    token_count: int,
+    market_count: int,
+    event_count: int,
+    city_count: int,
+) -> tuple[str, str]:
+    coverage = f"{token_count} tokens across {market_count} markets, {event_count} events, {city_count} cities"
+    if not websocket_health.get("thread_alive"):
+        return "stream_error", f"websocket thread stopped; {coverage}"
+    if websocket_health.get("stale"):
+        return "stream_stale", f"websocket order book stale; {coverage}"
+    return "streaming", f"websocket streaming {coverage}"
 
 
 def run_realtime_forever(settings: Settings | None = None) -> None:
@@ -504,18 +750,33 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
         cycle_started_at = utc_now_iso()
         discovery_client = PolymarketClient(settings.gamma_base, settings.clob_base)
         ensemble_client = OpenMeteoEnsembleClient.from_settings(settings)
+        observation_provider = AviationWeatherMetarNowcastProvider.from_settings(settings)
         broker = PaperBroker(settings)
         write_runner_status(settings, "discovering", message="discovering markets for websocket stream", cycle_started_at=cycle_started_at)
-        markets = discovery_client.discover_weather_markets(limit=settings.max_markets)
+        discovered_markets = discovery_client.discover_weather_markets(
+            max_pages=settings.discovery_max_pages,
+            page_size=settings.discovery_page_size,
+        )
+        event_groups = _group_weather_markets_by_event(discovered_markets)
+        markets = [market for group in event_groups for market in group]
+        market_by_id = _stream_market_registry(discovery_client, broker, markets)
+        stream_markets = list(market_by_id.values())
+        coverage = _discovery_coverage(stream_markets)
         market_by_token = {
             token_id: market
-            for market in markets
+            for market in stream_markets
             for token_id in _market_token_ids(market)
         }
         signals_by_market: dict[str, WeatherSignal] = {}
         market_types: dict[str, str] = {}
-        for market in markets:
-            signal = estimate_weather_probability(market.question, settings=settings, ensemble_client=ensemble_client)
+        for market in stream_markets:
+            signal = _call_probability_estimator(
+                estimate_weather_probability,
+                market.question,
+                settings=settings,
+                ensemble_client=ensemble_client,
+                observation_provider=observation_provider,
+            )
             signals_by_market[market.market_id] = signal
             market_types[market.market_id] = _market_type_from_signal(signal)
 
@@ -543,25 +804,47 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
             on_update=on_update,
             heartbeat_seconds=settings.orderbook_stream_heartbeat_seconds,
             reconnect_seconds=settings.orderbook_stream_reconnect_seconds,
+            stale_seconds=settings.orderbook_stream_stale_seconds,
         )
         stream_holder["client"] = StreamBackedPolymarketClient(settings.gamma_base, settings.clob_base, stream)
         stream.start(market_by_token.keys())
-        write_runner_status(
-            settings,
-            "streaming",
-            message=f"websocket streaming {len(market_by_token)} tokens across {len(markets)} markets",
-            cycle_started_at=cycle_started_at,
-            markets_done=0,
-            markets_total=len(markets),
-            cash_usd=round(broker.state.cash_usd, 2),
-            exposure_usd=round(broker.total_exposure(), 2),
-            open_positions=len(broker.state.positions),
-        )
+
+        def write_stream_status() -> None:
+            websocket_health = stream.health_snapshot()
+            phase, message = _stream_status_phase(
+                websocket_health,
+                token_count=len(market_by_token),
+                market_count=len(stream_markets),
+                event_count=coverage["events"],
+                city_count=coverage["cities"],
+            )
+            write_runner_status(
+                settings,
+                phase,
+                message=message,
+                cycle_started_at=cycle_started_at,
+                markets_done=0,
+                markets_total=len(stream_markets),
+                events_total=coverage["events"],
+                cities_total=coverage["cities"],
+                cash_usd=round(broker.state.cash_usd, 2),
+                exposure_usd=round(broker.total_exposure(), 2),
+                open_positions=len(broker.state.positions),
+                forecast=ensemble_client.health_snapshot(),
+                websocket=websocket_health,
+            )
+
+        write_stream_status()
+        status_updated_at = datetime.now(timezone.utc)
         try:
             while True:
-                elapsed = (datetime.now(timezone.utc) - refresh_started_at).total_seconds()
+                now = datetime.now(timezone.utc)
+                elapsed = (now - refresh_started_at).total_seconds()
                 if elapsed >= settings.forecast_refresh_interval_seconds:
                     break
+                if (now - status_updated_at).total_seconds() >= settings.runner_health_status_interval_seconds:
+                    write_stream_status()
+                    status_updated_at = now
                 time.sleep(1)
         finally:
             stream.stop()

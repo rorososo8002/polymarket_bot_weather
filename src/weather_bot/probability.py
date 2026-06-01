@@ -5,6 +5,7 @@ import math
 import os
 import re
 import statistics
+from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
@@ -15,6 +16,7 @@ from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponen
 
 from .config import Settings
 from .models import ParsedWeatherQuestion, WeatherSignal
+from .nowcast import StationNowcastObservation
 from .stations import STATION_MAP, StationMeta
 from .weather_client import parse_weather_question
 
@@ -30,6 +32,19 @@ from .weather_client import parse_weather_question
 # Default model set.  If Open-Meteo changes a model id, override with:
 # OPEN_METEO_ENSEMBLE_MODELS=gfs_seamless,ecmwf_ifs025,gem_global
 DEFAULT_ENSEMBLE_MODELS = "gfs_seamless,ecmwf_ifs025"
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _utc_iso(value: datetime) -> str:
+    return value.astimezone(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def _safe_error(exc: BaseException) -> str:
+    text = " ".join(str(exc).split())
+    return f"{type(exc).__name__}: {text}"[:240]
 
 
 # ---------------------------------------------------------------------------
@@ -176,6 +191,44 @@ def blend_empirical_and_cdf(empirical_p: float, mean_f: float, threshold_f: floa
     return clamp_probability(0.70 * empirical_p + 0.30 * cdf_p)
 
 
+def _temperature_bucket_probability(
+    parsed: ParsedWeatherQuestion,
+    member_values_f: list[float],
+    mean_f: float,
+    sigma_f: float,
+) -> tuple[float, float]:
+    """Return a probability and raw ensemble vote for one temperature bucket."""
+    if parsed.threshold_f is None or parsed.operator is None:
+        raise ValueError("Temperature bucket is missing a parsed threshold.")
+
+    threshold_f = parsed.threshold_f
+    bucket_width_f = 1.8 if parsed.threshold_unit == "C" else 1.0
+    half_width_f = bucket_width_f / 2.0
+
+    if parsed.temperature_bucket == "exact":
+        lower_f = threshold_f - half_width_f
+        upper_f = threshold_f + half_width_f
+        votes = [lower_f <= value < upper_f for value in member_values_f]
+        cdf_p = normal_cdf((upper_f - mean_f) / sigma_f) - normal_cdf((lower_f - mean_f) / sigma_f)
+    elif parsed.temperature_bucket == "lower_tail":
+        upper_f = threshold_f + half_width_f
+        votes = [value < upper_f for value in member_values_f]
+        cdf_p = normal_cdf((upper_f - mean_f) / sigma_f)
+    elif parsed.temperature_bucket == "upper_tail":
+        lower_f = threshold_f - half_width_f
+        votes = [value >= lower_f for value in member_values_f]
+        cdf_p = 1.0 - normal_cdf((lower_f - mean_f) / sigma_f)
+    elif parsed.operator == ">=":
+        votes = [value >= threshold_f for value in member_values_f]
+        cdf_p = probability_temperature_ge(threshold_f, mean_f, sigma_f)
+    else:
+        votes = [value <= threshold_f for value in member_values_f]
+        cdf_p = normal_cdf((threshold_f - mean_f) / sigma_f)
+
+    empirical_p = sum(votes) / len(votes)
+    return clamp_probability(0.70 * empirical_p + 0.30 * cdf_p), empirical_p
+
+
 # ---------------------------------------------------------------------------
 # 3) Bias correction
 # ---------------------------------------------------------------------------
@@ -228,6 +281,11 @@ class OpenMeteoEnsembleClient:
         self.cache_ttl_seconds = max(0, int(cache_ttl_seconds))
         self.disabled_reason = ""
         self._cache: dict[str, dict[str, Any]] = {}
+        self._last_attempt_at: datetime | None = None
+        self._last_success_at: datetime | None = None
+        self._last_failure_reason = ""
+        self._persistence_error = ""
+        self._latest_cache_created_at: datetime | None = None
 
     @classmethod
     def from_settings(cls, settings: Settings) -> "OpenMeteoEnsembleClient":
@@ -243,9 +301,46 @@ class OpenMeteoEnsembleClient:
             self.models,
         ])
 
+    @staticmethod
+    def _created_at(entry: dict[str, Any]) -> datetime | None:
+        try:
+            created_at = datetime.fromisoformat(str(entry.get("created_at", "")).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
+        return created_at.astimezone(timezone.utc)
+
+    def _remember_cached_data(self, cache_key: str, data: dict[str, Any], created_at: datetime) -> None:
+        self._cache[cache_key] = {
+            "created_at": _utc_iso(created_at),
+            "data": data,
+        }
+        if self._latest_cache_created_at is None or created_at > self._latest_cache_created_at:
+            self._latest_cache_created_at = created_at
+        if self._last_success_at is None or created_at > self._last_success_at:
+            self._last_success_at = created_at
+
+    def _fresh_entry_data(self, entry: dict[str, Any], now: datetime) -> dict[str, Any] | None:
+        if self.cache_ttl_seconds <= 0:
+            return None
+        created_at = self._created_at(entry)
+        if created_at is None:
+            return None
+        age_seconds = (now - created_at).total_seconds()
+        if age_seconds > self.cache_ttl_seconds:
+            return None
+        data = entry.get("data")
+        return data if isinstance(data, dict) else None
+
     def _fresh_cached_data(self, cache_key: str) -> dict[str, Any] | None:
-        if cache_key in self._cache:
-            return self._cache[cache_key]
+        now = _utc_now()
+        memory_entry = self._cache.get(cache_key)
+        if isinstance(memory_entry, dict):
+            data = self._fresh_entry_data(memory_entry, now)
+            if data is not None:
+                return data
+            self._cache.pop(cache_key, None)
         if self.cache_ttl_seconds <= 0 or self.cache_path is None or not self.cache_path.exists():
             return None
         try:
@@ -253,22 +348,20 @@ class OpenMeteoEnsembleClient:
             entry = raw.get(cache_key) if isinstance(raw, dict) else None
             if not isinstance(entry, dict):
                 return None
-            created_at = datetime.fromisoformat(str(entry.get("created_at", "")).replace("Z", "+00:00"))
-            if created_at.tzinfo is None:
-                created_at = created_at.replace(tzinfo=timezone.utc)
-            age_seconds = (datetime.now(timezone.utc) - created_at.astimezone(timezone.utc)).total_seconds()
-            if age_seconds > self.cache_ttl_seconds:
-                return None
-            data = entry.get("data")
-            if isinstance(data, dict):
-                self._cache[cache_key] = data
+            data = self._fresh_entry_data(entry, now)
+            created_at = self._created_at(entry)
+            if data is not None and created_at is not None:
+                self._remember_cached_data(cache_key, data, created_at)
                 return data
-        except Exception:
+        except Exception as exc:
+            self._persistence_error = _safe_error(exc)
             return None
         return None
 
     def _store_cached_data(self, cache_key: str, data: dict[str, Any]) -> None:
-        self._cache[cache_key] = data
+        created_at = _utc_now()
+        self._remember_cached_data(cache_key, data, created_at)
+        self._last_failure_reason = ""
         if self.cache_ttl_seconds <= 0 or self.cache_path is None:
             return
         try:
@@ -279,15 +372,34 @@ class OpenMeteoEnsembleClient:
                     loaded = json.loads(self.cache_path.read_text(encoding="utf-8"))
                     if isinstance(loaded, dict):
                         raw = loaded
-                except Exception:
+                except Exception as exc:
+                    self._persistence_error = _safe_error(exc)
                     raw = {}
             raw[cache_key] = {
-                "created_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+                "created_at": _utc_iso(created_at),
                 "data": data,
             }
             self.cache_path.write_text(json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8")
-        except Exception:
-            pass
+            self._persistence_error = ""
+        except Exception as exc:
+            self._persistence_error = _safe_error(exc)
+
+    def health_snapshot(self, now: datetime | None = None) -> dict[str, Any]:
+        current = (now or _utc_now()).astimezone(timezone.utc)
+        cache_age_seconds: int | None = None
+        if self._latest_cache_created_at is not None:
+            cache_age_seconds = max(0, int((current - self._latest_cache_created_at).total_seconds()))
+        stale = self._last_success_at is None
+        if cache_age_seconds is not None and self.cache_ttl_seconds > 0:
+            stale = cache_age_seconds > self.cache_ttl_seconds
+        return {
+            "last_attempt_at": _utc_iso(self._last_attempt_at) if self._last_attempt_at is not None else "",
+            "last_success_at": _utc_iso(self._last_success_at) if self._last_success_at is not None else "",
+            "last_failure_reason": self._last_failure_reason,
+            "cache_age_seconds": cache_age_seconds,
+            "stale": stale,
+            "persistence_error": self._persistence_error,
+        }
 
     @retry(
         stop=stop_after_attempt(3),
@@ -307,6 +419,7 @@ class OpenMeteoEnsembleClient:
         if cached is not None:
             return cached
         if self.disabled_reason:
+            self._last_failure_reason = self.disabled_reason
             raise RuntimeError(f"ensemble disabled for cycle: {self.disabled_reason}")
         params = {
             "latitude": latitude,
@@ -317,15 +430,26 @@ class OpenMeteoEnsembleClient:
             "timezone": timezone,
             "forecast_days": forecast_days,
         }
-        resp = requests.get(self.base_url, params=params, timeout=self.timeout)
         try:
+            self._last_attempt_at = _utc_now()
+            resp = requests.get(self.base_url, params=params, timeout=self.timeout)
             resp.raise_for_status()
         except requests.HTTPError as exc:
             if _is_rate_limited(exc):
                 body = getattr(resp, "text", "") or str(exc)
                 self.disabled_reason = f"Open-Meteo rate limited: {body[:160]}"
+                self._last_failure_reason = self.disabled_reason
+            else:
+                self._last_failure_reason = _safe_error(exc)
             raise
-        data = resp.json()
+        except Exception as exc:
+            self._last_failure_reason = _safe_error(exc)
+            raise
+        try:
+            data = resp.json()
+        except Exception as exc:
+            self._last_failure_reason = _safe_error(exc)
+            raise
         self._store_cached_data(cache_key, data)
         return data
 
@@ -426,8 +550,88 @@ def _temperature_daily_variable(parsed: ParsedWeatherQuestion) -> str:
     return "temperature_2m_min" if parsed.temperature_metric == "min" else "temperature_2m_max"
 
 
-def _temperature_reference_label(parsed: ParsedWeatherQuestion) -> str:
-    return "target forecast low" if parsed.temperature_metric == "min" else "target forecast high"
+def _nowcast_threshold_adjustment(
+    parsed: ParsedWeatherQuestion,
+    forecast_probability: float,
+    observed_high_f: float,
+) -> tuple[float, str]:
+    if parsed.threshold_f is None or parsed.operator is None:
+        return forecast_probability, "no-threshold"
+
+    threshold_f = parsed.threshold_f
+    half_width_f = (1.8 if parsed.threshold_unit == "C" else 1.0) / 2.0
+
+    if parsed.temperature_bucket == "exact":
+        upper_f = threshold_f + half_width_f
+        if observed_high_f >= upper_f:
+            return 0.0, "observed-high-above-exact-bucket"
+        return forecast_probability, "observed-high-not-decisive"
+
+    if parsed.temperature_bucket == "lower_tail":
+        upper_f = threshold_f + half_width_f
+        if observed_high_f >= upper_f:
+            return 0.0, "observed-high-above-lower-tail"
+        return forecast_probability, "observed-high-not-decisive"
+
+    if parsed.temperature_bucket == "upper_tail":
+        lower_f = threshold_f - half_width_f
+        if observed_high_f >= lower_f:
+            return 1.0, "observed-high-reached-upper-tail"
+        return forecast_probability, "observed-high-not-decisive"
+
+    if parsed.operator == ">=" and observed_high_f >= threshold_f:
+        return 1.0, "observed-high-reached-threshold"
+    if parsed.operator == "<=" and observed_high_f > threshold_f:
+        return 0.0, "observed-high-above-threshold"
+    return forecast_probability, "observed-high-not-decisive"
+
+
+def _with_temperature_nowcast(
+    signal: WeatherSignal,
+    parsed: ParsedWeatherQuestion,
+    station: StationMeta,
+    target: date,
+    settings: Settings,
+    observation_provider: Any | None,
+) -> WeatherSignal:
+    if not settings.station_nowcast_enabled:
+        return replace(signal, note=f"{signal.note}; evidence=forecast-only; nowcast_unavailable=disabled")
+    if observation_provider is None:
+        return replace(signal, note=f"{signal.note}; evidence=forecast-only; nowcast_unavailable=provider-not-supplied")
+
+    try:
+        observation: StationNowcastObservation = observation_provider.observed_high_so_far(station, target_date=target)
+    except Exception as exc:  # noqa: BLE001
+        note = f"{signal.note}; evidence=forecast-only; nowcast_unavailable=provider-error:{type(exc).__name__}"
+        return replace(signal, note=note)
+
+    payload = observation.to_log_payload()
+    if not observation.usable or observation.observed_high_f is None:
+        reason = observation.unavailable_reason or "unknown"
+        note = (
+            f"{signal.note}; evidence=forecast-only; nowcast_unavailable={reason}; "
+            f"nowcast_source={observation.source or 'unmapped'}; "
+            f"observed_high_c={observation.observed_high_c}"
+        )
+        return replace(signal, note=note, nowcast=payload)
+
+    adjusted_p, adjustment = _nowcast_threshold_adjustment(parsed, signal.p_true, observation.observed_high_f)
+    confidence = max(signal.confidence, 0.95) if adjusted_p != signal.p_true else signal.confidence
+    note = (
+        f"{signal.note}; evidence=forecast-plus-nowcast; nowcast_adjustment={adjustment}; "
+        f"observed_high_c={observation.observed_high_c:.1f}; "
+        f"observed_at={_utc_iso(observation.observed_at)}; "
+        f"freshness_seconds={observation.freshness_seconds}; "
+        f"nowcast_source={observation.source}"
+    )
+    return replace(
+        signal,
+        p_true=clamp_probability(adjusted_p),
+        confidence=confidence,
+        source=f"{signal.source}+nowcast",
+        note=note,
+        nowcast=payload,
+    )
 
 
 
@@ -525,6 +729,7 @@ def estimate_weather_probability(
     settings: Settings | None = None,
     client: Any | None = None,
     ensemble_client: OpenMeteoEnsembleClient | None = None,
+    observation_provider: Any | None = None,
 ) -> WeatherSignal:
     """Estimate P(YES) for a Polymarket weather question.
 
@@ -567,15 +772,10 @@ def estimate_weather_probability(
             if len(member_values) < 4:
                 raise ValueError(f"Too few ensemble members parsed for {variable}: {len(member_values)}")
 
-            if parsed.operator == ">=":
-                votes = [x >= parsed.threshold_f for x in member_values]
-            else:
-                votes = [x <= parsed.threshold_f for x in member_values]
-            empirical_p = sum(votes) / len(votes)
             mean_f = _mean(member_values)
             spread_f = _stdev(member_values)
             sigma_f = dynamic_sigma_f(member_values, _lead_time_days(target, timezone_name=station.timezone))
-            p = blend_empirical_and_cdf(empirical_p, mean_f, parsed.threshold_f, sigma_f, parsed.operator)
+            p, empirical_p = _temperature_bucket_probability(parsed, member_values, mean_f, sigma_f)
 
             # Confidence: station mapped + enough members + low ambiguity.  Wider spread lowers confidence.
             station_bonus = 0.12
@@ -586,12 +786,20 @@ def estimate_weather_probability(
             date_used = (daily.get("time") or [target.isoformat()])[min(idx, max(0, len(daily.get("time") or []) - 1))]
             note = (
                 f"{station.station_name} [{station.station_id}] target_date={date_used}; "
-                f"{parsed.operator}{_format_threshold(parsed)}; members={len(member_values)}; "
+                f"bucket={parsed.temperature_bucket}; {parsed.operator}{_format_threshold(parsed)}; "
+                f"members={len(member_values)}; "
                 f"vote={empirical_p:.3f}; mean={mean_f:.1f}F; spread={spread_f:.2f}F; "
                 f"dynamic_sigma={sigma_f:.2f}F; bias={bias_f:+.2f}F; "
                 f"models={ensemble_client.models}. {station.note}"
             )
-            return WeatherSignal(p_true=clamp_probability(p), confidence=confidence, source="open-meteo-ensemble-station", note=note, parsed=parsed)
+            signal = WeatherSignal(
+                p_true=clamp_probability(p),
+                confidence=confidence,
+                source="open-meteo-ensemble-station",
+                note=note,
+                parsed=parsed,
+            )
+            return _with_temperature_nowcast(signal, parsed, station, target, settings, observation_provider)
         except Exception as exc:  # noqa: BLE001
             return WeatherSignal(
                 p_true=0.5,

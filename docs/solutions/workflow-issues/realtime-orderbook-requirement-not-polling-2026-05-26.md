@@ -25,7 +25,7 @@ Configuration examples and handoff docs should show only the realtime path:
 ```text
 ORDERBOOK_STREAM_ENABLED=true
 ORDERBOOK_STREAM_URL=wss://ws-subscriptions-clob.polymarket.com/ws/market
-FORECAST_REFRESH_INTERVAL_SECONDS=600
+FORECAST_REFRESH_INTERVAL_SECONDS=1800
 ```
 
 If someone tries to disable the stream in `run_forever()`, fail closed instead of silently falling back to a REST loop.

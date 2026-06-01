@@ -6,7 +6,7 @@ This bot is intentionally conservative:
 
 - It trades only the 41 Polymarket weather cities with verified settlement stations.
 - It forecasts at the exact station used by the market rules, not a city center.
-- It refreshes forecast data every 10 minutes by default.
+- It refreshes forecast data every 30 minutes by default.
 - It monitors Polymarket order books through the CLOB WebSocket market stream by default.
 - It is paper-only. No private key is required and no real orders are sent.
 
@@ -20,28 +20,26 @@ copy .env.example .env
 live-paper-bot
 ```
 
-Run tests:
+Run tests from the repository root on Windows:
 
 ```powershell
-$env:PYTHONPATH='src'
-python -m pytest -q
+& 'C:\Users\wpdla\Python312\python.exe' -m pytest -q
 ```
 
-If Windows blocks pytest's default temp directory, use a workspace temp path:
-
-```powershell
-New-Item -ItemType Directory -Force -Path '.pytest-tmp' | Out-Null
-$env:PYTHONPATH='src'
-$env:TMP=(Resolve-Path '.pytest-tmp').Path
-$env:TEMP=$env:TMP
-python -m pytest -q
-```
+The root `conftest.py` automatically keeps pytest temporary files under
+`.pytest-tmp/`. You do not need to set `TMP` or `TEMP` manually. Routine local
+test and Oracle VPS commands are collected in
+`docs/codex/known-good-commands.md`.
 
 ## Production Policy
 
 The bot must fail closed around settlement ambiguity.
 
-`src/weather_bot/stations.py` is the single source of truth for supported cities. Market discovery, parsing, probability estimation, and the default scan count all use that same 41-city station set. If a market city is not in `STATION_MAP`, the bot should not discover, price, or trade it.
+`src/weather_bot/stations.py` is the single source of truth for supported cities.
+Its 41-city `STATION_MAP` is an allowlist: each listed city has a verified
+settlement station and may be evaluated. If a market city is not in
+`STATION_MAP`, the bot should not discover, price, or trade it. The allowlist is
+not a discovery cutoff.
 
 Current cadence:
 
@@ -50,14 +48,24 @@ ORDERBOOK_STREAM_ENABLED=true
 ORDERBOOK_STREAM_URL=wss://ws-subscriptions-clob.polymarket.com/ws/market
 ORDERBOOK_STREAM_HEARTBEAT_SECONDS=10
 ORDERBOOK_STREAM_RECONNECT_SECONDS=2
-FORECAST_REFRESH_INTERVAL_SECONDS=600
-FORECAST_CACHE_TTL_SECONDS=600
-MAX_MARKETS=41
+FORECAST_REFRESH_INTERVAL_SECONDS=1800
+FORECAST_CACHE_TTL_SECONDS=1800
+DISCOVERY_MAX_PAGES=8
+DISCOVERY_PAGE_SIZE=100
 ```
 
-`MAX_MARKETS=41` is explicit in deployment env files for readability. In code, the default comes from `SUPPORTED_CITY_COUNT = len(STATION_MAP)`.
+Discovery expands every supported weather event linked from Polymarket weather
+category pages. An event is one city-date question such as Seoul's highest
+temperature on May 25. That event can contain many binary markets: `18°C or
+below`, exact buckets such as `19°C`, and `28°C or higher`.
 
-The order-book path is event-driven from the Polymarket CLOB WebSocket market channel. Forecast and market snapshots are refreshed every 10 minutes; forecast requests should not run on every order-book update.
+`DISCOVERY_MAX_PAGES` and `DISCOVERY_PAGE_SIZE` only bound the fallback Gamma
+API pagination path. Think of them as limiting how many backup-result pages the
+bot reads if the category page is unavailable. They do not reduce the 41-city
+allowlist and do not stop normal category discovery after 41 events. Runner
+status reports the actual event, city, market, and token coverage.
+
+The order-book path is event-driven from the Polymarket CLOB WebSocket market channel. Forecast and market snapshots are refreshed every 30 minutes; forecast requests should not run on every order-book update.
 
 ## Verified City Set
 
@@ -109,14 +117,18 @@ The order-book path is event-driven from the Polymarket CLOB WebSocket market ch
 
 ```text
 Polymarket category/Gamma discovery
+  -> fetch city-date weather events
+  -> expand exact, lower-tail, and upper-tail binary markets
   -> parse supported 41-city weather question
   -> station lookup in STATION_MAP
   -> Open-Meteo ensemble forecast at settlement station
   -> CLOB WebSocket book/price_change events
   -> cached YES/NO order-book VWAP
-  -> edge, risk, exposure, probability stop threshold
+  -> executable net-return filter
+  -> city-date portfolio selection with one shared correlated-risk budget
+  -> risk, exposure, probability stop threshold
   -> PaperBroker open/close decision
-  -> CSV, state JSON, raw snapshot logs
+  -> CSV, state JSON, event-portfolio JSONL, raw snapshot logs
 ```
 
 ## Strategy Logic
@@ -137,6 +149,7 @@ Entry requires:
 
 ```text
 net_edge > MIN_NET_EDGE
+expected_net_return >= ENTRY_MIN_EXPECTED_NET_RETURN_PCT
 confidence >= required confidence
 date_hint present
 station verified
@@ -144,11 +157,24 @@ exposure caps pass
 probability stop threshold recorded
 ```
 
-Default sizing is fixed-fraction paper sizing:
+Default sizing is fixed-fraction paper sizing. The runner first calculates a
+conservative reference bankroll:
 
 ```text
-entry_usd = current_bankroll * ENTRY_FRACTION
+cost_basis_bankroll = cash + open-position entry cost
+liquidation_bankroll = cash + executable sell value of open positions
+entry_bankroll = min(cost_basis_bankroll, liquidation_bankroll)
+entry_usd = entry_bankroll * ENTRY_FRACTION
 ```
+
+Below `$1,000`, at most two complementary city-date legs share one 10% event
+budget. At `$1,000` or more, the shared event budget shrinks to 5%. One opened
+leg must be at least `$10`, and one strong leg may use the full event budget.
+The selector compares distinct-bucket `YES+YES`, `YES+NO`, and `NO+NO`
+combinations after normalizing event probabilities. One city's different dates
+share a 20% cap, total open paper exposure is capped at 90%, unrealized profits
+do not increase new-entry sizing, and missing held-position valuation pauses
+new entries.
 
 ## Files
 
@@ -158,6 +184,7 @@ src/weather_bot/weather_client.py     question parser for supported cities
 src/weather_bot/probability.py        Open-Meteo ensemble probability model
 src/weather_bot/polymarket_client.py  Polymarket Gamma/CLOB public data
 src/weather_bot/realtime_orderbook.py Polymarket CLOB WebSocket order-book cache
+src/weather_bot/portfolio.py          city-date portfolio selection and budget
 src/weather_bot/live_paper_runner.py  main paper-trading loop
 src/weather_bot/paper.py              local paper broker and logs
 src/weather_bot/edge.py               YES/NO executable edge
@@ -172,20 +199,28 @@ AGENTS.md
 docs/production-implementation-plan.md
 docs/production-progress.md
 docs/production-decisions.md
+docs/oracle-migration-handoff.md
 ```
 
 ## Important Defaults
 
 ```text
-BANKROLL_USD=1000
-ENTRY_FRACTION=0.05
+BANKROLL_USD=100
+ENTRY_FRACTION=0.10
 MIN_NET_EDGE=0.05
+ENTRY_MIN_EXPECTED_NET_RETURN_PCT=0.06
+WEATHER_TAKER_FEE_RATE=0.05
 PROBABILITY_STOP_DROP_THRESHOLD=0.10
 MODEL_ERROR_MARGIN=0.03
 RESOLUTION_ERROR_MARGIN=0.01
-MAX_TOTAL_EXPOSURE_FRACTION=0.30
-MAX_CITY_EXPOSURE_FRACTION=0.08
-MAX_EVENT_DATE_EXPOSURE_FRACTION=0.05
+MAX_SINGLE_MARKET_FRACTION=0.10
+MIN_ORDER_USD=10.00
+MAX_TOTAL_EXPOSURE_FRACTION=0.90
+MAX_CITY_EXPOSURE_FRACTION=0.20
+MAX_EVENT_DATE_EXPOSURE_FRACTION=0.10
+LARGE_BANKROLL_EVENT_DATE_EXPOSURE_FRACTION=0.05
+EVENT_DATE_EXPOSURE_TRANSITION_USD=1000
+MAX_EVENT_PORTFOLIO_LEGS=2
 ENABLE_PRECIPITATION_MARKETS=false
 ```
 
@@ -193,8 +228,8 @@ Precipitation and snow markets remain disabled by default because they are noisi
 
 ## Current Limitations
 
-- Market discovery and forecast signal snapshots refresh on a 10-minute cycle.
+- Market discovery and forecast signal snapshots refresh on a 30-minute cycle.
 - Forecasts are station-based but station-level bias calibration is still neutral.
 - Execution is paper-only.
 
-Next production step: add production monitoring around WebSocket reconnects, stale snapshots, and stream health before any live-wallet execution work.
+Next strategy step: add verified settlement-station nowcasts.

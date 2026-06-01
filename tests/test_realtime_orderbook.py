@@ -1,7 +1,8 @@
 import json
+from datetime import datetime, timedelta, timezone
 
 from weather_bot.models import OrderBook
-from weather_bot.realtime_orderbook import OrderBookStreamCache, market_subscription_message
+from weather_bot.realtime_orderbook import OrderBookMarketStream, OrderBookStreamCache, market_subscription_message
 
 
 def test_market_subscription_uses_token_ids_with_custom_features():
@@ -89,3 +90,65 @@ def test_stream_cache_tracks_last_trade_price_from_stream_event():
 
     book = cache.get_order_book("yes")
     assert book.last_trade_price == 0.57
+
+
+def test_market_stream_health_tracks_messages_books_and_staleness(monkeypatch):
+    now = [datetime(2026, 6, 1, 0, 0, tzinfo=timezone.utc)]
+
+    class AliveThread:
+        def is_alive(self):
+            return True
+
+    monkeypatch.setattr("weather_bot.realtime_orderbook._utc_now", lambda: now[0])
+    stream = OrderBookMarketStream(stale_seconds=60)
+    stream._thread = AliveThread()
+    stream.apply_message(
+        {
+            "event_type": "book",
+            "asset_id": "yes",
+            "bids": [{"price": "0.49", "size": "10"}],
+            "asks": [{"price": "0.52", "size": "20"}],
+        }
+    )
+
+    fresh = stream.health_snapshot()
+    now[0] += timedelta(seconds=61)
+    stale = stream.health_snapshot()
+
+    assert fresh["thread_alive"] is True
+    assert fresh["last_message_at"] == "2026-06-01T00:00:00+00:00"
+    assert fresh["last_book_at"] == "2026-06-01T00:00:00+00:00"
+    assert fresh["stale_book_age_seconds"] == 0
+    assert fresh["stale"] is False
+    assert stale["stale_book_age_seconds"] == 61
+    assert stale["stale"] is True
+
+
+def test_market_stream_health_tracks_reconnects_and_dead_thread():
+    stream = OrderBookMarketStream(stale_seconds=60)
+
+    stream._record_reconnect(RuntimeError("socket closed"))
+    health = stream.health_snapshot()
+
+    assert health["thread_alive"] is False
+    assert health["reconnect_count"] == 1
+    assert health["stale"] is True
+    assert "socket closed" in health["last_error"]
+
+
+def test_market_stream_does_not_treat_trade_only_event_as_orderbook_refresh(monkeypatch):
+    now = datetime(2026, 6, 1, 0, 0, tzinfo=timezone.utc)
+
+    class AliveThread:
+        def is_alive(self):
+            return True
+
+    monkeypatch.setattr("weather_bot.realtime_orderbook._utc_now", lambda: now)
+    stream = OrderBookMarketStream(stale_seconds=60)
+    stream._thread = AliveThread()
+
+    stream.apply_message({"event_type": "last_trade_price", "asset_id": "yes", "price": "0.57"})
+    health = stream.health_snapshot()
+
+    assert health["last_message_at"] == "2026-06-01T00:00:00+00:00"
+    assert health["last_book_at"] is None

@@ -1,5 +1,8 @@
 # Weather Bot Dashboard Design
 
+Status: Historical seed spec. The current rebuild contract is
+`docs/dashboard-build-spec.md`.
+
 ## Goal
 
 Build a 24-hour human dashboard for the paper-trading bot so the operator can
@@ -22,15 +25,16 @@ strategy is winning or losing without reading CSV files or spending Codex tokens
 
 ## UI
 
-The dashboard uses a dark terminal-style operations layout:
+The current dashboard uses a Polymarket-style dark trading layout:
 
-- Left: event stream of decisions, opens, closes, skips, and errors.
-- Center: metrics and equity/PnL graph, plus open positions and recent trades.
-- Right: scanner intelligence, candidate/skip counts, signal pressure bars, and
-  recent candidate cards.
+- Left: open positions with clickable Polymarket market links.
+- Center: metrics, equity/PnL chart with range buttons and hover PnL tooltip,
+  plus realized PnL.
+- Right: scanner intelligence and recent trades.
 
-Open-position cards show the market title, side, long badge, entry price with
-`E` notation, mark price, unrealized PnL, city, date hint, and shares.
+Open-position cards show market title, side, long badge, forecast-weather badge,
+entry price in cents, mark price in cents, unrealized PnL, city, date hint, and
+shares.
 
 ## Security
 
