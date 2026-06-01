@@ -11,6 +11,11 @@ def test_default_forecast_cadence_is_thirty_minutes():
     assert Settings.forecast_cache_ttl_seconds == 1800
 
 
+def test_default_entry_net_return_filter_uses_official_weather_fee_rate():
+    assert Settings.entry_min_expected_net_return_pct == 0.06
+    assert Settings.weather_taker_fee_rate == 0.05
+
+
 def test_load_settings_reads_dashboard_env(monkeypatch):
     monkeypatch.setenv("DASHBOARD_HOST", "0.0.0.0")
     monkeypatch.setenv("DASHBOARD_PORT", "9999")
@@ -26,11 +31,15 @@ def test_load_settings_reads_dashboard_env(monkeypatch):
 def test_load_settings_reads_conservative_strategy_controls(monkeypatch):
     monkeypatch.setenv("ENABLE_PRECIPITATION_MARKETS", "true")
     monkeypatch.setenv("PROBABILITY_STOP_DROP_THRESHOLD", "0.08")
+    monkeypatch.setenv("ENTRY_MIN_EXPECTED_NET_RETURN_PCT", "0.07")
+    monkeypatch.setenv("WEATHER_TAKER_FEE_RATE", "0.04")
 
     settings = load_settings()
 
     assert settings.enable_precipitation_markets is True
     assert settings.probability_stop_drop_threshold == 0.08
+    assert settings.entry_min_expected_net_return_pct == 0.07
+    assert settings.weather_taker_fee_rate == 0.04
 
 
 def test_load_settings_reads_forecast_cache_controls(monkeypatch):

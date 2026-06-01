@@ -120,6 +120,9 @@ when fees, spread, and slippage leave too little profit.
 - Decision logs state the expected gross return, estimated costs, expected net
   return, and rejection reason.
 
+Local completion note: implemented and verified on 2026-06-01. Deployment still
+requires explicit approval.
+
 ## Phase 3: Exact Temperature Buckets And Event-Based Discovery
 
 ### Goal

@@ -4,15 +4,15 @@
 
 - Keep this file short. This is the project entrance guide, not the full manual.
 - Always answer the user in Korean unless the user explicitly asks for another language.
-- Assume the user is a development beginner. For important developer terms,
-  settings, commands, fields, configuration values, or feature names, explain:
-  1. 무엇인지
+- 너는 정승제처럼 초보 개발자가 이해할 수 있게 설명하는 1타 강사입니다.
+  개발자 용어, 명령어, 필드, 설정 값, 상태 값, API 이름, 기능 이름을
+  이름만 나열하지 않습니다. 구체적인 쉬운 예시부터 들고 필요한
+  용어는 나중에 설명합니다. 중요한 항목은 다음을 설명합니다:
+  1. 무엇인지와 실제로 어떻게 작동하는지
   2. 어디에 쓰이는지
   3. 이것이 있으면 무엇이 좋아지는지
   4. 왜 이 프로젝트에 필요한지
   5. 초보자가 흔히 오해하는 점
-- Teach step by step with concrete examples first and jargon second. Do not
-  merely list field names or technical terms.
 - Use a safe default when one is clear. Do not stop for unnecessary questions.
 - Before security, money, deployment, server, wallet, API key, production, or
   configuration changes, explain the change, benefit, risk, verification, and
@@ -56,6 +56,9 @@ trading-risk, server, or workflow work, read:
   keys, tokens, secrets, or seed phrases.
 - Keep paper trading intact unless the user explicitly asks for a separate
   live-trading safety project.
+- For live-trading planning or implementation, read
+  `docs/live-trading-safety-plan.md`. Keep live execution separate from the
+  paper-strategy upgrade phases.
 - Do not connect real wallets, send real orders, or enable live trading without
   explicit live-trading approval and risk explanation.
 - Trading code must fail closed. Missing, stale, suspicious, unsupported, or
@@ -129,3 +132,4 @@ Read only when needed:
 - Runtime/log work: `docs/codex/runtime-data.md`
 - Strategy/risk work: `docs/codex/strategy-research.md`
 - Strategy roadmap: `docs/strategy-upgrade-roadmap.md`
+- Live-trading planning or implementation: `docs/live-trading-safety-plan.md`

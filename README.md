@@ -137,6 +137,7 @@ Entry requires:
 
 ```text
 net_edge > MIN_NET_EDGE
+expected_net_return >= ENTRY_MIN_EXPECTED_NET_RETURN_PCT
 confidence >= required confidence
 date_hint present
 station verified
@@ -181,6 +182,8 @@ docs/oracle-migration-handoff.md
 BANKROLL_USD=1000
 ENTRY_FRACTION=0.05
 MIN_NET_EDGE=0.05
+ENTRY_MIN_EXPECTED_NET_RETURN_PCT=0.06
+WEATHER_TAKER_FEE_RATE=0.05
 PROBABILITY_STOP_DROP_THRESHOLD=0.10
 MODEL_ERROR_MARGIN=0.03
 RESOLUTION_ERROR_MARGIN=0.01
@@ -198,4 +201,4 @@ Precipitation and snow markets remain disabled by default because they are noisi
 - Forecasts are station-based but station-level bias calibration is still neutral.
 - Execution is paper-only.
 
-Next production step: add production monitoring around WebSocket reconnects, stale snapshots, and stream health before any live-wallet execution work.
+Next strategy step: support exact temperature buckets and event-based discovery.

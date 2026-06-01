@@ -194,7 +194,7 @@ def test_no_candidate_requires_no_side_exit_liquidity():
     settings = Settings(
         min_net_edge=0.01,
         min_order_usd=1.0,
-        estimated_fee_per_share=0.0,
+        weather_taker_fee_rate=0.0,
         model_error_margin=0.0,
         resolution_error_margin=0.0,
         require_date_hint_for_trade=True,
@@ -218,15 +218,15 @@ def test_no_valid_side_decision_explains_side_liquidity_filters():
     settings = Settings(
         min_net_edge=0.01,
         min_order_usd=1.0,
-        estimated_fee_per_share=0.0,
+        weather_taker_fee_rate=0.0,
         model_error_margin=0.0,
         resolution_error_margin=0.0,
         require_date_hint_for_trade=True,
     )
     client = FakePolymarketClient(
         books={
-            "yes": book("yes", bid=0.001, ask=0.01, bid_size=1000.0, ask_size=1000.0),
-            "no": book("no", bid=0.98, ask=0.99, bid_size=1000.0, ask_size=1000.0),
+            "yes": book("yes", bid=0.001, ask=0.0, bid_size=1000.0, ask_size=1000.0),
+            "no": book("no", bid=0.98, ask=1.0, bid_size=1000.0, ask_size=1000.0),
         }
     )
 
@@ -234,8 +234,8 @@ def test_no_valid_side_decision_explains_side_liquidity_filters():
 
     assert result.side == "SKIP"
     assert "No valid side evaluated" in result.reason
-    assert "YES liquidity filter: extreme ask=0.010" in result.reason
-    assert "NO liquidity filter: extreme ask=0.990" in result.reason
+    assert "YES liquidity filter: invalid ask=0.000" in result.reason
+    assert "NO liquidity filter: invalid ask=1.000" in result.reason
     assert per_side["YES"].reason in result.reason
     assert per_side["NO"].reason in result.reason
 
@@ -244,7 +244,7 @@ def test_entry_does_not_use_fixed_price_drop_guard():
     settings = Settings(
         min_net_edge=0.01,
         min_order_usd=1.0,
-        estimated_fee_per_share=0.0,
+        weather_taker_fee_rate=0.0,
         model_error_margin=0.0,
         resolution_error_margin=0.0,
         require_date_hint_for_trade=True,
@@ -263,11 +263,67 @@ def test_entry_does_not_use_fixed_price_drop_guard():
     assert "YES edge=" in per_side["YES"].reason
 
 
+def test_entry_net_return_filter_rejects_thin_high_price_trade(tmp_path):
+    settings = Settings(
+        state_path=str(tmp_path / "state.json"),
+        trades_csv_path=str(tmp_path / "trades.csv"),
+        decisions_csv_path=str(tmp_path / "decisions.csv"),
+        raw_snapshots_path=str(tmp_path / "raw.jsonl"),
+        min_net_edge=0.01,
+        entry_min_expected_net_return_pct=0.06,
+        weather_taker_fee_rate=0.05,
+        model_error_margin=0.0,
+        resolution_error_margin=0.0,
+        require_date_hint_for_trade=True,
+    )
+    client = FakePolymarketClient(
+        books={
+            "yes": book("yes", bid=0.87, ask=0.88, bid_size=1000.0, ask_size=1000.0),
+            "no": book("no", bid=0.11, ask=0.12, bid_size=1000.0, ask_size=1000.0),
+        }
+    )
+
+    result, per_side = evaluate_market(temp_market(), temp_signal(p_true=0.92), client, settings, 1000.0, "temperature")
+    PaperBroker(settings).log_decision(temp_market(), result, "test", "temperature")
+
+    assert result.side == "SKIP"
+    assert per_side["YES"].net_edge > settings.min_net_edge
+    assert "expected_gross=" in result.reason
+    assert "estimated_cost=" in result.reason
+    assert "expected_net_return=" in result.reason
+    assert "reject=expected net return below 6.00%" in result.reason
+    assert "reject=expected net return below 6.00%" in (tmp_path / "decisions.csv").read_text(encoding="utf-8")
+
+
+def test_entry_net_return_filter_allows_high_price_settlement_candidate():
+    settings = Settings(
+        min_net_edge=0.01,
+        entry_min_expected_net_return_pct=0.06,
+        weather_taker_fee_rate=0.05,
+        model_error_margin=0.0,
+        resolution_error_margin=0.0,
+        require_date_hint_for_trade=True,
+    )
+    client = FakePolymarketClient(
+        books={
+            "yes": book("yes", bid=0.92, ask=0.93, bid_size=1000.0, ask_size=1000.0),
+            "no": book("no", bid=0.06, ask=0.07, bid_size=1000.0, ask_size=1000.0),
+        }
+    )
+
+    result, per_side = evaluate_market(temp_market(), temp_signal(p_true=1.0), client, settings, 1000.0, "temperature")
+
+    assert result.side == "YES"
+    assert per_side["YES"].side == "YES"
+    assert "route=settlement" in result.reason
+    assert "expected_net_return=" in result.reason
+
+
 def test_unavailable_forecast_signals_do_not_trade():
     settings = Settings(
         min_net_edge=0.01,
         min_order_usd=1.0,
-        estimated_fee_per_share=0.0,
+        weather_taker_fee_rate=0.0,
         model_error_margin=0.0,
         resolution_error_margin=0.0,
         require_date_hint_for_trade=True,
@@ -347,7 +403,7 @@ def test_weekday_date_hint_is_parsed():
 def test_held_positions_are_re_evaluated_even_when_not_in_scan_results():
     settings = Settings(
         min_net_edge=0.01,
-        estimated_fee_per_share=0.0,
+        weather_taker_fee_rate=0.0,
         model_error_margin=0.0,
         resolution_error_margin=0.0,
         require_date_hint_for_trade=True,

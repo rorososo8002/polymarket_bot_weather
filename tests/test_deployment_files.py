@@ -29,6 +29,9 @@ def test_vps_env_example_keeps_runtime_state_under_data_dir():
     assert "RAW_SNAPSHOTS_PATH=/opt/polymarket-weather-bot/data/paper_raw_snapshots.jsonl" in text
     assert "ORDERBOOK_STREAM_STALE_SECONDS=60" in text
     assert "RUNNER_HEALTH_STATUS_INTERVAL_SECONDS=5" in text
+    assert "ENTRY_MIN_EXPECTED_NET_RETURN_PCT=0.06" in text
+    assert "WEATHER_TAKER_FEE_RATE=0.05" in text
+    assert "ESTIMATED_FEE_PER_SHARE" not in text
     assert "POLYMARKET_PRIVATE_KEY" not in text
 
 

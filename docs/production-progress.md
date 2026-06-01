@@ -19,22 +19,33 @@
   않습니다.
 - 대시보드는 현재 포지션, 진입금액, 최근 예보, 실현 수익·손실, 남은
   현금과 예보·WebSocket 건강 상태를 보여줍니다.
+- weather taker 수수료는 공식 곡선
+  `shares * 0.05 * price * (1 - price)`로 계산합니다. 진입 VWAP에는
+  진입 스프레드와 슬리피지가 이미 포함되므로 다시 빼지 않습니다.
+- 기존 `net_edge` 조건과 별도로 예상 순수익률이 기본 `6%` 이상인
+  진입만 허용합니다. 일반 청산 경로와 보수적 정산 보유 경로를
+  평가하며, 고가 진입을 가격만으로 무조건 금지하지 않습니다.
+- decision log의 `reason`에는 예상 총수익, 예상 비용, 예상 순수익률,
+  선택 경로와 거절 이유를 남깁니다.
 - Phase 0과 Phase 1은 로컬에서 검증했고 `4ac3cf5`로 커밋했습니다.
+- Phase 2는 로컬에서 구현하고 테스트했습니다. 아직 커밋하거나
+  배포하지 않았습니다.
 
 ## 진행 중
 
-- 로컬 코드와 문서 정리는 끝났습니다.
-- Oracle VPS에는 Phase 0과 Phase 1 변경을 아직 배포하지 않았습니다.
+- Phase 2 로컬 변경은 검증을 마쳤고 커밋 전 상태입니다.
+- Oracle VPS에는 Phase 0, Phase 1, Phase 2 변경을 아직 배포하지
+  않았습니다.
 - 배포는 변경 내용, 위험, 검증 방법, 되돌리는 방법을 설명한 뒤 사용자
   승인을 받아야 합니다.
 
 ## 다음 작업
 
-1. `docs/strategy-upgrade-roadmap.md`의 Phase 2만 진행합니다.
-2. `0.88`에 진입해서 `0.92` 부근에 청산하는 것처럼 비용을 빼면
-   수익이 너무 얇은 거래를 거절합니다.
-3. 공식 Polymarket 수수료 계산, 스프레드, 슬리피지를 반영한 예상
-   순수익률 필터를 테스트부터 추가합니다.
+1. 다음 fresh chat에서는 `docs/strategy-upgrade-roadmap.md`의 Phase 3만
+   진행합니다.
+2. `26°C` 같은 exact bucket, lower-tail, upper-tail 질문을 지원합니다.
+3. binary-market 개수가 아니라 event, city, date 기준으로 discovery
+   범위를 측정합니다.
 4. 기존 남은 위험도 보존합니다. 기본 WebSocket 경로에는 해결된
    시장의 settlement 처리가 아직 연결되지 않았습니다.
 
@@ -48,3 +59,7 @@
 - `src/weather_bot/stations.py`의 `STATION_MAP`을 지원 도시와 정산
   관측소의 단일 기준으로 취급합니다.
 - 실거래, 지갑 연결, 자동 배포는 별도 승인 없이 추가하지 않습니다.
+- 향후 실거래 실행 계층은 `docs/live-trading-safety-plan.md`에서 별도로
+  이어갑니다. paper 전략 Phase와 섞지 않습니다.
+- Phase 3에서는 이번 Phase 2의 공식 수수료 함수와 예상 순수익률
+  필터를 유지합니다.

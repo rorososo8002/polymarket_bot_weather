@@ -61,8 +61,10 @@ class Settings:
     # max_event_date_exposure_fraction: 같은 도시+날짜 조합 포지션의 bankroll 비율 상한
     max_event_date_exposure_fraction: float = 0.05
 
-    # Cost / safety buffers. Polymarket fee should be read by market when you add live execution.
-    estimated_fee_per_share: float = 0.02  # Polymarket 실수수료: 매수/매도 각 1~2%. 0.02(2%)로 보수적 설정.
+    # Paper weather-fee default from the official category schedule.
+    # A separate live-execution project must query fee parameters per market.
+    entry_min_expected_net_return_pct: float = 0.06
+    weather_taker_fee_rate: float = 0.05
     model_error_margin: float = 0.03
     resolution_error_margin: float = 0.01
 
@@ -145,7 +147,11 @@ def load_settings() -> Settings:
         max_total_exposure_fraction=_float_env("MAX_TOTAL_EXPOSURE_FRACTION", Settings.max_total_exposure_fraction),
         bankroll_usd=_float_env("BANKROLL_USD", Settings.bankroll_usd),
         min_order_usd=_float_env("MIN_ORDER_USD", Settings.min_order_usd),
-        estimated_fee_per_share=_float_env("ESTIMATED_FEE_PER_SHARE", Settings.estimated_fee_per_share),
+        entry_min_expected_net_return_pct=_float_env(
+            "ENTRY_MIN_EXPECTED_NET_RETURN_PCT",
+            Settings.entry_min_expected_net_return_pct,
+        ),
+        weather_taker_fee_rate=_float_env("WEATHER_TAKER_FEE_RATE", Settings.weather_taker_fee_rate),
         model_error_margin=_float_env("MODEL_ERROR_MARGIN", Settings.model_error_margin),
         resolution_error_margin=_float_env("RESOLUTION_ERROR_MARGIN", Settings.resolution_error_margin),
         precip_min_net_edge=_float_env("PRECIP_MIN_NET_EDGE", Settings.precip_min_net_edge),

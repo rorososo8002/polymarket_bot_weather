@@ -129,3 +129,42 @@ step.
 Consequence: Old chronological detail belongs in `docs/archive/` when needed,
 while reusable prevention lessons belong in `docs/solutions/`. A fresh AI
 starts from the current handoff instead of redesigning completed work.
+
+## 2026-06-01: Require Executable Expected Net Return Before Entry
+
+Decision: A paper entry must pass the existing `net_edge` condition and a
+separate expected-net-return condition. The default hypothesis is
+`ENTRY_MIN_EXPECTED_NET_RETURN_PCT=0.06`. Weather taker fees use the official
+Polymarket formula `shares * 0.05 * price * (1 - price)` instead of a fixed
+per-share estimate.
+
+Why: A trade such as buying near `0.88` and expecting an exit near `0.92` can
+look profitable before costs but leave too little return after fees and future
+exit-market costs. Entry VWAP already contains the entry spread and slippage, so
+subtracting those again would double-count cost.
+
+Consequence: The runner logs expected gross profit, estimated cost, expected net
+return, spread, slippage, fee components, selected route, and any threshold
+rejection in the decision reason. Expected early exits use a conservative
+future spread-and-slippage haircut. A high entry price is not banned by itself:
+a conservative hold-to-settlement route may still pass when it leaves at least
+the same 6% expected net return. The bot remains paper-only. Official reference:
+https://docs.polymarket.com/trading/fees.
+
+## 2026-06-01: Keep Live Execution Separate From Paper Strategy
+
+Decision: Future live trading work is tracked in
+`docs/live-trading-safety-plan.md`. It starts only after the paper strategy is
+accepted as sufficiently complete. The live project reuses the paper strategy
+instead of adding a second, artificially more conservative trading strategy.
+
+Why: Paper trading and live execution answer different questions. Paper work
+tests whether the trading rules are useful. Live work must make actual order
+submission, authentication, fill tracking, cancellation, restart recovery,
+regional eligibility checks, and redemption reliable. Mixing them makes it
+hard to tell whether a result changed because of strategy or execution.
+
+Consequence: The strategy-upgrade roadmap remains paper-focused. Live-specific
+operational controls protect actual order handling without silently changing
+the paper strategy. Wallet connection, credentials, real orders, and live
+deployment still require separate explicit user approval.

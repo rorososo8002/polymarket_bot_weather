@@ -1,5 +1,6 @@
 import inspect
 
+import weather_bot.edge as edge_module
 from weather_bot.edge import no_net_edge, vwap_for_size, yes_net_edge
 from weather_bot.models import OrderLevel
 
@@ -44,3 +45,30 @@ def test_no_net_edge():
 def test_edge_functions_do_not_accept_separate_slippage_parameter():
     assert "slippage" not in inspect.signature(yes_net_edge).parameters
     assert "slippage" not in inspect.signature(no_net_edge).parameters
+
+
+def test_polymarket_weather_taker_fee_uses_official_curve():
+    fee = edge_module.polymarket_taker_fee_usdc(shares=100, price=0.90, fee_rate=0.05)
+
+    assert fee == 0.45
+
+
+def test_polymarket_weather_taker_fee_rounds_usdc_to_five_places():
+    fee = edge_module.polymarket_taker_fee_usdc(shares=1, price=0.333333, fee_rate=0.05)
+
+    assert fee == 0.01111
+
+
+def test_executable_net_return_rejects_thin_088_to_092_round_trip():
+    estimate = edge_module.estimate_executable_net_return(
+        shares=100,
+        entry_vwap=0.88,
+        expected_exit_price=0.92,
+        expected_exit_spread=0.01,
+        expected_exit_slippage=0.0,
+        fee_rate=0.05,
+    )
+
+    assert estimate.expected_gross_profit_usdc == 4.0
+    assert estimate.estimated_cost_usdc > 0
+    assert estimate.expected_net_return_pct < 0.06

@@ -23,6 +23,7 @@ Polymarket discovery
   -> estimate station-based weather probability
   -> stream CLOB order-book updates
   -> compute executable YES/NO VWAP edge
+  -> reject entries with weak expected net return after costs
   -> apply risk, exposure, and probability-stop rules
   -> open/close paper positions
   -> write state, decisions, trades, raw snapshots, and runner heartbeat
@@ -83,10 +84,43 @@ opens. A position may still be blocked by existing exposure, same-market hedge
 protection, missing token ids, or risk caps. `DECISION SKIP` means the bot saw
 the market but refused to open a trade because the edge was too small, confidence
 was too low, parsing/date safety failed, liquidity was inadequate, the spread was
-too wide, prices were extreme, YES+NO asks were abnormal, or no executable side
-could be evaluated. When both sides fail liquidity validation, the SKIP reason
-includes the YES and NO rejection details so operators can see why neither side
-was executable.
+too wide, the expected net return after costs was too small, prices were
+invalid, YES+NO asks were abnormal, or no executable side could be evaluated.
+When both sides fail liquidity validation, the SKIP reason includes the YES and
+NO rejection details so operators can see why neither side was executable.
+
+## Entry Net-Return Contract
+
+An entry must pass both the existing model `net_edge` condition and a separate
+executable expected-net-return condition. The default paper hypothesis is:
+
+```text
+ENTRY_MIN_EXPECTED_NET_RETURN_PCT=0.06
+WEATHER_TAKER_FEE_RATE=0.05
+```
+
+The weather taker fee follows the official Polymarket formula:
+
+```text
+fee_usdc = shares * fee_rate * price * (1 - price)
+```
+
+`p_exec` is the entry ask-side VWAP, so it already contains the entry spread and
+entry slippage. Do not subtract those costs a second time. For an expected early
+exit, use the current spread and observed slippage as a conservative future
+exit haircut and calculate the exit taker fee at the estimated executable exit
+price.
+
+A high entry price is not banned by itself. The runner also evaluates a
+hold-to-settlement route using the model probability after model-error and
+resolution-error margins. That route has no order-book exit haircut and no exit
+taker fee. It may pass only when its conservative expected net return still
+meets the same 6% threshold.
+
+Decision-log reasons include the chosen route, expected exit value, expected
+gross profit, estimated total cost, expected net-return rate, entry fee, exit
+fee, future exit-market cost, spread, slippage, and the rejection reason when
+the threshold is not met.
 
 ## Dashboard Contract
 
@@ -148,6 +182,8 @@ RUNNER_HEALTH_STATUS_INTERVAL_SECONDS=5
 FORECAST_REFRESH_INTERVAL_SECONDS=1800
 FORECAST_CACHE_TTL_SECONDS=1800
 MAX_MARKETS=41
+ENTRY_MIN_EXPECTED_NET_RETURN_PCT=0.06
+WEATHER_TAKER_FEE_RATE=0.05
 ENABLE_PRECIPITATION_MARKETS=false
 REQUIRE_DATE_HINT_FOR_TRADE=true
 ```
@@ -175,5 +211,9 @@ For VPS deployment, use `docs/VPS_LIVE_PAPER.md`.
 ## Source Notes
 
 - Station choices come from Polymarket weather rule text and resolution sources.
+- Weather taker-fee defaults follow https://docs.polymarket.com/trading/fees.
 - Hong Kong uses the Hong Kong Observatory daily extract.
-- Live wallet execution is intentionally absent and requires a separate production-safety design.
+- Live wallet execution is intentionally absent. Future live execution work is
+  tracked separately in `docs/live-trading-safety-plan.md` so it can reuse the
+  completed paper strategy without mixing actual-order concerns into the paper
+  upgrade phases.

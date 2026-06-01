@@ -5,7 +5,14 @@ import threading
 import time
 
 from .config import Settings, load_settings
-from .edge import executable_buy_price, no_net_edge, yes_net_edge
+from .edge import (
+    estimate_executable_net_return,
+    executable_buy_price,
+    no_net_edge,
+    polymarket_taker_fee_per_share,
+    yes_net_edge,
+)
+from .exit_policy import conservative_settlement_value, model_fair_price, target_exit_price
 from .models import EdgeResult, MarketDecision, OrderBook, PaperPosition, RawMarket, WeatherSignal
 from .paper import PaperBroker, maybe_close_positions, maybe_settle_resolved_positions
 from .polymarket_client import PolymarketClient
@@ -70,8 +77,10 @@ def _side_liquidity_reason(side: str, book: OrderBook, market_type: str) -> str 
     spread = ask - bid
     if spread > 0.20:
         return f"{side} liquidity filter: spread too wide {spread:.2f} > 0.20 [{market_type}]"
-    if ask > 0.92 or ask < 0.08:
-        return f"{side} liquidity filter: extreme ask={ask:.3f} outside 0.08~0.92 [{market_type}]"
+    if ask >= 1.0 or ask <= 0.0:
+        return f"{side} liquidity filter: invalid ask={ask:.3f} [{market_type}]"
+    if ask < 0.08:
+        return f"{side} liquidity filter: extreme low ask={ask:.3f} below 0.08 [{market_type}]"
     bid_value = _bid_notional(book)
     if bid_value < 10.0:
         return f"{side} liquidity filter: exit bid depth ${bid_value:.1f} < $10 [{market_type}]"
@@ -120,11 +129,12 @@ def _side_result(
     if p_exec is None:
         return EdgeResult("SKIP", signal.p_true, None, -999.0, 0.0, 0.0, f"{side} liquidity filter: insufficient ask depth [{market_type}]")
 
+    entry_fee_per_share = polymarket_taker_fee_per_share(p_exec, settings.weather_taker_fee_rate)
     if side == "YES":
         edge = yes_net_edge(
             signal.p_true,
             p_exec,
-            settings.estimated_fee_per_share,
+            entry_fee_per_share,
             settings.model_error_margin,
             settings.resolution_error_margin,
         )
@@ -133,13 +143,13 @@ def _side_result(
         edge = no_net_edge(
             signal.p_true,
             p_exec,
-            settings.estimated_fee_per_share,
+            entry_fee_per_share,
             settings.model_error_margin,
             settings.resolution_error_margin,
         )
         side_probability = 1.0 - signal.p_true
 
-    p_eff = p_exec + settings.estimated_fee_per_share
+    p_eff = p_exec + entry_fee_per_share
     size_usd = position_size_usd(
         side_probability,
         p_eff,
@@ -149,15 +159,53 @@ def _side_result(
         net_edge=edge,
         min_edge=min_edge,
     )
-    is_trade = edge > min_edge and size_usd >= settings.min_order_usd
+    estimate_shares = size_usd / p_exec if size_usd > 0 else _shares
+    spread = max(0.0, (book.best_ask or p_exec) - (book.best_bid or p_exec))
+    fair = model_fair_price(side, signal.p_true, settings)
+    expected_exit = target_exit_price(p_exec, fair, settings)
+    expected_exit_estimate = estimate_executable_net_return(
+        shares=estimate_shares,
+        entry_vwap=p_exec,
+        expected_exit_price=expected_exit,
+        expected_exit_spread=spread,
+        expected_exit_slippage=slip,
+        fee_rate=settings.weather_taker_fee_rate,
+    )
+    settlement_estimate = estimate_executable_net_return(
+        shares=estimate_shares,
+        entry_vwap=p_exec,
+        expected_exit_price=conservative_settlement_value(side, signal.p_true, settings),
+        fee_rate=settings.weather_taker_fee_rate,
+        hold_to_settlement=True,
+    )
+    return_estimate = max(
+        (expected_exit_estimate, settlement_estimate),
+        key=lambda estimate: estimate.expected_net_return_pct,
+    )
+    return_ok = return_estimate.expected_net_return_pct >= settings.entry_min_expected_net_return_pct
+    is_trade = edge > min_edge and size_usd >= settings.min_order_usd and return_ok
+    rejection = ""
+    if not return_ok:
+        rejection = f", reject=expected net return below {settings.entry_min_expected_net_return_pct:.2%}"
+    reason = (
+        f"{side} edge={edge:.4f}, p_exec_vwap={p_exec:.4f}, route={return_estimate.route}, "
+        f"expected_exit={return_estimate.expected_exit_price:.4f}, "
+        f"expected_gross=${return_estimate.expected_gross_profit_usdc:.4f}, "
+        f"estimated_cost=${return_estimate.estimated_cost_usdc:.4f}, "
+        f"expected_net_return={return_estimate.expected_net_return_pct:.2%}, "
+        f"entry_fee=${return_estimate.entry_fee_usdc:.4f}, "
+        f"exit_fee=${return_estimate.exit_fee_usdc:.4f}, "
+        f"exit_market_cost=${return_estimate.exit_market_cost_usdc:.4f}, "
+        f"spread_audit={spread:.4f}, slip_audit={slip:.4f}{rejection} [{market_type}]"
+    )
     return EdgeResult(
         side=side if is_trade else "SKIP",
         p_true=signal.p_true,
         p_exec=p_exec,
         net_edge=edge,
-        size_usd=size_usd if edge > min_edge else 0.0,
-        size_shares=(size_usd / p_exec) if edge > min_edge and p_exec > 0 else 0.0,
-        reason=f"{side} edge={edge:.4f}, p_exec_vwap={p_exec:.4f}, slip_audit={slip:.4f} [{market_type}]",
+        size_usd=size_usd if edge > min_edge and return_ok else 0.0,
+        size_shares=(size_usd / p_exec) if edge > min_edge and return_ok and p_exec > 0 else 0.0,
+        reason=reason,
     )
 
 

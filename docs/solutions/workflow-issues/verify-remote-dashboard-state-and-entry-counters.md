@@ -87,6 +87,7 @@ The runner now expands opaque no-side skips with per-side reasons:
 
 ```text
 edge below 5.00% [temperature]. No valid side evaluated.
+Phase 2 이전 로그 예시:
 YES liquidity filter: extreme ask=0.013 outside 0.08~0.92 [temperature] |
 NO liquidity filter: extreme ask=0.995 outside 0.08~0.92 [temperature]
 ```

@@ -26,4 +26,9 @@ Read this file only for strategy changes, probability modeling, trading behavior
   freshness, and actual order-book price freshness as separate checks.
 - Keep token IDs for open positions in stream subscriptions even if market discovery has rolled forward to newer markets.
 - Invalid edge sentinels such as `-999` are missing-data markers, not real negative edge. They must not trigger edge-faded exits.
+- Keep model `net_edge` and executable expected net return as separate entry
+  gates. Use the official weather taker-fee curve. Entry VWAP already embeds
+  entry spread and slippage; do not subtract them twice. Evaluate conservative
+  settlement value separately so high prices are judged by remaining return,
+  not rejected by a blanket cap.
 - Never add private keys, live-wallet execution, or real orders unless the user explicitly asks for that separate safety project.
