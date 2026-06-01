@@ -29,6 +29,9 @@ def test_vps_env_example_keeps_runtime_state_under_data_dir():
     assert "BANKROLL_USD=100\n" in text
     assert "PORTFOLIO_DECISIONS_JSONL_PATH=/opt/polymarket-weather-bot/data/paper_event_portfolios.jsonl" in text
     assert "RAW_SNAPSHOTS_PATH=/opt/polymarket-weather-bot/data/paper_raw_snapshots.jsonl" in text
+    assert "STATION_NOWCAST_ENABLED=true" in text
+    assert "STATION_NOWCAST_CACHE_TTL_SECONDS=900" in text
+    assert "STATION_NOWCAST_FRESHNESS_SECONDS=5400" in text
     assert "PORTFOLIO_DECISIONS_JSONL_PATH=/opt/polymarket-weather-bot/data/paper_event_portfolios.jsonl" in text
     assert "ORDERBOOK_STREAM_STALE_SECONDS=60" in text
     assert "RUNNER_HEALTH_STATUS_INTERVAL_SECONDS=5" in text

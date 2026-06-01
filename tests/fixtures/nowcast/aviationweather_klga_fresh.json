@@ -1,0 +1,14 @@
+[
+  {
+    "icaoId": "KLGA",
+    "obsTime": 1780421400,
+    "temp": 24.4,
+    "rawOb": "KLGA 021730Z 21008KT 10SM FEW050 24/14 A2992"
+  },
+  {
+    "icaoId": "KLGA",
+    "obsTime": 1780423200,
+    "temp": 25.6,
+    "rawOb": "KLGA 021800Z 22009KT 10SM FEW050 26/14 A2991"
+  }
+]

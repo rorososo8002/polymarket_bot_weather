@@ -75,6 +75,7 @@ class WeatherSignal:
     source: str
     note: str
     parsed: ParsedWeatherQuestion | None = None
+    nowcast: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)

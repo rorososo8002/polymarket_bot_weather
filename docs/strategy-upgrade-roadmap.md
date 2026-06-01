@@ -213,6 +213,18 @@ same-day decisions. A forecast alone is not enough near settlement.
 - The paper strategy can explain whether a decision used forecast-only or
   forecast-plus-nowcast evidence.
 
+Local completion note: implemented on 2026-06-02. The first pass was a
+Seoul/RKSI pilot, then source checks expanded same-station observations to
+39 ICAO stations through Aviation Weather Center METAR plus Hong Kong/HKO
+through Hong Kong Observatory's maximum/minimum temperature since midnight CSV.
+Karachi/OPMR remains forecast-only because AWC did not return recent OPMR METAR
+data. The bot records observed high-so-far, observation timestamps, source URLs,
+freshness, raw observation count, and unavailable reasons. Missing, stale,
+malformed, future-date, or unmapped nowcast keeps the decision forecast-only and
+skips nowcast-dependent logic. `docs/station-registry-audit.md` lists all
+41 cities, their Open-Meteo station coordinates, nowcast provider status, and
+the current rule-evidence gap. Deployment still requires explicit approval.
+
 ## Phase 6: Principal Recovery And Settlement Runner
 
 ### Goal

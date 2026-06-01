@@ -23,6 +23,7 @@ Polymarket discovery
   -> group exact, lower-tail, and upper-tail temperature buckets by event
   -> reject unmapped cities and unsupported question shapes
   -> estimate station-based weather probability
+  -> attach verified settlement-station nowcast evidence when available
   -> stream CLOB order-book updates
   -> compute executable YES/NO VWAP edge
   -> reject entries with weak expected net return after costs
@@ -40,6 +41,8 @@ src/weather_bot/weather_client.py     question parser backed by station coordina
 src/weather_bot/polymarket_client.py  Gamma discovery and CLOB REST book parsing
 src/weather_bot/realtime_orderbook.py CLOB WebSocket order-book cache
 src/weather_bot/probability.py        station-based Open-Meteo ensemble model
+src/weather_bot/nowcast.py            settlement-station observed high pilot
+docs/station-registry-audit.md        41-city forecast/nowcast station audit table
 src/weather_bot/portfolio.py          city-date portfolio budget and complementary-leg selection
 src/weather_bot/live_paper_runner.py  paper loop and realtime stream orchestration
 src/weather_bot/paper.py              paper broker, logs, settlements, exits
@@ -163,6 +166,76 @@ inside every supported weather-category event it finds, groups the markets
 before evaluation, and reports actual event, city, market, and token coverage.
 The 41-city `STATION_MAP` remains the settlement-station allowlist. It is not an
 event-count cutoff.
+
+## Settlement-Station Nowcast Contract
+
+Same-day temperature decisions may use a settlement-station nowcast only when
+the observation source is explicitly mapped to the same station used by
+`STATION_MAP`. The bot must not substitute city-center weather, nearby airport
+weather, deterministic forecast fallback, or guessed values.
+
+Phase 5 originally started with a Seoul/RKSI pilot, then expanded after source
+checks:
+
+```text
+39 ICAO stations -> Aviation Weather Center METAR API
+hong kong/HKO   -> Hong Kong Observatory max/min temperature since midnight CSV
+karachi/OPMR    -> forecast-only for now; AWC did not return recent OPMR METAR data
+```
+
+For ICAO airport stations, the nowcast source is the Aviation Weather Center
+METAR API for the same station id used by `STATION_MAP`. For Hong Kong, the
+source is the Hong Kong Observatory row in HKO's official "maximum/minimum air
+temperature since midnight" CSV because HKO is not an ICAO METAR station.
+Hong Kong stayed in scope because the current weather event scan showed it near
+the top of active highest-temperature volume. OPMR remains forecast-only until
+a same-station official observation source is verified.
+
+Nowcast sources are cached for 15 minutes and observations older than 90 minutes
+are unusable. This means a 30-minute trading loop does not hammer the source:
+each station-date normally triggers at most one nowcast HTTP request per cache
+window when that city's market is actually evaluated.
+
+Each nowcast record carries:
+
+```text
+observed_high_c
+observed_high_f
+observed_at
+high_observed_at
+source
+source_url
+settlement_source_url
+freshness_seconds
+unavailable_reason
+raw_observation_count
+```
+
+If the observation is fresh and verified, temperature probability notes say
+`evidence=forecast-plus-nowcast` and the source becomes
+`open-meteo-ensemble-station+nowcast`. If the observed high has already crossed
+a threshold or made a lower/exact bucket impossible, the probability is bounded
+to `1.0` or `0.0` accordingly. If the observation is missing, stale, malformed,
+for a future date, or from an unmapped station, nowcast-dependent logic is
+skipped and the note says `evidence=forecast-only` with
+`nowcast_unavailable=<reason>`.
+
+Unsupported observation sources are intentionally not backfilled with nearby
+stations. Karachi/OPMR is the current example: the bot may still trade Karachi
+from Open-Meteo station-coordinate forecasts, but it does not use same-day
+observed highs until an OPMR-matching official observation source is verified.
+
+`src/weather_bot/stations.py` also exposes `station_audit_rows()` so the station
+coverage can be checked without reading Python objects by hand. Each row records
+the Open-Meteo forecast source, the fact that the forecast coordinates come from
+the settlement station, the candidate nowcast station, and whether that nowcast
+source is enabled, still only a candidate, or needs a separate provider. The
+human-readable version is `docs/station-registry-audit.md`.
+
+Important: `provider_enabled` means the observation API is implemented for the
+same station identity. `provider_unavailable` means forecast-only. The
+`rule_evidence_status` field remains separate: it records whether the exact
+Polymarket rule URL and station wording are stored in the repository.
 
 ## City-Date Portfolio Contract
 
@@ -290,6 +363,9 @@ ORDERBOOK_STREAM_STALE_SECONDS=60
 RUNNER_HEALTH_STATUS_INTERVAL_SECONDS=5
 FORECAST_REFRESH_INTERVAL_SECONDS=1800
 FORECAST_CACHE_TTL_SECONDS=1800
+STATION_NOWCAST_ENABLED=true
+STATION_NOWCAST_CACHE_TTL_SECONDS=900
+STATION_NOWCAST_FRESHNESS_SECONDS=5400
 DISCOVERY_MAX_PAGES=8
 DISCOVERY_PAGE_SIZE=100
 PORTFOLIO_DECISIONS_JSONL_PATH=paper_event_portfolios.jsonl
@@ -346,6 +422,10 @@ For VPS deployment, use `docs/VPS_LIVE_PAPER.md`.
   risk principle described at
   https://www.finra.org/investors/insights/concentration-risk.
 - Ensemble member forecasts follow https://open-meteo.com/en/docs/ensemble-api.
+- Seoul settlement-station nowcast uses the same-station RKSI pilot. The
+  settlement reference is
+  https://www.wunderground.com/history/daily/kr/incheon/RKSI and the METAR
+  observation API is https://aviationweather.gov/api/data/.
 - Hong Kong uses the Hong Kong Observatory daily extract.
 - Live wallet execution is intentionally absent. Future live execution work is
   tracked separately in `docs/live-trading-safety-plan.md` so it can reuse the

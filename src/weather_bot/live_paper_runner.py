@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import inspect
 from datetime import datetime, timezone
 import threading
 import time
+from typing import Any
 
 from .config import Settings, load_settings
 from .edge import (
@@ -14,6 +16,7 @@ from .edge import (
 )
 from .exit_policy import conservative_settlement_value, model_fair_price, target_exit_price
 from .models import EdgeResult, MarketDecision, OrderBook, PaperPosition, RawMarket, WeatherSignal
+from .nowcast import AviationWeatherMetarNowcastProvider
 from .paper import PaperBroker, maybe_close_positions, maybe_settle_resolved_positions
 from .polymarket_client import PolymarketClient
 from .portfolio import (
@@ -28,6 +31,25 @@ from .realtime_orderbook import OrderBookMarketStream
 from .risk import fractional_kelly_binary
 from .runner_status import utc_now_iso, write_runner_status
 from .weather_client import parse_weather_question
+
+
+def _call_probability_estimator(
+    probability_estimator: Any,
+    question: str,
+    *,
+    settings: Settings,
+    ensemble_client: OpenMeteoEnsembleClient | None = None,
+    observation_provider: Any | None = None,
+) -> WeatherSignal:
+    kwargs: dict[str, Any] = {"settings": settings}
+    if ensemble_client is not None:
+        kwargs["ensemble_client"] = ensemble_client
+    if observation_provider is not None:
+        signature = inspect.signature(probability_estimator)
+        accepts_kwargs = any(param.kind == inspect.Parameter.VAR_KEYWORD for param in signature.parameters.values())
+        if accepts_kwargs or "observation_provider" in signature.parameters:
+            kwargs["observation_provider"] = observation_provider
+    return probability_estimator(question, **kwargs)
 
 
 class StreamBackedPolymarketClient(PolymarketClient):
@@ -353,6 +375,7 @@ def refresh_open_position_edges(
     market_by_id: dict[str, RawMarket],
     probability_estimator=estimate_weather_probability,
     ensemble_client: OpenMeteoEnsembleClient | None = None,
+    observation_provider: Any | None = None,
 ) -> None:
     """Refresh model probability and edge for held positions missing from the scan."""
     for pos in broker.state.positions:
@@ -360,10 +383,13 @@ def refresh_open_position_edges(
         if key in latest_edges:
             continue
         market = market_by_id.get(pos.market_id) or _market_from_position(pos)
-        if ensemble_client is None:
-            signal = probability_estimator(pos.question, settings=settings)
-        else:
-            signal = probability_estimator(pos.question, settings=settings, ensemble_client=ensemble_client)
+        signal = _call_probability_estimator(
+            probability_estimator,
+            pos.question,
+            settings=settings,
+            ensemble_client=ensemble_client,
+            observation_provider=observation_provider,
+        )
         market_type = str(pos.metadata.get("market_type") or _market_type_from_signal(signal))
         _best, per_side = evaluate_market(
             market,
@@ -433,6 +459,7 @@ def run_cycle(settings: Settings | None = None) -> list[MarketDecision]:
     write_runner_status(settings, "starting", message="starting cycle", cycle_started_at=cycle_started_at)
     client = PolymarketClient(settings.gamma_base, settings.clob_base)
     ensemble_client = OpenMeteoEnsembleClient.from_settings(settings)
+    observation_provider = AviationWeatherMetarNowcastProvider.from_settings(settings)
     broker = PaperBroker(settings)
     try:
         write_runner_status(settings, "discovering", message="discovering markets", cycle_started_at=cycle_started_at)
@@ -479,7 +506,13 @@ def run_cycle(settings: Settings | None = None) -> list[MarketDecision]:
         for market in event_markets:
             markets_done += 1
             try:
-                signal = estimate_weather_probability(market.question, settings=settings, ensemble_client=ensemble_client)
+                signal = _call_probability_estimator(
+                    estimate_weather_probability,
+                    market.question,
+                    settings=settings,
+                    ensemble_client=ensemble_client,
+                    observation_provider=observation_provider,
+                )
                 market_type = _market_type_from_signal(signal)
                 result, per_side = evaluate_market(
                     market,
@@ -504,6 +537,7 @@ def run_cycle(settings: Settings | None = None) -> list[MarketDecision]:
                             "confidence": signal.confidence,
                             "source": signal.source,
                             "note": signal.note,
+                            "nowcast": signal.nowcast,
                         },
                         "per_side": {side: edge.__dict__ for side, edge in per_side.items()},
                     },
@@ -554,7 +588,15 @@ def run_cycle(settings: Settings | None = None) -> list[MarketDecision]:
     for msg in settlement_msgs:
         print(msg)
 
-    refresh_open_position_edges(broker, client, settings, latest_edges, market_by_id, ensemble_client=ensemble_client)
+    refresh_open_position_edges(
+        broker,
+        client,
+        settings,
+        latest_edges,
+        market_by_id,
+        ensemble_client=ensemble_client,
+        observation_provider=observation_provider,
+    )
     close_msgs = maybe_close_positions(broker, client, market_by_id, latest_edges)
     for msg in close_msgs:
         print(msg)
@@ -675,6 +717,7 @@ def _evaluate_realtime_update(
                         "confidence": signal.confidence,
                         "source": signal.source,
                         "note": signal.note,
+                        "nowcast": signal.nowcast,
                     },
                     "per_side": {side: edge.__dict__ for side, edge in per_side.items()},
                 },
@@ -707,6 +750,7 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
         cycle_started_at = utc_now_iso()
         discovery_client = PolymarketClient(settings.gamma_base, settings.clob_base)
         ensemble_client = OpenMeteoEnsembleClient.from_settings(settings)
+        observation_provider = AviationWeatherMetarNowcastProvider.from_settings(settings)
         broker = PaperBroker(settings)
         write_runner_status(settings, "discovering", message="discovering markets for websocket stream", cycle_started_at=cycle_started_at)
         discovered_markets = discovery_client.discover_weather_markets(
@@ -726,7 +770,13 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
         signals_by_market: dict[str, WeatherSignal] = {}
         market_types: dict[str, str] = {}
         for market in stream_markets:
-            signal = estimate_weather_probability(market.question, settings=settings, ensemble_client=ensemble_client)
+            signal = _call_probability_estimator(
+                estimate_weather_probability,
+                market.question,
+                settings=settings,
+                ensemble_client=ensemble_client,
+                observation_provider=observation_provider,
+            )
             signals_by_market[market.market_id] = signal
             market_types[market.market_id] = _market_type_from_signal(signal)
 

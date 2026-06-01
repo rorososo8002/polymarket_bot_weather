@@ -5,6 +5,7 @@ import math
 import os
 import re
 import statistics
+from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
@@ -15,6 +16,7 @@ from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponen
 
 from .config import Settings
 from .models import ParsedWeatherQuestion, WeatherSignal
+from .nowcast import StationNowcastObservation
 from .stations import STATION_MAP, StationMeta
 from .weather_client import parse_weather_question
 
@@ -548,6 +550,90 @@ def _temperature_daily_variable(parsed: ParsedWeatherQuestion) -> str:
     return "temperature_2m_min" if parsed.temperature_metric == "min" else "temperature_2m_max"
 
 
+def _nowcast_threshold_adjustment(
+    parsed: ParsedWeatherQuestion,
+    forecast_probability: float,
+    observed_high_f: float,
+) -> tuple[float, str]:
+    if parsed.threshold_f is None or parsed.operator is None:
+        return forecast_probability, "no-threshold"
+
+    threshold_f = parsed.threshold_f
+    half_width_f = (1.8 if parsed.threshold_unit == "C" else 1.0) / 2.0
+
+    if parsed.temperature_bucket == "exact":
+        upper_f = threshold_f + half_width_f
+        if observed_high_f >= upper_f:
+            return 0.0, "observed-high-above-exact-bucket"
+        return forecast_probability, "observed-high-not-decisive"
+
+    if parsed.temperature_bucket == "lower_tail":
+        upper_f = threshold_f + half_width_f
+        if observed_high_f >= upper_f:
+            return 0.0, "observed-high-above-lower-tail"
+        return forecast_probability, "observed-high-not-decisive"
+
+    if parsed.temperature_bucket == "upper_tail":
+        lower_f = threshold_f - half_width_f
+        if observed_high_f >= lower_f:
+            return 1.0, "observed-high-reached-upper-tail"
+        return forecast_probability, "observed-high-not-decisive"
+
+    if parsed.operator == ">=" and observed_high_f >= threshold_f:
+        return 1.0, "observed-high-reached-threshold"
+    if parsed.operator == "<=" and observed_high_f > threshold_f:
+        return 0.0, "observed-high-above-threshold"
+    return forecast_probability, "observed-high-not-decisive"
+
+
+def _with_temperature_nowcast(
+    signal: WeatherSignal,
+    parsed: ParsedWeatherQuestion,
+    station: StationMeta,
+    target: date,
+    settings: Settings,
+    observation_provider: Any | None,
+) -> WeatherSignal:
+    if not settings.station_nowcast_enabled:
+        return replace(signal, note=f"{signal.note}; evidence=forecast-only; nowcast_unavailable=disabled")
+    if observation_provider is None:
+        return replace(signal, note=f"{signal.note}; evidence=forecast-only; nowcast_unavailable=provider-not-supplied")
+
+    try:
+        observation: StationNowcastObservation = observation_provider.observed_high_so_far(station, target_date=target)
+    except Exception as exc:  # noqa: BLE001
+        note = f"{signal.note}; evidence=forecast-only; nowcast_unavailable=provider-error:{type(exc).__name__}"
+        return replace(signal, note=note)
+
+    payload = observation.to_log_payload()
+    if not observation.usable or observation.observed_high_f is None:
+        reason = observation.unavailable_reason or "unknown"
+        note = (
+            f"{signal.note}; evidence=forecast-only; nowcast_unavailable={reason}; "
+            f"nowcast_source={observation.source or 'unmapped'}; "
+            f"observed_high_c={observation.observed_high_c}"
+        )
+        return replace(signal, note=note, nowcast=payload)
+
+    adjusted_p, adjustment = _nowcast_threshold_adjustment(parsed, signal.p_true, observation.observed_high_f)
+    confidence = max(signal.confidence, 0.95) if adjusted_p != signal.p_true else signal.confidence
+    note = (
+        f"{signal.note}; evidence=forecast-plus-nowcast; nowcast_adjustment={adjustment}; "
+        f"observed_high_c={observation.observed_high_c:.1f}; "
+        f"observed_at={_utc_iso(observation.observed_at)}; "
+        f"freshness_seconds={observation.freshness_seconds}; "
+        f"nowcast_source={observation.source}"
+    )
+    return replace(
+        signal,
+        p_true=clamp_probability(adjusted_p),
+        confidence=confidence,
+        source=f"{signal.source}+nowcast",
+        note=note,
+        nowcast=payload,
+    )
+
+
 
 # ---------------------------------------------------------------------------
 # 5) 강수 앙상블 확률 모델
@@ -643,6 +729,7 @@ def estimate_weather_probability(
     settings: Settings | None = None,
     client: Any | None = None,
     ensemble_client: OpenMeteoEnsembleClient | None = None,
+    observation_provider: Any | None = None,
 ) -> WeatherSignal:
     """Estimate P(YES) for a Polymarket weather question.
 
@@ -705,7 +792,14 @@ def estimate_weather_probability(
                 f"dynamic_sigma={sigma_f:.2f}F; bias={bias_f:+.2f}F; "
                 f"models={ensemble_client.models}. {station.note}"
             )
-            return WeatherSignal(p_true=clamp_probability(p), confidence=confidence, source="open-meteo-ensemble-station", note=note, parsed=parsed)
+            signal = WeatherSignal(
+                p_true=clamp_probability(p),
+                confidence=confidence,
+                source="open-meteo-ensemble-station",
+                note=note,
+                parsed=parsed,
+            )
+            return _with_temperature_nowcast(signal, parsed, station, target, settings, observation_provider)
         except Exception as exc:  # noqa: BLE001
             return WeatherSignal(
                 p_true=0.5,

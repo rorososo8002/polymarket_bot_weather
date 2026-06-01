@@ -272,3 +272,81 @@ paper-only and has not been deployed automatically.
 
 Official reference:
 https://docs.polymarket.com/advanced/neg-risk.
+
+## 2026-06-02: Start Settlement-Station Nowcast As A Seoul-Only Pilot
+
+Decision: Same-day temperature probability may use observed high-so-far only
+when the observation provider is explicitly mapped to the same settlement
+station in `STATION_MAP`. Phase 5 maps only Seoul/RKSI. All other cities,
+including otherwise supported Polymarket cities, report
+`nowcast-source-unmapped` and continue as forecast-only.
+
+Decision: The Seoul pilot uses the Aviation Weather Center METAR API for RKSI
+as same-station progress evidence, while documenting Wunderground RKSI as the
+Polymarket settlement reference. This does not replace final settlement data:
+it only prevents the bot from ignoring fresh same-day observations before
+Wunderground finalizes the day's high.
+
+Why: Polymarket Seoul rules resolve to the Wunderground finalized highest
+temperature for all times on the day at the Incheon Intl Airport Station.
+Using a city-center Seoul temperature would be the same class of mistake this
+project already banned. AWC documents METAR terminal observations as worldwide,
+provides an API for ICAO station ids, and updates the current METAR cache once
+a minute. The bot still caches nowcast calls for 15 minutes and requires the
+latest station observation to be no older than 90 minutes so missing or stale
+feeds do not become strategy data.
+
+Consequence: `WeatherSignal` now carries optional `nowcast` metadata with
+observed high, observation timestamps, source URLs, freshness, raw observation
+count, and unavailable reason. Decision notes say either
+`evidence=forecast-plus-nowcast` or `evidence=forecast-only`. Fresh nowcast can
+bound a same-day temperature market to `1.0` when the observed high has already
+crossed a threshold or to `0.0` when an exact/lower bucket is already
+impossible. Missing, stale, malformed, future-date, or unmapped nowcast is a
+skip for nowcast-dependent logic, not a guessed observation.
+
+Official references:
+- Polymarket Seoul weather rule pages name Wunderground RKSI as the resolution
+  source for the finalized daily high.
+- Aviation Weather Center Data API documents METAR terminal observations,
+  JSON/API access by ICAO station id, once-per-minute current METAR cache
+  updates, and request-rate restrictions.
+
+## 2026-06-02: Keep Station Audit Evidence Explicit
+
+Decision: The station registry now records forecast source, forecast coordinate
+source, nowcast candidate station, nowcast enablement status, and whether the
+Polymarket rule URL and exact station wording are stored. The readable audit
+table lives in `docs/station-registry-audit.md`.
+
+Why: A station id such as `RKSI` or `KLGA` is not enough for a beginner or a
+future AI to know whether the bot is using a forecast coordinate, a settlement
+station, a same-day observation feed, or a verified trading signal. Putting
+those states in separate fields prevents the dangerous shortcut of treating all
+41 station ids as automatically nowcast-ready.
+
+Consequence: This audit is separate from live observation provider coverage.
+`rule_evidence_status=needs_rule_source_url` means the exact rule URL and
+station wording are not yet stored in the repository fields.
+
+## 2026-06-02: Expand Same-Station Observation Providers After Source Checks
+
+Decision: Actual same-day observed highs can now come from two official source
+families. ICAO settlement stations use the Aviation Weather Center METAR API
+when that exact ICAO id returns observations. Hong Kong/HKO uses the Hong Kong
+Observatory maximum/minimum temperature since midnight CSV. Karachi/OPMR stays
+forecast-only because AWC did not return recent OPMR METAR data, and no
+same-station substitute was added.
+
+Why: Hong Kong was not worth skipping blindly. The current Polymarket weather
+scan showed "Highest temperature in Hong Kong on June 1, 2026" near the top of
+active weather-event 24-hour volume, so implementing the official HKO-shaped
+source had trading-research value. For Karachi, substituting a different
+airport would repeat the city-center/nearby-station mistake, so the safer
+choice is to leave it forecast-only.
+
+Consequence: `DEFAULT_NOWCAST_SOURCES` follows the station registry:
+39 ICAO stations are `aviationweather-metar`, Hong Kong is
+`hko-maxmin-since-midnight`, and OPMR is unmapped. Missing, stale, malformed,
+or unmapped observations still keep the strategy forecast-only with an
+unavailable reason.

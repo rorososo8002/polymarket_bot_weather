@@ -14,6 +14,12 @@ def test_default_forecast_cadence_is_thirty_minutes():
     assert Settings.forecast_cache_ttl_seconds == 1800
 
 
+def test_default_station_nowcast_is_pilot_cached_and_freshness_bounded():
+    assert Settings.station_nowcast_enabled is True
+    assert Settings.station_nowcast_cache_ttl_seconds == 900
+    assert Settings.station_nowcast_freshness_seconds == 5400
+
+
 def test_default_entry_net_return_filter_uses_official_weather_fee_rate():
     assert Settings.entry_min_expected_net_return_pct == 0.06
     assert Settings.weather_taker_fee_rate == 0.05
@@ -66,6 +72,18 @@ def test_load_settings_reads_forecast_cache_controls(monkeypatch):
 
     assert settings.forecast_cache_path == "data/custom_forecast_cache.json"
     assert settings.forecast_cache_ttl_seconds == 600
+
+
+def test_load_settings_reads_station_nowcast_controls(monkeypatch):
+    monkeypatch.setenv("STATION_NOWCAST_ENABLED", "false")
+    monkeypatch.setenv("STATION_NOWCAST_CACHE_TTL_SECONDS", "300")
+    monkeypatch.setenv("STATION_NOWCAST_FRESHNESS_SECONDS", "1800")
+
+    settings = load_settings()
+
+    assert settings.station_nowcast_enabled is False
+    assert settings.station_nowcast_cache_ttl_seconds == 300
+    assert settings.station_nowcast_freshness_seconds == 1800
 
 
 def test_load_settings_reads_realtime_orderbook_stream(monkeypatch):

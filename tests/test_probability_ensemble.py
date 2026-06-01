@@ -14,6 +14,7 @@ from weather_bot.probability import (
     dynamic_sigma_f,
     estimate_weather_probability,
 )
+from weather_bot.nowcast import StationNowcastObservation
 from weather_bot.weather_client import parse_weather_question
 
 
@@ -403,3 +404,101 @@ def test_multi_bucket_temperature_probabilities_share_one_consistent_distributio
 
     assert all(signal.source == "open-meteo-ensemble-station" for signal in signals)
     assert sum(signal.p_true for signal in signals) == pytest.approx(1.0)
+
+
+def test_temperature_nowcast_can_confirm_threshold_crossing_without_city_fallback():
+    target = _today_for_timezone("Asia/Seoul")
+    member_values_f = [75.2, 76.0, 76.8, 77.0]
+
+    class FakeEnsembleClient:
+        models = "fake"
+
+        def forecast_daily_ensemble(self, *_args, **_kwargs):
+            daily = {"time": [target.isoformat()], "temperature_2m_max": [member_values_f[0]]}
+            daily.update(
+                {
+                    f"temperature_2m_max_member{idx:02d}": [value]
+                    for idx, value in enumerate(member_values_f[1:], start=1)
+                }
+            )
+            return {"daily": daily}
+
+    class FreshNowcastProvider:
+        def observed_high_so_far(self, station, *, target_date, now=None):
+            assert station.station_id == "RKSI"
+            assert target_date == target
+            return StationNowcastObservation(
+                station_id="RKSI",
+                station_name=station.station_name,
+                observed_high_c=27.0,
+                observed_at=datetime(2026, 6, 2, 8, 0, tzinfo=timezone.utc),
+                high_observed_at=datetime(2026, 6, 2, 8, 0, tzinfo=timezone.utc),
+                source="aviationweather-metar",
+                source_url="https://aviationweather.gov/api/data/metar",
+                settlement_source_url="https://www.wunderground.com/history/daily/kr/incheon/RKSI",
+                freshness_seconds=1800,
+                unavailable_reason="",
+                raw_observation_count=4,
+                update_cadence="fixture",
+            )
+
+    signal = estimate_weather_probability(
+        "Will the highest temperature in Seoul be 27C or higher today?",
+        settings=Settings(),
+        ensemble_client=FakeEnsembleClient(),
+        observation_provider=FreshNowcastProvider(),
+    )
+
+    assert signal.source == "open-meteo-ensemble-station+nowcast"
+    assert signal.p_true == 1.0
+    assert signal.confidence >= 0.95
+    assert signal.nowcast["observed_high_c"] == 27.0
+    assert "evidence=forecast-plus-nowcast" in signal.note
+
+
+def test_temperature_nowcast_unavailable_keeps_forecast_only_signal():
+    target = _today_for_timezone("Asia/Seoul")
+
+    class FakeEnsembleClient:
+        models = "fake"
+
+        def forecast_daily_ensemble(self, *_args, **_kwargs):
+            return {
+                "daily": {
+                    "time": [target.isoformat()],
+                    "temperature_2m_max": [80.0],
+                    "temperature_2m_max_member01": [81.0],
+                    "temperature_2m_max_member02": [82.0],
+                    "temperature_2m_max_member03": [83.0],
+                }
+            }
+
+    class StaleNowcastProvider:
+        def observed_high_so_far(self, station, *, target_date, now=None):
+            return StationNowcastObservation(
+                station_id=station.station_id,
+                station_name=station.station_name,
+                observed_high_c=24.0,
+                observed_at=datetime(2026, 6, 2, 5, 0, tzinfo=timezone.utc),
+                high_observed_at=datetime(2026, 6, 2, 5, 0, tzinfo=timezone.utc),
+                source="aviationweather-metar",
+                source_url="https://aviationweather.gov/api/data/metar",
+                settlement_source_url="https://www.wunderground.com/history/daily/kr/incheon/RKSI",
+                freshness_seconds=10800,
+                unavailable_reason="stale-observation",
+                raw_observation_count=2,
+                update_cadence="fixture",
+            )
+
+    signal = estimate_weather_probability(
+        "Will the highest temperature in Seoul be 27C or higher today?",
+        settings=Settings(),
+        ensemble_client=FakeEnsembleClient(),
+        observation_provider=StaleNowcastProvider(),
+    )
+
+    assert signal.source == "open-meteo-ensemble-station"
+    assert 0.0 < signal.p_true < 1.0
+    assert signal.nowcast["unavailable_reason"] == "stale-observation"
+    assert "evidence=forecast-only" in signal.note
+    assert "nowcast_unavailable=stale-observation" in signal.note

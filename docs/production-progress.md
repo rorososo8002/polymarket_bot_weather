@@ -61,26 +61,44 @@
   비용 차감 예상 순이익, 기대 로그 성장률, 정규화된 시나리오 확률과
   scenario PnL을 남깁니다. 대시보드에서도 최근 event 포트폴리오
   설명을 볼 수 있습니다.
+- Phase 5에서는 정산 관측소 nowcast를 Seoul/RKSI pilot으로 시작한 뒤,
+  공식 관측 API를 확인해 39개 ICAO 관측소는 Aviation Weather Center METAR,
+  Hong Kong/HKO는 Hong Kong Observatory 자정 이후 최고/최저기온 CSV로
+  확장했습니다. Karachi/OPMR은 AWC에서 최근 자료가 확인되지 않아
+  forecast-only로 남겼습니다.
+- `src/weather_bot/stations.py`에 41개 도시의 예보 출처, 예보 좌표 기준,
+  nowcast 후보 관측소, nowcast 사용 가능 상태, Polymarket 규칙 원문 증거
+  보관 여부를 설명하는 감사 필드를 추가했습니다. 사람이 읽는 표는
+  `docs/station-registry-audit.md`입니다.
+- nowcast 로그는 관측 최고기온, 관측 시각, 출처 URL, 정산 기준 URL,
+  freshness, 원자료 개수, unavailable 이유를 남깁니다. fresh/verified이면
+  `forecast-plus-nowcast`, 없거나 오래됐거나 malformed이거나 미지원이면
+  `forecast-only`로 설명합니다.
 - Windows 로컬 pytest는 별도 `TMP`, `TEMP` 수동 설정 없이도 저장소
   내부 `.pytest-tmp/`를 자동 사용합니다. 반복 작업의 첫 명령은
   `docs/codex/known-good-commands.md`에 모았습니다.
 
 ## 진행 중
 
-- Phase 3과 revised Phase 4 로컬 구현은 검증을 마쳤습니다.
-- Oracle VPS에는 Phase 0, Phase 1, Phase 2, Phase 3, Phase 4 변경을 아직
+- Phase 5 로컬 구현과 검증을 마쳤습니다.
+- 현재 same-station observation provider는 40개 도시에서 사용 가능합니다:
+  39개 ICAO METAR + Hong Kong/HKO CSV입니다. Karachi/OPMR은
+  `nowcast-source-unmapped`로 forecast-only입니다.
+- Oracle VPS에는 Phase 0, Phase 1, Phase 2, Phase 3, Phase 4, Phase 5 변경을 아직
   배포하지 않았습니다.
 - 배포는 변경 내용, 위험, 검증 방법, 되돌리는 방법을 설명한 뒤 사용자
   승인을 받아야 합니다.
 
 ## 다음 작업
 
-1. 다음 fresh chat에서는 `docs/strategy-upgrade-roadmap.md`의 Phase 5만
+1. 다음 fresh chat에서는 `docs/strategy-upgrade-roadmap.md`의 Phase 6만
    진행합니다.
-2. 공식 정산 관측소의 실제 관측 출처와 갱신 주기를 조사합니다. 검증되지
-   않은 도심 날씨나 추측값으로 대체하지 않습니다.
-3. observation이 없거나 오래되었거나 검증되지 않았으면 nowcast 의존
-   로직을 건너뜁니다.
+2. Phase 6은 principal recovery와 settlement runner입니다. 강한 저가
+   포지션을 너무 일찍 전량 청산하지 않도록, 원금 회수 tranche와 제한된
+   runner tranche를 paper-only로 설계합니다.
+3. Phase 6에서도 Phase 5 nowcast는 보조 증거일 뿐입니다. 미지원·stale·
+   malformed observation이면 nowcast 의존 로직은 건너뛰고 forecast-only
+   설명을 유지합니다.
 4. 기존 남은 위험도 보존합니다. 기본 WebSocket 경로에는 해결된
    시장의 settlement 처리가 아직 연결되지 않았습니다.
 
@@ -96,9 +114,9 @@
 - 실거래, 지갑 연결, 자동 배포는 별도 승인 없이 추가하지 않습니다.
 - 향후 실거래 실행 계층은 `docs/live-trading-safety-plan.md`에서 별도로
   이어갑니다. paper 전략 Phase와 섞지 않습니다.
-- Phase 5에서는 이번 Phase 4의 event 공유 예산, 한 leg 최소 `$10`,
+- Phase 6에서는 이번 Phase 4의 event 공유 예산, 한 leg 최소 `$10`,
   도시 합계 `20%`, 전체 오픈 `90%`, 최대 2개 leg, `YES+NO`와
   `NO+NO` 비교, 보수적 진입 기준금, Phase 3의 구간 확률과 Phase 2의
-  비용 필터를 유지합니다.
+  비용 필터, Phase 5의 verified nowcast/fail-closed 규칙을 유지합니다.
 - 로컬 pytest 또는 Oracle SSH 작업을 시작할 때는
   `docs/codex/known-good-commands.md`의 검증된 첫 명령을 먼저 사용합니다.
