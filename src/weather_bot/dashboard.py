@@ -456,6 +456,16 @@ HTML = r"""<!doctype html>
           <div id="r-websocket-book" class="health-detail">마지막 주문서 --</div>
           <div id="r-websocket-error" class="health-detail">최근 오류 --</div>
         </div>
+        <div class="health-box">
+          <div class="health-title"><span>이벤트 포트폴리오</span><strong id="r-portfolio-event">--</strong></div>
+          <div class="health-detail">기준금 &lt; $1,000: 도시+날짜 10% · $1,000 이상: 5% · 최대 2개 leg</div>
+          <div class="health-detail">한 leg 최소 $10 · 도시 전체 20% · 전체 오픈 90%</div>
+          <div class="health-detail">서로 다른 구간의 YES+YES · YES+NO · NO+NO 비교</div>
+          <div id="r-portfolio-budget" class="health-detail">최근 예산 --</div>
+          <div id="r-portfolio-selected" class="health-detail">선택 leg --</div>
+          <div id="r-portfolio-rejected" class="health-detail">거절 leg --</div>
+          <div id="r-portfolio-scenario" class="health-detail">최악 시나리오 --</div>
+        </div>
       </div>
       <div class="panel-title">Recent Trades <span id="trade-count">0</span></div>
       <div class="panel-body recent-trades-body"><div id="recent-trades" class="trade-list"></div></div>
@@ -719,6 +729,16 @@ function render(payload) {
   setText("r-websocket-message", "마지막 메시지 " + shortDateTime(websocketHealth.last_message_at));
   setText("r-websocket-book", "마지막 주문서 " + shortDateTime(websocketHealth.last_book_at) + " · 나이 " + (websocketHealth.stale_book_age_seconds == null ? "--" : duration(websocketHealth.stale_book_age_seconds)));
   setText("r-websocket-error", "최근 오류 " + (websocketHealth.last_error || "--"));
+  const eventPortfolio = (payload.scanner || {}).latest_event_portfolio || {};
+  const selectedLegs = eventPortfolio.selected_legs || [];
+  const rejectedLegs = eventPortfolio.rejected_legs || [];
+  const scenarios = eventPortfolio.scenario_pnl_usd || {};
+  const worstScenario = Object.values(scenarios).length ? Math.min(...Object.values(scenarios).map(Number)) : null;
+  setText("r-portfolio-event", eventPortfolio.event_key || "--");
+  setText("r-portfolio-budget", "최근 예산 기준금 " + money(eventPortfolio.entry_bankroll_usd || 0) + " · 한도 " + money(eventPortfolio.event_cap_usd || 0) + " · 기대 순익 " + money(eventPortfolio.expected_net_profit_usd || 0) + " · 기대 로그 성장 " + pct(eventPortfolio.expected_log_growth || 0));
+  setText("r-portfolio-selected", "선택 leg " + (selectedLegs.length ? selectedLegs.map(item => (item.market_id || "?") + " " + (item.side || "") + " " + money(item.size_usd || 0)).join(" | ") : "--"));
+  setText("r-portfolio-rejected", "거절 leg " + (rejectedLegs.length ? rejectedLegs.map(item => (item.market_id || "?") + ": " + (item.reason || "")).join(" | ") : "--"));
+  setText("r-portfolio-scenario", "최악 시나리오 " + (worstScenario == null ? "--" : money(worstScenario)));
   setText("open-count", payload.positions.length);
   setText("trade-count", payload.recent_trades.length);
   const realizedRows = payload.realized_results || [];
@@ -829,6 +849,32 @@ def _read_csv_tail_rows(path: Path, limit: int) -> list[str]:
     if start == 0 and lines:
         lines = lines[1:]
     return lines[-limit:]
+
+
+def _read_jsonl(path: Path, limit: int = 20) -> list[dict[str, Any]]:
+    if not path.exists() or limit <= 0:
+        return []
+    max_bytes = max(256 * 1024, min(2 * 1024 * 1024, limit * 8192))
+    try:
+        size = path.stat().st_size
+        with path.open("rb") as f:
+            start = max(0, size - max_bytes)
+            f.seek(start)
+            chunk = f.read()
+        lines = chunk.decode("utf-8", errors="replace").splitlines()
+        if start > 0 and lines:
+            lines = lines[1:]
+        rows: list[dict[str, Any]] = []
+        for line in lines[-limit:]:
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(row, dict):
+                rows.append(row)
+        return rows
+    except OSError:
+        return []
 
 
 def _empty_decision_totals() -> dict[str, int]:
@@ -1502,6 +1548,7 @@ def build_dashboard_payload(settings: Settings | None = None, auth_required: boo
     trades_path = Path(settings.trades_csv_path)
     trade_totals = _trade_action_totals(trades_path)
     runner_status = read_runner_status(settings)
+    event_portfolios = _read_jsonl(Path(settings.portfolio_decisions_jsonl_path), 20)
     health = {
         "forecast": _forecast_health(settings, runner_status),
         "websocket": _websocket_health(settings, runner_status),
@@ -1558,6 +1605,7 @@ def build_dashboard_payload(settings: Settings | None = None, auth_required: boo
             "actual_opens": int(trade_totals["opens"]),
             "actual_closes": int(trade_totals["closes"]),
             "latest_forecast_at": _latest_forecast_cache_at(settings),
+            "latest_event_portfolio": event_portfolios[-1] if event_portfolios else {},
         },
         "equity_points": _equity_points(settings, trades, curve_value, started_at),
     }

@@ -16,10 +16,18 @@ from .exit_policy import conservative_settlement_value, model_fair_price, target
 from .models import EdgeResult, MarketDecision, OrderBook, PaperPosition, RawMarket, WeatherSignal
 from .paper import PaperBroker, maybe_close_positions, maybe_settle_resolved_positions
 from .polymarket_client import PolymarketClient
+from .portfolio import (
+    EntryBankrollSnapshot,
+    EventPortfolioDecision,
+    PortfolioCandidate,
+    available_entry_bankroll,
+    select_event_portfolio,
+)
 from .probability import OpenMeteoEnsembleClient, estimate_weather_probability
 from .realtime_orderbook import OrderBookMarketStream
 from .risk import fractional_kelly_binary
 from .runner_status import utc_now_iso, write_runner_status
+from .weather_client import parse_weather_question
 
 
 class StreamBackedPolymarketClient(PolymarketClient):
@@ -206,6 +214,7 @@ def _side_result(
         size_usd=size_usd if edge > min_edge and return_ok else 0.0,
         size_shares=(size_usd / p_exec) if edge > min_edge and return_ok and p_exec > 0 else 0.0,
         reason=reason,
+        expected_net_profit_usd=return_estimate.expected_net_profit_usdc if edge > min_edge and return_ok else 0.0,
     )
 
 
@@ -297,6 +306,21 @@ def evaluate_market(
     return best_result, per_side
 
 
+def _event_portfolio_candidates(
+    market: RawMarket,
+    signal: WeatherSignal,
+    result: EdgeResult,
+    per_side: dict[str, EdgeResult],
+    market_type: str,
+) -> list[PortfolioCandidate]:
+    executable = [
+        PortfolioCandidate(market, signal, edge_result, market_type)
+        for edge_result in per_side.values()
+        if edge_result.side in {"YES", "NO"}
+    ]
+    return executable or [PortfolioCandidate(market, signal, result, market_type)]
+
+
 def _market_type_from_signal(signal: WeatherSignal) -> str:
     if signal.parsed is not None and signal.parsed.variable in {"precipitation", "snow"}:
         return "precipitation"
@@ -374,6 +398,35 @@ def _stream_market_registry(
     return market_by_id
 
 
+def _market_event_key(market: RawMarket) -> str:
+    if market.event_id:
+        return market.event_id
+    parsed = parse_weather_question(market.question)
+    return "|".join([
+        parsed.city or "unknown-city",
+        parsed.date_hint or "unknown-date",
+        parsed.variable,
+        parsed.temperature_metric,
+    ])
+
+
+def _group_weather_markets_by_event(markets: list[RawMarket]) -> list[list[RawMarket]]:
+    groups: dict[str, list[RawMarket]] = {}
+    for market in markets:
+        groups.setdefault(_market_event_key(market), []).append(market)
+    return list(groups.values())
+
+
+def _discovery_coverage(markets: list[RawMarket]) -> dict[str, int]:
+    groups = _group_weather_markets_by_event(markets)
+    cities = {
+        parsed.city
+        for market in markets
+        if (parsed := parse_weather_question(market.question)).city
+    }
+    return {"events": len(groups), "cities": len(cities), "markets": len(markets)}
+
+
 def run_cycle(settings: Settings | None = None) -> list[MarketDecision]:
     settings = settings or load_settings()
     cycle_started_at = utc_now_iso()
@@ -383,93 +436,119 @@ def run_cycle(settings: Settings | None = None) -> list[MarketDecision]:
     broker = PaperBroker(settings)
     try:
         write_runner_status(settings, "discovering", message="discovering markets", cycle_started_at=cycle_started_at)
-        markets = client.discover_weather_markets(limit=settings.max_markets)
+        discovered_markets = client.discover_weather_markets(
+            max_pages=settings.discovery_max_pages,
+            page_size=settings.discovery_page_size,
+        )
     except Exception as exc:  # noqa: BLE001
         write_runner_status(settings, "error", message=f"market discovery failed: {exc}", cycle_started_at=cycle_started_at)
         print(f"DATA ERROR: could not fetch live Polymarket markets: {exc}")
         print("Check internet/DNS/VPN, then run live-paper-bot again.")
         return []
 
+    event_groups = _group_weather_markets_by_event(discovered_markets)
+    markets = [market for group in event_groups for market in group]
+    coverage = _discovery_coverage(markets)
     market_by_id = {m.market_id: m for m in markets}
     decisions: list[MarketDecision] = []
     latest_edges: dict[tuple[str, str], EdgeResult] = {}
 
     print(
-        f"\nLIVE PAPER CYCLE | markets={len(markets)} | "
+        f"\nLIVE PAPER CYCLE | markets={len(markets)} | events={coverage['events']} | "
+        f"cities={coverage['cities']} | "
         f"cash=${broker.state.cash_usd:.2f} | exposure=${broker.total_exposure():.2f} | "
         f"bankroll=${broker.current_bankroll_before_entry():.2f} | open_positions={len(broker.state.positions)}"
     )
     write_runner_status(
         settings,
         "evaluating",
-        message=f"evaluating 0/{len(markets)}",
+        message=f"evaluating 0/{len(markets)} markets across {coverage['events']} events, {coverage['cities']} cities",
         cycle_started_at=cycle_started_at,
         markets_done=0,
         markets_total=len(markets),
+        events_total=coverage["events"],
+        cities_total=coverage["cities"],
         cash_usd=round(broker.state.cash_usd, 2),
         exposure_usd=round(broker.total_exposure(), 2),
         open_positions=len(broker.state.positions),
     )
-    for idx, market in enumerate(markets, start=1):
-        try:
-            signal = estimate_weather_probability(market.question, settings=settings, ensemble_client=ensemble_client)
-            bankroll_before = broker.current_bankroll_before_entry()
-            market_type = _market_type_from_signal(signal)
-            result, per_side = evaluate_market(market, signal, client, settings, bankroll_before, market_type)
-            for side, edge_result in per_side.items():
-                latest_edges[(market.market_id, side)] = edge_result
-            decisions.append(MarketDecision(market=market, signal=signal, result=result))
-            broker.log_decision(market, result, signal.note, market_type)
-            broker.log_raw_snapshot(
-                "decision",
-                market,
-                {
-                    "market_raw": market.raw,
-                    "signal": {
-                        "p_true": signal.p_true,
-                        "confidence": signal.confidence,
-                        "source": signal.source,
-                        "note": signal.note,
+    markets_done = 0
+    for event_markets in event_groups:
+        entry_bankroll = available_entry_bankroll(broker, client)
+        candidates: list[PortfolioCandidate] = []
+        for market in event_markets:
+            markets_done += 1
+            try:
+                signal = estimate_weather_probability(market.question, settings=settings, ensemble_client=ensemble_client)
+                market_type = _market_type_from_signal(signal)
+                result, per_side = evaluate_market(
+                    market,
+                    signal,
+                    client,
+                    settings,
+                    entry_bankroll.entry_bankroll,
+                    market_type,
+                )
+                for side, edge_result in per_side.items():
+                    latest_edges[(market.market_id, side)] = edge_result
+                decisions.append(MarketDecision(market=market, signal=signal, result=result))
+                candidates.extend(_event_portfolio_candidates(market, signal, result, per_side, market_type))
+                broker.log_decision(market, result, signal.note, market_type)
+                broker.log_raw_snapshot(
+                    "decision",
+                    market,
+                    {
+                        "market_raw": market.raw,
+                        "signal": {
+                            "p_true": signal.p_true,
+                            "confidence": signal.confidence,
+                            "source": signal.source,
+                            "note": signal.note,
+                        },
+                        "per_side": {side: edge.__dict__ for side, edge in per_side.items()},
                     },
-                    "per_side": {side: edge.__dict__ for side, edge in per_side.items()},
-                },
+                )
+                print("-" * 100)
+                print(f"Q: {market.question}")
+                print(f"P_true={signal.p_true:.3f} confidence={signal.confidence:.2f} source={signal.source}")
+                print(f"Decision={result.side} edge={result.net_edge:.3f} p_exec={result.p_exec} size=${result.size_usd:.2f}")
+                print(f"Reason: {result.reason}")
+                print(f"Note: {signal.note}")
+            except Exception as exc:  # noqa: BLE001
+                print("-" * 100)
+                print(f"Q: {market.question}")
+                print(f"ERROR: {exc}")
+            write_runner_status(
+                settings,
+                "evaluating",
+                message=f"evaluating {markets_done}/{len(markets)}",
+                cycle_started_at=cycle_started_at,
+                markets_done=markets_done,
+                markets_total=len(markets),
+                events_total=coverage["events"],
+                cities_total=coverage["cities"],
+                last_market=market.question,
+                cash_usd=round(broker.state.cash_usd, 2),
+                exposure_usd=round(broker.total_exposure(), 2),
+                open_positions=len(broker.state.positions),
             )
-            print("-" * 100)
-            print(f"Q: {market.question}")
-            print(f"P_true={signal.p_true:.3f} confidence={signal.confidence:.2f} source={signal.source}")
-            print(f"Decision={result.side} edge={result.net_edge:.3f} p_exec={result.p_exec} size=${result.size_usd:.2f}")
-            print(f"Reason: {result.reason}")
-            print(f"Note: {signal.note}")
-            if result.side in {"YES", "NO"}:
-                token_id = market.yes_token_id if result.side == "YES" else market.no_token_id
-                if broker.has_any_position(market.market_id):
-                    existing = [p.side for p in broker.state.positions if p.market_id == market.market_id]
-                    print(f"SKIP hedge block: already holding {existing} in this market")
-                elif token_id:
-                    city = signal.parsed.city if signal.parsed is not None else ""
-                    date_hint = signal.parsed.date_hint if signal.parsed is not None else ""
-                    pos = broker.open_position(market, token_id, result, market_type, city=city or "", date_hint=date_hint or "")
-                    if pos:
-                        city_info = f" [{city}/{date_hint}]" if city else ""
-                        print(f"PAPER OPENED {pos.side}: ${pos.cost_usd:.2f} at {pos.entry_price:.4f}, shares={pos.shares:.4f}{city_info}")
-        except Exception as exc:  # noqa: BLE001
-            print("-" * 100)
-            print(f"Q: {market.question}")
-            print(f"ERROR: {exc}")
-        write_runner_status(
-            settings,
-            "evaluating",
-            message=f"evaluating {idx}/{len(markets)}",
-            cycle_started_at=cycle_started_at,
-            markets_done=idx,
-            markets_total=len(markets),
-            last_market=market.question,
-            cash_usd=round(broker.state.cash_usd, 2),
-            exposure_usd=round(broker.total_exposure(), 2),
-            open_positions=len(broker.state.positions),
+        portfolio = _apply_event_portfolio(broker, candidates, entry_bankroll)
+        print(
+            f"EVENT PORTFOLIO {portfolio.event_key}: selected={len(portfolio.selected)} "
+            f"exposure=${portfolio.selected_exposure_usd:.2f} cap=${portfolio.event_cap_usd:.2f} "
+            f"expected_net_profit=${portfolio.expected_net_profit_usd:.2f}"
         )
 
-    write_runner_status(settings, "closing", message="checking settlements and exits", cycle_started_at=cycle_started_at, markets_done=len(markets), markets_total=len(markets))
+    write_runner_status(
+        settings,
+        "closing",
+        message="checking settlements and exits",
+        cycle_started_at=cycle_started_at,
+        markets_done=len(markets),
+        markets_total=len(markets),
+        events_total=coverage["events"],
+        cities_total=coverage["cities"],
+    )
     _hydrate_open_position_markets(client, broker, market_by_id)
     settlement_msgs = maybe_settle_resolved_positions(broker, market_by_id)
     for msg in settlement_msgs:
@@ -491,6 +570,8 @@ def run_cycle(settings: Settings | None = None) -> list[MarketDecision]:
         cycle_started_at=cycle_started_at,
         markets_done=len(markets),
         markets_total=len(markets),
+        events_total=coverage["events"],
+        cities_total=coverage["cities"],
         cash_usd=round(broker.state.cash_usd, 2),
         exposure_usd=round(broker.total_exposure(), 2),
         open_positions=len(broker.state.positions),
@@ -508,6 +589,7 @@ def _open_position_if_needed(
     signal: WeatherSignal,
     result: EdgeResult,
     market_type: str,
+    entry_bankroll_usd: float | None = None,
 ) -> None:
     if result.side not in {"YES", "NO"}:
         return
@@ -516,7 +598,34 @@ def _open_position_if_needed(
         return
     city = signal.parsed.city if signal.parsed is not None else ""
     date_hint = signal.parsed.date_hint if signal.parsed is not None else ""
-    broker.open_position(market, token_id, result, market_type, city=city or "", date_hint=date_hint or "")
+    broker.open_position(
+        market,
+        token_id,
+        result,
+        market_type,
+        city=city or "",
+        date_hint=date_hint or "",
+        entry_bankroll_usd=entry_bankroll_usd,
+    )
+
+
+def _apply_event_portfolio(
+    broker: PaperBroker,
+    candidates: list[PortfolioCandidate],
+    entry_bankroll: EntryBankrollSnapshot,
+) -> EventPortfolioDecision:
+    decision = select_event_portfolio(broker, candidates, entry_bankroll)
+    broker.log_event_portfolio_decision(decision.to_log_payload())
+    for candidate in decision.selected:
+        _open_position_if_needed(
+            broker,
+            candidate.market,
+            candidate.signal,
+            candidate.result,
+            candidate.market_type,
+            entry_bankroll_usd=entry_bankroll.entry_bankroll,
+        )
+    return decision
 
 
 def _evaluate_realtime_update(
@@ -529,48 +638,61 @@ def _evaluate_realtime_update(
     market_types: dict[str, str],
     latest_edges: dict[tuple[str, str], EdgeResult],
 ) -> None:
-    touched_markets = {
-        market_by_token[token_id].market_id
+    touched_events = {
+        _market_event_key(market_by_token[token_id])
         for token_id in updated_token_ids
         if token_id in market_by_token
     }
     market_by_id = {market.market_id: market for market in market_by_token.values()}
-    for market_id in touched_markets:
-        market = market_by_id[market_id]
-        signal = signals_by_market[market_id]
-        market_type = market_types[market_id]
-        result, per_side = evaluate_market(
-            market,
-            signal,
-            client,
-            settings,
-            broker.current_bankroll_before_entry(),
-            market_type,
-        )
-        for side, edge_result in per_side.items():
-            latest_edges[(market.market_id, side)] = edge_result
-        broker.log_decision(market, result, signal.note, market_type)
-        broker.log_raw_snapshot(
-            "realtime_decision",
-            market,
-            {
-                "updated_token_ids": sorted(updated_token_ids),
-                "signal": {
-                    "p_true": signal.p_true,
-                    "confidence": signal.confidence,
-                    "source": signal.source,
-                    "note": signal.note,
+    event_groups: dict[str, list[RawMarket]] = {}
+    for market in market_by_id.values():
+        event_groups.setdefault(_market_event_key(market), []).append(market)
+    for event_key in touched_events:
+        entry_bankroll = available_entry_bankroll(broker, client)
+        candidates: list[PortfolioCandidate] = []
+        for market in event_groups[event_key]:
+            signal = signals_by_market[market.market_id]
+            market_type = market_types[market.market_id]
+            result, per_side = evaluate_market(
+                market,
+                signal,
+                client,
+                settings,
+                entry_bankroll.entry_bankroll,
+                market_type,
+            )
+            for side, edge_result in per_side.items():
+                latest_edges[(market.market_id, side)] = edge_result
+            candidates.extend(_event_portfolio_candidates(market, signal, result, per_side, market_type))
+            broker.log_decision(market, result, signal.note, market_type)
+            broker.log_raw_snapshot(
+                "realtime_decision",
+                market,
+                {
+                    "updated_token_ids": sorted(updated_token_ids),
+                    "signal": {
+                        "p_true": signal.p_true,
+                        "confidence": signal.confidence,
+                        "source": signal.source,
+                        "note": signal.note,
+                    },
+                    "per_side": {side: edge.__dict__ for side, edge in per_side.items()},
                 },
-                "per_side": {side: edge.__dict__ for side, edge in per_side.items()},
-            },
-        )
-        _open_position_if_needed(broker, market, signal, result, market_type)
+            )
+        _apply_event_portfolio(broker, candidates, entry_bankroll)
     for message in maybe_close_positions(broker, client, market_by_id, latest_edges):
         print(message)
 
 
-def _stream_status_phase(websocket_health: dict[str, object], *, token_count: int, market_count: int) -> tuple[str, str]:
-    coverage = f"{token_count} tokens across {market_count} markets"
+def _stream_status_phase(
+    websocket_health: dict[str, object],
+    *,
+    token_count: int,
+    market_count: int,
+    event_count: int,
+    city_count: int,
+) -> tuple[str, str]:
+    coverage = f"{token_count} tokens across {market_count} markets, {event_count} events, {city_count} cities"
     if not websocket_health.get("thread_alive"):
         return "stream_error", f"websocket thread stopped; {coverage}"
     if websocket_health.get("stale"):
@@ -587,9 +709,15 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
         ensemble_client = OpenMeteoEnsembleClient.from_settings(settings)
         broker = PaperBroker(settings)
         write_runner_status(settings, "discovering", message="discovering markets for websocket stream", cycle_started_at=cycle_started_at)
-        markets = discovery_client.discover_weather_markets(limit=settings.max_markets)
+        discovered_markets = discovery_client.discover_weather_markets(
+            max_pages=settings.discovery_max_pages,
+            page_size=settings.discovery_page_size,
+        )
+        event_groups = _group_weather_markets_by_event(discovered_markets)
+        markets = [market for group in event_groups for market in group]
         market_by_id = _stream_market_registry(discovery_client, broker, markets)
         stream_markets = list(market_by_id.values())
+        coverage = _discovery_coverage(stream_markets)
         market_by_token = {
             token_id: market
             for market in stream_markets
@@ -637,6 +765,8 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
                 websocket_health,
                 token_count=len(market_by_token),
                 market_count=len(stream_markets),
+                event_count=coverage["events"],
+                city_count=coverage["cities"],
             )
             write_runner_status(
                 settings,
@@ -645,6 +775,8 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
                 cycle_started_at=cycle_started_at,
                 markets_done=0,
                 markets_total=len(stream_markets),
+                events_total=coverage["events"],
+                cities_total=coverage["cities"],
                 cash_usd=round(broker.state.cash_usd, 2),
                 exposure_usd=round(broker.total_exposure(), 2),
                 open_positions=len(broker.state.positions),

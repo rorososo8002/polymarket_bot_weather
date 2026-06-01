@@ -150,6 +150,9 @@ only `temperature >= threshold`.
 - Production docs explain the event-based scan model and remove outdated
   `MAX_MARKETS=41` claims where they are no longer correct.
 
+Local completion note: implemented and verified on 2026-06-01. Deployment still
+requires explicit approval.
+
 ## Phase 4: City-Date Portfolio Selection
 
 ### Goal
@@ -176,6 +179,12 @@ making several highly correlated bets look independent.
 - Tests cover one-leg selection, complementary combinations, correlated-risk
   blocking, and cap enforcement.
 - Paper logs can reconstruct the event-level decision.
+
+Local completion note: implemented on 2026-06-01 and revised on 2026-06-02.
+The revised paper selector normalizes event probabilities, compares distinct
+bucket `YES+YES`, `YES+NO`, and `NO+NO` combinations, requires at least `$10`
+per opened leg, caps one city's dates at 20%, and caps total paper exposure at
+90%. Deployment still requires explicit approval.
 
 ## Phase 5: Settlement-Station Nowcast
 

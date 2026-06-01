@@ -28,14 +28,16 @@ Do not copy old pre-Oracle runtime files to Oracle. Start the Oracle paper run f
 
 ## Next Work
 
-1. SSH into Oracle using the fixed target and private key above.
+1. Read `docs/codex/known-good-commands.md`, then SSH into Oracle using its
+   verified preflight and the fixed target and private key above.
 2. Prepare the server if a rebuild is required:
    - install Python, git, venv, systemd dependencies
    - add 2GB swap if the instance has 1GB RAM
    - open dashboard port only if needed
 3. Deploy the current repo to Oracle.
 4. Create Oracle env files with safe production defaults:
-   - `MAX_MARKETS=41`
+   - `DISCOVERY_MAX_PAGES=8`
+   - `DISCOVERY_PAGE_SIZE=100`
    - `ORDERBOOK_STREAM_ENABLED=true`
    - `ORDERBOOK_STREAM_STALE_SECONDS=60`
    - `RUNNER_HEALTH_STATUS_INTERVAL_SECONDS=5`
@@ -49,7 +51,8 @@ Do not copy old pre-Oracle runtime files to Oracle. Start the Oracle paper run f
    - services are active
    - dashboard status shows `scan_interval_seconds=1800`
    - bot reaches `phase=streaming`
-   - message shows `websocket streaming 82 tokens across 41 markets`
+   - message shows token, binary-market, event, and city coverage, for example
+     `websocket streaming 82 tokens across 41 markets, 7 events, 4 cities`
    - dashboard `예보 상태` shows a recent successful forecast or an explicit
      stale warning
    - dashboard `WebSocket 상태` shows a live receiver thread and a recent

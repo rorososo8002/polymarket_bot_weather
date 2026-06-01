@@ -62,7 +62,7 @@ Decision: The realtime stream registry combines current discovery markets with e
 
 Why: Discovery can roll forward to newer dates while an older market position is still open. Dropping that token from the WebSocket subscription leaves mark prices and exit checks stale even though the position still has economic risk.
 
-Consequence: Open positions keep receiving live order-book updates while they remain in paper state. Stream status counts the combined discovery-plus-held registry, so the visible market count can exceed `MAX_MARKETS`.
+Consequence: Open positions keep receiving live order-book updates while they remain in paper state. Stream status counts the combined discovery-plus-held registry, so the visible binary-market count can exceed the current discovery result.
 
 ## 2026-05-28: Explain Two-Sided Liquidity Rejections In SKIP Logs
 
@@ -168,3 +168,107 @@ Consequence: The strategy-upgrade roadmap remains paper-focused. Live-specific
 operational controls protect actual order handling without silently changing
 the paper strategy. Wallet connection, credentials, real orders, and live
 deployment still require separate explicit user approval.
+
+## 2026-06-01: Discover Complete Weather Events Before Evaluating Binary Markets
+
+Decision: Discovery expands every supported binary market inside every
+weather-category event it finds. The 41-city `STATION_MAP` is only a verified
+settlement-station allowlist. It must not be reused as an event-count cutoff.
+The fallback Gamma events endpoint is bounded separately by pagination safety
+controls. Runner status reports event, city, market, and token coverage
+separately.
+
+Why: A single temperature event contains many mutually exclusive outcomes, such
+as `18°C or below`, exact buckets from `19°C` through `27°C`, and `28°C or
+higher`. Stopping after 41 binary markets can cut off an event partway through
+or scan only a few cities while appearing to cover the 41-city station map.
+Stopping after 41 events is also wrong because a supported city can have more
+than one active city-date event.
+
+Consequence: Exact, lower-tail, and upper-tail buckets are priced from one
+ensemble distribution with shared half-degree boundaries. Their probabilities
+remain mutually consistent. Standalone threshold questions keep their existing
+threshold meaning. The bot remains paper-only.
+
+## 2026-06-01: Promote Known-Good Commands Into Executable Defaults
+
+Decision: Local pytest automatically uses a process-specific workspace temp
+directory through the repository root `conftest.py`. Routine local pytest,
+Oracle SSH preflight, interactive SSH, remote pytest, bounded log checks, SCP
+shape, and dashboard reachability commands are collected in
+`docs/codex/known-good-commands.md`. `AGENTS.md` directs fresh chats there before
+they invent command variants.
+
+Why: A documented workaround that is read only after failure still wastes a
+test run and investigation tokens. The same applies to SSH: retrying guessed
+key paths or fragile nested quoting repeats avoidable work.
+
+Consequence: Raw local `python -m pytest -q` works without manual `TMP` or
+`TEMP` setup. Each pytest process gets a separate workspace temp directory.
+Oracle work starts with a harmless key-existence check and `date` preflight
+before longer remote commands. Existing detailed SSH safety docs remain the
+reference when a recorded first command fails.
+
+## 2026-06-01: Split One Conservative City-Date Budget Across At Most Two Legs
+
+Status: Superseded by the 2026-06-02 event-portfolio decision below.
+
+Decision: New entries are selected at the city-date event level. A reference
+bankroll below `$1,000` may allocate at most 10% to one city-date event. At
+`$1,000` or more, that shared cap shrinks to 5%. A single leg remains capped at
+5%, one city remains capped at 10%, total open exposure remains capped at 30%,
+and one event may hold at most two legs.
+
+Why: A `$100` paper account needs enough nominal room to study complementary
+weather buckets, but nearby buckets remain strongly correlated. Treating each
+bucket as an independent 10% trade would multiply one-day weather risk. Sizing
+new trades only from remaining cash would cause order size to shrink for the
+wrong reason after normal entries. Sizing from temporary unrealized profits
+would increase risk before those profits are safely realizable.
+
+Consequence: Before a new event entry, calculate cost-basis bankroll as cash
+plus open-position entry cost and liquidation bankroll as cash plus executable
+sell value of every held position. Use the smaller value. Missing or stale
+held-position valuation pauses new entries. A second leg is allowed only when
+it adds positive expected net profit after costs and is a non-overlapping
+temperature-bucket `YES` position. Repeated `NO` legs, overlapping thresholds,
+same-market opposite positions, and third legs are blocked. Event-level JSONL
+logs record budget, exposure, selected and rejected legs, expected net profit,
+and scenario PnL. Raising these caps later requires a separate resolved-paper-
+trade evidence review. General concentration-risk reference:
+https://www.finra.org/investors/insights/concentration-risk.
+
+## 2026-06-02: Score YES And NO Event Portfolios With A Ten-Dollar Minimum Leg
+
+Decision: The city-date selector now compares one-leg and at-most-two-leg
+portfolios across distinct non-overlapping temperature buckets. Allowed
+combinations are `YES+YES`, `YES+NO`, and `NO+NO`. Same-market `YES+NO`,
+overlapping thresholds, and third legs remain blocked. Before scoring, event
+bucket probabilities are normalized to 100%. Each candidate must retain
+positive expected net profit after executable costs, and the selected
+portfolio maximizes expected logarithmic bankroll growth.
+
+Decision: A paper leg must be at least `$10`. A bankroll below `$1,000` keeps
+the shared city-date cap at 10%; from `$1,000`, that cap remains 5%. A strong
+single leg may use the full event budget. Different dates for one city share a
+20% city cap. Total open paper exposure may reach 90%, leaving at least 10%
+cash.
+
+Why: The first Phase 4 implementation considered only non-overlapping `YES`
+legs and capped one leg at 5%. That missed economically useful `NO` positions.
+For example, if Seoul settles at `27C`, `27C YES`, `25C NO`, and `26C NO` all
+win. Polymarket `negRisk=true` events explicitly connect one outcome's `NO`
+share with the other outcomes. The previous 30% total cap also prevented a
+`$100` paper account from studying enough independent city-date opportunities.
+At the same time, `$1` legs produced nominal paper activity with little
+economic meaning.
+
+Consequence: With a `$100` reference bankroll, one city-date event can open one
+`$10` leg because the event budget and minimum leg are both `$10`. With a
+`$200` bankroll, the event budget is `$20`, so a calculated `$10+$10`
+combination becomes possible. The 90% account-level cap does not permit one
+event to consume 90%; event and city caps still apply first. This remains
+paper-only and has not been deployed automatically.
+
+Official reference:
+https://docs.polymarket.com/advanced/neg-risk.

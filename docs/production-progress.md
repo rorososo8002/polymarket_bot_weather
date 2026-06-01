@@ -28,24 +28,59 @@
 - decision log의 `reason`에는 예상 총수익, 예상 비용, 예상 순수익률,
   선택 경로와 거절 이유를 남깁니다.
 - Phase 0과 Phase 1은 로컬에서 검증했고 `4ac3cf5`로 커밋했습니다.
-- Phase 2는 로컬에서 구현하고 테스트했습니다. 아직 커밋하거나
-  배포하지 않았습니다.
+- Phase 2는 로컬에서 구현하고 테스트한 뒤 `bac9c45`로 커밋했습니다.
+- Phase 3에서는 exact bucket, lower-tail, upper-tail 온도 구간을
+  파싱하고 같은 앙상블 분포에서 서로 겹치지 않는 확률을 계산합니다.
+- `STATION_MAP`의 41개 도시는 공식 관측소가 검증된 거래 허용
+  목록입니다. 도시 수를 event 탐색 중단 기준으로 재사용하지 않습니다.
+- discovery는 날씨 카테고리에서 찾은 지원 가능한 도시·날짜 event를
+  모두 펼칩니다. 각 event 안의 지원 가능한 서브마켓도 모두 유지합니다.
+- fallback Gamma API의 페이지 수와 한 페이지 크기만 별도 안전장치로
+  제한합니다. 이 제한은 도시나 event를 41개에서 자르는 기능이
+  아닙니다.
+- runner 상태는 실제 event, 도시, market, token coverage를 구분해
+  표시합니다.
+- Phase 4에서는 마켓을 하나씩 즉시 열지 않고 도시+날짜 event 단위로
+  후보 조합을 선택합니다. 같은 event의 leg는 독립 베팅이 아니라 하나의
+  공유 예산을 나눠 씁니다.
+- 새 진입 기준금은 `현금 + 기존 진입원금`과 `현금 + 안전하게 청산 가능한
+  보유 포지션 가치` 중 작은 값입니다. 평가이익은 새 위험을 키우지 않고,
+  평가손실은 즉시 반영합니다. 보유 포지션을 안전하게 평가할 주문서가
+  없으면 새 진입을 멈춥니다.
+- 기준금 `$1,000` 미만에서는 같은 도시+날짜 전체 한도를 `10%`,
+  `$1,000` 이상에서는 `5%`로 사용합니다. 한 leg는 최소 `$10`이며
+  강한 한 leg가 event 예산 전부를 쓸 수 있습니다. 같은 도시의 여러
+  날짜 합계는 `20%`, 전체 오픈 포지션은 `90%`입니다.
+- 같은 도시+날짜 event는 최대 2개 leg만 허용합니다. 같은 마켓의
+  `YES+NO` 동시 보유와 겹치는 구간은 막지만, 서로 다른 구간의
+  `YES+YES`, `YES+NO`, `NO+NO`는 모두 후보로 비교합니다.
+- event 포트폴리오는 가능한 최종 기온별 손익표를 만들고, 구간별
+  확률 합을 `100%`로 정규화한 뒤 비용 반영 순이익이 양수인 후보 중
+  기대 로그 성장률이 가장 좋은 조합을 선택합니다.
+- event-level JSONL 로그는 기준금, 한도, 기존·선택 노출, 선택·거절 leg,
+  비용 차감 예상 순이익, 기대 로그 성장률, 정규화된 시나리오 확률과
+  scenario PnL을 남깁니다. 대시보드에서도 최근 event 포트폴리오
+  설명을 볼 수 있습니다.
+- Windows 로컬 pytest는 별도 `TMP`, `TEMP` 수동 설정 없이도 저장소
+  내부 `.pytest-tmp/`를 자동 사용합니다. 반복 작업의 첫 명령은
+  `docs/codex/known-good-commands.md`에 모았습니다.
 
 ## 진행 중
 
-- Phase 2 로컬 변경은 검증을 마쳤고 커밋 전 상태입니다.
-- Oracle VPS에는 Phase 0, Phase 1, Phase 2 변경을 아직 배포하지
-  않았습니다.
+- Phase 3과 revised Phase 4 로컬 구현은 검증을 마쳤습니다.
+- Oracle VPS에는 Phase 0, Phase 1, Phase 2, Phase 3, Phase 4 변경을 아직
+  배포하지 않았습니다.
 - 배포는 변경 내용, 위험, 검증 방법, 되돌리는 방법을 설명한 뒤 사용자
   승인을 받아야 합니다.
 
 ## 다음 작업
 
-1. 다음 fresh chat에서는 `docs/strategy-upgrade-roadmap.md`의 Phase 3만
+1. 다음 fresh chat에서는 `docs/strategy-upgrade-roadmap.md`의 Phase 5만
    진행합니다.
-2. `26°C` 같은 exact bucket, lower-tail, upper-tail 질문을 지원합니다.
-3. binary-market 개수가 아니라 event, city, date 기준으로 discovery
-   범위를 측정합니다.
+2. 공식 정산 관측소의 실제 관측 출처와 갱신 주기를 조사합니다. 검증되지
+   않은 도심 날씨나 추측값으로 대체하지 않습니다.
+3. observation이 없거나 오래되었거나 검증되지 않았으면 nowcast 의존
+   로직을 건너뜁니다.
 4. 기존 남은 위험도 보존합니다. 기본 WebSocket 경로에는 해결된
    시장의 settlement 처리가 아직 연결되지 않았습니다.
 
@@ -61,5 +96,9 @@
 - 실거래, 지갑 연결, 자동 배포는 별도 승인 없이 추가하지 않습니다.
 - 향후 실거래 실행 계층은 `docs/live-trading-safety-plan.md`에서 별도로
   이어갑니다. paper 전략 Phase와 섞지 않습니다.
-- Phase 3에서는 이번 Phase 2의 공식 수수료 함수와 예상 순수익률
-  필터를 유지합니다.
+- Phase 5에서는 이번 Phase 4의 event 공유 예산, 한 leg 최소 `$10`,
+  도시 합계 `20%`, 전체 오픈 `90%`, 최대 2개 leg, `YES+NO`와
+  `NO+NO` 비교, 보수적 진입 기준금, Phase 3의 구간 확률과 Phase 2의
+  비용 필터를 유지합니다.
+- 로컬 pytest 또는 Oracle SSH 작업을 시작할 때는
+  `docs/codex/known-good-commands.md`의 검증된 첫 명령을 먼저 사용합니다.

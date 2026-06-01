@@ -31,4 +31,21 @@ Read this file only for strategy changes, probability modeling, trading behavior
   entry spread and slippage; do not subtract them twice. Evaluate conservative
   settlement value separately so high prices are judged by remaining return,
   not rejected by a blanket cap.
+- Discover weather events before binary submarkets. One city-date temperature
+  event can contain lower-tail, exact, and upper-tail buckets. Expand every
+  supported weather-category event found, compute bucket probabilities from
+  shared non-overlapping boundaries, and report actual event, city, market, and
+  token coverage. The 41-city station allowlist is not an event-count cutoff.
+- Select entries at the city-date portfolio level. A small paper account below
+  `$1,000` shares a 10% city-date budget across at most two complementary
+  non-overlapping temperature buckets. At `$1,000` or more, shrink that shared
+  budget to 5%. Normalize event probabilities to 100%, then compare
+  `YES+YES`, `YES+NO`, `NO+NO`, one-leg, and no-entry outcomes. Require each
+  opened leg to be at least `$10`, allow one strong leg to use the full event
+  budget, cap one city's different dates at 20%, and cap total paper exposure
+  at 90%.
+- Size new entries from the smaller of cost-basis bankroll and executable
+  liquidation bankroll. Do not let unrealized profits increase risk. If a
+  held position cannot be valued from a usable order book, fail closed and
+  pause new entries.
 - Never add private keys, live-wallet execution, or real orders unless the user explicitly asks for that separate safety project.

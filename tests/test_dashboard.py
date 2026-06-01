@@ -25,6 +25,62 @@ def test_read_csv_uses_tail_without_loading_entire_file(tmp_path):
     assert [row["note"] for row in tail] == ["117", "118", "119"]
 
 
+def test_dashboard_payload_exposes_latest_event_portfolio_explanation(tmp_path):
+    state_path = tmp_path / "state.json"
+    portfolios_path = tmp_path / "portfolios.jsonl"
+    state_path.write_text(json.dumps({"cash_usd": 100.0, "positions": []}), encoding="utf-8")
+    portfolios_path.write_text(
+        json.dumps(
+            {
+                "ts": "2026-06-01T01:00:00+00:00",
+                "event_key": "seoul-may-25",
+                "entry_bankroll_usd": 100.0,
+                "event_cap_fraction": 0.10,
+                "event_cap_usd": 10.0,
+                "existing_event_exposure_usd": 0.0,
+                "selected_exposure_usd": 10.0,
+                "expected_net_profit_usd": 2.0,
+                "selected_legs": [
+                    {"market_id": "seoul-26", "side": "YES", "size_usd": 5.0},
+                    {"market_id": "seoul-27", "side": "YES", "size_usd": 5.0},
+                ],
+                "rejected_legs": [{"market_id": "seoul-28", "side": "NO", "reason": "same-direction concentration"}],
+                "scenario_pnl_usd": {"none_selected_legs_win": -10.0},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    payload = build_dashboard_payload(
+        Settings(
+            bankroll_usd=100.0,
+            state_path=str(state_path),
+            portfolio_decisions_jsonl_path=str(portfolios_path),
+        )
+    )
+
+    latest = payload["scanner"]["latest_event_portfolio"]
+    assert latest["event_key"] == "seoul-may-25"
+    assert latest["entry_bankroll_usd"] == 100.0
+    assert latest["event_cap_fraction"] == 0.10
+    assert [leg["market_id"] for leg in latest["selected_legs"]] == ["seoul-26", "seoul-27"]
+    assert latest["rejected_legs"][0]["market_id"] == "seoul-28"
+
+
+def test_dashboard_html_explains_adaptive_event_portfolio_budget():
+    assert "이벤트 포트폴리오" in HTML
+    assert "기준금" in HTML
+    assert "$1,000" in HTML
+    assert "최대 2개" in HTML
+    assert "최소 $10" in HTML
+    assert "도시 전체 20%" in HTML
+    assert "전체 오픈 90%" in HTML
+    assert "YES+NO" in HTML
+    assert "NO+NO" in HTML
+    assert "기대 로그 성장" in HTML
+
+
 def test_dashboard_payload_summarizes_state_trades_and_decisions(tmp_path):
     state_path = tmp_path / "state.json"
     trades_path = tmp_path / "trades.csv"

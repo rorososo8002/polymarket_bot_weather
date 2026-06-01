@@ -131,14 +131,70 @@ def test_stream_status_phase_surfaces_dead_and_stale_websocket():
         {"thread_alive": False, "stale": True},
         token_count=82,
         market_count=41,
+        event_count=7,
+        city_count=4,
     )
     stale_phase, stale_message = runner_module._stream_status_phase(
         {"thread_alive": True, "stale": True},
         token_count=82,
         market_count=41,
+        event_count=7,
+        city_count=4,
     )
 
     assert dead_phase == "stream_error"
     assert "stopped" in dead_message
     assert stale_phase == "stream_stale"
     assert "stale" in stale_message
+
+
+def test_runner_groups_binary_submarkets_by_weather_event_and_reports_coverage():
+    markets = [
+        RawMarket(
+            "seoul-lower",
+            "Will the highest temperature in Seoul be 18°C or below on May 25?",
+            "seoul-lower",
+            True,
+            False,
+            "seoul-lower-yes",
+            "seoul-lower-no",
+            event_id="seoul-may-25",
+        ),
+        RawMarket(
+            "seoul-exact",
+            "Will the highest temperature in Seoul be 19°C on May 25?",
+            "seoul-exact",
+            True,
+            False,
+            "seoul-exact-yes",
+            "seoul-exact-no",
+            event_id="seoul-may-25",
+        ),
+        RawMarket(
+            "london-exact",
+            "Will the highest temperature in London be 24°C on May 25?",
+            "london-exact",
+            True,
+            False,
+            "london-exact-yes",
+            "london-exact-no",
+            event_id="london-may-25",
+        ),
+    ]
+
+    grouped = runner_module._group_weather_markets_by_event(markets)
+    coverage = runner_module._discovery_coverage(markets)
+
+    assert [len(group) for group in grouped] == [2, 1]
+    assert coverage == {"events": 2, "cities": 2, "markets": 3}
+
+    phase, message = runner_module._stream_status_phase(
+        {"thread_alive": True, "stale": False},
+        token_count=6,
+        market_count=3,
+        event_count=2,
+        city_count=2,
+    )
+
+    assert phase == "streaming"
+    assert message == "websocket streaming 6 tokens across 3 markets, 2 events, 2 cities"

@@ -367,3 +367,39 @@ def test_highest_temperature_below_uses_daily_max_not_daily_min():
 
     assert signal.source == "open-meteo-ensemble-station"
     assert signal.p_true < 0.20
+
+
+def test_multi_bucket_temperature_probabilities_share_one_consistent_distribution():
+    target = _today_for_timezone("Asia/Seoul")
+    member_values_c = [17.0, 18.2, 19.4, 20.6, 21.8, 23.0, 24.2, 25.4, 26.6, 27.8, 29.0]
+    member_values_f = [value * 9.0 / 5.0 + 32.0 for value in member_values_c]
+
+    class FakeEnsembleClient:
+        models = "fake"
+
+        def forecast_daily_ensemble(self, *_args, **_kwargs):
+            daily = {"time": [target.isoformat()], "temperature_2m_max": [member_values_f[0]]}
+            daily.update(
+                {
+                    f"temperature_2m_max_member{idx:02d}": [value]
+                    for idx, value in enumerate(member_values_f[1:], start=1)
+                }
+            )
+            return {"daily": daily}
+
+    questions = [
+        "Will the highest temperature in Seoul be 18°C or below today?",
+        *[
+            f"Will the highest temperature in Seoul be {value}°C today?"
+            for value in range(19, 28)
+        ],
+        "Will the highest temperature in Seoul be 28°C or higher today?",
+    ]
+
+    signals = [
+        estimate_weather_probability(question, settings=Settings(), ensemble_client=FakeEnsembleClient())
+        for question in questions
+    ]
+
+    assert all(signal.source == "open-meteo-ensemble-station" for signal in signals)
+    assert sum(signal.p_true for signal in signals) == pytest.approx(1.0)

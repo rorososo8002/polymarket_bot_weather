@@ -1,6 +1,7 @@
 ---
 title: Use workspace temp dirs when pytest cannot scan Windows temp
 date: 2026-05-26
+last_updated: 2026-06-01
 category: docs/solutions/workflow-issues
 module: pytest verification
 problem_type: workflow_issue
@@ -22,29 +23,37 @@ fixtures.
 
 ## Guidance
 
-When pytest setup fails with a Windows temp permission error, create a temp
-folder inside the workspace and point `TMP` and `TEMP` at it for that test run.
+The repository root `conftest.py` now makes workspace temp storage the default.
+Run pytest normally from the repository root:
 
 ```powershell
-New-Item -ItemType Directory -Force -Path '.pytest-tmp' | Out-Null
-$env:PYTHONPATH='src'
-$env:TMP=(Resolve-Path '.pytest-tmp').Path
-$env:TEMP=$env:TMP
 & 'C:\Users\wpdla\Python312\python.exe' -m pytest -q
 ```
 
-Remove the workspace temp folder after verification if it was created only for
-the agent run.
+At startup, pytest automatically uses a process-specific path such as:
+
+```text
+.pytest-tmp/pytest-12345
+```
+
+The number is the pytest process ID. Separate processes therefore do not share
+one temp directory. A caller can still pass `--basetemp` explicitly when a
+special run needs a different location.
 
 ## Why This Matters
 
-The test failure is environmental, not a product regression. Re-running with a
-workspace temp directory preserves the value of the full suite without needing
-administrator access or unsafe cleanup of the global temp tree.
+The test failure is environmental, not a product regression. Making the
+workspace path automatic avoids wasting one failed run before applying the
+known workaround. It also avoids administrator access and unsafe cleanup of the
+global temp tree.
 
 ## When to Apply
 
-- Full-suite pytest fails during fixture setup with `PermissionError`.
+- Run local Windows pytest from the repository root so `conftest.py` loads.
+- If an older checkout lacks root `conftest.py`, apply the manual workspace-temp
+  workaround before running the full suite.
+- If full-suite pytest still fails during fixture setup with `PermissionError`,
+  inspect whether an explicit `--basetemp` overrode the repository default.
 - The stack trace points into `_pytest\tmpdir.py` or `_pytest\pathlib.py`.
 - Focused tests pass, but tests using `tmp_path` cannot start.
 
@@ -53,9 +62,10 @@ administrator access or unsafe cleanup of the global temp tree.
 The corrected run for this update passed with:
 
 ```text
-70 passed
+114 passed
 ```
 
 ## Related
 
 - [Run git mutations serially](serial-git-mutations-2026-05-24.md)
+- `docs/codex/known-good-commands.md`

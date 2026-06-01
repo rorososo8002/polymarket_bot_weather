@@ -2,8 +2,11 @@ from weather_bot.config import Settings, load_settings
 from weather_bot.stations import SUPPORTED_CITY_COUNT
 
 
-def test_default_max_markets_tracks_supported_city_count():
-    assert Settings.max_markets == SUPPORTED_CITY_COUNT
+def test_supported_city_allowlist_is_not_used_as_discovery_event_cap():
+    assert SUPPORTED_CITY_COUNT == 41
+    assert not hasattr(Settings, "max_events")
+    assert Settings.discovery_max_pages == 8
+    assert Settings.discovery_page_size == 100
 
 
 def test_default_forecast_cadence_is_thirty_minutes():
@@ -14,6 +17,19 @@ def test_default_forecast_cadence_is_thirty_minutes():
 def test_default_entry_net_return_filter_uses_official_weather_fee_rate():
     assert Settings.entry_min_expected_net_return_pct == 0.06
     assert Settings.weather_taker_fee_rate == 0.05
+
+
+def test_default_city_date_portfolio_caps_shrink_after_one_thousand_dollars():
+    assert Settings.bankroll_usd == 100.0
+    assert Settings.entry_fraction == 0.10
+    assert Settings.max_single_market_fraction == 0.10
+    assert Settings.max_city_exposure_fraction == 0.20
+    assert Settings.max_event_date_exposure_fraction == 0.10
+    assert Settings.large_bankroll_event_date_exposure_fraction == 0.05
+    assert Settings.event_date_exposure_transition_usd == 1000.0
+    assert Settings.max_event_portfolio_legs == 2
+    assert Settings.max_total_exposure_fraction == 0.90
+    assert Settings.min_order_usd == 10.0
 
 
 def test_load_settings_reads_dashboard_env(monkeypatch):
@@ -66,3 +82,31 @@ def test_load_settings_reads_realtime_orderbook_stream(monkeypatch):
     assert settings.orderbook_stream_stale_seconds == 45
     assert settings.runner_health_status_interval_seconds == 7
     assert settings.forecast_refresh_interval_seconds == 600
+
+
+def test_load_settings_reads_discovery_pagination_safety_controls(monkeypatch):
+    monkeypatch.setenv("DISCOVERY_MAX_PAGES", "17")
+    monkeypatch.setenv("DISCOVERY_PAGE_SIZE", "75")
+
+    settings = load_settings()
+
+    assert settings.discovery_max_pages == 17
+    assert settings.discovery_page_size == 75
+
+
+def test_load_settings_reads_city_date_portfolio_controls(monkeypatch):
+    monkeypatch.setenv("PORTFOLIO_DECISIONS_JSONL_PATH", "data/custom-portfolios.jsonl")
+    monkeypatch.setenv("MAX_CITY_EXPOSURE_FRACTION", "0.11")
+    monkeypatch.setenv("MAX_EVENT_DATE_EXPOSURE_FRACTION", "0.12")
+    monkeypatch.setenv("LARGE_BANKROLL_EVENT_DATE_EXPOSURE_FRACTION", "0.04")
+    monkeypatch.setenv("EVENT_DATE_EXPOSURE_TRANSITION_USD", "1200")
+    monkeypatch.setenv("MAX_EVENT_PORTFOLIO_LEGS", "3")
+
+    settings = load_settings()
+
+    assert settings.portfolio_decisions_jsonl_path == "data/custom-portfolios.jsonl"
+    assert settings.max_city_exposure_fraction == 0.11
+    assert settings.max_event_date_exposure_fraction == 0.12
+    assert settings.large_bankroll_event_date_exposure_fraction == 0.04
+    assert settings.event_date_exposure_transition_usd == 1200.0
+    assert settings.max_event_portfolio_legs == 3

@@ -16,6 +16,8 @@ class RawMarket:
     yes_token_id: str | None = None
     no_token_id: str | None = None
     condition_id: str | None = None
+    event_id: str | None = None
+    event_slug: str | None = None
     raw: dict[str, Any] | None = None
 
 
@@ -63,6 +65,7 @@ class ParsedWeatherQuestion:
     note: str = ""
     threshold_precip_mm: float | None = None  # 강수 질문에서 파싱된 mm 임계값 (None=어떤 비든, 0.1mm 기본값)
     temperature_metric: Literal["max", "min"] = "max"
+    temperature_bucket: Literal["threshold", "exact", "lower_tail", "upper_tail"] = "threshold"
 
 
 @dataclass(frozen=True)
@@ -83,6 +86,7 @@ class EdgeResult:
     size_usd: float
     size_shares: float
     reason: str
+    expected_net_profit_usd: float = 0.0
 
 
 @dataclass(frozen=True)

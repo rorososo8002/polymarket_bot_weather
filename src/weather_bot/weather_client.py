@@ -12,8 +12,8 @@ def c_to_f(c: float) -> float:
     return c * 9.0 / 5.0 + 32.0
 
 
-def _extract_temp_threshold(q: str) -> tuple[float | None, str, str | None]:
-    """Return threshold in Fahrenheit, original unit, and comparison operator."""
+def _extract_temp_threshold(q: str) -> tuple[float | None, str, str | None, str]:
+    """Return threshold in Fahrenheit, original unit, operator, and bucket shape."""
     high_words = (
         r"(?:\babove\b|\bover\b|\bat\s+least\b|\bexceed(?:s)?\b|\breach(?:es)?\b|"
         r"\bhit(?:s)?\b|\bhigher(?:\s+than)?\b|\bor\s+higher\b|>=|\bhigh\b|\uc774\uc0c1)"
@@ -36,10 +36,13 @@ def _extract_temp_threshold(q: str) -> tuple[float | None, str, str | None]:
         window = q[max(0, unit_match.start() - 40):unit_match.end() + 30]
         if re.search(low_words, window, re.IGNORECASE):
             operator = "<="
+            bucket = "lower_tail" if re.search(r"\bor\s+(?:below|lower|less)\b|\uc774\ud558", window, re.IGNORECASE) else "threshold"
         elif re.search(high_words, window, re.IGNORECASE):
             operator = ">="
+            bucket = "upper_tail" if re.search(r"\bor\s+(?:above|higher)\b|\uc774\uc0c1", window, re.IGNORECASE) else "threshold"
         else:
-            return None, "UNKNOWN", None
+            operator = "=="
+            bucket = "exact"
     else:
         comparison_match = re.search(
             rf"(?P<op>{high_words}|{low_words})[^\d]{{0,30}}(?P<value>\d{{1,3}}(?:\.\d+)?)",
@@ -47,14 +50,15 @@ def _extract_temp_threshold(q: str) -> tuple[float | None, str, str | None]:
             re.IGNORECASE,
         )
         if not comparison_match:
-            return None, "UNKNOWN", None
+            return None, "UNKNOWN", None, "threshold"
         threshold_raw = float(comparison_match.group("value"))
         unit_text = ""
         operator = "<=" if re.search(low_words, comparison_match.group("op"), re.IGNORECASE) else ">="
+        bucket = "threshold"
 
     if unit_text in {"c", "celsius", "\u2103", "\ub3c4"}:
-        return c_to_f(threshold_raw), "C", operator
-    return threshold_raw, "F", operator
+        return c_to_f(threshold_raw), "C", operator, bucket
+    return threshold_raw, "F", operator, bucket
 
 
 def _extract_precip_threshold(q: str) -> float | None:
@@ -93,10 +97,11 @@ def parse_weather_question(question: str) -> ParsedWeatherQuestion:
     threshold_unit: str = "UNKNOWN"
     operator = None
     temperature_metric = "max"
+    temperature_bucket = "threshold"
     if variable == "temperature":
-        threshold_f, threshold_unit, operator = _extract_temp_threshold(q)
+        threshold_f, threshold_unit, operator, temperature_bucket = _extract_temp_threshold(q)
         if threshold_f is not None:
-            threshold_original = (threshold_f - 32.0) * 5.0 / 9.0 if threshold_unit == "C" else threshold_f
+            threshold_original = round((threshold_f - 32.0) * 5.0 / 9.0, 6) if threshold_unit == "C" else threshold_f
         if re.search(r"\b(lowest|minimum|min(?:imum)?|overnight\s+low|low\s+temperature)\b", q):
             temperature_metric = "min"
 
@@ -148,4 +153,5 @@ def parse_weather_question(question: str) -> ParsedWeatherQuestion:
         note="; ".join(notes),
         threshold_precip_mm=threshold_precip_mm,
         temperature_metric=temperature_metric,  # type: ignore[arg-type]
+        temperature_bucket=temperature_bucket,  # type: ignore[arg-type]
     )

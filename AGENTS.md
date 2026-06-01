@@ -79,8 +79,8 @@ trading-risk, server, or workflow work, read:
 - Use `C:\Users\wpdla\Documents\오라클ssh\ssh-key-2026-05-25.key` with `ssh -i`
   or `scp -i`. Do not use the `.pub` file.
 - Never print, open, copy, or commit the key contents.
-- Before VPS work, read `docs/codex/vps-dashboard.md` and
-  `docs/codex/ssh-powershell.md`.
+- Before VPS work, start with `docs/codex/known-good-commands.md`, then read
+  `docs/codex/vps-dashboard.md` and `docs/codex/ssh-powershell.md` as needed.
 
 ## Token Safety
 
@@ -95,6 +95,9 @@ trading-risk, server, or workflow work, read:
 ## Workflow
 
 - Think before coding. State assumptions when they affect the result.
+- Before local pytest or VPS/SSH work, start with the matching command in
+  `docs/codex/known-good-commands.md`. If it fails, inspect the concrete error
+  before inventing a different command shape.
 - Touch only files needed for the task.
 - Preserve user changes. Never reset, overwrite, or revert unrelated work.
 - For behavior changes, add a failing focused test first and verify that it
@@ -127,6 +130,7 @@ trading-risk, server, or workflow work, read:
 
 Read only when needed:
 
+- Routine local pytest or VPS/SSH command: `docs/codex/known-good-commands.md`
 - VPS/server work: `docs/codex/vps-dashboard.md`,
   `docs/codex/ssh-powershell.md`
 - Runtime/log work: `docs/codex/runtime-data.md`

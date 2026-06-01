@@ -189,6 +189,44 @@ def blend_empirical_and_cdf(empirical_p: float, mean_f: float, threshold_f: floa
     return clamp_probability(0.70 * empirical_p + 0.30 * cdf_p)
 
 
+def _temperature_bucket_probability(
+    parsed: ParsedWeatherQuestion,
+    member_values_f: list[float],
+    mean_f: float,
+    sigma_f: float,
+) -> tuple[float, float]:
+    """Return a probability and raw ensemble vote for one temperature bucket."""
+    if parsed.threshold_f is None or parsed.operator is None:
+        raise ValueError("Temperature bucket is missing a parsed threshold.")
+
+    threshold_f = parsed.threshold_f
+    bucket_width_f = 1.8 if parsed.threshold_unit == "C" else 1.0
+    half_width_f = bucket_width_f / 2.0
+
+    if parsed.temperature_bucket == "exact":
+        lower_f = threshold_f - half_width_f
+        upper_f = threshold_f + half_width_f
+        votes = [lower_f <= value < upper_f for value in member_values_f]
+        cdf_p = normal_cdf((upper_f - mean_f) / sigma_f) - normal_cdf((lower_f - mean_f) / sigma_f)
+    elif parsed.temperature_bucket == "lower_tail":
+        upper_f = threshold_f + half_width_f
+        votes = [value < upper_f for value in member_values_f]
+        cdf_p = normal_cdf((upper_f - mean_f) / sigma_f)
+    elif parsed.temperature_bucket == "upper_tail":
+        lower_f = threshold_f - half_width_f
+        votes = [value >= lower_f for value in member_values_f]
+        cdf_p = 1.0 - normal_cdf((lower_f - mean_f) / sigma_f)
+    elif parsed.operator == ">=":
+        votes = [value >= threshold_f for value in member_values_f]
+        cdf_p = probability_temperature_ge(threshold_f, mean_f, sigma_f)
+    else:
+        votes = [value <= threshold_f for value in member_values_f]
+        cdf_p = normal_cdf((threshold_f - mean_f) / sigma_f)
+
+    empirical_p = sum(votes) / len(votes)
+    return clamp_probability(0.70 * empirical_p + 0.30 * cdf_p), empirical_p
+
+
 # ---------------------------------------------------------------------------
 # 3) Bias correction
 # ---------------------------------------------------------------------------
@@ -647,15 +685,10 @@ def estimate_weather_probability(
             if len(member_values) < 4:
                 raise ValueError(f"Too few ensemble members parsed for {variable}: {len(member_values)}")
 
-            if parsed.operator == ">=":
-                votes = [x >= parsed.threshold_f for x in member_values]
-            else:
-                votes = [x <= parsed.threshold_f for x in member_values]
-            empirical_p = sum(votes) / len(votes)
             mean_f = _mean(member_values)
             spread_f = _stdev(member_values)
             sigma_f = dynamic_sigma_f(member_values, _lead_time_days(target, timezone_name=station.timezone))
-            p = blend_empirical_and_cdf(empirical_p, mean_f, parsed.threshold_f, sigma_f, parsed.operator)
+            p, empirical_p = _temperature_bucket_probability(parsed, member_values, mean_f, sigma_f)
 
             # Confidence: station mapped + enough members + low ambiguity.  Wider spread lowers confidence.
             station_bonus = 0.12
@@ -666,7 +699,8 @@ def estimate_weather_probability(
             date_used = (daily.get("time") or [target.isoformat()])[min(idx, max(0, len(daily.get("time") or []) - 1))]
             note = (
                 f"{station.station_name} [{station.station_id}] target_date={date_used}; "
-                f"{parsed.operator}{_format_threshold(parsed)}; members={len(member_values)}; "
+                f"bucket={parsed.temperature_bucket}; {parsed.operator}{_format_threshold(parsed)}; "
+                f"members={len(member_values)}; "
                 f"vote={empirical_p:.3f}; mean={mean_f:.1f}F; spread={spread_f:.2f}F; "
                 f"dynamic_sigma={sigma_f:.2f}F; bias={bias_f:+.2f}F; "
                 f"models={ensemble_client.models}. {station.note}"

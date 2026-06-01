@@ -4,9 +4,6 @@ from dataclasses import dataclass
 import os
 from dotenv import load_dotenv
 
-from .stations import SUPPORTED_CITY_COUNT
-
-
 @dataclass(frozen=True)
 class Settings:
     # Public data endpoints
@@ -21,10 +18,12 @@ class Settings:
     orderbook_stream_stale_seconds: int = 60
     runner_health_status_interval_seconds: int = 5
     forecast_refresh_interval_seconds: int = 1800
-    max_markets: int = SUPPORTED_CITY_COUNT
+    discovery_max_pages: int = 8
+    discovery_page_size: int = 100
     state_path: str = "paper_state.json"
     trades_csv_path: str = "paper_trades.csv"
     decisions_csv_path: str = "paper_decisions.csv"
+    portfolio_decisions_jsonl_path: str = "paper_event_portfolios.jsonl"
     raw_snapshots_path: str = "paper_raw_snapshots.jsonl"
     forecast_cache_path: str = ""
     forecast_cache_ttl_seconds: int = 1800
@@ -44,22 +43,27 @@ class Settings:
     edge_fade_max_loss_pct: float = 0.02
     max_holding_hours: float = 96.0
 
-    # Risk / sizing. Default is fixed 5% per valid signal, matching your example.
+    # Risk / sizing. A small paper account can put its full 10% city-date budget
+    # into one strong leg. The event optimizer may split larger budgets across
+    # at most two legs, but every opened leg must still meet MIN_ORDER_USD.
     # Set SIZE_MODE=kelly if you want pure fractional-Kelly sizing.
     size_mode: str = "fixed_fraction"
-    entry_fraction: float = 0.05
+    entry_fraction: float = 0.10
     fractional_kelly: float = 0.10
-    max_single_market_fraction: float = 0.05
-    max_total_exposure_fraction: float = 0.30
-    bankroll_usd: float = 1000.0
-    min_order_usd: float = 1.0
+    max_single_market_fraction: float = 0.10
+    max_total_exposure_fraction: float = 0.90
+    bankroll_usd: float = 100.0
+    min_order_usd: float = 10.0
 
     # 도시별 중복 노출 한도 (같은 날씨 이벤트 파생 마켓 몰빵 방지)
     # NYC 70°F + NYC 72°F + NYC 75°F 모두 같은 기온 이벤트 → 각 5%씩 넣으면 15% 노출
     # max_city_exposure_fraction: 한 도시의 모든 포지션 cost 합 / bankroll 상한
-    max_city_exposure_fraction: float = 0.08
-    # max_event_date_exposure_fraction: 같은 도시+날짜 조합 포지션의 bankroll 비율 상한
-    max_event_date_exposure_fraction: float = 0.05
+    max_city_exposure_fraction: float = 0.20
+    # 작은 paper 계좌는 도시+날짜 예산을 10%로 시작하되, 기준금 $1,000부터 5%로 축소한다.
+    max_event_date_exposure_fraction: float = 0.10
+    large_bankroll_event_date_exposure_fraction: float = 0.05
+    event_date_exposure_transition_usd: float = 1000.0
+    max_event_portfolio_legs: int = 2
 
     # Paper weather-fee default from the official category schedule.
     # A separate live-execution project must query fee parameters per market.
@@ -118,10 +122,15 @@ def load_settings() -> Settings:
         orderbook_stream_stale_seconds=_int_env("ORDERBOOK_STREAM_STALE_SECONDS", Settings.orderbook_stream_stale_seconds),
         runner_health_status_interval_seconds=_int_env("RUNNER_HEALTH_STATUS_INTERVAL_SECONDS", Settings.runner_health_status_interval_seconds),
         forecast_refresh_interval_seconds=_int_env("FORECAST_REFRESH_INTERVAL_SECONDS", Settings.forecast_refresh_interval_seconds),
-        max_markets=_int_env("MAX_MARKETS", Settings.max_markets),
+        discovery_max_pages=_int_env("DISCOVERY_MAX_PAGES", Settings.discovery_max_pages),
+        discovery_page_size=_int_env("DISCOVERY_PAGE_SIZE", Settings.discovery_page_size),
         state_path=os.getenv("STATE_PATH", Settings.state_path),
         trades_csv_path=os.getenv("TRADES_CSV_PATH", Settings.trades_csv_path),
         decisions_csv_path=os.getenv("DECISIONS_CSV_PATH", Settings.decisions_csv_path),
+        portfolio_decisions_jsonl_path=os.getenv(
+            "PORTFOLIO_DECISIONS_JSONL_PATH",
+            Settings.portfolio_decisions_jsonl_path,
+        ),
         raw_snapshots_path=os.getenv("RAW_SNAPSHOTS_PATH", Settings.raw_snapshots_path),
         forecast_cache_path=os.getenv("FORECAST_CACHE_PATH", Settings.forecast_cache_path),
         forecast_cache_ttl_seconds=_int_env("FORECAST_CACHE_TTL_SECONDS", Settings.forecast_cache_ttl_seconds),
@@ -164,4 +173,13 @@ def load_settings() -> Settings:
         require_date_hint_for_trade=_bool_env("REQUIRE_DATE_HINT_FOR_TRADE", Settings.require_date_hint_for_trade),
         max_city_exposure_fraction=_float_env("MAX_CITY_EXPOSURE_FRACTION", Settings.max_city_exposure_fraction),
         max_event_date_exposure_fraction=_float_env("MAX_EVENT_DATE_EXPOSURE_FRACTION", Settings.max_event_date_exposure_fraction),
+        large_bankroll_event_date_exposure_fraction=_float_env(
+            "LARGE_BANKROLL_EVENT_DATE_EXPOSURE_FRACTION",
+            Settings.large_bankroll_event_date_exposure_fraction,
+        ),
+        event_date_exposure_transition_usd=_float_env(
+            "EVENT_DATE_EXPOSURE_TRANSITION_USD",
+            Settings.event_date_exposure_transition_usd,
+        ),
+        max_event_portfolio_legs=_int_env("MAX_EVENT_PORTFOLIO_LEGS", Settings.max_event_portfolio_legs),
     )

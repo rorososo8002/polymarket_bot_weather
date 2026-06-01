@@ -56,7 +56,7 @@ Do not show `누적 후보 판단`, `예보 없음`, `실제 진입`, or `YES/NO
 Those counters may still exist internally for tests or future diagnostics, but
 they are not dashboard display rows.
 
-Below the summary rows, include two health boxes:
+Below the summary rows, include three explanation boxes:
 
 - `예보 상태`: explain the last fresh-request attempt, last successful
   forecast timestamp, cache age, stale warning, recent failure reason, and
@@ -65,6 +65,17 @@ Below the summary rows, include two health boxes:
   reconnect count, last incoming message, last actual order-book price update,
   stale-book age, and recent stream error. Trade-only or tick-size-only events
   must not refresh the last order-book timestamp.
+- `이벤트 포트폴리오`: explain the latest city-date portfolio decision. Show
+  the conservative reference bankroll, shared cap, selected legs, rejected
+  legs, and worst logged scenario PnL. State that city-date exposure is 10%
+  below `$1,000`, 5% from `$1,000`, and limited to two complementary legs.
+  Also state that one leg must be at least `$10`, one city's different dates
+  share a 20% cap, and total open paper exposure is capped at 90%. Show that
+  distinct-bucket `YES+YES`, `YES+NO`, and `NO+NO` combinations are compared,
+  and include the latest expected net profit and expected log-growth score.
+
+Read `paper_event_portfolios.jsonl` with a bounded tail read. Do not load the
+entire runtime log on each dashboard refresh.
 
 ## Open Positions Contract
 
