@@ -199,8 +199,8 @@ same-day decisions. A forecast alone is not enough near settlement.
   settlement-station type before coding.
 - Add observation providers behind explicit station mappings. Do not substitute
   city-center weather or guessed values.
-- Record observed high-so-far, observation timestamp, source, freshness, and
-  unavailable reason.
+- Record observed high-so-far, observed low-so-far, observation timestamp,
+  source, freshness, and unavailable reason.
 - Skip nowcast-dependent logic when observations are missing, stale, or
   unverified.
 - Start with a small verified station pilot if a reliable source cannot yet
@@ -218,8 +218,9 @@ Seoul/RKSI pilot, then source checks expanded same-station observations to
 39 ICAO stations through Aviation Weather Center METAR plus Hong Kong/HKO
 through Hong Kong Observatory's maximum/minimum temperature since midnight CSV.
 Karachi/OPMR remains forecast-only because AWC did not return recent OPMR METAR
-data. The bot records observed high-so-far, observation timestamps, source URLs,
-freshness, raw observation count, and unavailable reasons. Missing, stale,
+data. The bot records observed high-so-far, observed low-so-far, observation
+timestamps, source URLs, freshness, raw observation count, and unavailable
+reasons. Missing, stale,
 malformed, future-date, or unmapped nowcast keeps the decision forecast-only and
 skips nowcast-dependent logic. `docs/station-registry-audit.md` lists all
 41 cities, their Open-Meteo station coordinates, nowcast provider status, and

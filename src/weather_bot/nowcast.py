@@ -50,10 +50,16 @@ class StationNowcastObservation:
     unavailable_reason: str
     raw_observation_count: int = 0
     update_cadence: str = ""
+    observed_low_c: float | None = None
+    low_observed_at: datetime | None = None
 
     @property
     def usable(self) -> bool:
-        return not self.unavailable_reason and self.observed_high_c is not None and self.observed_at is not None
+        return (
+            not self.unavailable_reason
+            and self.observed_at is not None
+            and (self.observed_high_c is not None or self.observed_low_c is not None)
+        )
 
     @property
     def observed_high_f(self) -> float | None:
@@ -61,14 +67,23 @@ class StationNowcastObservation:
             return None
         return self.observed_high_c * 9.0 / 5.0 + 32.0
 
+    @property
+    def observed_low_f(self) -> float | None:
+        if self.observed_low_c is None:
+            return None
+        return self.observed_low_c * 9.0 / 5.0 + 32.0
+
     def to_log_payload(self) -> dict[str, Any]:
         return {
             "station_id": self.station_id,
             "station_name": self.station_name,
             "observed_high_c": self.observed_high_c,
             "observed_high_f": self.observed_high_f,
+            "observed_low_c": self.observed_low_c,
+            "observed_low_f": self.observed_low_f,
             "observed_at": _iso_or_empty(self.observed_at),
             "high_observed_at": _iso_or_empty(self.high_observed_at),
+            "low_observed_at": _iso_or_empty(self.low_observed_at),
             "source": self.source,
             "source_url": self.source_url,
             "settlement_source_url": self.settlement_source_url,
@@ -239,6 +254,24 @@ class AviationWeatherMetarNowcastProvider:
         target_date: date,
         now: datetime | None = None,
     ) -> StationNowcastObservation:
+        return self.observed_temperature_extremes_so_far(station, target_date=target_date, now=now)
+
+    def observed_low_so_far(
+        self,
+        station: StationMeta,
+        *,
+        target_date: date,
+        now: datetime | None = None,
+    ) -> StationNowcastObservation:
+        return self.observed_temperature_extremes_so_far(station, target_date=target_date, now=now)
+
+    def observed_temperature_extremes_so_far(
+        self,
+        station: StationMeta,
+        *,
+        target_date: date,
+        now: datetime | None = None,
+    ) -> StationNowcastObservation:
         current = _as_utc(now or _utc_now())
         source = self.sources.get(station.station_id)
         if source is None:
@@ -340,6 +373,7 @@ class AviationWeatherMetarNowcastProvider:
 
         latest_at = max(observed_at for observed_at, _temp in observations)
         high_at, high_c = max(observations, key=lambda item: item[1])
+        low_at, low_c = min(observations, key=lambda item: item[1])
         freshness_seconds = max(0, int((now - latest_at).total_seconds()))
         reason = "stale-observation" if freshness_seconds > self.freshness_seconds else ""
         return StationNowcastObservation(
@@ -355,6 +389,8 @@ class AviationWeatherMetarNowcastProvider:
             unavailable_reason=reason,
             raw_observation_count=len(payload),
             update_cadence=source.update_cadence,
+            observed_low_c=round(low_c, 3),
+            low_observed_at=low_at,
         )
 
     def _parse_hko_payload(
@@ -377,7 +413,8 @@ class AviationWeatherMetarNowcastProvider:
 
             observed_at = _parse_hko_report_time(row.get("Date time"), station.timezone)
             high_c = _parse_hko_temperature_c(row.get("Maximum Air Temperature Since Midnight(degree Celsius)"))
-            if observed_at is None or high_c is None:
+            low_c = _parse_hko_temperature_c(row.get("Minimum Air Temperature Since Midnight(degree Celsius)"))
+            if observed_at is None or high_c is None or low_c is None:
                 return self._unavailable(station, "malformed-observation-payload", source, raw_count=len(rows))
 
             freshness_seconds = max(0, int((now - observed_at).total_seconds()))
@@ -398,6 +435,8 @@ class AviationWeatherMetarNowcastProvider:
                 unavailable_reason=reason,
                 raw_observation_count=len(rows),
                 update_cadence=source.update_cadence,
+                observed_low_c=round(low_c, 3),
+                low_observed_at=None,
             )
 
         return self._unavailable(station, "malformed-observation-payload", source, raw_count=len(rows))

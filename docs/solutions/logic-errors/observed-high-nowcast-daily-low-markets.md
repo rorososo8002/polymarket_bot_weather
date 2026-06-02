@@ -1,6 +1,7 @@
 ---
 title: Do not use observed high nowcast for daily-low markets
 date: 2026-06-03
+last_updated: 2026-06-03
 category: logic-errors
 module: weather_bot.probability
 problem_type: logic_error
@@ -45,8 +46,8 @@ the bot may think a paper trade is safer or more profitable than it really is.
 
 ## 3. How It Was Fixed
 
-The nowcast gate now checks the parsed temperature metric before reading the
-high-so-far provider:
+The first fix made the nowcast gate check the parsed temperature metric before
+reading the high-so-far provider:
 
 ```python
 if parsed.temperature_metric == "min":
@@ -63,13 +64,31 @@ In plain words: if the question is about the daily minimum temperature, do not
 call the observed-high provider. Keep the signal forecast-only until a separate
 same-station observed-low provider is verified.
 
-A focused regression test now supplies a fresh high observation to a
-lowest-temperature question and checks that:
+The follow-up fix added that separate low observation path without adding a
+second provider call. `StationNowcastObservation` now carries both
+`observed_high_c` and `observed_low_c`, and
+`AviationWeatherMetarNowcastProvider.observed_temperature_extremes_so_far()`
+derives both values from one station-date response:
 
-- The signal source stays `open-meteo-ensemble-station`.
-- The probability does not flip to `0.0`.
-- The note records forecast-only evidence with
+```python
+latest_at = max(observed_at for observed_at, _temp in observations)
+high_at, high_c = max(observations, key=lambda item: item[1])
+low_at, low_c = min(observations, key=lambda item: item[1])
+```
+
+In plain words: call the official station source once, then calculate both
+today's highest observed temperature and today's lowest observed temperature
+from that same response. Daily-high markets use the high value; daily-low
+markets use the low value.
+
+Focused regression tests now check that:
+
+- A high-only provider still leaves daily-low markets forecast-only with
   `nowcast_unavailable=observed-low-provider-not-supplied`.
+- A real observed-low provider can push a daily-low threshold crossing to
+  `p_true == 1.0`.
+- A high request followed by a low request for the same station-date uses the
+  cached provider response instead of making another HTTP call.
 
 ## 4. What To Check Next Time
 
@@ -80,8 +99,10 @@ lowest-temperature question and checks that:
   lower-tail minimum-temperature markets.
 - Add paired tests whenever a parser field changes behavior:
   `temperature_metric="max"` should still allow observed-high nowcast, while
-  `temperature_metric="min"` should remain forecast-only without an observed-low
-  provider.
+  `temperature_metric="min"` should use observed-low nowcast only when the
+  same-station provider supplies it.
+- Cache observed high and low together by station-date. Do not make separate
+  external calls just because the market question changes from high to low.
 - Keep the log note explicit. Operators should be able to see why a signal is
   forecast-only instead of guessing whether nowcast failed.
 
@@ -90,9 +111,10 @@ lowest-temperature question and checks that:
 This bot must fail closed. Missing low-temperature nowcast should not be patched
 with high-temperature data, nearby-station data, or city-center data.
 
-Forecast-only is safer than a confident correction based on the wrong fact. A
-future observed-low provider must be separately verified against the same
-Polymarket settlement station before it can affect daily-low probabilities.
+Forecast-only is safer than a confident correction based on the wrong fact. When
+observed-low nowcast exists, it must come from the same response family as the
+verified settlement-station provider and must stay inside the normal freshness
+and unmapped-source checks.
 
 ## Related Issues
 

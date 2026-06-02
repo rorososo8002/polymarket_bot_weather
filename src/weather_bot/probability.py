@@ -578,6 +578,58 @@ def _nowcast_threshold_adjustment(
     return forecast_probability, "observed-high-not-decisive"
 
 
+def _nowcast_low_threshold_adjustment(
+    parsed: ParsedWeatherQuestion,
+    forecast_probability: float,
+    observed_low_f: float,
+) -> tuple[float, str]:
+    if parsed.threshold_f is None or parsed.operator is None:
+        return forecast_probability, "no-threshold"
+
+    threshold_f = parsed.threshold_f
+    half_width_f = (1.8 if parsed.threshold_unit == "C" else 1.0) / 2.0
+
+    if parsed.temperature_bucket == "exact":
+        lower_f = threshold_f - half_width_f
+        if observed_low_f < lower_f:
+            return 0.0, "observed-low-below-exact-bucket"
+        return forecast_probability, "observed-low-not-decisive"
+
+    if parsed.temperature_bucket == "lower_tail":
+        upper_f = threshold_f + half_width_f
+        if observed_low_f <= upper_f:
+            return 1.0, "observed-low-reached-lower-tail"
+        return forecast_probability, "observed-low-not-decisive"
+
+    if parsed.temperature_bucket == "upper_tail":
+        lower_f = threshold_f - half_width_f
+        if observed_low_f < lower_f:
+            return 0.0, "observed-low-below-upper-tail"
+        return forecast_probability, "observed-low-not-decisive"
+
+    if parsed.operator == "<=" and observed_low_f <= threshold_f:
+        return 1.0, "observed-low-reached-threshold"
+    if parsed.operator == ">=" and observed_low_f < threshold_f:
+        return 0.0, "observed-low-below-threshold"
+    return forecast_probability, "observed-low-not-decisive"
+
+
+def _observed_temperature_extremes(
+    observation_provider: Any,
+    station: StationMeta,
+    *,
+    target: date,
+    metric: str,
+) -> StationNowcastObservation | None:
+    if hasattr(observation_provider, "observed_temperature_extremes_so_far"):
+        return observation_provider.observed_temperature_extremes_so_far(station, target_date=target)
+    if metric == "min" and hasattr(observation_provider, "observed_low_so_far"):
+        return observation_provider.observed_low_so_far(station, target_date=target)
+    if metric != "min" and hasattr(observation_provider, "observed_high_so_far"):
+        return observation_provider.observed_high_so_far(station, target_date=target)
+    return None
+
+
 def _with_temperature_nowcast(
     signal: WeatherSignal,
     parsed: ParsedWeatherQuestion,
@@ -588,38 +640,48 @@ def _with_temperature_nowcast(
 ) -> WeatherSignal:
     if not settings.station_nowcast_enabled:
         return replace(signal, note=f"{signal.note}; evidence=forecast-only; nowcast_unavailable=disabled")
-    if parsed.temperature_metric == "min":
-        return replace(
-            signal,
-            note=(
-                f"{signal.note}; evidence=forecast-only; "
-                "nowcast_unavailable=observed-low-provider-not-supplied"
-            ),
-        )
     if observation_provider is None:
         return replace(signal, note=f"{signal.note}; evidence=forecast-only; nowcast_unavailable=provider-not-supplied")
 
     try:
-        observation: StationNowcastObservation = observation_provider.observed_high_so_far(station, target_date=target)
+        observation = _observed_temperature_extremes(
+            observation_provider,
+            station,
+            target=target,
+            metric=parsed.temperature_metric,
+        )
     except Exception as exc:  # noqa: BLE001
         note = f"{signal.note}; evidence=forecast-only; nowcast_unavailable=provider-error:{type(exc).__name__}"
         return replace(signal, note=note)
+    if observation is None:
+        reason = "observed-low-provider-not-supplied" if parsed.temperature_metric == "min" else "provider-not-supplied"
+        return replace(signal, note=f"{signal.note}; evidence=forecast-only; nowcast_unavailable={reason}")
 
     payload = observation.to_log_payload()
-    if not observation.usable or observation.observed_high_f is None:
+    observed_value_f = observation.observed_low_f if parsed.temperature_metric == "min" else observation.observed_high_f
+    if not observation.usable or observed_value_f is None:
         reason = observation.unavailable_reason or "unknown"
+        value_label = "observed_low_c" if parsed.temperature_metric == "min" else "observed_high_c"
+        observed_value_c = observation.observed_low_c if parsed.temperature_metric == "min" else observation.observed_high_c
         note = (
             f"{signal.note}; evidence=forecast-only; nowcast_unavailable={reason}; "
             f"nowcast_source={observation.source or 'unmapped'}; "
-            f"observed_high_c={observation.observed_high_c}"
+            f"{value_label}={observed_value_c}"
         )
         return replace(signal, note=note, nowcast=payload)
 
-    adjusted_p, adjustment = _nowcast_threshold_adjustment(parsed, signal.p_true, observation.observed_high_f)
+    if parsed.temperature_metric == "min":
+        adjusted_p, adjustment = _nowcast_low_threshold_adjustment(parsed, signal.p_true, observed_value_f)
+        observed_label = "observed_low_c"
+        observed_value_c = observation.observed_low_c
+    else:
+        adjusted_p, adjustment = _nowcast_threshold_adjustment(parsed, signal.p_true, observed_value_f)
+        observed_label = "observed_high_c"
+        observed_value_c = observation.observed_high_c
     confidence = max(signal.confidence, 0.95) if adjusted_p != signal.p_true else signal.confidence
     note = (
         f"{signal.note}; evidence=forecast-plus-nowcast; nowcast_adjustment={adjustment}; "
-        f"observed_high_c={observation.observed_high_c:.1f}; "
+        f"{observed_label}={observed_value_c:.1f}; "
         f"observed_at={_utc_iso(observation.observed_at)}; "
         f"freshness_seconds={observation.freshness_seconds}; "
         f"nowcast_source={observation.source}"

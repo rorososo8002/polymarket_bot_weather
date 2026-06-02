@@ -32,9 +32,10 @@ specialized reference docs.
   when conservative settlement value beats fee-adjusted sell-now value. Active
   runners are rechecked; they are not risk exemptions.
 - Same-day nowcast is allowed only from explicitly mapped same-station official
-  sources. Observed high-so-far is only evidence for daily-high markets; daily-low
-  markets stay forecast-only unless a same-station observed low provider is
-  verified. No nearby-station or city-center substitutions.
+  sources. Observed high-so-far is evidence only for daily-high markets, and
+  observed low-so-far is evidence only for daily-low markets. Providers should
+  derive both extrema from one station-date response and cache it. No
+  nearby-station or city-center substitutions.
 - Public whale/external-signal research remains shadow-only. Promotion requires
   paired resolved public-signal and bot-entry samples, then only suggests a
   paper-only A/B experiment.
@@ -280,9 +281,20 @@ are redacted from dashboard logs.
 
 ### 2026-06-03: Do Not Use Observed High Nowcast For Daily-Low Markets
 
+Status: Superseded by the observed-extrema nowcast decision below.
 Decision: `observed_high_so_far` nowcast applies only to daily-high temperature
 markets. Daily-low markets stay forecast-only unless a separate same-station
 observed low provider is verified. Why: today's observed high does not prove
 whether today's low was below a threshold. Consequence: lowest-temperature
 questions cannot be forced toward NO by an unrelated high-temperature
 observation.
+
+### 2026-06-03: Use One Same-Station Extrema Nowcast For Daily High And Low
+
+Decision: The nowcast provider returns same-station observed temperature
+extrema for the target station-date: high-so-far and low-so-far. Why: METAR
+history and HKO max/min data can supply both values from one provider response,
+which avoids extra calls and keeps the metric matched to the market question.
+Consequence: daily-high markets may use observed high, daily-low markets may
+use observed low, and missing or stale extrema still fall back to forecast-only
+or skip according to the normal fail-closed rules.

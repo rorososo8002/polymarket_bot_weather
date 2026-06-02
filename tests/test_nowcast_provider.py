@@ -38,7 +38,7 @@ def load_text_fixture(name: str):
     return (FIXTURES / name).read_text(encoding="utf-8")
 
 
-def provider_for(payload, *, freshness_seconds: int = 5400):
+def provider_for(payload, *, freshness_seconds: int = 5400, cache_ttl_seconds: int = 0):
     calls = []
 
     def fake_get(url, *, params, timeout, headers):
@@ -48,7 +48,7 @@ def provider_for(payload, *, freshness_seconds: int = 5400):
     provider = AviationWeatherMetarNowcastProvider(
         http_get=fake_get,
         freshness_seconds=freshness_seconds,
-        cache_ttl_seconds=0,
+        cache_ttl_seconds=cache_ttl_seconds,
     )
     return provider, calls
 
@@ -72,6 +72,26 @@ def test_aviationweather_provider_returns_fresh_station_high_from_fixture():
     assert observation.raw_observation_count == 3
     assert calls[0]["params"]["ids"] == "RKSI"
     assert calls[0]["params"]["format"] == "json"
+
+
+def test_aviationweather_provider_returns_high_and_low_from_one_cached_fetch():
+    provider, calls = provider_for(load_fixture("aviationweather_rksi_fresh.json"), cache_ttl_seconds=900)
+
+    high_observation = provider.observed_high_so_far(
+        STATION_MAP["seoul"],
+        target_date=date(2026, 6, 2),
+        now=datetime(2026, 6, 2, 8, 30, tzinfo=timezone.utc),
+    )
+    low_observation = provider.observed_low_so_far(
+        STATION_MAP["seoul"],
+        target_date=date(2026, 6, 2),
+        now=datetime(2026, 6, 2, 8, 31, tzinfo=timezone.utc),
+    )
+
+    assert high_observation.observed_high_c == 26.7
+    assert low_observation.observed_low_c == 18.0
+    assert low_observation.low_observed_at.isoformat() == "2026-06-02T00:00:00+00:00"
+    assert len(calls) == 1
 
 
 def test_aviationweather_provider_supports_verified_icao_station_beyond_seoul():
@@ -164,6 +184,7 @@ def test_hko_provider_returns_max_temperature_since_midnight_from_fixture():
     assert observation.observed_high_c == 30.0
     assert observation.observed_at.isoformat() == "2026-06-02T03:30:00+00:00"
     assert observation.high_observed_at is None
+    assert observation.observed_low_c == 27.6
     assert observation.freshness_seconds == 900
     assert observation.source == "hko-maxmin-since-midnight"
     assert "latest_since_midnight_maxmin.csv" in calls[0]["url"]

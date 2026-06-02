@@ -37,9 +37,10 @@ Read this file only for strategy changes, probability modeling, trading behavior
   shared non-overlapping boundaries, and report actual event, city, market, and
   token coverage. The 41-city station allowlist is not an event-count cutoff.
 - Use settlement-station nowcast only from explicitly mapped same-station
-  observation providers. Phase 5 supports only the Seoul/RKSI pilot. Missing,
-  stale, malformed, future-date, or unmapped observations keep the decision
-  forecast-only and skip nowcast-dependent logic.
+  observation providers. Current providers derive observed high/low extrema
+  from one station-date response when possible. Missing, stale, malformed,
+  future-date, or unmapped observations keep the decision forecast-only and
+  skip nowcast-dependent logic.
 - Select entries at the city-date portfolio level. A small paper account below
   `$1,000` shares a 10% city-date budget across at most two complementary
   non-overlapping temperature buckets. At `$1,000` or more, shrink that shared

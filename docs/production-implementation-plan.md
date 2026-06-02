@@ -63,7 +63,7 @@ The shadow path is never an execution input by default.
 src/weather_bot/stations.py           city/station allowlist
 src/weather_bot/weather_client.py     question parser
 src/weather_bot/probability.py        Open-Meteo ensemble probability
-src/weather_bot/nowcast.py            same-station observed high providers
+src/weather_bot/nowcast.py            same-station observed high/low providers
 src/weather_bot/polymarket_client.py  Gamma discovery and REST book parsing
 src/weather_bot/realtime_orderbook.py CLOB WebSocket order-book cache
 src/weather_bot/edge.py               VWAP, fee, slippage, net-return math
@@ -129,9 +129,10 @@ trade from guessed cash or hidden positions.
   mapped to the same settlement station. Current sources: AWC METAR for 39 ICAO
   stations, HKO max/min CSV for Hong Kong, and forecast-only for OPMR/Karachi
   until a same-station provider is verified.
-- Observed high-so-far nowcast applies only to daily-high temperature markets.
-  Daily-low markets stay forecast-only unless a separate observed low-so-far
-  provider is explicitly verified for the same settlement station.
+- Temperature nowcast derives observed high-so-far and observed low-so-far from
+  one station-date response when the source provides enough observations. Use
+  observed high only for daily-high markets and observed low only for daily-low
+  markets; do not cross-apply one metric to the other.
 - Missing, stale, malformed, future-date, unmapped, or unsupported nowcast data
   is not guessed. It remains forecast-only or fail-closed depending on context.
 - Missing exact target-date forecasts are not guessed. Nearby forecast dates
