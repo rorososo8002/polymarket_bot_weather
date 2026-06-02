@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import csv
 import json
+import os
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
+from math import isfinite
 from pathlib import Path
 from typing import Any, Literal
 from uuid import uuid4
@@ -46,6 +48,10 @@ class SettlementRunnerDecision:
 PROFIT_RUNNER_TRIGGERS = {"take_profit", "overheated_take_profit"}
 
 
+class PaperStateLoadError(RuntimeError):
+    """Raised when paper accounting state is unsafe to trade from."""
+
+
 class PaperBroker:
     """Small local paper broker.
 
@@ -65,21 +71,56 @@ class PaperBroker:
     def load_state(self) -> PaperState:
         if not self.state_path.exists():
             return PaperState(cash_usd=self.settings.bankroll_usd)
-        raw = json.loads(self.state_path.read_text(encoding="utf-8"))
-        # Deserialize stats. Older state files may not have this key, so use an empty dict.
-        raw_stats = raw.get("stats", {})
-        stats: dict[str, Any] = {
-            mt: {
-                "wins": int(st.get("wins", 0)),
-                "losses": int(st.get("losses", 0)),
-                "pnl": float(st.get("pnl", 0.0)),
-            }
-            for mt, st in raw_stats.items()
-        }
+        try:
+            raw = json.loads(self.state_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise PaperStateLoadError(
+                f"Invalid paper state at {self.state_path}: JSON is corrupt; refusing to start paper trading"
+            ) from exc
+        except OSError as exc:
+            raise PaperStateLoadError(
+                f"Invalid paper state at {self.state_path}: cannot read state file; refusing to start paper trading"
+            ) from exc
+        if not isinstance(raw, dict):
+            raise PaperStateLoadError(
+                f"Invalid paper state at {self.state_path}: root must be a JSON object; refusing to start paper trading"
+            )
+        try:
+            cash_usd = float(raw["cash_usd"])
+            realized_pnl_usd = float(raw.get("realized_pnl_usd", 0.0))
+            if not isfinite(cash_usd) or not isfinite(realized_pnl_usd):
+                raise ValueError("cash and realized PnL must be finite")
+
+            raw_positions = raw.get("positions", [])
+            if not isinstance(raw_positions, list):
+                raise ValueError("positions must be a list")
+            positions: list[PaperPosition] = []
+            for item in raw_positions:
+                if not isinstance(item, dict):
+                    raise ValueError("each position must be a JSON object")
+                positions.append(PaperPosition(**item))
+
+            # Older state files may not have stats, but if present it must be readable.
+            raw_stats = raw.get("stats", {})
+            if not isinstance(raw_stats, dict):
+                raise ValueError("stats must be a JSON object")
+            stats: dict[str, Any] = {}
+            for mt, st in raw_stats.items():
+                if not isinstance(st, dict):
+                    raise ValueError("each stats entry must be a JSON object")
+                stats[str(mt)] = {
+                    "wins": int(st.get("wins", 0)),
+                    "losses": int(st.get("losses", 0)),
+                    "pnl": float(st.get("pnl", 0.0)),
+                }
+        except (KeyError, TypeError, ValueError) as exc:
+            raise PaperStateLoadError(
+                f"Invalid paper state at {self.state_path}: {exc}; refusing to start paper trading"
+            ) from exc
         return PaperState(
-            cash_usd=float(raw.get("cash_usd", self.settings.bankroll_usd)),
-            realized_pnl_usd=float(raw.get("realized_pnl_usd", 0.0)),
-            positions=[PaperPosition(**p) for p in raw.get("positions", [])],
+            cash_usd=cash_usd,
+            realized_pnl_usd=realized_pnl_usd,
+            positions=positions,
             stats=stats,
         )
 
@@ -90,7 +131,14 @@ class PaperBroker:
             "positions": [asdict(p) for p in self.state.positions],
             "stats": self.state.stats,
         }
-        self.state_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+        self.state_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = self.state_path.with_name(f"{self.state_path.name}.{uuid4().hex}.tmp")
+        try:
+            tmp_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+            os.replace(tmp_path, self.state_path)
+        finally:
+            if tmp_path.exists():
+                tmp_path.unlink()
 
     def total_exposure(self) -> float:
         return sum(p.cost_usd for p in self.state.positions)

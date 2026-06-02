@@ -20,6 +20,9 @@ verified settlement stations and reproducible paper accounting.
   newer markets.
 - Treat `best_bid_ask` stream messages as indicative best-price references
   only. They must not create or move executable bid/ask depth.
+- Persist `paper_state.json` through an atomic temp-file replace. Existing
+  corrupt, unreadable, or structurally invalid paper state fails closed instead
+  of starting a new default account.
 - Keep execution paper-only unless live trading is explicitly approved through
   `docs/live-trading-safety-plan.md`.
 
@@ -59,7 +62,7 @@ src/weather_bot/realtime_orderbook.py CLOB WebSocket order-book cache
 src/weather_bot/edge.py               VWAP, fee, slippage, net-return math
 src/weather_bot/risk.py               probability shrinkage and Kelly sizing
 src/weather_bot/portfolio.py          city-date portfolio budget selector
-src/weather_bot/paper.py              paper broker, accounting, exits, logs
+src/weather_bot/paper.py              paper broker, accounting, atomic state, exits, logs
 src/weather_bot/exit_policy.py        close/hold trigger rules
 src/weather_bot/live_paper_runner.py  main paper loop and realtime orchestration
 src/weather_bot/dashboard.py          read-only operator dashboard
@@ -99,6 +102,12 @@ value and new-entry liquidation bankroll also use after-exit-fee value.
 `EdgeResult.size_shares`, portfolio scenario PnL, and broker-opened paper
 positions use this same fee-adjusted actual share count:
 `size_usd / (p_exec + fee_per_share)`.
+
+`paper_state.json` is the paper account book, not a disposable cache. State
+saves write a complete temporary file first and then replace the live file with
+`os.replace`. If an existing state file is corrupt JSON, unreadable, or has an
+invalid account structure, `PaperBroker` refuses to start so the bot cannot
+trade from guessed cash or hidden positions.
 
 ## Weather And Discovery Contract
 

@@ -18,6 +18,9 @@
 - Paper accounting is fee-aware end to end: `size_usd` is the all-in entry
   budget, closes add after-fee proceeds, and dashboard/liquidation values use
   after-exit-fee marks.
+- Paper account state is persisted with a temp-file write followed by
+  `os.replace`, and existing corrupt or invalid `paper_state.json` fails closed
+  instead of starting from a fresh default account.
 - Entry candidate `size_shares` now means the actual fee-adjusted shares bought
   with the all-in `size_usd` budget, so portfolio scenarios and broker-opened
   paper positions use the same held quantity.
@@ -31,9 +34,8 @@
 - Forecast target dates now require exact `daily.time` matches. If the target
   date is absent, the probability path returns `forecast-unavailable` with zero
   confidence instead of using a nearby forecast date.
-- Local verification after the latest fee-adjusted entry-share consistency fix:
-  focused portfolio pytest and full `pytest -q`. Full result:
-  `191 passed`.
+- Local verification after the latest paper-state persistence fix: focused
+  paper-state pytest and full `pytest -q`. Full result: `193 passed`.
 
 ## In Progress
 
