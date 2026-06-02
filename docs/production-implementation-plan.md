@@ -109,6 +109,10 @@ value and new-entry liquidation bankroll also use after-exit-fee value.
 `EdgeResult.size_shares`, portfolio scenario PnL, and broker-opened paper
 positions use this same fee-adjusted actual share count:
 `size_usd / (p_exec + fee_per_share)`.
+If the conservative new-entry bankroll is not positive, or if the calculated
+order is below `MIN_ORDER_USD`, the live evaluator returns SKIP before
+expected-return math. It must not call positive-share helpers with zero or
+below-minimum entry sizes.
 
 `paper_state.json` is the paper account book, not a disposable cache. State
 saves write a complete temporary file first and then replace the live file with
@@ -156,6 +160,8 @@ entry_bankroll = min(cost_basis_bankroll, liquidation_bankroll)
 Unrealized profits do not increase new-entry sizing. Executable unrealized
 losses reduce sizing immediately. If any held position cannot be valued from a
 usable order book, new entries fail closed.
+The runner surfaces that as an operator-readable SKIP, not as an exception from
+zero-share expected-return calculation.
 
 Default portfolio limits:
 
@@ -197,6 +203,24 @@ risk exemption.
 
 Evaluation failure sentinels such as `net_edge=-999` with no executable
 `p_exec` are not exit signals.
+
+## SKIP Diagnostics Contract
+
+SKIP is a safe decision, not a final explanation. Repeated SKIPs must be
+classified before changing strategy thresholds or risk settings.
+
+Use `docs/codex/skip-diagnostics.md` to separate:
+
+- account-safety SKIPs, such as unpriceable held positions
+- minimum-order or budget SKIPs
+- market-liquidity SKIPs
+- weather-data or parser SKIPs
+- strategy-threshold SKIPs
+
+A future paper-only skip diagnosis report should aggregate
+`paper_decisions.csv`, `paper_event_portfolios.jsonl`, runner status, and
+order-book health into counts by reason category. That report is for
+investigation only; it must not feed live orders or automatic threshold changes.
 
 ## Shadow Research Contract
 

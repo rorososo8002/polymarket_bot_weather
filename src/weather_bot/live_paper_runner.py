@@ -34,6 +34,9 @@ from .runner_status import utc_now_iso, write_runner_status
 from .weather_client import parse_weather_question
 
 
+ENTRY_BANKROLL_FAIL_CLOSED_REASON = "기존 포지션을 안전하게 평가할 수 없어 신규 진입 차단"
+
+
 def _call_probability_estimator(
     probability_estimator: Any,
     question: str,
@@ -190,6 +193,13 @@ def _side_result(
         net_edge=edge,
         min_edge=min_edge,
     )
+    if size_usd < settings.min_order_usd:
+        reason = (
+            f"{side} calculated order ${size_usd:.2f} below minimum order "
+            f"${settings.min_order_usd:.2f}; skipping before expected-return estimate [{market_type}]"
+        )
+        return EdgeResult("SKIP", signal.p_true, p_exec, edge, 0.0, 0.0, reason)
+
     estimate_shares = fee_adjusted_entry_shares(size_usd, p_exec, settings.weather_taker_fee_rate)
     spread = max(0.0, (book.best_ask or p_exec) - (book.best_bid or p_exec))
     fair = model_fair_price(side, signal.p_true, settings)
@@ -252,6 +262,11 @@ def _no_valid_side_reason(base_reason: str, per_side: dict[str, EdgeResult]) -> 
     return f"{base_reason} {' | '.join(details)}"
 
 
+def _entry_bankroll_skip_reason(bankroll_before_entry: float, reason: str | None = None) -> str:
+    detail = f"; {reason}" if reason else ""
+    return f"{ENTRY_BANKROLL_FAIL_CLOSED_REASON}; entry_bankroll=${bankroll_before_entry:.2f}{detail}"
+
+
 def evaluate_market(
     market: RawMarket,
     signal: WeatherSignal,
@@ -259,6 +274,7 @@ def evaluate_market(
     settings: Settings,
     bankroll_before_entry: float,
     market_type: str = "temperature",
+    entry_bankroll_reason: str | None = None,
 ) -> tuple[EdgeResult, dict[str, EdgeResult]]:
     """Evaluate live YES/NO books and return the best executable paper result."""
     min_confidence, min_edge, entry_fraction_override = _market_params(settings, market_type)
@@ -273,6 +289,18 @@ def evaluate_market(
 
     if settings.require_date_hint_for_trade and signal.parsed is not None and signal.parsed.date_hint is None:
         result = EdgeResult("SKIP", signal.p_true, None, -999.0, 0.0, 0.0, f"date_hint=None: refusing undated market [{market_type}]")
+        return result, {}
+
+    if bankroll_before_entry <= 0:
+        result = EdgeResult(
+            "SKIP",
+            signal.p_true,
+            None,
+            -999.0,
+            0.0,
+            0.0,
+            _entry_bankroll_skip_reason(bankroll_before_entry, entry_bankroll_reason),
+        )
         return result, {}
 
     books, fetch_error = _fetch_books(market, client)
@@ -522,6 +550,7 @@ def run_cycle(settings: Settings | None = None) -> list[MarketDecision]:
                     settings,
                     entry_bankroll.entry_bankroll,
                     market_type,
+                    entry_bankroll.reason,
                 )
                 for side, edge_result in per_side.items():
                     latest_edges[(market.market_id, side)] = edge_result
@@ -703,6 +732,7 @@ def _evaluate_realtime_update(
                 settings,
                 entry_bankroll.entry_bankroll,
                 market_type,
+                entry_bankroll.reason,
             )
             for side, edge_result in per_side.items():
                 latest_edges[(market.market_id, side)] = edge_result

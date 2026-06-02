@@ -35,6 +35,10 @@
 - Entry candidate `size_shares` now means the actual fee-adjusted shares bought
   with the all-in `size_usd` budget, so portfolio scenarios and broker-opened
   paper positions use the same held quantity.
+- New-entry evaluation fails closed before expected-return math when
+  `entry_bankroll <= 0` or the calculated order is below `MIN_ORDER_USD`; the
+  decision logs an operator-readable SKIP instead of raising a zero-share
+  exception.
 - Phase 6 settlement runners recover principal first, then keep a bounded 25%
   runner only when conservative settlement value beats fee-adjusted sell-now
   value. Runner logs distinguish actual held shares from target runner shares.
@@ -45,13 +49,16 @@
 - Forecast target dates now require exact `daily.time` matches. If the target
   date is absent, the probability path returns `forecast-unavailable` with zero
   confidence instead of using a nearby forecast date.
-- Local verification after the latest observed-extrema nowcast fix: focused
-  nowcast/probability pytest and full `pytest -q`. Full result: `209 passed`.
+- Local verification after the latest entry-bankroll fail-closed fix: focused
+  portfolio/runner/edge pytest and full `pytest -q`. Full result:
+  `212 passed`.
 
 ## In Progress
 
 - Phase 0-7 local work is complete with review hardening and fee-adjusted
   paper-share consistency.
+- Entry-bankroll fail-closed hardening is complete locally and remains
+  paper-only.
 - Station-rule evidence hardening is complete locally and remains paper-only.
 - Phase 0-7 changes have not been automatically deployed to the Oracle VPS.
 - Before any deployment, explain the change, benefit, risk, verification method,
@@ -80,6 +87,10 @@
 8. For any public dashboard exposure, set a real long random `DASHBOARD_TOKEN`.
    Empty, placeholder, basic, default, or change-me style tokens now stop the
    dashboard before it binds to the public host.
+9. Build or run a paper-only SKIP diagnosis report before treating repeated
+   SKIPs as strategy failure. Use `docs/codex/skip-diagnostics.md` to classify
+   whether the blocker is account safety, minimum order, market liquidity,
+   weather/parsing data, or strategy threshold.
 
 ## For The Next AI
 
@@ -97,3 +108,5 @@
 - Use `TRADING_READY_STATION_MAP` for execution candidates. Karachi remains
   excluded until the `OPMR` registry entry is reconciled with the official
   Polymarket rule source that points to `OPKC`.
+- Repeated SKIPs are research signals, not the end of the investigation. Use
+  `docs/codex/skip-diagnostics.md` before changing thresholds or strategy.

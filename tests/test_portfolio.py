@@ -174,6 +174,64 @@ def test_entry_bankroll_fails_closed_when_held_position_cannot_be_priced(tmp_pat
     assert "missing-token" in snapshot.reason
 
 
+def test_evaluate_market_skips_when_entry_bankroll_is_zero(tmp_path):
+    cfg = settings(
+        tmp_path,
+        min_net_edge=0.01,
+        entry_min_expected_net_return_pct=0.01,
+        weather_taker_fee_rate=0.0,
+        model_error_margin=0.0,
+        resolution_error_margin=0.0,
+    )
+    raw_market = market("seoul-26", "26\u00b0C")
+    signal = WeatherSignal(0.80, 0.90, "test", "test", parse_weather_question(raw_market.question))
+    client = FakeClient(
+        {
+            "seoul-26-yes": orderbook("seoul-26-yes", 0.39, 0.40),
+            "seoul-26-no": orderbook("seoul-26-no", 0.59, 0.60),
+        }
+    )
+
+    result, per_side = evaluate_market(raw_market, signal, client, cfg, 0.0, "temperature")
+
+    assert result.side == "SKIP"
+    assert per_side == {}
+    assert result.size_usd == 0.0
+    assert result.size_shares == 0.0
+    assert "기존 포지션을 안전하게 평가할 수 없어 신규 진입 차단" in result.reason
+
+
+def test_evaluate_market_skips_when_calculated_order_is_below_minimum(tmp_path):
+    cfg = settings(
+        tmp_path,
+        bankroll_usd=50.0,
+        min_net_edge=0.01,
+        min_order_usd=10.0,
+        entry_fraction=0.10,
+        max_single_market_fraction=0.10,
+        entry_min_expected_net_return_pct=0.01,
+        weather_taker_fee_rate=0.0,
+        model_error_margin=0.0,
+        resolution_error_margin=0.0,
+    )
+    raw_market = market("seoul-26", "26\u00b0C")
+    signal = WeatherSignal(0.80, 0.90, "test", "test", parse_weather_question(raw_market.question))
+    client = FakeClient(
+        {
+            "seoul-26-yes": orderbook("seoul-26-yes", 0.39, 0.40),
+            "seoul-26-no": orderbook("seoul-26-no", 0.59, 0.60),
+        }
+    )
+
+    result, per_side = evaluate_market(raw_market, signal, client, cfg, 50.0, "temperature")
+
+    assert result.side == "SKIP"
+    assert result.size_usd == 0.0
+    assert result.size_shares == 0.0
+    assert "minimum order" in result.reason
+    assert per_side["YES"].size_usd == 0.0
+
+
 def test_event_portfolio_selects_one_profitable_leg(tmp_path):
     broker = PaperBroker(settings(tmp_path))
 
@@ -638,6 +696,84 @@ def test_run_cycle_opens_city_date_candidates_as_one_logged_portfolio(monkeypatc
     assert [pos["market_id"] for pos in state["positions"]] == ["seoul-26", "seoul-27"]
     assert len(rows) == 1
     assert [leg["market_id"] for leg in json.loads(rows[0])["selected_legs"]] == ["seoul-26", "seoul-27"]
+
+
+def test_run_cycle_logs_skip_when_entry_bankroll_cannot_price_held_position(monkeypatch, tmp_path):
+    cfg = settings(
+        tmp_path,
+        bankroll_usd=100.0,
+        min_net_edge=0.01,
+        entry_min_expected_net_return_pct=0.01,
+        weather_taker_fee_rate=0.0,
+        model_error_margin=0.0,
+        resolution_error_margin=0.0,
+    )
+    (tmp_path / "state.json").write_text(
+        json.dumps(
+            {
+                "cash_usd": 90.0,
+                "positions": [
+                    {
+                        "position_id": "held",
+                        "market_id": "held",
+                        "question": "Will the highest temperature in Seoul be 25\u00b0C on May 25?",
+                        "token_id": "missing-token",
+                        "side": "YES",
+                        "entry_price": 0.50,
+                        "shares": 20.0,
+                        "cost_usd": 10.0,
+                        "opened_at": "2026-06-01T00:00:00+00:00",
+                        "metadata": {"city": "seoul", "date_hint": "may 25"},
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    markets = [market("seoul-26", "26\u00b0C")]
+    books = {
+        "seoul-26-yes": orderbook("seoul-26-yes", 0.39, 0.40),
+        "seoul-26-no": orderbook("seoul-26-no", 0.59, 0.60),
+    }
+
+    class CycleClient:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        def discover_weather_markets(self, max_pages: int, page_size: int):
+            return markets
+
+        def get_order_book(self, token_id: str) -> OrderBook:
+            return books[token_id]
+
+        def get_market(self, market_id: str) -> RawMarket:
+            if market_id == "held":
+                return RawMarket(
+                    market_id="held",
+                    question="Will the highest temperature in Seoul be 25\u00b0C on May 25?",
+                    slug="held",
+                    active=True,
+                    closed=False,
+                    yes_token_id="missing-token",
+                    no_token_id=None,
+                    event_id="seoul-may-25",
+                )
+            return next(item for item in markets if item.market_id == market_id)
+
+    def estimate(question, **_kwargs):
+        parsed = parse_weather_question(question)
+        return WeatherSignal(0.80, 0.90, "test", "test", parsed)
+
+    monkeypatch.setattr("weather_bot.live_paper_runner.PolymarketClient", CycleClient)
+    monkeypatch.setattr("weather_bot.live_paper_runner.estimate_weather_probability", estimate)
+
+    decisions = run_cycle(cfg)
+
+    assert len(decisions) == 1
+    assert decisions[0].result.side == "SKIP"
+    assert "기존 포지션을 안전하게 평가할 수 없어 신규 진입 차단" in decisions[0].result.reason
+    rows = (tmp_path / "portfolio.jsonl").read_text(encoding="utf-8").splitlines()
+    assert json.loads(rows[0])["entry_bankroll_usable"] is False
 
 
 def test_run_cycle_opens_two_profitable_no_legs_for_same_event(monkeypatch, tmp_path):

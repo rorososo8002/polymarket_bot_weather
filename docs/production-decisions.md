@@ -25,6 +25,10 @@ specialized reference docs.
   all-in paper-entry budget; `size_shares` is the fee-adjusted actual held
   quantity; paper cash, liquidation bankroll, and dashboard PnL use after-fee
   accounting.
+- New-entry evaluation blocks before expected-return math when
+  `entry_bankroll <= 0` or the calculated order is below the `$10` minimum, so
+  fail-closed account uncertainty is logged as SKIP instead of a zero-share
+  exception.
 - City-date weather buckets share one correlated-risk budget. At most two
   complementary legs are selected per event, with a `$10` minimum leg and
   conservative city, event, and total exposure caps.
@@ -41,6 +45,8 @@ specialized reference docs.
   paper-only A/B experiment.
 - Known-good commands belong in `docs/codex/known-good-commands.md`; fresh work
   should use them before inventing command shapes.
+- Repeated SKIPs are research signals. Diagnose and classify them before
+  changing strategy thresholds, risk caps, or data-source assumptions.
 - `paper_state.json` is an account book. Saves use atomic temp-file replacement,
   and existing corrupt or invalid paper state fails closed instead of resetting.
 - Public dashboard exposure requires a real `DASHBOARD_TOKEN`; empty,
@@ -298,3 +304,22 @@ which avoids extra calls and keeps the metric matched to the market question.
 Consequence: daily-high markets may use observed high, daily-low markets may
 use observed low, and missing or stale extrema still fall back to forecast-only
 or skip according to the normal fail-closed rules.
+
+### 2026-06-03: Block New Entries Before Zero-Share Return Math
+
+Decision: If `entry_bankroll <= 0`, or if sizing produces an order below
+`MIN_ORDER_USD`, the live paper evaluator returns SKIP before calling
+expected-return helpers that require positive shares. Why: an unpriceable held
+position means the account basis for new entries is untrusted, and a zero-share
+or below-minimum order is not a real executable candidate. Consequence:
+operators see "기존 포지션을 안전하게 평가할 수 없어 신규 진입 차단" or a minimum-order
+SKIP reason instead of `shares must be positive`.
+
+### 2026-06-03: Treat Repeated SKIPs As A Diagnosis Input
+
+Decision: Repeated SKIPs must be grouped by reason category before strategy or
+risk changes. Why: SKIP can mean very different things: account safety, minimum
+order, thin liquidity, stale weather data, parser uncertainty, or a valid weak
+edge. Consequence: use `docs/codex/skip-diagnostics.md` and future paper-only
+reporting to find the blocker first; do not weaken thresholds just because the
+bot skipped many markets.
