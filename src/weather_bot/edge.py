@@ -52,6 +52,17 @@ def polymarket_taker_fee_per_share(price: float, fee_rate: float = WEATHER_TAKER
     return fee_rate * price * (1.0 - price)
 
 
+def fee_adjusted_entry_shares(size_usd: float, price: float, fee_rate: float = WEATHER_TAKER_FEE_RATE) -> float:
+    """Return shares bought when `size_usd` is the all-in entry budget."""
+    if size_usd < 0:
+        raise ValueError("size_usd must be non-negative")
+    fee_per_share = polymarket_taker_fee_per_share(price, fee_rate)
+    unit_cost = price + fee_per_share
+    if size_usd == 0 or unit_cost <= 0:
+        return 0.0
+    return size_usd / unit_cost
+
+
 def estimate_executable_net_return(
     *,
     shares: float,

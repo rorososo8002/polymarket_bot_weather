@@ -10,6 +10,7 @@ from .config import Settings, load_settings
 from .edge import (
     estimate_executable_net_return,
     executable_buy_price,
+    fee_adjusted_entry_shares,
     no_net_edge,
     polymarket_taker_fee_per_share,
     yes_net_edge,
@@ -189,7 +190,7 @@ def _side_result(
         net_edge=edge,
         min_edge=min_edge,
     )
-    estimate_shares = size_usd / p_eff if size_usd > 0 else _shares
+    estimate_shares = fee_adjusted_entry_shares(size_usd, p_exec, settings.weather_taker_fee_rate)
     spread = max(0.0, (book.best_ask or p_exec) - (book.best_bid or p_exec))
     fair = model_fair_price(side, signal.p_true, settings)
     expected_exit = target_exit_price(p_exec, fair, settings)
@@ -234,7 +235,7 @@ def _side_result(
         p_exec=p_exec,
         net_edge=edge,
         size_usd=size_usd if edge > min_edge and return_ok else 0.0,
-        size_shares=(size_usd / p_exec) if edge > min_edge and return_ok and p_exec > 0 else 0.0,
+        size_shares=estimate_shares if edge > min_edge and return_ok else 0.0,
         reason=reason,
         expected_net_profit_usd=return_estimate.expected_net_profit_usdc if edge > min_edge and return_ok else 0.0,
     )

@@ -96,6 +96,9 @@ fee_usdc = shares * fee_rate * price * (1 - price)
 `size_usd / p_exec` so entry notional plus fee stays inside the budget. Normal
 and partial closes add only after-fee proceeds to paper cash. Dashboard market
 value and new-entry liquidation bankroll also use after-exit-fee value.
+`EdgeResult.size_shares`, portfolio scenario PnL, and broker-opened paper
+positions use this same fee-adjusted actual share count:
+`size_usd / (p_exec + fee_per_share)`.
 
 ## Weather And Discovery Contract
 

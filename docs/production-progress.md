@@ -18,6 +18,9 @@
 - Paper accounting is fee-aware end to end: `size_usd` is the all-in entry
   budget, closes add after-fee proceeds, and dashboard/liquidation values use
   after-exit-fee marks.
+- Entry candidate `size_shares` now means the actual fee-adjusted shares bought
+  with the all-in `size_usd` budget, so portfolio scenarios and broker-opened
+  paper positions use the same held quantity.
 - Phase 6 settlement runners recover principal first, then keep a bounded 25%
   runner only when conservative settlement value beats fee-adjusted sell-now
   value. Runner logs distinguish actual held shares from target runner shares.
@@ -28,13 +31,14 @@
 - Forecast target dates now require exact `daily.time` matches. If the target
   date is absent, the probability path returns `forecast-unavailable` with zero
   confidence instead of using a nearby forecast date.
-- Local verification after the latest `best_bid_ask` depth guard: focused
-  realtime-orderbook pytest and full `pytest -q`. Full result:
-  `190 passed in 2.81s`.
+- Local verification after the latest fee-adjusted entry-share consistency fix:
+  focused portfolio pytest and full `pytest -q`. Full result:
+  `191 passed`.
 
 ## In Progress
 
-- Phase 0-7 local work is complete with review hardening.
+- Phase 0-7 local work is complete with review hardening and fee-adjusted
+  paper-share consistency.
 - Phase 0-7 changes have not been automatically deployed to the Oracle VPS.
 - Before any deployment, explain the change, benefit, risk, verification method,
   public exposure implications, and rollback method, then get explicit user

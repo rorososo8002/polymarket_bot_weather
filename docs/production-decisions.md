@@ -20,8 +20,9 @@ specialized reference docs.
 - `best_bid_ask` is indicative price data only. Executable depth comes from
   `book` snapshots or `price_change` updates, not assumed sizes.
 - Entry decisions are fee-aware. `p_exec` is executable VWAP; `size_usd` is the
-  all-in paper-entry budget; paper cash, liquidation bankroll, and dashboard PnL
-  use after-fee accounting.
+  all-in paper-entry budget; `size_shares` is the fee-adjusted actual held
+  quantity; paper cash, liquidation bankroll, and dashboard PnL use after-fee
+  accounting.
 - City-date weather buckets share one correlated-risk budget. At most two
   complementary legs are selected per event, with a `$10` minimum leg and
   conservative city, event, and total exposure caps.
@@ -230,3 +231,11 @@ prices only; they do not add, move, or resize bid/ask levels. Why: those
 messages do not prove how many shares are actually available at the quoted
 price. Consequence: executable VWAP, liquidity filters, exits, and paper fills
 use only depth confirmed by `book` snapshots or `price_change` updates.
+
+### 2026-06-03: Use Fee-Adjusted Shares As The Canonical Entry Quantity
+
+Decision: `EdgeResult.size_shares` means the actual shares bought after entry
+fees, not gross `size_usd / p_exec` shares. Why: portfolio scenarios that use
+gross shares overstate settlement payoff and expected profitability. Consequence:
+entry filtering, portfolio selection, scenario PnL, and paper broker opens all
+share the same all-in-budget quantity formula.

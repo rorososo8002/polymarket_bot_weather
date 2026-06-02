@@ -10,7 +10,13 @@ from uuid import uuid4
 
 from .config import Settings
 from .models import EdgeResult, PaperPosition, PaperState, RawMarket
-from .edge import executable_sell_price, max_absorbable_shares, polymarket_taker_fee_per_share, polymarket_taker_fee_usdc
+from .edge import (
+    executable_sell_price,
+    fee_adjusted_entry_shares,
+    max_absorbable_shares,
+    polymarket_taker_fee_per_share,
+    polymarket_taker_fee_usdc,
+)
 from .exit_policy import assess_exit, build_entry_plan, conservative_settlement_value, side_true_probability
 from .polymarket_client import PolymarketClient
 from .portfolio import adaptive_event_cap_fraction, is_complementary_with_positions
@@ -220,8 +226,7 @@ class PaperBroker:
             self.log_trade("SKIP_CASH", market, result.side, token_id, 0, result.p_exec, 0, "not enough cash")
             return None
         expected_profit = result.expected_net_profit_usd * spend / result.size_usd
-        entry_fee_per_share = polymarket_taker_fee_per_share(result.p_exec, self.settings.weather_taker_fee_rate)
-        shares = spend / (result.p_exec + entry_fee_per_share)
+        shares = fee_adjusted_entry_shares(spend, result.p_exec, self.settings.weather_taker_fee_rate)
         entry_fee_usdc = polymarket_taker_fee_usdc(shares, result.p_exec, self.settings.weather_taker_fee_rate)
         adjusted_result = EdgeResult(
             result.side,

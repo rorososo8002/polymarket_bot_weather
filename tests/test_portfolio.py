@@ -5,7 +5,8 @@ import json
 import pytest
 
 from weather_bot.config import Settings
-from weather_bot.live_paper_runner import _apply_event_portfolio, _evaluate_realtime_update, run_cycle
+from weather_bot.edge import polymarket_taker_fee_per_share
+from weather_bot.live_paper_runner import _apply_event_portfolio, _evaluate_realtime_update, evaluate_market, run_cycle
 from weather_bot.models import EdgeResult, OrderBook, OrderLevel, PaperPosition, PaperState, RawMarket, WeatherSignal
 from weather_bot.paper import PaperBroker
 from weather_bot.portfolio import (
@@ -188,6 +189,49 @@ def test_event_portfolio_selects_one_profitable_leg(tmp_path):
     assert decision.event_cap_fraction == 0.10
     assert decision.event_cap_usd == 10.0
     assert decision.expected_net_profit_usd == 1.25
+
+
+def test_fee_adjusted_shares_drive_portfolio_scenario_and_open_position(tmp_path):
+    cfg = settings(
+        tmp_path,
+        min_net_edge=0.01,
+        entry_min_expected_net_return_pct=0.01,
+        weather_taker_fee_rate=0.05,
+        model_error_margin=0.0,
+        resolution_error_margin=0.0,
+    )
+    raw_market = market("seoul-26", "26\u00b0C")
+    signal = WeatherSignal(0.80, 0.90, "test", "test", parse_weather_question(raw_market.question))
+    client = FakeClient(
+        {
+            "seoul-26-yes": orderbook("seoul-26-yes", 0.39, 0.40),
+            "seoul-26-no": orderbook("seoul-26-no", 0.59, 0.60),
+        }
+    )
+
+    result, _per_side = evaluate_market(raw_market, signal, client, cfg, 100.0, "temperature")
+
+    assert result.side == "YES"
+    assert result.p_exec is not None
+    entry_fee_per_share = polymarket_taker_fee_per_share(result.p_exec, cfg.weather_taker_fee_rate)
+    gross_shares = result.size_usd / result.p_exec
+    fee_adjusted_shares = result.size_usd / (result.p_exec + entry_fee_per_share)
+    assert result.size_shares == pytest.approx(fee_adjusted_shares)
+    assert result.size_shares < gross_shares
+
+    broker = PaperBroker(cfg)
+    decision = _apply_event_portfolio(
+        broker,
+        [PortfolioCandidate(raw_market, signal, result, "temperature")],
+        usable_snapshot(),
+    )
+
+    assert len(broker.state.positions) == 1
+    position = broker.state.positions[0]
+    selected = decision.selected[0]
+    assert position.shares == pytest.approx(fee_adjusted_shares)
+    assert selected.result.size_shares == pytest.approx(position.shares)
+    assert decision.scenario_pnl_usd["seoul-26"] == pytest.approx(position.shares - position.cost_usd, abs=1e-6)
 
 
 def test_event_portfolio_allows_two_profitable_no_legs_when_growth_improves(tmp_path):
