@@ -40,6 +40,9 @@ specialized reference docs.
   should use them before inventing command shapes.
 - `paper_state.json` is an account book. Saves use atomic temp-file replacement,
   and existing corrupt or invalid paper state fails closed instead of resetting.
+- Public dashboard exposure requires a real `DASHBOARD_TOKEN`; empty,
+  placeholder, basic, default, change-me style, or other obvious example tokens
+  stop startup before binding to a public host.
 
 ## Compact Ledger
 
@@ -262,3 +265,13 @@ settlement station contaminates paper-profit evidence. Consequence: 40 cities
 are trading-ready with stored Polymarket rule URLs and station wording; Karachi
 is excluded because its found rule source points to `OPKC` while the registry
 uses `OPMR`.
+
+### 2026-06-03: Fail Closed On Public Dashboard Without A Real Token
+
+Decision: When `DASHBOARD_HOST` is not `127.0.0.1` or `localhost`, the
+dashboard refuses to start unless `DASHBOARD_TOKEN` is non-empty and
+non-placeholder. Why: binding to `0.0.0.0` exposes the service to anyone who can
+reach the URL, including automated scanners. Consequence: copied example files,
+empty tokens, or basic/default/change-me tokens fail before the HTTP server
+binds; local development can still run without a token, and query-token values
+are redacted from dashboard logs.

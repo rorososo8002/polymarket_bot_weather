@@ -27,6 +27,9 @@ verified settlement stations and reproducible paper accounting.
 - Persist `paper_state.json` through an atomic temp-file replace. Existing
   corrupt, unreadable, or structurally invalid paper state fails closed instead
   of starting a new default account.
+- Public dashboard binding fails closed unless `DASHBOARD_TOKEN` is set to a
+  non-placeholder value. Local development on `127.0.0.1` or `localhost` may
+  still run without a token.
 - Keep execution paper-only unless live trading is explicitly approved through
   `docs/live-trading-safety-plan.md`.
 
@@ -235,11 +238,20 @@ SHADOW_MIN_TRADE_USDC=100.0
 SHADOW_COMPARE_WINDOW_SECONDS=86400
 ENABLE_PRECIPITATION_MARKETS=false
 REQUIRE_DATE_HINT_FOR_TRADE=true
+DASHBOARD_HOST=127.0.0.1
+DASHBOARD_PORT=8787
+DASHBOARD_TOKEN=
 ```
 
 `DISCOVERY_MAX_PAGES` and `DISCOVERY_PAGE_SIZE` only bound fallback Gamma
 pagination. They do not reduce the verified 41-city allowlist and do not cap
 normal category discovery.
+
+For public dashboard hosts such as `0.0.0.0`, `DASHBOARD_TOKEN` must be a real
+long random value rather than empty, placeholder, basic, default, or change-me
+text. Query-string tokens are accepted for first-load compatibility but are
+redacted from logs, stored in browser local storage, and subsequent API polling
+uses the `X-Dashboard-Token` header.
 
 ## Verification
 

@@ -84,7 +84,9 @@ def test_dashboard_env_requires_token_and_data_paths():
 
     assert "DASHBOARD_HOST=0.0.0.0" in text
     assert "DASHBOARD_PORT=8787" in text
-    assert "DASHBOARD_TOKEN=change-me-long-random-token" in text
+    assert "DASHBOARD_TOKEN=\n" in text
+    assert "refuses to start on public hosts" in text
+    assert "long random token" in text
     assert "STATE_PATH=/opt/polymarket-weather-bot/data/paper_state.json" in text
     assert "FORECAST_CACHE_TTL_SECONDS=1800" in text
     assert "ORDERBOOK_STREAM_STALE_SECONDS=60" in text

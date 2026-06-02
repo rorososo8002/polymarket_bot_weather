@@ -25,6 +25,10 @@
 - Paper account state is persisted with a temp-file write followed by
   `os.replace`, and existing corrupt or invalid `paper_state.json` fails closed
   instead of starting from a fresh default account.
+- Dashboard startup fails closed on public hosts such as `0.0.0.0` unless
+  `DASHBOARD_TOKEN` is non-empty and non-placeholder. Browser API polling uses
+  the token header instead of a token query string, and server logs redact
+  token query values.
 - Entry candidate `size_shares` now means the actual fee-adjusted shares bought
   with the all-in `size_usd` budget, so portfolio scenarios and broker-opened
   paper positions use the same held quantity.
@@ -70,6 +74,9 @@
    `docs/codex/known-good-commands.md`.
 7. Do not bypass `TRADING_READY_STATION_MAP`; `STATION_MAP` is the registry,
    while trading-ready means official rule evidence is stored and conflict-free.
+8. For any public dashboard exposure, set a real long random `DASHBOARD_TOKEN`.
+   Empty, placeholder, basic, default, or change-me style tokens now stop the
+   dashboard before it binds to the public host.
 
 ## For The Next AI
 

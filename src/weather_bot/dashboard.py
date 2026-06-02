@@ -22,6 +22,45 @@ _DECISION_TOTALS_CACHE: dict[str, dict[str, Any]] = {}
 _TRADE_TOTALS_LOCK = threading.Lock()
 _TRADE_TOTALS_CACHE: dict[str, dict[str, Any]] = {}
 MAX_INITIAL_DECISION_TOTAL_SCAN_BYTES = 128 * 1024 * 1024
+LOCAL_DASHBOARD_HOSTS = {"127.0.0.1", "localhost"}
+WEAK_DASHBOARD_TOKEN_MARKERS = (
+    "placeholder",
+    "basic",
+    "default",
+    "changeme",
+    "replace",
+    "example",
+    "sample",
+    "secret",
+    "password",
+)
+_TOKEN_QUERY_LOG_RE = re.compile(r"(?i)([?&]token=)([^&\s]*)")
+
+
+def _is_public_dashboard_host(host: str) -> bool:
+    return (host or "").strip().lower() not in LOCAL_DASHBOARD_HOSTS
+
+
+def _is_weak_dashboard_token(token: str) -> bool:
+    normalized = re.sub(r"[^a-z0-9]+", "", (token or "").strip().lower())
+    if not normalized:
+        return True
+    return any(marker in normalized for marker in WEAK_DASHBOARD_TOKEN_MARKERS)
+
+
+def _validate_dashboard_startup_security(host: str, token: str) -> None:
+    if not _is_public_dashboard_host(host):
+        return
+    if _is_weak_dashboard_token(token):
+        raise ValueError(
+            "DASHBOARD_TOKEN must be set to a non-placeholder value when "
+            "DASHBOARD_HOST is public. Use DASHBOARD_HOST=127.0.0.1 for "
+            "local-only development."
+        )
+
+
+def _redact_dashboard_log_message(message: str) -> str:
+    return _TOKEN_QUERY_LOG_RE.sub(r"\1<redacted>", message)
 
 
 HTML = r"""<!doctype html>
@@ -477,7 +516,12 @@ HTML = r"""<!doctype html>
 <script>
 const params = new URLSearchParams(location.search);
 const urlToken = params.get("token");
-if (urlToken) localStorage.setItem("dashboardToken", urlToken);
+if (urlToken) {
+  localStorage.setItem("dashboardToken", urlToken);
+  params.delete("token");
+  const cleanQuery = params.toString();
+  history.replaceState(null, "", location.pathname + (cleanQuery ? "?" + cleanQuery : "") + location.hash);
+}
 const token = localStorage.getItem("dashboardToken") || "";
 let chartRange = "ALL";
 let chartHoverX = null;
@@ -752,8 +796,7 @@ function render(payload) {
 
 async function tick() {
   try {
-    const q = token ? "?token=" + encodeURIComponent(token) : "";
-    const res = await fetch("/api/status" + q, {headers: token ? {"X-Dashboard-Token": token} : {}});
+    const res = await fetch("/api/status", {headers: token ? {"X-Dashboard-Token": token} : {}});
     if (res.status === 403) {
       document.getElementById("lock").style.display = "block";
       setText("sys-status", "AUTH");
@@ -1660,7 +1703,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self._send(HTTPStatus.NOT_FOUND, "application/json", b'{"error":"not found"}')
 
     def log_message(self, fmt: str, *args: Any) -> None:
-        print(f"{self.address_string()} - {fmt % args}")
+        print(f"{self.address_string()} - {_redact_dashboard_log_message(fmt % args)}")
 
 
 def run_dashboard(settings: Settings | None = None) -> None:
@@ -1668,6 +1711,7 @@ def run_dashboard(settings: Settings | None = None) -> None:
     host = settings.dashboard_host
     port = settings.dashboard_port
     token = settings.dashboard_token
+    _validate_dashboard_startup_security(host, token)
     server = ThreadingHTTPServer((host, port), DashboardHandler)
     server.settings = settings  # type: ignore[attr-defined]
     server.dashboard_token = token  # type: ignore[attr-defined]

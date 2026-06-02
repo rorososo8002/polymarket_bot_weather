@@ -83,6 +83,96 @@ def test_dashboard_html_explains_adaptive_event_portfolio_budget():
     assert "expected log growth" in HTML
 
 
+def test_dashboard_refuses_public_host_with_empty_token(monkeypatch):
+    class FailingServer:
+        def __init__(self, *_args, **_kwargs):
+            raise AssertionError("public dashboard must refuse startup before binding")
+
+    monkeypatch.setattr(dashboard_module, "ThreadingHTTPServer", FailingServer)
+
+    with pytest.raises(ValueError, match="DASHBOARD_TOKEN"):
+        dashboard_module.run_dashboard(Settings(dashboard_host="0.0.0.0", dashboard_token=""))
+
+
+@pytest.mark.parametrize("token", ["placeholder", "basic", "default", "change-me-long-random-token"])
+def test_dashboard_refuses_public_host_with_placeholder_token(monkeypatch, token):
+    class FailingServer:
+        def __init__(self, *_args, **_kwargs):
+            raise AssertionError("public dashboard must refuse startup before binding")
+
+    monkeypatch.setattr(dashboard_module, "ThreadingHTTPServer", FailingServer)
+
+    with pytest.raises(ValueError, match="DASHBOARD_TOKEN"):
+        dashboard_module.run_dashboard(Settings(dashboard_host="0.0.0.0", dashboard_token=token))
+
+
+def test_dashboard_allows_localhost_without_token(monkeypatch):
+    class Served(Exception):
+        pass
+
+    created_servers = []
+
+    class DummyServer:
+        def __init__(self, server_address, handler_cls):
+            self.server_address = server_address
+            self.handler_cls = handler_cls
+            created_servers.append(self)
+
+        def serve_forever(self):
+            raise Served
+
+    monkeypatch.setattr(dashboard_module, "ThreadingHTTPServer", DummyServer)
+
+    with pytest.raises(Served):
+        dashboard_module.run_dashboard(Settings(dashboard_host="localhost", dashboard_token=""))
+
+    assert created_servers[0].server_address == ("localhost", 8787)
+    assert created_servers[0].dashboard_token == ""
+
+
+def test_dashboard_allows_public_host_with_real_token(monkeypatch):
+    class Served(Exception):
+        pass
+
+    created_servers = []
+
+    class DummyServer:
+        def __init__(self, server_address, handler_cls):
+            self.server_address = server_address
+            self.handler_cls = handler_cls
+            created_servers.append(self)
+
+        def serve_forever(self):
+            raise Served
+
+    monkeypatch.setattr(dashboard_module, "ThreadingHTTPServer", DummyServer)
+
+    with pytest.raises(Served):
+        dashboard_module.run_dashboard(
+            Settings(dashboard_host="0.0.0.0", dashboard_token="real-random-dashboard-token-2026")
+        )
+
+    assert created_servers[0].server_address == ("0.0.0.0", 8787)
+    assert created_servers[0].dashboard_token == "real-random-dashboard-token-2026"
+
+
+def test_dashboard_logs_redact_url_query_token(capsys):
+    handler = object.__new__(dashboard_module.DashboardHandler)
+    handler.address_string = lambda: "127.0.0.1"
+
+    handler.log_message("%s", "GET /api/status?token=super-secret-token&range=ALL HTTP/1.1")
+
+    output = capsys.readouterr().out
+    assert "super-secret-token" not in output
+    assert "token=<redacted>" in output
+
+
+def test_dashboard_html_sends_api_token_by_header_not_query_string():
+    assert '"/api/status" + q' not in HTML
+    assert '?token=" + encodeURIComponent(token)' not in HTML
+    assert '"X-Dashboard-Token": token' in HTML
+
+
 def test_dashboard_payload_summarizes_state_trades_and_decisions(tmp_path):
     state_path = tmp_path / "state.json"
     trades_path = tmp_path / "trades.csv"
