@@ -56,6 +56,8 @@ specialized reference docs.
 - Public dashboard exposure requires a real `DASHBOARD_TOKEN`; empty,
   placeholder, basic, default, change-me style, or other obvious example tokens
   stop startup before binding to a public host.
+- Boolean environment settings accept only explicit true/false aliases. Unknown
+  values fail startup instead of silently disabling safety switches.
 
 ## Compact Ledger
 
@@ -337,3 +339,12 @@ are tradable asset IDs, but their list order is not a safe proof of side. If
 YES and NO are swapped, a correct prediction can be recorded as the opposite
 paper position. Consequence: missing, duplicated, malformed, or non-YES/NO
 outcome labels make discovery skip the market instead of guessing.
+
+### 2026-06-03: Reject Unknown Boolean Environment Values
+
+Decision: Boolean environment variables accept only explicit true aliases
+(`true`, `1`, `yes`, `y`, `on`) and false aliases (`false`, `0`, `no`, `n`,
+`off`). Why: misspellings such as `REQUIRE_DATE_HINT_FOR_TRADE=treu` can
+silently disable a safety switch if every unknown value becomes `False`.
+Consequence: startup raises `ValueError` for unknown boolean values, so the
+operator must fix the setting before paper trading continues.

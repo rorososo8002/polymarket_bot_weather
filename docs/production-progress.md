@@ -33,6 +33,9 @@
   `DASHBOARD_TOKEN` is non-empty and non-placeholder. Browser API polling uses
   the token header instead of a token query string, and server logs redact
   token query values.
+- Boolean environment settings now accept only explicit true/false aliases.
+  Unknown values raise `ValueError` at startup so safety switches such as
+  `REQUIRE_DATE_HINT_FOR_TRADE` cannot be disabled by typos.
 - Entry candidate `size_shares` now means the actual fee-adjusted shares bought
   with the all-in `size_usd` budget, so portfolio scenarios and broker-opened
   paper positions use the same held quantity.
@@ -53,8 +56,8 @@
 - Polymarket market discovery no longer trusts `clobTokenIds` list order for
   YES/NO side mapping. It maps token IDs only from explicit `tokens` or
   `outcomes` labels and skips markets when the side cannot be proven.
-- Local verification after the latest YES/NO token-mapping fail-closed fix:
-  focused hardening pytest and full `pytest -q`. Full result: `215 passed`.
+- Local verification after the latest boolean config fail-closed fix: focused
+  config pytest and full `pytest -q`. Full result: `243 passed`.
 
 ## In Progress
 
@@ -64,6 +67,7 @@
   paper-only.
 - Station-rule evidence hardening is complete locally and remains paper-only.
 - YES/NO token mapping hardening is complete locally and remains paper-only.
+- Boolean config parsing hardening is complete locally and remains paper-only.
 - Phase 0-7 changes have not been automatically deployed to the Oracle VPS.
 - Before any deployment, explain the change, benefit, risk, verification method,
   public exposure implications, and rollback method, then get explicit user

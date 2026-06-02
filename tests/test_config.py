@@ -1,3 +1,5 @@
+import pytest
+
 from weather_bot.config import Settings, load_settings
 from weather_bot.stations import SUPPORTED_CITY_COUNT
 
@@ -124,6 +126,32 @@ def test_load_settings_reads_realtime_orderbook_stream(monkeypatch):
     assert settings.orderbook_stream_stale_seconds == 45
     assert settings.runner_health_status_interval_seconds == 7
     assert settings.forecast_refresh_interval_seconds == 600
+
+
+@pytest.mark.parametrize("raw", ["true", "1", "yes", "y", "on"])
+def test_load_settings_accepts_known_true_boolean_values(monkeypatch, raw):
+    monkeypatch.setenv("REQUIRE_DATE_HINT_FOR_TRADE", raw)
+
+    settings = load_settings()
+
+    assert settings.require_date_hint_for_trade is True
+
+
+@pytest.mark.parametrize("raw", ["false", "0", "no", "n", "off"])
+def test_load_settings_accepts_known_false_boolean_values(monkeypatch, raw):
+    monkeypatch.setenv("REQUIRE_DATE_HINT_FOR_TRADE", raw)
+
+    settings = load_settings()
+
+    assert settings.require_date_hint_for_trade is False
+
+
+@pytest.mark.parametrize("raw", ["treu", "enabled", "maybe"])
+def test_load_settings_rejects_unknown_boolean_values(monkeypatch, raw):
+    monkeypatch.setenv("REQUIRE_DATE_HINT_FOR_TRADE", raw)
+
+    with pytest.raises(ValueError, match="REQUIRE_DATE_HINT_FOR_TRADE"):
+        load_settings()
 
 
 def test_load_settings_reads_discovery_pagination_safety_controls(monkeypatch):

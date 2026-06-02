@@ -4,6 +4,10 @@ from dataclasses import dataclass
 import os
 from dotenv import load_dotenv
 
+_TRUE_ENV_VALUES = {"1", "true", "yes", "y", "on"}
+_FALSE_ENV_VALUES = {"0", "false", "no", "n", "off"}
+
+
 @dataclass(frozen=True)
 class Settings:
     # Public data endpoints
@@ -128,7 +132,13 @@ def _bool_env(name: str, default: bool) -> bool:
     raw = os.getenv(name)
     if raw is None or raw.strip() == "":
         return default
-    return raw.strip().lower() in {"1", "true", "yes", "y", "on"}
+    normalized = raw.strip().lower()
+    if normalized in _TRUE_ENV_VALUES:
+        return True
+    if normalized in _FALSE_ENV_VALUES:
+        return False
+    allowed = ", ".join(sorted(_TRUE_ENV_VALUES | _FALSE_ENV_VALUES))
+    raise ValueError(f"Invalid boolean value for {name}. Expected one of: {allowed}")
 
 
 def load_settings() -> Settings:

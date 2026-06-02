@@ -33,6 +33,8 @@ verified settlement stations and reproducible paper accounting.
 - Public dashboard binding fails closed unless `DASHBOARD_TOKEN` is set to a
   non-placeholder value. Local development on `127.0.0.1` or `localhost` may
   still run without a token.
+- Boolean environment settings accept only explicit true/false aliases. Unknown
+  values fail startup with `ValueError` instead of silently becoming `False`.
 - Keep execution paper-only unless live trading is explicitly approved through
   `docs/live-trading-safety-plan.md`.
 
