@@ -12,6 +12,9 @@
   cities, refresh Open-Meteo forecasts every 30 minutes by default, use the
   Polymarket CLOB WebSocket stream, keep held token IDs subscribed, fail closed
   on stale or unsupported data, and preserve paper-only execution.
+- Realtime order-book cache treats `best_bid_ask` as indicative best-price
+  reference only. Executable bid/ask depth comes only from `book` snapshots or
+  `price_change` level updates.
 - Paper accounting is fee-aware end to end: `size_usd` is the all-in entry
   budget, closes add after-fee proceeds, and dashboard/liquidation values use
   after-exit-fee marks.
@@ -25,8 +28,9 @@
 - Forecast target dates now require exact `daily.time` matches. If the target
   date is absent, the probability path returns `forecast-unavailable` with zero
   confidence instead of using a nearby forecast date.
-- Local verification after the latest exact-date forecast guard: focused
-  probability pytest and full `pytest -q`. Full result: `188 passed in 3.02s`.
+- Local verification after the latest `best_bid_ask` depth guard: focused
+  realtime-orderbook pytest and full `pytest -q`. Full result:
+  `190 passed in 2.81s`.
 
 ## In Progress
 

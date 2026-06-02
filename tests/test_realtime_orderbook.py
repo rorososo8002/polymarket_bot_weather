@@ -1,6 +1,7 @@
 import json
 from datetime import datetime, timedelta, timezone
 
+from weather_bot.edge import executable_buy_price, executable_sell_price
 from weather_bot.models import OrderBook
 from weather_bot.realtime_orderbook import OrderBookMarketStream, OrderBookStreamCache, market_subscription_message
 
@@ -73,6 +74,61 @@ def test_stream_cache_accepts_json_message_lists():
     book = cache.get_order_book("no")
     assert book.best_bid == 0.41
     assert book.best_ask == 0.44
+
+
+def test_best_bid_ask_only_does_not_create_executable_depth():
+    cache = OrderBookStreamCache()
+
+    assert cache.apply_message(
+        {
+            "event_type": "best_bid_ask",
+            "asset_id": "yes",
+            "market": "condition",
+            "best_bid": "0.41",
+            "best_ask": "0.44",
+            "timestamp": "3",
+        }
+    ) == {"yes"}
+
+    book = cache.get_order_book("yes")
+    assert book.best_bid == 0.41
+    assert book.best_ask == 0.44
+    assert book.bids == []
+    assert book.asks == []
+    assert executable_buy_price(book, 0.20) == (None, 0.0, 0.0)
+    assert executable_sell_price(book, 0.5) == (None, 0.0)
+
+
+def test_best_bid_ask_updates_reference_price_without_moving_snapshot_depth():
+    cache = OrderBookStreamCache()
+    cache.apply_message(
+        {
+            "event_type": "book",
+            "asset_id": "yes",
+            "market": "condition",
+            "bids": [{"price": "0.49", "size": "10"}],
+            "asks": [{"price": "0.52", "size": "20"}],
+            "timestamp": "1",
+        }
+    )
+
+    assert cache.apply_message(
+        {
+            "event_type": "best_bid_ask",
+            "asset_id": "yes",
+            "market": "condition",
+            "best_bid": "0.50",
+            "best_ask": "0.51",
+            "timestamp": "2",
+        }
+    ) == {"yes"}
+
+    book = cache.get_order_book("yes")
+    assert book.best_bid == 0.50
+    assert book.best_ask == 0.51
+    assert [(level.price, level.size) for level in book.bids] == [(0.49, 10.0)]
+    assert [(level.price, level.size) for level in book.asks] == [(0.52, 20.0)]
+    assert executable_sell_price(book, 1.0) == (0.49, 0.0)
 
 
 def test_stream_cache_tracks_last_trade_price_from_stream_event():

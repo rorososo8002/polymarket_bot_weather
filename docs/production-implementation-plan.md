@@ -18,6 +18,8 @@ verified settlement stations and reproducible paper accounting.
 - Use the Polymarket CLOB WebSocket market stream for order books by default.
 - Keep token IDs for open positions subscribed even when discovery moves to
   newer markets.
+- Treat `best_bid_ask` stream messages as indicative best-price references
+  only. They must not create or move executable bid/ask depth.
 - Keep execution paper-only unless live trading is explicitly approved through
   `docs/live-trading-safety-plan.md`.
 
@@ -81,6 +83,9 @@ expected_net_return >= ENTRY_MIN_EXPECTED_NET_RETURN_PCT
 
 `p_exec` is the executable ask-side VWAP and already includes entry spread and
 slippage. Do not subtract entry spread or entry slippage a second time.
+`best_bid_ask` may update displayed/reference best bid and ask prices, but
+`p_exec` must be computed only from confirmed order-book depth carried by
+`book` snapshots or `price_change` updates.
 `WEATHER_TAKER_FEE_RATE=0.05` follows the Polymarket formula:
 
 ```text

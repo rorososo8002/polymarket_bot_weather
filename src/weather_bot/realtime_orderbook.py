@@ -140,6 +140,8 @@ class OrderBookStreamCache:
                     book_hash=str(change.get("hash") or "") or current.book_hash,
                     last_trade_price=current.last_trade_price,
                     raw=message,
+                    indicative_best_bid=None if side == "BUY" else current.indicative_best_bid,
+                    indicative_best_ask=None if side == "SELL" else current.indicative_best_ask,
                 )
                 updated.add(token_id)
         return updated
@@ -154,8 +156,8 @@ class OrderBookStreamCache:
             current = self._books.get(token_id) or OrderBook(token_id, [], [], market=str(message.get("market") or "") or None)
             self._books[token_id] = OrderBook(
                 token_id=token_id,
-                bids=_set_level(current.bids, bid, current.bids[0].size if current.bids else 1.0, reverse=True) if bid > 0 else current.bids,
-                asks=_set_level(current.asks, ask, current.asks[0].size if current.asks else 1.0, reverse=False) if ask > 0 else current.asks,
+                bids=current.bids,
+                asks=current.asks,
                 market=current.market or str(message.get("market") or "") or None,
                 timestamp=str(message.get("timestamp") or "") or current.timestamp,
                 min_order_size=current.min_order_size,
@@ -164,6 +166,8 @@ class OrderBookStreamCache:
                 book_hash=current.book_hash,
                 last_trade_price=current.last_trade_price,
                 raw=message,
+                indicative_best_bid=bid if bid > 0 else current.indicative_best_bid,
+                indicative_best_ask=ask if ask > 0 else current.indicative_best_ask,
             )
         return {token_id}
 
@@ -185,6 +189,8 @@ class OrderBookStreamCache:
                 book_hash=current.book_hash,
                 last_trade_price=float(message.get("price") or 0) or current.last_trade_price,
                 raw=message,
+                indicative_best_bid=current.indicative_best_bid,
+                indicative_best_ask=current.indicative_best_ask,
             )
         return {token_id}
 
@@ -208,6 +214,8 @@ class OrderBookStreamCache:
                 book_hash=current.book_hash,
                 last_trade_price=current.last_trade_price,
                 raw=message,
+                indicative_best_bid=current.indicative_best_bid,
+                indicative_best_ask=current.indicative_best_ask,
             )
         return {token_id}
 

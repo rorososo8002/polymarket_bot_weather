@@ -40,13 +40,19 @@ class OrderBook:
     book_hash: str | None = None
     last_trade_price: float | None = None
     raw: dict[str, Any] | None = None
+    indicative_best_bid: float | None = None
+    indicative_best_ask: float | None = None
 
     @property
     def best_bid(self) -> float | None:
+        if self.indicative_best_bid is not None:
+            return self.indicative_best_bid
         return self.bids[0].price if self.bids else None
 
     @property
     def best_ask(self) -> float | None:
+        if self.indicative_best_ask is not None:
+            return self.indicative_best_ask
         return self.asks[0].price if self.asks else None
 
 

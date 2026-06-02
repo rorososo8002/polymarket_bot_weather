@@ -37,7 +37,7 @@ dead thread or an old order book.
 - Checking only whether the main Python process was active missed a dead
   background thread.
 - Treating every WebSocket message as a book refresh confused trade-only and
-  tick-size-only messages with executable bid and ask updates.
+  tick-size-only messages with order-book price updates.
 
 ## Solution
 Apply the same TTL check to memory and disk forecast entries. Record safe
@@ -49,8 +49,9 @@ last incoming message, last actual order-book price update, stale-book age, and
 the recent stream error. Refresh `paper_runner_status.json` every few seconds
 while the runner waits for the next forecast cycle.
 
-Only `book`, `price_change`, and `best_bid_ask` messages refresh the usable
-order-book timestamp:
+Only `book`, `price_change`, and `best_bid_ask` messages refresh the
+order-book price timestamp. A `best_bid_ask` refresh proves quote freshness,
+not executable depth; fills still require `book` or `price_change` depth:
 
 ```python
 return str(message.get("event_type") or "") in {
@@ -66,7 +67,7 @@ signals:
 
 - Is the main paper service still reporting status?
 - Is the forecast recent enough to reuse?
-- Is the real-time receiver thread alive, and are executable order-book prices
+- Is the real-time receiver thread alive, and are order-book price updates
   still arriving?
 
 Separating those questions prevents one healthy layer from hiding a failure in

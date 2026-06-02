@@ -17,6 +17,8 @@ specialized reference docs.
 - Forecasts refresh every 30 minutes by default. Order books use the Polymarket
   CLOB WebSocket stream, and open-position token IDs stay subscribed until the
   position closes or settles.
+- `best_bid_ask` is indicative price data only. Executable depth comes from
+  `book` snapshots or `price_change` updates, not assumed sizes.
 - Entry decisions are fee-aware. `p_exec` is executable VWAP; `size_usd` is the
   all-in paper-entry budget; paper cash, liquidation bankroll, and dashboard PnL
   use after-fee accounting.
@@ -220,3 +222,11 @@ Decision: `weather_bot.probability` rejects an Open-Meteo daily forecast unless
 a different city-date event look tradable and contaminate paper-performance
 results. Consequence: missing target-date rows return `forecast-unavailable`
 with zero confidence, so paper trading skips instead of guessing.
+
+### 2026-06-03: Do Not Turn Best-Bid-Ask Quotes Into Depth
+
+Decision: `best_bid_ask` WebSocket messages update indicative best bid/ask
+prices only; they do not add, move, or resize bid/ask levels. Why: those
+messages do not prove how many shares are actually available at the quoted
+price. Consequence: executable VWAP, liquidity filters, exits, and paper fills
+use only depth confirmed by `book` snapshots or `price_change` updates.

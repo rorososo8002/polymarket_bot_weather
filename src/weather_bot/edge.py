@@ -130,6 +130,13 @@ def vwap_for_size(levels: list[OrderLevel], shares: float) -> float | None:
     return None
 
 
+def _best_executable_price(levels: list[OrderLevel]) -> float | None:
+    for level in levels:
+        if level.size > 0:
+            return level.price
+    return None
+
+
 def executable_buy_price(book: OrderBook, target_usd: float) -> tuple[float | None, float, float]:
     """Estimate VWAP execution price, shares, and slippage for a target USD order.
 
@@ -137,7 +144,7 @@ def executable_buy_price(book: OrderBook, target_usd: float) -> tuple[float | No
     """
     if target_usd <= 0:
         raise ValueError("target_usd must be positive")
-    best_ask = book.best_ask
+    best_ask = _best_executable_price(book.asks)
     if best_ask is None or best_ask <= 0:
         return None, 0.0, 0.0
     shares = target_usd / best_ask
@@ -160,7 +167,7 @@ def executable_sell_price(book: OrderBook, shares: float) -> tuple[float | None,
     """
     if shares <= 0:
         raise ValueError("shares must be positive")
-    best_bid = book.best_bid
+    best_bid = _best_executable_price(book.bids)
     if best_bid is None or best_bid <= 0:
         return None, 0.0
     p_exec = vwap_for_size(book.bids, shares)
