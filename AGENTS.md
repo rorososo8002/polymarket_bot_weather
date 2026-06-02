@@ -42,8 +42,13 @@ trading-risk, server, or workflow work, read:
 - Do not reimplement completed work.
 - If code and docs disagree, record the drift before continuing.
 - Keep the three handoff docs current for non-trivial work.
+- Keep the three handoff docs compact. They are the default fresh-chat read
+  set, so do not turn them into manuals, roadmaps, transcripts, or detailed
+  research logs. Prefer a compact summary plus a link to a situation-specific
+  doc.
 - Keep bot strategy, goals, phases, and risk direction in
-  `docs/production-implementation-plan.md`.
+  `docs/production-implementation-plan.md`. This file should describe the
+  current strategy contract, not every implementation detail.
 - Keep `docs/production-progress.md` short and current with these sections:
   `Completed`, `In Progress`, `Next Work`, `For The Next AI`.
 - Always include this text under `For The Next AI`:
@@ -51,9 +56,14 @@ trading-risk, server, or workflow work, read:
 > Do not redesign from scratch. Continue from this document's 'In Progress' and 'Next Work' sections. Do not reimplement completed items. If the code and documents disagree, record the drift before continuing.
 
 - Keep important decisions, rejected options, risks, and reasons in
-  `docs/production-decisions.md`.
+  `docs/production-decisions.md`. Keep it as a compact decision ledger:
+  current rule, why it exists, and operational consequence.
 - Move old chronological detail to `docs/archive/` or reusable lessons to
   `docs/solutions/`. Do not turn the progress file into a work diary.
+- Do not add situation-specific docs such as roadmap, dashboard, VPS, runtime,
+  live-trading, or shadow-research references to the default `For The Next AI`
+  read list unless they truly become mandatory for every fresh chat. Mention
+  them as conditional reads in `Next Work` instead.
 - Do not update handoff docs for tiny typo fixes, simple explanations, or
   read-only investigation unless the finding affects future implementation.
 

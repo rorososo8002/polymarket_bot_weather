@@ -1,455 +1,212 @@
 # Production Decisions
 
-## 2026-05-26: Trade Only Verified Polymarket Weather Stations
+This file is the compact decision ledger for fresh-chat handoff. Keep the
+current rule, why it exists, and the operational consequence. Put long
+investigation detail in `docs/solutions/`, `docs/codex/`, roadmap docs, or
+specialized reference docs.
 
-Decision: The bot trades only the 41 cities currently mapped in `src/weather_bot/stations.py`.
+## Active Decision Snapshot
 
-Why: Weather-market edge can disappear if the bot forecasts the wrong station. Previous defaults used city or common climate stations that differed from Polymarket rules, such as Seoul ASOS vs Incheon Intl Airport, Heathrow vs London City Airport, and NYC Central Park vs LaGuardia.
+- Paper-only execution is the boundary. No private keys, wallet connection,
+  signing, real orders, automatic copy trading, or live deployment are allowed
+  without explicit approval and a separate live-trading safety pass.
+- The bot trades only verified Polymarket weather stations in `STATION_MAP`.
+  Unknown, stale, malformed, unsupported, or suspicious data means skip.
+- Forecasts refresh every 30 minutes by default. Order books use the Polymarket
+  CLOB WebSocket stream, and open-position token IDs stay subscribed until the
+  position closes or settles.
+- Entry decisions are fee-aware. `p_exec` is executable VWAP; `size_usd` is the
+  all-in paper-entry budget; paper cash, liquidation bankroll, and dashboard PnL
+  use after-fee accounting.
+- City-date weather buckets share one correlated-risk budget. At most two
+  complementary legs are selected per event, with a `$10` minimum leg and
+  conservative city, event, and total exposure caps.
+- Profit exits may recover principal and keep a bounded settlement runner only
+  when conservative settlement value beats fee-adjusted sell-now value. Active
+  runners are rechecked; they are not risk exemptions.
+- Same-day nowcast is allowed only from explicitly mapped same-station official
+  sources. No nearby-station or city-center substitutions.
+- Public whale/external-signal research remains shadow-only. Promotion requires
+  paired resolved public-signal and bot-entry samples, then only suggests a
+  paper-only A/B experiment.
+- Known-good commands belong in `docs/codex/known-good-commands.md`; fresh work
+  should use them before inventing command shapes.
 
-Consequence: A weather-shaped Polymarket market is skipped unless its parsed city is in `STATION_MAP`.
+## Compact Ledger
 
-## 2026-05-26: Remove City-Centroid Trading Fallback
+### 2026-05-26: Trade Only Verified Polymarket Weather Stations
 
-Decision: `estimate_weather_probability()` returns `unsupported-station` with zero confidence when no verified settlement station exists.
+Decision: Trade only the 41 cities mapped in `src/weather_bot/stations.py`.
+Why: Forecasting the wrong station destroys weather-market edge. Consequence:
+weather-shaped markets are skipped unless their parsed city is in `STATION_MAP`.
 
-Why: City-centroid forecasts are useful for exploration but unsafe for production trading. Unknown settlement stations must fail closed.
+### 2026-05-26: Remove City-Centroid Trading Fallback
 
-Consequence: Parser support and trading support use the same verified station set. Unmapped cities are not treated as supported bot cities unless they are added to `STATION_MAP`.
+Decision: Missing verified station returns `unsupported-station` with zero
+confidence. Why: city-centroid forecasts are exploration data, not production
+trading data. Consequence: parser support and trading support use the same
+verified station set.
 
-## 2026-05-26: Forecast Cache Refresh Is 30 Minutes
+### 2026-05-26: Forecast Cache Refresh Is 30 Minutes
 
-Decision: Default forecast cache TTL and refresh interval are 1800 seconds.
+Decision: Forecast cache TTL and refresh interval default to 1800 seconds. Why:
+forecast data moves slower than order books. Consequence: WebSocket evaluations
+reuse cache until it expires.
 
-Why: Forecast data is slow-moving compared with order books. Pulling forecasts every fast loop wastes API quota and increases rate-limit risk.
+### 2026-05-26: Order Books Use The CLOB WebSocket Stream
 
-Consequence: Order-book stream evaluations reuse cached Open-Meteo ensemble responses until the cache expires.
+Decision: Default order-book monitoring uses the Polymarket CLOB WebSocket
+market channel. Why: realtime order-book monitoring was required; a REST loop
+is polling. Consequence: discovery/forecasts refresh slowly while book events
+trigger paper evaluation.
 
-## 2026-05-26: Order Books Use The CLOB WebSocket Stream
+### 2026-05-26: Keep Paper Trading As The Execution Boundary
 
-Decision: Default order-book monitoring uses the Polymarket CLOB WebSocket market channel.
+Decision: No private keys, signing, or live order submission. Why: real-money
+execution needs separate safety work. Consequence: "trade" means paper
+open/close through `PaperBroker`.
 
-Why: The user requirement is real-time order-book monitoring. A REST loop is still polling and can miss the intended execution behavior.
+### 2026-05-26: Probability Stop Replaces Fixed Price Stop
 
-Consequence: `run_forever()` enters `run_realtime_forever()` by default. Market discovery and forecasts refresh every 30 minutes, while WebSocket `book`, `price_change`, `best_bid_ask`, and tick-size events update the order-book cache and trigger paper-trade evaluation.
+Decision: Close when current side probability falls below the entry-time
+`probability_stop_threshold`. Why: forecast deterioration is the thesis break,
+not thin price noise. Consequence: YES uses `p_true`; NO uses `1 - p_true`.
 
-## 2026-05-26: Keep Paper Trading As The Execution Boundary
+### 2026-05-28: Invalid Edge Sentinels Are Not Exit Signals
 
-Decision: No private keys, signing, or live order submission were added.
+Decision: `edge faded` exits require a fresh executable held-side edge and
+non-empty `p_exec`. Why: `net_edge=-999` means evaluation failure, not negative
+edge. Consequence: invalid book updates can log SKIP but cannot force a close.
 
-Why: The repository is explicitly structured as a live-data paper-trading bot. Moving to real-money execution requires separate safety work.
+### 2026-05-28: Keep Held Position Tokens In WebSocket Subscriptions
 
-Consequence: "Trade" in this implementation means paper open/close through `PaperBroker`. Live execution remains a future explicit project.
+Decision: Realtime subscriptions include current discovery tokens plus every
+open paper-position token. Why: discovery can move to newer dates while older
+positions still carry risk. Consequence: held positions keep live marks.
 
-## 2026-05-26: Probability Stop Replaces Fixed Price Stop
+### 2026-05-28: Explain Two-Sided Liquidity Rejections In SKIP Logs
 
-Decision: The bot no longer uses a fixed entry-price percentage stop. It records `probability_stop_threshold` at entry and closes when the current side probability falls below that threshold.
+Decision: If both YES and NO fail liquidity validation, the final SKIP reason
+includes both side-specific details. Why: opaque SKIPs hide the real blocker.
+Consequence: fail-closed logs remain operator-readable.
 
-Why: Weather-market risk is driven more by forecast probability deterioration than by a fixed token-price move. A static price stop can fire on thin bid/ask noise even when the forecast thesis is unchanged.
+### 2026-05-28: Strategy Changes Must Be Research-Backed And Reproducible
 
-Consequence: `PROBABILITY_STOP_DROP_THRESHOLD=0.10` is the default. YES positions compare current `p_true` to entry-side probability; NO positions compare `1 - p_true`. Decision logs use `probability_stop_threshold` instead of a price stop column.
+Decision: Strategy changes must state expected-value, calibration, sizing,
+liquidity, slippage, forecast-error, or drawdown rationale. Why: a fresh AI
+must reproduce behavior without redesigning. Consequence: update production
+docs alongside strategy code.
 
-## 2026-05-28: Invalid Edge Sentinels Are Not Exit Signals
+### 2026-05-28: Dashboard Scanner Counts Are Cumulative But Hidden
 
-Decision: `edge faded` exits require a fresh executable held-side edge with a non-empty `p_exec`. A sentinel such as `net_edge=-999` with `p_exec=None` means the side could not be evaluated from the current order book and must not close a position by itself.
+Decision: Keep cached totals internally, but show current operator state in the
+visible Scanner Intelligence panel. Why: candidate counts are not actual open
+trades. Consequence: detailed dashboard contract lives in
+`docs/dashboard-build-spec.md`.
 
-Why: During Oracle paper trading, a Seoul NO position opened with a model target far above entry, closed about 12 minutes later for only about 0.1% because `latest_edge=-999` satisfied the old edge-faded condition, then immediately reopened when the next valid update showed the NO edge was still strong. That churn was caused by treating an evaluation failure as a real negative edge.
+### 2026-06-01: Forecast Freshness And WebSocket Health Are Separate Signals
 
-Consequence: Invalid order-book/evaluation updates can still appear as `DECISION SKIP`, but they do not force an edge-faded close. Probability stops, target exits, overheated exits, valid executable edge fades, and max-hold exits still work.
+Decision: Runner status records forecast health and WebSocket health
+separately. Why: a live process can have stale forecasts or a dead receiver
+thread. Consequence: dashboard warns on stale, degraded, or failed inputs.
 
-## 2026-05-28: Keep Held Position Tokens In WebSocket Subscriptions
+### 2026-06-01: Keep The Entrance Guide Short And Progress Current
 
-Decision: The realtime stream registry combines current discovery markets with every open paper position. If market hydration fails, the runner reconstructs a minimal market from the held position so its token remains subscribed.
+Decision: `AGENTS.md` stays the short entrance guide and
+`docs/production-progress.md` stays a current handoff. Why: long mandatory
+checklists waste fresh-chat tokens. Consequence: old detail goes to reference
+docs or `docs/solutions/`.
 
-Why: Discovery can roll forward to newer dates while an older market position is still open. Dropping that token from the WebSocket subscription leaves mark prices and exit checks stale even though the position still has economic risk.
+### 2026-06-01: Require Executable Expected Net Return Before Entry
 
-Consequence: Open positions keep receiving live order-book updates while they remain in paper state. Stream status counts the combined discovery-plus-held registry, so the visible binary-market count can exceed the current discovery result.
+Decision: Entry needs both model `net_edge` and executable expected net return
+above `ENTRY_MIN_EXPECTED_NET_RETURN_PCT=0.06`. Why: apparently profitable
+high-price entries can fail after fees and exit costs. Consequence: reasons log
+route, gross profit, estimated costs, fees, spread, slippage, and rejection.
 
-## 2026-05-28: Explain Two-Sided Liquidity Rejections In SKIP Logs
+### 2026-06-01: Keep Live Execution Separate From Paper Strategy
 
-Decision: When neither YES nor NO has a valid executable liquidity evaluation, the final `DECISION SKIP` reason includes both per-side rejection details.
+Decision: Future live trading is tracked in
+`docs/live-trading-safety-plan.md`. Why: strategy quality and real-order
+execution safety are different problems. Consequence: wallet connection,
+credentials, and live orders require explicit separate approval.
 
-Why: An opaque `No valid side evaluated.` message cannot tell an operator whether the book lacked bids, lacked asks, had extreme prices, had an excessive spread, or lacked exit depth.
+### 2026-06-01: Discover Complete Weather Events Before Evaluating Markets
 
-Consequence: Paper decision logs remain fail-closed while exposing the concrete YES and NO liquidity filters that blocked entry.
+Decision: Discovery expands every supported binary market inside supported
+weather-category events. Why: one event can contain many exact, lower-tail, and
+upper-tail markets; stopping at 41 binaries can cut coverage. Consequence:
+runner status reports event, city, market, and token coverage separately.
 
-## 2026-05-28: Strategy Changes Must Be Research-Backed And Reproducible
+### 2026-06-01: Promote Known-Good Commands Into Executable Defaults
 
-Decision: Production strategy work must be documented as an executable specification, not a chronological activity log.
+Decision: Routine local pytest, Oracle SSH, remote pytest, bounded log checks,
+SCP, and dashboard reachability commands live in
+`docs/codex/known-good-commands.md`. Why: command guessing repeats avoidable
+failures. Consequence: use known-good shapes first.
 
-Why: A fresh AI should be able to open the folder, read the production docs, and reproduce the same bot behavior and research priorities. The core mission is to improve risk-adjusted paper returns through market research, mathematical reasoning, and empirical trade review.
+### 2026-06-01: Split One Conservative City-Date Budget
 
-Consequence: Future strategy changes should state the expected-value, calibration, Kelly/fractional-Kelly, liquidity, slippage, forecast-error, or drawdown rationale behind the rule; update production docs alongside code; and keep live-wallet execution out of scope unless explicitly requested.
+Status: Superseded by the 2026-06-02 portfolio decision. Retained principle:
+nearby buckets are correlated, so one event must not multiply exposure.
 
-## 2026-05-28: Dashboard Scanner Counts Are Cumulative
+### 2026-06-02: Score YES And NO Event Portfolios With A Ten-Dollar Minimum Leg
 
-Decision: `dashboard.py` keeps cached decision and trade totals for diagnostics,
-but the visible Scanner Intelligence panel shows only operator-useful current
-state: open positions, open entry cost, latest Open-Meteo cache time, total
-realized profit, total realized loss, and remaining cash.
+Decision: Compare one-leg and at-most-two-leg `YES+YES`, `YES+NO`, and `NO+NO`
+portfolios across distinct buckets. Minimum leg is `$10`; event cap is 10%
+below `$1,000` and 5% from `$1,000`; city cap is 20%; total open cap is 90%.
+Why: useful NO legs and multi-outcome negative-risk relationships were missed
+before. Consequence: selection maximizes expected log growth under shared
+event risk.
 
-Why: Candidate decisions, forecast-unavailable rows, and YES/NO decision rows are
-not the same thing as actual open trades. Showing them beside open exposure made
-the dashboard easy to misread during operation.
-
-Consequence: The UI no longer displays cumulative candidate-judgment,
-forecast-unavailable, actual-open, or YES/NO decision counters. The detailed
-dashboard rebuild contract is documented in `docs/dashboard-build-spec.md`.
-
-## 2026-06-01: Forecast Freshness And WebSocket Health Are Separate Signals
-
-Decision: The runner writes forecast and WebSocket health snapshots to
-`paper_runner_status.json` while streaming. The dashboard shows them separately
-and raises `STALE`, `DEGRADED`, or `FAILED` warnings instead of treating a
-reachable dashboard page as proof that trading inputs are healthy.
-
-Why: A main process can remain open after its WebSocket receiver thread dies.
-An Open-Meteo response can also remain in memory long after its TTL expires.
-Those two failures can leave an apparently normal dashboard backed by old
-prices or old forecasts.
-
-Consequence: Memory and disk forecast caches share the same TTL. Forecast
-diagnostics distinguish fetch attempts, successful forecast timestamps,
-failure reasons, cache age, stale data, and disk-save failures. WebSocket
-diagnostics distinguish receiver-thread death, reconnect churn, any incoming
-message, actual order-book price updates, stale-book age, and stream errors.
-
-## 2026-06-01: Keep The Entrance Guide Short And The Progress File Current
-
-Decision: `AGENTS.md` contains the project-specific safety and handoff rules
-that every new chat needs. Generic long engineering reminders are not duplicated
-in a separate mandatory checklist. `docs/production-progress.md` stays short and
-uses `Completed`, `In Progress`, `Next Work`, and `For The Next AI`.
-
-Why: Reading a long checklist and a chronological progress diary in every new
-chat spends tokens without improving the next decision. The important rules are
-the ones that prevent concrete mistakes: preserve user work, fail closed, test
-behavior changes, expose failures, keep paper trading, and leave a clear next
-step.
-
-Consequence: Old chronological detail belongs in `docs/archive/` when needed,
-while reusable prevention lessons belong in `docs/solutions/`. A fresh AI
-starts from the current handoff instead of redesigning completed work.
-
-## 2026-06-01: Require Executable Expected Net Return Before Entry
-
-Decision: A paper entry must pass the existing `net_edge` condition and a
-separate expected-net-return condition. The default hypothesis is
-`ENTRY_MIN_EXPECTED_NET_RETURN_PCT=0.06`. Weather taker fees use the official
-Polymarket formula `shares * 0.05 * price * (1 - price)` instead of a fixed
-per-share estimate.
-
-Why: A trade such as buying near `0.88` and expecting an exit near `0.92` can
-look profitable before costs but leave too little return after fees and future
-exit-market costs. Entry VWAP already contains the entry spread and slippage, so
-subtracting those again would double-count cost.
-
-Consequence: The runner logs expected gross profit, estimated cost, expected net
-return, spread, slippage, fee components, selected route, and any threshold
-rejection in the decision reason. Expected early exits use a conservative
-future spread-and-slippage haircut. A high entry price is not banned by itself:
-a conservative hold-to-settlement route may still pass when it leaves at least
-the same 6% expected net return. The bot remains paper-only. Official reference:
-https://docs.polymarket.com/trading/fees.
-
-## 2026-06-01: Keep Live Execution Separate From Paper Strategy
-
-Decision: Future live trading work is tracked in
-`docs/live-trading-safety-plan.md`. It starts only after the paper strategy is
-accepted as sufficiently complete. The live project reuses the paper strategy
-instead of adding a second, artificially more conservative trading strategy.
-
-Why: Paper trading and live execution answer different questions. Paper work
-tests whether the trading rules are useful. Live work must make actual order
-submission, authentication, fill tracking, cancellation, restart recovery,
-regional eligibility checks, and redemption reliable. Mixing them makes it
-hard to tell whether a result changed because of strategy or execution.
-
-Consequence: The strategy-upgrade roadmap remains paper-focused. Live-specific
-operational controls protect actual order handling without silently changing
-the paper strategy. Wallet connection, credentials, real orders, and live
-deployment still require separate explicit user approval.
-
-## 2026-06-01: Discover Complete Weather Events Before Evaluating Binary Markets
-
-Decision: Discovery expands every supported binary market inside every
-weather-category event it finds. The 41-city `STATION_MAP` is only a verified
-settlement-station allowlist. It must not be reused as an event-count cutoff.
-The fallback Gamma events endpoint is bounded separately by pagination safety
-controls. Runner status reports event, city, market, and token coverage
-separately.
-
-Why: A single temperature event contains many mutually exclusive outcomes, such
-as `18°C or below`, exact buckets from `19°C` through `27°C`, and `28°C or
-higher`. Stopping after 41 binary markets can cut off an event partway through
-or scan only a few cities while appearing to cover the 41-city station map.
-Stopping after 41 events is also wrong because a supported city can have more
-than one active city-date event.
-
-Consequence: Exact, lower-tail, and upper-tail buckets are priced from one
-ensemble distribution with shared half-degree boundaries. Their probabilities
-remain mutually consistent. Standalone threshold questions keep their existing
-threshold meaning. The bot remains paper-only.
-
-## 2026-06-01: Promote Known-Good Commands Into Executable Defaults
-
-Decision: Local pytest automatically uses a process-specific workspace temp
-directory through the repository root `conftest.py`. Routine local pytest,
-Oracle SSH preflight, interactive SSH, remote pytest, bounded log checks, SCP
-shape, and dashboard reachability commands are collected in
-`docs/codex/known-good-commands.md`. `AGENTS.md` directs fresh chats there before
-they invent command variants.
-
-Why: A documented workaround that is read only after failure still wastes a
-test run and investigation tokens. The same applies to SSH: retrying guessed
-key paths or fragile nested quoting repeats avoidable work.
-
-Consequence: Raw local `python -m pytest -q` works without manual `TMP` or
-`TEMP` setup. Each pytest process gets a separate workspace temp directory.
-Oracle work starts with a harmless key-existence check and `date` preflight
-before longer remote commands. Existing detailed SSH safety docs remain the
-reference when a recorded first command fails.
-
-## 2026-06-01: Split One Conservative City-Date Budget Across At Most Two Legs
-
-Status: Superseded by the 2026-06-02 event-portfolio decision below.
-
-Decision: New entries are selected at the city-date event level. A reference
-bankroll below `$1,000` may allocate at most 10% to one city-date event. At
-`$1,000` or more, that shared cap shrinks to 5%. A single leg remains capped at
-5%, one city remains capped at 10%, total open exposure remains capped at 30%,
-and one event may hold at most two legs.
-
-Why: A `$100` paper account needs enough nominal room to study complementary
-weather buckets, but nearby buckets remain strongly correlated. Treating each
-bucket as an independent 10% trade would multiply one-day weather risk. Sizing
-new trades only from remaining cash would cause order size to shrink for the
-wrong reason after normal entries. Sizing from temporary unrealized profits
-would increase risk before those profits are safely realizable.
-
-Consequence: Before a new event entry, calculate cost-basis bankroll as cash
-plus open-position entry cost and liquidation bankroll as cash plus executable
-sell value of every held position. Use the smaller value. Missing or stale
-held-position valuation pauses new entries. A second leg is allowed only when
-it adds positive expected net profit after costs and is a non-overlapping
-temperature-bucket `YES` position. Repeated `NO` legs, overlapping thresholds,
-same-market opposite positions, and third legs are blocked. Event-level JSONL
-logs record budget, exposure, selected and rejected legs, expected net profit,
-and scenario PnL. Raising these caps later requires a separate resolved-paper-
-trade evidence review. General concentration-risk reference:
-https://www.finra.org/investors/insights/concentration-risk.
-
-## 2026-06-02: Score YES And NO Event Portfolios With A Ten-Dollar Minimum Leg
-
-Decision: The city-date selector now compares one-leg and at-most-two-leg
-portfolios across distinct non-overlapping temperature buckets. Allowed
-combinations are `YES+YES`, `YES+NO`, and `NO+NO`. Same-market `YES+NO`,
-overlapping thresholds, and third legs remain blocked. Before scoring, event
-bucket probabilities are normalized to 100%. Each candidate must retain
-positive expected net profit after executable costs, and the selected
-portfolio maximizes expected logarithmic bankroll growth.
-
-Decision: A paper leg must be at least `$10`. A bankroll below `$1,000` keeps
-the shared city-date cap at 10%; from `$1,000`, that cap remains 5%. A strong
-single leg may use the full event budget. Different dates for one city share a
-20% city cap. Total open paper exposure may reach 90%, leaving at least 10%
-cash.
-
-Why: The first Phase 4 implementation considered only non-overlapping `YES`
-legs and capped one leg at 5%. That missed economically useful `NO` positions.
-For example, if Seoul settles at `27C`, `27C YES`, `25C NO`, and `26C NO` all
-win. Polymarket `negRisk=true` events explicitly connect one outcome's `NO`
-share with the other outcomes. The previous 30% total cap also prevented a
-`$100` paper account from studying enough independent city-date opportunities.
-At the same time, `$1` legs produced nominal paper activity with little
-economic meaning.
-
-Consequence: With a `$100` reference bankroll, one city-date event can open one
-`$10` leg because the event budget and minimum leg are both `$10`. With a
-`$200` bankroll, the event budget is `$20`, so a calculated `$10+$10`
-combination becomes possible. The 90% account-level cap does not permit one
-event to consume 90%; event and city caps still apply first. This remains
-paper-only and has not been deployed automatically.
-
-Official reference:
-https://docs.polymarket.com/advanced/neg-risk.
-
-## 2026-06-02: Start Settlement-Station Nowcast As A Seoul-Only Pilot
+### 2026-06-02: Start Settlement-Station Nowcast As A Seoul Pilot
 
 Decision: Same-day temperature probability may use observed high-so-far only
-when the observation provider is explicitly mapped to the same settlement
-station in `STATION_MAP`. Phase 5 maps only Seoul/RKSI. All other cities,
-including otherwise supported Polymarket cities, report
-`nowcast-source-unmapped` and continue as forecast-only.
+from explicitly mapped settlement-station sources. Why: city-center or nearby
+station substitutions repeat the wrong-station mistake. Consequence: missing,
+stale, malformed, future-date, or unmapped nowcast remains forecast-only or
+skip.
 
-Decision: The Seoul pilot uses the Aviation Weather Center METAR API for RKSI
-as same-station progress evidence, while documenting Wunderground RKSI as the
-Polymarket settlement reference. This does not replace final settlement data:
-it only prevents the bot from ignoring fresh same-day observations before
-Wunderground finalizes the day's high.
+### 2026-06-02: Keep Station Audit Evidence Explicit
 
-Why: Polymarket Seoul rules resolve to the Wunderground finalized highest
-temperature for all times on the day at the Incheon Intl Airport Station.
-Using a city-center Seoul temperature would be the same class of mistake this
-project already banned. AWC documents METAR terminal observations as worldwide,
-provides an API for ICAO station ids, and updates the current METAR cache once
-a minute. The bot still caches nowcast calls for 15 minutes and requires the
-latest station observation to be no older than 90 minutes so missing or stale
-feeds do not become strategy data.
+Decision: Station registry records forecast source, coordinate source, nowcast
+candidate, provider status, and rule evidence status separately. Why: station
+ID alone does not prove nowcast readiness. Consequence: readable audit table is
+`docs/station-registry-audit.md`.
 
-Consequence: `WeatherSignal` now carries optional `nowcast` metadata with
-observed high, observation timestamps, source URLs, freshness, raw observation
-count, and unavailable reason. Decision notes say either
-`evidence=forecast-plus-nowcast` or `evidence=forecast-only`. Fresh nowcast can
-bound a same-day temperature market to `1.0` when the observed high has already
-crossed a threshold or to `0.0` when an exact/lower bucket is already
-impossible. Missing, stale, malformed, future-date, or unmapped nowcast is a
-skip for nowcast-dependent logic, not a guessed observation.
+### 2026-06-02: Expand Same-Station Observation Providers After Source Checks
 
-Official references:
-- Polymarket Seoul weather rule pages name Wunderground RKSI as the resolution
-  source for the finalized daily high.
-- Aviation Weather Center Data API documents METAR terminal observations,
-  JSON/API access by ICAO station id, once-per-minute current METAR cache
-  updates, and request-rate restrictions.
+Decision: Use AWC METAR for 39 ICAO stations, HKO daily max/min CSV for Hong
+Kong, and keep Karachi/OPMR forecast-only. Why: Hong Kong has official HKO data;
+OPMR lacked a verified same-station provider. Consequence: no substitutions.
 
-## 2026-06-02: Keep Station Audit Evidence Explicit
+### 2026-06-02: Recover Principal Before Holding A Settlement Runner
 
-Decision: The station registry now records forecast source, forecast coordinate
-source, nowcast candidate station, nowcast enablement status, and whether the
-Polymarket rule URL and exact station wording are stored. The readable audit
-table lives in `docs/station-registry-audit.md`.
+Decision: Profit exits may sell a principal-recovery tranche and keep a bounded
+runner when conservative settlement value is better than fee-adjusted sell-now
+value. Why: a favorable low-cost position can be worth more at settlement.
+Consequence: runner actions log `PARTIAL_CLOSE`, `HOLD_RUNNER`, or
+`HOLD_NO_LIQUIDITY`; active runners are rechecked.
 
-Why: A station id such as `RKSI` or `KLGA` is not enough for a beginner or a
-future AI to know whether the bot is using a forecast coordinate, a settlement
-station, a same-day observation feed, or a verified trading signal. Putting
-those states in separate fields prevents the dangerous shortcut of treating all
-41 station ids as automatically nowcast-ready.
+### 2026-06-02: Keep Whale And External Signals In Shadow Research
 
-Consequence: This audit is separate from live observation provider coverage.
-`rule_evidence_status=needs_rule_source_url` means the exact rule URL and
-station wording are not yet stored in the repository fields.
+Decision: Public whale/external signals are research-only and not execution
+inputs. Why: trade size alone is not proof of edge. Consequence: bounded public
+rows and notes can produce a report, but cannot copy trades.
 
-## 2026-06-02: Expand Same-Station Observation Providers After Source Checks
+### 2026-06-02: Keep Paper Fee Accounting Consistent End To End
 
-Decision: Actual same-day observed highs can now come from two official source
-families. ICAO settlement stations use the Aviation Weather Center METAR API
-when that exact ICAO id returns observations. Hong Kong/HKO uses the Hong Kong
-Observatory maximum/minimum temperature since midnight CSV. Karachi/OPMR stays
-forecast-only because AWC did not return recent OPMR METAR data, and no
-same-station substitute was added.
+Decision: Treat `size_usd` as all-in entry budget, buy fewer shares after entry
+fee, subtract taker fees from normal and partial closes, and value dashboard
+PnL/liquidation after exit fee. Why: gross paper fills overstated performance.
+Consequence: post-fix paper results are more conservative; old runtime files
+are not rewritten.
 
-Why: Hong Kong was not worth skipping blindly. The current Polymarket weather
-scan showed "Highest temperature in Hong Kong on June 1, 2026" near the top of
-active weather-event 24-hour volume, so implementing the official HKO-shaped
-source had trading-research value. For Karachi, substituting a different
-airport would repeat the city-center/nearby-station mistake, so the safer
-choice is to leave it forecast-only.
+### 2026-06-02: Guard Shadow Research Locally And Compare Paired Samples
 
-Consequence: `DEFAULT_NOWCAST_SOURCES` follows the station registry:
-39 ICAO stations are `aviationweather-metar`, Hong Kong is
-`hko-maxmin-since-midnight`, and OPMR is unmapped. Missing, stale, malformed,
-or unmapped observations still keep the strategy forecast-only with an
-unavailable reason.
-
-## 2026-06-02: Recover Principal Before Holding A Settlement Runner
-
-Decision: A model-target or overheated profit exit no longer always liquidates
-the whole paper position. The broker first compares the current executable
-sell value after the weather taker fee with the conservative hold-to-settlement
-expected value. If settlement is at least as good, it sells a
-principal-recovery tranche and bounds the remaining runner at
-`SETTLEMENT_RUNNER_MAX_FRACTION`, which defaults to 25% of the current
-position. The policy is configurable through `SETTLEMENT_RUNNER_ENABLED`,
-`SETTLEMENT_RUNNER_MAX_FRACTION`, and
-`SETTLEMENT_RUNNER_MIN_EV_MARGIN_USD`.
-
-Why: A low-cost favorable YES or NO position can be worth more as a controlled
-settlement runner than as an immediate full sale. Selling enough to recover
-principal reduces downside while preserving some upside when the conservative
-settlement value still beats the fee-adjusted sell-now value.
-
-Consequence: Active runners are not repeatedly chopped by later profit signals,
-but they are closed if fresh settlement expected value becomes worse than the
-fee-adjusted sell-now value. Probability stops, valid edge-faded exits, max
-holding time, settlement resolution, invalid-sentinel protection,
-low-liquidity limits, and forecast/nowcast fail-closed behavior remain intact.
-Runner decisions are written to the paper trade log as `PARTIAL_CLOSE`,
-`HOLD_RUNNER`, or `HOLD_NO_LIQUIDITY`, with tranche-level reason text including
-sell-now value, settlement expected value, desired shares, actual executable
-shares, and `low_liquidity` when applicable. This remains paper-only and has
-not been deployed automatically.
-
-## 2026-06-02: Keep Whale And External Signals In Shadow Research
-
-Decision: Public whale/external-signal research is separate from trading
-execution. The bot may collect bounded public Polymarket Data API trade rows,
-public user activity, top-holder context, and manually classified public notes,
-but the live paper runner does not consume those signals.
-
-Decision: The research report must compare public signal timing, implied side,
-and later outcome against our own `paper_decisions.csv`. It must distinguish
-`observed_public_api` evidence from manually entered public-post evidence and
-speculation. It must conclude whether the signal deserves a later paper-only
-experiment, not whether to copy trades immediately.
-
-Why: A large public trade can be informative, but size alone is not proof that
-the trader has an edge. Blind copy trading would mix someone else's timing,
-liquidity, risk tolerance, and possible unrelated portfolio hedge into our
-weather strategy. The project goal is higher risk-adjusted paper returns through
-measured evidence, not automatic imitation.
-
-Consequence: `src/weather_bot/shadow_signals.py` writes bounded
-`shadow_external_signals.jsonl` rows and builds `shadow_signal_report.md`.
-Default research caps are `SHADOW_MAX_MARKETS=100`,
-`SHADOW_MAX_TRADES_PER_MARKET=100`, `SHADOW_MAX_ROWS=1000`, and
-`SHADOW_MIN_TRADE_USDC=100.0`. Fewer than 20 resolved matched signals keeps the
-report in "paper-only experiment: hold" mode. A public signal set must beat
-matched bot entries by at least five percentage points before the report
-suggests a paper-only A/B experiment. Wallet connection, live orders, private
-data collection, and automatic copy trading remain absent.
-
-Official references:
-- https://docs.polymarket.com/market-data/overview
-- https://docs.polymarket.com/api-reference/core/get-trades-for-a-user-or-markets
-- https://docs.polymarket.com/api-reference/core/get-user-activity
-- https://docs.polymarket.com/api-reference/core/get-top-holders-for-markets
-
-## 2026-06-02: Keep Paper Fee Accounting Consistent End To End
-
-Decision: Treat `size_usd` as the all-in paper-entry budget, including the
-modeled entry taker fee. Buy fewer paper shares so entry notional plus fee stays
-inside that budget. Subtract taker fees from normal-close and partial-close
-proceeds. Use after-exit-fee liquidation value for new-entry bankroll and
-dashboard unrealized PnL.
-
-Why: The strategy filter already rejected entries using fee-aware expected
-returns, but the paper wallet recorded gross fills without charging those same
-fees. That made simulated cash, liquidation bankroll, and dashboard returns
-look better than the modeled strategy could actually earn.
-
-Consequence: Paper accounting is more conservative and internally consistent.
-Risk caps still use the clean all-in entry budget. Existing historical runtime
-files are not rewritten retroactively, so pre-fix and post-fix paper results
-must be interpreted with that boundary in mind. This remains paper-only and has
-not been deployed automatically.
-
-Official reference:
-https://docs.polymarket.com/trading/fees
-
-## 2026-06-02: Guard Shadow Research Locally And Compare Paired Samples
-
-Decision: Recheck `SHADOW_MIN_TRADE_USDC` after parsing each public API row,
-deduplicate by full row identity instead of transaction hash alone, honor
-`SHADOW_MAX_ROWS=0`, and calculate experiment promotion only from paired
-resolved rows where the bot made a scoreable `YES` or `NO` entry.
-
-Why: Remote filters are helpful but should not be the only safety boundary. One
-transaction can contain multiple distinct rows. A zero retention cap must keep
-zero rows. Most importantly, comparing all external signals against only bot
-entries creates unequal denominators: bot `SKIP` rows can make public signals
-look better without proving a better entry rule.
-
-Consequence: The report still shows all resolved external signals and bot-skip
-diagnostics, but promotion needs at least 20 paired resolved rows and a
-five-percentage-point advantage over bot entries on that same sample. Shadow
-signals remain research-only and cannot place orders or change paper entries.
+Decision: Recheck minimum public trade size locally, dedupe by full row
+identity, honor zero retention, and promote only from paired resolved rows
+where the bot made a scoreable entry. Why: remote filters and unequal
+denominators can overstate public-signal edge. Consequence: shadow promotion
+requires at least 20 paired rows and a five-point advantage, then only
+paper-only A/B testing.
