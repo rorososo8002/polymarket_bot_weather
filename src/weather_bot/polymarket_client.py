@@ -115,7 +115,7 @@ class PolymarketClient:
             if not isinstance(row, dict) or not self._is_weather_market(row):
                 continue
             market = self._parse_market(row, event_id=event_id or None, event_slug=event_slug)
-            if market.yes_token_id or market.no_token_id:
+            if market.yes_token_id and market.no_token_id:
                 markets.append(market)
         if not event_id and markets:
             event_id = "|".join(market.market_id for market in markets)
@@ -189,28 +189,12 @@ class PolymarketClient:
         event_id: str | None = None,
         event_slug: str | None = None,
     ) -> RawMarket:
-        tokens = row.get("tokens") or row.get("clobTokenIds") or []
-        yes_token_id = None
-        no_token_id = None
-
-        if isinstance(tokens, list) and tokens and isinstance(tokens[0], dict):
-            for token in tokens:
-                outcome = str(token.get("outcome") or token.get("name") or "").upper()
-                token_id = str(token.get("token_id") or token.get("tokenId") or token.get("id") or "")
-                if outcome == "YES":
-                    yes_token_id = token_id
-                elif outcome == "NO":
-                    no_token_id = token_id
-        else:
-            raw_ids = row.get("clobTokenIds")
-            if isinstance(raw_ids, str):
-                try:
-                    raw_ids = json.loads(raw_ids)
-                except json.JSONDecodeError:
-                    raw_ids = []
-            if isinstance(raw_ids, list) and len(raw_ids) >= 2:
-                yes_token_id = str(raw_ids[0])
-                no_token_id = str(raw_ids[1])
+        yes_token_id, no_token_id = self._token_ids_from_token_objects(row.get("tokens"))
+        if not (yes_token_id and no_token_id):
+            yes_token_id, no_token_id = self._token_ids_from_outcomes(
+                row.get("outcomes"),
+                row.get("clobTokenIds"),
+            )
 
         return RawMarket(
             market_id=str(row.get("id") or row.get("market") or row.get("conditionId") or "unknown"),
@@ -225,6 +209,58 @@ class PolymarketClient:
             event_slug=event_slug or row.get("eventSlug") or row.get("event_slug"),
             raw=row,
         )
+
+    @classmethod
+    def _token_ids_from_token_objects(cls, value: Any) -> tuple[str | None, str | None]:
+        if not isinstance(value, list) or not value:
+            return None, None
+
+        pairs: dict[str, str] = {}
+        for token in value:
+            if not isinstance(token, dict):
+                return None, None
+            outcome = cls._normalize_binary_outcome(token.get("outcome") or token.get("name"))
+            token_id = str(token.get("token_id") or token.get("tokenId") or token.get("id") or "").strip()
+            if outcome not in {"YES", "NO"} or not token_id or outcome in pairs:
+                return None, None
+            pairs[outcome] = token_id
+        return cls._complete_binary_token_pair(pairs)
+
+    @classmethod
+    def _token_ids_from_outcomes(cls, outcomes_value: Any, token_ids_value: Any) -> tuple[str | None, str | None]:
+        outcomes = cls._list_value(outcomes_value)
+        token_ids = cls._list_value(token_ids_value)
+        if len(outcomes) != 2 or len(token_ids) != 2:
+            return None, None
+
+        pairs: dict[str, str] = {}
+        for outcome_value, token_id_value in zip(outcomes, token_ids):
+            outcome = cls._normalize_binary_outcome(outcome_value)
+            token_id = str(token_id_value).strip()
+            if outcome not in {"YES", "NO"} or not token_id or outcome in pairs:
+                return None, None
+            pairs[outcome] = token_id
+        return cls._complete_binary_token_pair(pairs)
+
+    @staticmethod
+    def _list_value(value: Any) -> list[Any]:
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except json.JSONDecodeError:
+                return []
+        return value if isinstance(value, list) else []
+
+    @staticmethod
+    def _normalize_binary_outcome(value: Any) -> str | None:
+        outcome = str(value or "").strip().upper()
+        return outcome if outcome in {"YES", "NO"} else None
+
+    @staticmethod
+    def _complete_binary_token_pair(pairs: dict[str, str]) -> tuple[str | None, str | None]:
+        if set(pairs) != {"YES", "NO"}:
+            return None, None
+        return pairs["YES"], pairs["NO"]
 
     def get_order_book(self, token_id: str) -> OrderBook:
         url = f"{self.clob_base}/book"

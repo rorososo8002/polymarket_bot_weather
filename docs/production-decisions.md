@@ -19,6 +19,9 @@ specialized reference docs.
 - Forecasts refresh every 30 minutes by default. Order books use the Polymarket
   CLOB WebSocket stream, and open-position token IDs stay subscribed until the
   position closes or settles.
+- Discovery maps YES/NO token IDs only from explicit outcome labels. If
+  `tokens` or `outcomes` cannot prove the YES and NO side for `clobTokenIds`,
+  the market is skipped rather than guessed from list order.
 - `best_bid_ask` is indicative price data only. Executable depth comes from
   `book` snapshots or `price_change` updates, not assumed sizes.
 - Entry decisions are fee-aware. `p_exec` is executable VWAP; `size_usd` is the
@@ -323,3 +326,12 @@ order, thin liquidity, stale weather data, parser uncertainty, or a valid weak
 edge. Consequence: use `docs/codex/skip-diagnostics.md` and future paper-only
 reporting to find the blocker first; do not weaken thresholds just because the
 bot skipped many markets.
+
+### 2026-06-03: Map Token IDs By Explicit YES/NO Outcomes
+
+Decision: `polymarket_client.py` maps tradable YES and NO token IDs only from
+explicit `tokens[].outcome` or market `outcomes` labels. Why: `clobTokenIds`
+are tradable asset IDs, but their list order is not a safe proof of side. If
+YES and NO are swapped, a correct prediction can be recorded as the opposite
+paper position. Consequence: missing, duplicated, malformed, or non-YES/NO
+outcome labels make discovery skip the market instead of guessing.

@@ -71,11 +71,29 @@ def temp_market() -> RawMarket:
     )
 
 
+def binary_token_fields(yes_token_id: str, no_token_id: str) -> dict[str, str]:
+    return {
+        "outcomes": json.dumps(["Yes", "No"]),
+        "clobTokenIds": json.dumps([yes_token_id, no_token_id]),
+    }
+
+
 def test_discovery_uses_weather_question_shape_and_paginates():
     client = FakePolymarketClient(
         pages={
             0: [{"id": "e0", "markets": [{"id": "x", "question": "Will unrelated thing happen?", "clobTokenIds": json.dumps(["x_yes", "x_no"])}]}],
-            50: [{"id": "e1", "markets": [{"id": "m1", "question": "Will NYC reach 90°F on May 25?", "clobTokenIds": json.dumps(["yes", "no"])}]}],
+            50: [
+                {
+                    "id": "e1",
+                    "markets": [
+                        {
+                            "id": "m1",
+                            "question": "Will NYC reach 90°F on May 25?",
+                            **binary_token_fields("yes", "no"),
+                        }
+                    ],
+                }
+            ],
             100: [],
         }
     )
@@ -99,12 +117,12 @@ def test_discovery_uses_polymarket_weather_category_event_slugs():
                         {
                             "id": "m1",
                             "question": "Will the highest temperature in Seoul be 27\u00b0C or higher on May 25?",
-                            "clobTokenIds": json.dumps(["yes", "no"]),
+                            **binary_token_fields("yes", "no"),
                         },
                         {
                             "id": "m2",
                             "question": "Will the highest temperature in Seoul be 26\u00b0C on May 25?",
-                            "clobTokenIds": json.dumps(["yes2", "no2"]),
+                            **binary_token_fields("yes2", "no2"),
                         },
                     ]
                 }
@@ -137,7 +155,7 @@ def test_category_discovery_does_not_stop_after_supported_city_count():
                         {
                             "id": f"market-{slug}",
                             "question": "Will the highest temperature in Seoul be 26\u00b0C on May 25?",
-                            "clobTokenIds": json.dumps([f"yes-{slug}", f"no-{slug}"]),
+                            **binary_token_fields(f"yes-{slug}", f"no-{slug}"),
                         }
                     ],
                 }
@@ -146,6 +164,46 @@ def test_category_discovery_does_not_stop_after_supported_city_count():
     markets = ManyCategoryEventsClient().discover_weather_markets()
 
     assert len(markets) == event_count
+
+
+def test_market_parser_maps_clob_tokens_by_outcomes_when_order_is_reversed():
+    client = FakePolymarketClient()
+
+    market = client._parse_market(
+        {
+            "id": "m1",
+            "question": "Will NYC reach 90 F on May 25?",
+            "outcomes": json.dumps(["No", "Yes"]),
+            "clobTokenIds": json.dumps(["no-token", "yes-token"]),
+        }
+    )
+
+    assert market.yes_token_id == "yes-token"
+    assert market.no_token_id == "no-token"
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        {
+            "id": "missing-outcomes",
+            "question": "Will NYC reach 90 F on May 25?",
+            "clobTokenIds": json.dumps(["first-token", "second-token"]),
+        },
+        {
+            "id": "ambiguous-outcomes",
+            "question": "Will NYC reach 90 F on May 25?",
+            "outcomes": json.dumps(["Above", "Below"]),
+            "clobTokenIds": json.dumps(["first-token", "second-token"]),
+        },
+    ],
+)
+def test_discovery_skips_clob_tokens_when_outcomes_do_not_identify_yes_and_no(row):
+    client = FakePolymarketClient(pages={0: [{"id": "e1", "markets": [row]}]})
+
+    markets = client.discover_weather_markets(max_pages=1, page_size=50)
+
+    assert markets == []
 
 
 def test_discovery_rejects_non_weather_questions_with_ambiguous_words_and_dates():
@@ -220,7 +278,18 @@ def test_discovery_returns_partial_results_when_later_gamma_page_errors():
         def _get(self, url: str, params: dict | None = None):
             offset = int((params or {}).get("offset", 0))
             if offset == 0:
-                return [{"id": "e1", "markets": [{"id": "m1", "question": "Will NYC reach 90 F on May 25?", "clobTokenIds": json.dumps(["yes", "no"])}]}]
+                return [
+                    {
+                        "id": "e1",
+                        "markets": [
+                            {
+                                "id": "m1",
+                                "question": "Will NYC reach 90 F on May 25?",
+                                **binary_token_fields("yes", "no"),
+                            }
+                        ],
+                    }
+                ]
             raise requests.HTTPError("later page failed")
 
     markets = FlakyClient().discover_weather_markets(max_pages=2, page_size=50)
@@ -240,17 +309,17 @@ def test_event_discovery_keeps_every_supported_submarket_without_city_count_trun
                             {
                                 "id": "lower",
                                 "question": "Will the highest temperature in Seoul be 18°C or below on May 25?",
-                                "clobTokenIds": json.dumps(["lower-yes", "lower-no"]),
+                                **binary_token_fields("lower-yes", "lower-no"),
                             },
                             {
                                 "id": "exact",
                                 "question": "Will the highest temperature in Seoul be 19°C on May 25?",
-                                "clobTokenIds": json.dumps(["exact-yes", "exact-no"]),
+                                **binary_token_fields("exact-yes", "exact-no"),
                             },
                             {
                                 "id": "upper",
                                 "question": "Will the highest temperature in Seoul be 28°C or higher on May 25?",
-                                "clobTokenIds": json.dumps(["upper-yes", "upper-no"]),
+                                **binary_token_fields("upper-yes", "upper-no"),
                             },
                         ],
                     },
@@ -260,7 +329,7 @@ def test_event_discovery_keeps_every_supported_submarket_without_city_count_trun
                             {
                                 "id": "london",
                                 "question": "Will the highest temperature in London be 24°C on May 25?",
-                                "clobTokenIds": json.dumps(["london-yes", "london-no"]),
+                                **binary_token_fields("london-yes", "london-no"),
                             }
                         ],
                     },

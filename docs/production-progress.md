@@ -49,9 +49,11 @@
 - Forecast target dates now require exact `daily.time` matches. If the target
   date is absent, the probability path returns `forecast-unavailable` with zero
   confidence instead of using a nearby forecast date.
-- Local verification after the latest entry-bankroll fail-closed fix: focused
-  portfolio/runner/edge pytest and full `pytest -q`. Full result:
-  `212 passed`.
+- Polymarket market discovery no longer trusts `clobTokenIds` list order for
+  YES/NO side mapping. It maps token IDs only from explicit `tokens` or
+  `outcomes` labels and skips markets when the side cannot be proven.
+- Local verification after the latest YES/NO token-mapping fail-closed fix:
+  focused hardening pytest and full `pytest -q`. Full result: `215 passed`.
 
 ## In Progress
 
@@ -60,6 +62,7 @@
 - Entry-bankroll fail-closed hardening is complete locally and remains
   paper-only.
 - Station-rule evidence hardening is complete locally and remains paper-only.
+- YES/NO token mapping hardening is complete locally and remains paper-only.
 - Phase 0-7 changes have not been automatically deployed to the Oracle VPS.
 - Before any deployment, explain the change, benefit, risk, verification method,
   public exposure implications, and rollback method, then get explicit user

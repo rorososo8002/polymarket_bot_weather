@@ -22,6 +22,9 @@ verified settlement stations and reproducible paper accounting.
 - Use the Polymarket CLOB WebSocket market stream for order books by default.
 - Keep token IDs for open positions subscribed even when discovery moves to
   newer markets.
+- Map Polymarket YES/NO token IDs only from explicit outcome labels. If
+  `tokens` or `outcomes` cannot prove which `clobTokenIds` entry is YES and
+  which is NO, skip the market instead of trusting list order.
 - Treat `best_bid_ask` stream messages as indicative best-price references
   only. They must not create or move executable bid/ask depth.
 - Persist `paper_state.json` through an atomic temp-file replace. Existing
@@ -144,6 +147,10 @@ trade from guessed cash or hidden positions.
 - Rule evidence is also fail-closed. If a city lacks a stored Polymarket rules
   URL/station phrase, or if the found rule source conflicts with the registry,
   discovery and probability estimation exclude it from paper trading.
+- YES/NO token mapping is fail-closed. `clobTokenIds` are tradable asset IDs,
+  but they are not safe to interpret by position alone. Discovery must map them
+  through explicit `tokens[].outcome` or the market `outcomes` field, and skip
+  if the labels are missing, duplicated, malformed, or not exactly YES/NO.
 
 Detailed station evidence lives in `docs/station-registry-audit.md`.
 
