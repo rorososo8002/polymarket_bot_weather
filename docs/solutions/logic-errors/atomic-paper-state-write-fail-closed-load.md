@@ -1,6 +1,7 @@
 ---
 title: Atomic Paper State Writes And Fail-Closed Loads
 date: 2026-06-03
+last_updated: 2026-06-03
 category: logic-errors
 module: weather_bot.paper
 problem_type: logic_error
@@ -8,10 +9,11 @@ component: service_object
 symptoms:
   - "`PaperBroker.save_state()` wrote directly to `paper_state.json`."
   - "A partially written or structurally invalid paper state could leave the bot without a trustworthy cash and position ledger."
+  - "A position with an invalid side, non-finite shares, out-of-range entry price, negative cost, empty IDs, or non-object metadata could still load."
 root_cause: missing_validation
 resolution_type: code_fix
 severity: high
-tags: [paper-trading, state-file, atomic-write, fail-closed, accounting]
+tags: [paper-trading, state-file, atomic-write, fail-closed, accounting, validation]
 ---
 
 # Atomic Paper State Writes And Fail-Closed Loads
@@ -56,6 +58,15 @@ fields, or structurally invalid. Missing state files still start a fresh paper
 account, because that is the normal first-run path. Existing but invalid state
 files do not.
 
+The loader also validates each saved open position before constructing a
+`PaperPosition`. That matters because a position is not decorative history; it
+is the current exposure used for risk limits, liquidation value, and later PnL.
+The saved `entry_price` is the average entry price field in this codebase, so it
+must stay in the binary-market price range from 0 to 1. `shares` must be a real
+finite positive number, `side` must be `YES` or `NO`, `cost_usd` must be
+non-negative, `market_id` and `token_id` must identify the held market and
+token, and `metadata` must be a JSON object when present.
+
 ## 4. What To Check Next Time To Prevent The Same Mistake
 
 - For any ledger-like runtime file, test that the first write target is a temp
@@ -64,6 +75,8 @@ files do not.
   until replacement happens.
 - Add a corrupt-file test that proves the bot raises a domain-specific error
   instead of quietly starting from default cash.
+- Add field-level position fixtures for bad sides, string or NaN shares,
+  out-of-range entry prices, negative costs, empty IDs, and non-object metadata.
 - Preserve the corrupt file for investigation; do not overwrite it during
   startup failure handling.
 - Keep normal first-run behavior separate from corrupt-file behavior: missing

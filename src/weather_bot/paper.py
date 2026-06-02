@@ -52,6 +52,56 @@ class PaperStateLoadError(RuntimeError):
     """Raised when paper accounting state is unsafe to trade from."""
 
 
+def _required_number(raw: dict[str, Any], field: str, index: int) -> float:
+    value = raw.get(field)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"positions[{index}].{field} must be a number")
+    value = float(value)
+    if not isfinite(value):
+        raise ValueError(f"positions[{index}].{field} must be finite")
+    return value
+
+
+def _required_nonempty_string(raw: dict[str, Any], field: str, index: int) -> str:
+    value = raw.get(field)
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"positions[{index}].{field} must be a non-empty string")
+    return value
+
+
+def _position_from_state(raw: dict[str, Any], index: int) -> PaperPosition:
+    item = dict(raw)
+
+    _required_nonempty_string(item, "market_id", index)
+    _required_nonempty_string(item, "token_id", index)
+
+    side = item.get("side")
+    if not isinstance(side, str) or side not in {"YES", "NO"}:
+        raise ValueError(f"positions[{index}].side must be YES or NO")
+
+    shares = _required_number(item, "shares", index)
+    if shares <= 0:
+        raise ValueError(f"positions[{index}].shares must be positive")
+    item["shares"] = shares
+
+    entry_price = _required_number(item, "entry_price", index)
+    if not 0.0 <= entry_price <= 1.0:
+        raise ValueError(f"positions[{index}].entry_price must be between 0 and 1")
+    item["entry_price"] = entry_price
+
+    cost_usd = _required_number(item, "cost_usd", index)
+    if cost_usd < 0:
+        raise ValueError(f"positions[{index}].cost_usd must be non-negative")
+    item["cost_usd"] = cost_usd
+
+    metadata = item.get("metadata", {})
+    if not isinstance(metadata, dict):
+        raise ValueError(f"positions[{index}].metadata must be a JSON object")
+    item["metadata"] = metadata
+
+    return PaperPosition(**item)
+
+
 class PaperBroker:
     """Small local paper broker.
 
@@ -95,10 +145,10 @@ class PaperBroker:
             if not isinstance(raw_positions, list):
                 raise ValueError("positions must be a list")
             positions: list[PaperPosition] = []
-            for item in raw_positions:
+            for index, item in enumerate(raw_positions):
                 if not isinstance(item, dict):
                     raise ValueError("each position must be a JSON object")
-                positions.append(PaperPosition(**item))
+                positions.append(_position_from_state(item, index))
 
             # Older state files may not have stats, but if present it must be readable.
             raw_stats = raw.get("stats", {})

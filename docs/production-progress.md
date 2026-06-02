@@ -26,8 +26,9 @@
   budget, closes add after-fee proceeds, and dashboard/liquidation values use
   after-exit-fee marks.
 - Paper account state is persisted with a temp-file write followed by
-  `os.replace`, and existing corrupt or invalid `paper_state.json` fails closed
-  instead of starting from a fresh default account.
+  `os.replace`, and existing corrupt, structurally invalid, or position-field
+  invalid `paper_state.json` fails closed instead of starting from a fresh
+  default account.
 - Dashboard startup fails closed on public hosts such as `0.0.0.0` unless
   `DASHBOARD_TOKEN` is non-empty and non-placeholder. Browser API polling uses
   the token header instead of a token query string, and server logs redact

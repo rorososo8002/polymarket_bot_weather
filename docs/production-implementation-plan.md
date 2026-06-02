@@ -28,8 +28,8 @@ verified settlement stations and reproducible paper accounting.
 - Treat `best_bid_ask` stream messages as indicative best-price references
   only. They must not create or move executable bid/ask depth.
 - Persist `paper_state.json` through an atomic temp-file replace. Existing
-  corrupt, unreadable, or structurally invalid paper state fails closed instead
-  of starting a new default account.
+  corrupt, unreadable, structurally invalid, or position-field invalid paper
+  state fails closed instead of starting a new default account.
 - Public dashboard binding fails closed unless `DASHBOARD_TOKEN` is set to a
   non-placeholder value. Local development on `127.0.0.1` or `localhost` may
   still run without a token.
@@ -119,9 +119,13 @@ below-minimum entry sizes.
 
 `paper_state.json` is the paper account book, not a disposable cache. State
 saves write a complete temporary file first and then replace the live file with
-`os.replace`. If an existing state file is corrupt JSON, unreadable, or has an
-invalid account structure, `PaperBroker` refuses to start so the bot cannot
-trade from guessed cash or hidden positions.
+`os.replace`. If an existing state file is corrupt JSON, unreadable, has an
+invalid account structure, or contains an invalid position field, `PaperBroker`
+refuses to start so the bot cannot trade from guessed cash or hidden positions.
+Position `side` must be `YES` or `NO`; `shares` must be finite and positive;
+the persisted average entry price field `entry_price` must be between 0 and 1;
+`cost_usd` must be non-negative; `market_id` and `token_id` must be non-empty;
+and `metadata` must be a JSON object when present.
 
 ## Weather And Discovery Contract
 
