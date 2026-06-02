@@ -143,7 +143,8 @@ def available_entry_bankroll(broker: PaperBroker, client: PolymarketClient) -> E
                 0.0,
                 f"cannot price held token {pos.token_id}: insufficient executable bid depth",
             )
-        liquidation_bankroll += pos.shares * exit_price
+        exit_fee_usdc = polymarket_taker_fee_usdc(pos.shares, exit_price, broker.settings.weather_taker_fee_rate)
+        liquidation_bankroll += pos.shares * exit_price - exit_fee_usdc
 
     entry_bankroll = min(cost_basis_bankroll, liquidation_bankroll)
     return EntryBankrollSnapshot(
@@ -284,15 +285,7 @@ def _scenario_pnl(
     probabilities: dict[str, float],
     settings: Settings,
 ) -> dict[str, float]:
-    selected_cost = sum(
-        leg.result.size_usd
-        + polymarket_taker_fee_usdc(
-            leg.result.size_shares,
-            leg.result.p_exec or 0.0,
-            settings.weather_taker_fee_rate,
-        )
-        for leg in selected
-    )
+    selected_cost = sum(leg.result.size_usd for leg in selected)
     total_cost = selected_cost + sum(pos.cost_usd for pos in held)
     scenarios: dict[str, float] = {}
     for outcome in probabilities:
@@ -333,7 +326,7 @@ def _resize_candidate(candidate: PortfolioCandidate, size_usd: float) -> Portfol
         result=replace(
             result,
             size_usd=size_usd,
-            size_shares=size_usd / result.p_exec,
+            size_shares=result.size_shares * scale,
             expected_net_profit_usd=result.expected_net_profit_usd * scale,
         ),
     )

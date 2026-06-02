@@ -8,8 +8,10 @@ below when the first command fails or when a task needs more detail.
 ## VPS Access
 
 - The active Oracle VPS is `ubuntu@140.245.69.242`.
-- The canonical local SSH key directory is `C:\Users\wpdla\Documents\오라클ssh`.
-- For Oracle VPS checks, use the SSH private key at `C:\Users\wpdla\Documents\오라클ssh\ssh-key-2026-05-25.key`.
+- The canonical local SSH key is named `ssh-key-2026-05-25.key` and lives in
+  the Oracle SSH directory under `C:\Users\wpdla\Documents`.
+- For Oracle VPS checks, resolve that private key path first and pass it to
+  `ssh -i`.
 - The adjacent `.pub` file is the public key and must not be passed to `ssh -i`.
 - Never print, open, copy, or commit the key contents. Use it only as an identity file with `ssh -i` or `scp -i`.
 - For remote pytest or verification, run from `/opt/polymarket-weather-bot` and use the service context when needed, for example `sudo -u polymarket /opt/polymarket-weather-bot/.venv/bin/python -m pytest -q`.

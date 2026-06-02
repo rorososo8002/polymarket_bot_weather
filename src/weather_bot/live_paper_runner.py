@@ -189,7 +189,7 @@ def _side_result(
         net_edge=edge,
         min_edge=min_edge,
     )
-    estimate_shares = size_usd / p_exec if size_usd > 0 else _shares
+    estimate_shares = size_usd / p_eff if size_usd > 0 else _shares
     spread = max(0.0, (book.best_ask or p_exec) - (book.best_bid or p_exec))
     fair = model_fair_price(side, signal.p_true, settings)
     expected_exit = target_exit_price(p_exec, fair, settings)

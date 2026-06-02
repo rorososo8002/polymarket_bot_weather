@@ -6,7 +6,8 @@ Date: 2026-05-28 Asia/Seoul
 
 - Oracle is the only active deployment target.
 - Oracle SSH target: `ubuntu@140.245.69.242`.
-- Canonical private key file: `C:\Users\wpdla\Documents\오라클ssh\ssh-key-2026-05-25.key`.
+- Canonical private key file: `ssh-key-2026-05-25.key` in the Oracle SSH
+  directory under `C:\Users\wpdla\Documents`.
 - Legacy pre-Oracle VPS helpers, keys, and runtime paths must not be used.
 - Do not connect to retired pre-Oracle hosts while diagnosing the bot, dashboard, or deployment.
 - If `127.0.0.1:8787` does not load, check the Oracle SSH tunnel and Oracle dashboard service only.
@@ -53,9 +54,9 @@ Do not copy old pre-Oracle runtime files to Oracle. Start the Oracle paper run f
    - bot reaches `phase=streaming`
    - message shows token, binary-market, event, and city coverage, for example
      `websocket streaming 82 tokens across 41 markets, 7 events, 4 cities`
-   - dashboard `예보 상태` shows a recent successful forecast or an explicit
+   - dashboard `Forecast Health` shows a recent successful forecast or an explicit
      stale warning
-   - dashboard `WebSocket 상태` shows a live receiver thread and a recent
+   - dashboard `WebSocket Health` shows a live receiver thread and a recent
      order-book update
    - decisions either use real forecast data or fail closed with `forecast-unavailable`
 

@@ -63,7 +63,7 @@ class ParsedWeatherQuestion:
     date_hint: str | None = None
     confidence: float = 0.0
     note: str = ""
-    threshold_precip_mm: float | None = None  # 강수 질문에서 파싱된 mm 임계값 (None=어떤 비든, 0.1mm 기본값)
+    threshold_precip_mm: float | None = None  # Precipitation threshold in mm. None means any rain; 0.1 mm is the default.
     temperature_metric: Literal["max", "min"] = "max"
     temperature_bucket: Literal["threshold", "exact", "lower_tail", "upper_tail"] = "threshold"
 
@@ -119,4 +119,4 @@ class PaperState:
     realized_pnl_usd: float = 0.0
     positions: list[PaperPosition] = field(default_factory=list)
     stats: dict[str, Any] = field(default_factory=dict)
-    # stats 구조: {"temperature": {"wins": 0, "losses": 0, "pnl": 0.0}, "precipitation": {...}}
+    # stats shape: {"temperature": {"wins": 0, "losses": 0, "pnl": 0.0}, "precipitation": {...}}

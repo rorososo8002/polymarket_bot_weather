@@ -9,6 +9,14 @@ except ModuleNotFoundError:
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_local_env_example_exposes_settlement_runner_defaults():
+    text = (ROOT / ".env.example").read_text(encoding="utf-8")
+
+    assert "SETTLEMENT_RUNNER_ENABLED=true" in text
+    assert "SETTLEMENT_RUNNER_MAX_FRACTION=0.25" in text
+    assert "SETTLEMENT_RUNNER_MIN_EV_MARGIN_USD=0.00" in text
+
+
 def test_systemd_service_runs_live_paper_bot_from_venv():
     service = ROOT / "deploy" / "systemd" / "polymarket-weather-bot.service"
 
@@ -41,6 +49,9 @@ def test_vps_env_example_keeps_runtime_state_under_data_dir():
     assert "MAX_MARKETS" not in text
     assert "ENTRY_MIN_EXPECTED_NET_RETURN_PCT=0.06" in text
     assert "WEATHER_TAKER_FEE_RATE=0.05" in text
+    assert "SETTLEMENT_RUNNER_ENABLED=true" in text
+    assert "SETTLEMENT_RUNNER_MAX_FRACTION=0.25" in text
+    assert "SETTLEMENT_RUNNER_MIN_EV_MARGIN_USD=0.00" in text
     assert "BANKROLL_USD=100\n" in text
     assert "ENTRY_FRACTION=0.10" in text
     assert "MAX_SINGLE_MARKET_FRACTION=0.10" in text

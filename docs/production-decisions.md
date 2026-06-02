@@ -118,7 +118,7 @@ message, actual order-book price updates, stale-book age, and stream errors.
 Decision: `AGENTS.md` contains the project-specific safety and handoff rules
 that every new chat needs. Generic long engineering reminders are not duplicated
 in a separate mandatory checklist. `docs/production-progress.md` stays short and
-uses `완료`, `진행 중`, `다음 작업`, and `이어받는 AI에게`.
+uses `Completed`, `In Progress`, `Next Work`, and `For The Next AI`.
 
 Why: Reading a long checklist and a chronological progress diary in every new
 chat spends tokens without improving the next decision. The important rules are
@@ -350,3 +350,106 @@ Consequence: `DEFAULT_NOWCAST_SOURCES` follows the station registry:
 `hko-maxmin-since-midnight`, and OPMR is unmapped. Missing, stale, malformed,
 or unmapped observations still keep the strategy forecast-only with an
 unavailable reason.
+
+## 2026-06-02: Recover Principal Before Holding A Settlement Runner
+
+Decision: A model-target or overheated profit exit no longer always liquidates
+the whole paper position. The broker first compares the current executable
+sell value after the weather taker fee with the conservative hold-to-settlement
+expected value. If settlement is at least as good, it sells a
+principal-recovery tranche and bounds the remaining runner at
+`SETTLEMENT_RUNNER_MAX_FRACTION`, which defaults to 25% of the current
+position. The policy is configurable through `SETTLEMENT_RUNNER_ENABLED`,
+`SETTLEMENT_RUNNER_MAX_FRACTION`, and
+`SETTLEMENT_RUNNER_MIN_EV_MARGIN_USD`.
+
+Why: A low-cost favorable YES or NO position can be worth more as a controlled
+settlement runner than as an immediate full sale. Selling enough to recover
+principal reduces downside while preserving some upside when the conservative
+settlement value still beats the fee-adjusted sell-now value.
+
+Consequence: Active runners are not repeatedly chopped by later profit signals,
+but they are closed if fresh settlement expected value becomes worse than the
+fee-adjusted sell-now value. Probability stops, valid edge-faded exits, max
+holding time, settlement resolution, invalid-sentinel protection,
+low-liquidity limits, and forecast/nowcast fail-closed behavior remain intact.
+Runner decisions are written to the paper trade log as `PARTIAL_CLOSE`,
+`HOLD_RUNNER`, or `HOLD_NO_LIQUIDITY`, with tranche-level reason text including
+sell-now value, settlement expected value, desired shares, actual executable
+shares, and `low_liquidity` when applicable. This remains paper-only and has
+not been deployed automatically.
+
+## 2026-06-02: Keep Whale And External Signals In Shadow Research
+
+Decision: Public whale/external-signal research is separate from trading
+execution. The bot may collect bounded public Polymarket Data API trade rows,
+public user activity, top-holder context, and manually classified public notes,
+but the live paper runner does not consume those signals.
+
+Decision: The research report must compare public signal timing, implied side,
+and later outcome against our own `paper_decisions.csv`. It must distinguish
+`observed_public_api` evidence from manually entered public-post evidence and
+speculation. It must conclude whether the signal deserves a later paper-only
+experiment, not whether to copy trades immediately.
+
+Why: A large public trade can be informative, but size alone is not proof that
+the trader has an edge. Blind copy trading would mix someone else's timing,
+liquidity, risk tolerance, and possible unrelated portfolio hedge into our
+weather strategy. The project goal is higher risk-adjusted paper returns through
+measured evidence, not automatic imitation.
+
+Consequence: `src/weather_bot/shadow_signals.py` writes bounded
+`shadow_external_signals.jsonl` rows and builds `shadow_signal_report.md`.
+Default research caps are `SHADOW_MAX_MARKETS=100`,
+`SHADOW_MAX_TRADES_PER_MARKET=100`, `SHADOW_MAX_ROWS=1000`, and
+`SHADOW_MIN_TRADE_USDC=100.0`. Fewer than 20 resolved matched signals keeps the
+report in "paper-only experiment: hold" mode. A public signal set must beat
+matched bot entries by at least five percentage points before the report
+suggests a paper-only A/B experiment. Wallet connection, live orders, private
+data collection, and automatic copy trading remain absent.
+
+Official references:
+- https://docs.polymarket.com/market-data/overview
+- https://docs.polymarket.com/api-reference/core/get-trades-for-a-user-or-markets
+- https://docs.polymarket.com/api-reference/core/get-user-activity
+- https://docs.polymarket.com/api-reference/core/get-top-holders-for-markets
+
+## 2026-06-02: Keep Paper Fee Accounting Consistent End To End
+
+Decision: Treat `size_usd` as the all-in paper-entry budget, including the
+modeled entry taker fee. Buy fewer paper shares so entry notional plus fee stays
+inside that budget. Subtract taker fees from normal-close and partial-close
+proceeds. Use after-exit-fee liquidation value for new-entry bankroll and
+dashboard unrealized PnL.
+
+Why: The strategy filter already rejected entries using fee-aware expected
+returns, but the paper wallet recorded gross fills without charging those same
+fees. That made simulated cash, liquidation bankroll, and dashboard returns
+look better than the modeled strategy could actually earn.
+
+Consequence: Paper accounting is more conservative and internally consistent.
+Risk caps still use the clean all-in entry budget. Existing historical runtime
+files are not rewritten retroactively, so pre-fix and post-fix paper results
+must be interpreted with that boundary in mind. This remains paper-only and has
+not been deployed automatically.
+
+Official reference:
+https://docs.polymarket.com/trading/fees
+
+## 2026-06-02: Guard Shadow Research Locally And Compare Paired Samples
+
+Decision: Recheck `SHADOW_MIN_TRADE_USDC` after parsing each public API row,
+deduplicate by full row identity instead of transaction hash alone, honor
+`SHADOW_MAX_ROWS=0`, and calculate experiment promotion only from paired
+resolved rows where the bot made a scoreable `YES` or `NO` entry.
+
+Why: Remote filters are helpful but should not be the only safety boundary. One
+transaction can contain multiple distinct rows. A zero retention cap must keep
+zero rows. Most importantly, comparing all external signals against only bot
+entries creates unequal denominators: bot `SKIP` rows can make public signals
+look better without proving a better entry rule.
+
+Consequence: The report still shows all resolved external signals and bot-skip
+diagnostics, but promotion needs at least 20 paired resolved rows and a
+five-percentage-point advantage over bot entries on that same sample. Shadow
+signals remain research-only and cannot place orders or change paper entries.

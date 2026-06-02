@@ -11,8 +11,8 @@ def test_parse_temperature_market_fahrenheit():
     assert parsed.threshold_unit == "F"
 
 
-def test_parse_temperature_market_celsius_korean_style():
-    parsed = parse_weather_question("오늘 Seoul 최고기온은 21도 이상?")
+def test_parse_temperature_market_celsius_threshold():
+    parsed = parse_weather_question("Will Seoul be at least 21C today?")
     assert parsed.city == "seoul"
     assert parsed.variable == "temperature"
     assert parsed.operator == ">="

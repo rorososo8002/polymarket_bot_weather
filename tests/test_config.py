@@ -25,6 +25,24 @@ def test_default_entry_net_return_filter_uses_official_weather_fee_rate():
     assert Settings.weather_taker_fee_rate == 0.05
 
 
+def test_default_settlement_runner_is_bounded_and_enabled():
+    assert Settings.settlement_runner_enabled is True
+    assert Settings.settlement_runner_max_fraction == 0.25
+    assert Settings.settlement_runner_min_ev_margin_usd == 0.0
+
+
+def test_default_shadow_signal_research_is_bounded_and_public_only():
+    assert Settings.polymarket_data_base == "https://data-api.polymarket.com"
+    assert Settings.shadow_signals_jsonl_path == "shadow_external_signals.jsonl"
+    assert Settings.shadow_public_notes_jsonl_path == "shadow_public_notes.jsonl"
+    assert Settings.shadow_report_path == "shadow_signal_report.md"
+    assert Settings.shadow_max_markets == 100
+    assert Settings.shadow_max_trades_per_market == 100
+    assert Settings.shadow_max_rows == 1000
+    assert Settings.shadow_min_trade_usdc == 100.0
+    assert Settings.shadow_compare_window_seconds == 86400
+
+
 def test_default_city_date_portfolio_caps_shrink_after_one_thousand_dollars():
     assert Settings.bankroll_usd == 100.0
     assert Settings.entry_fraction == 0.10
@@ -55,6 +73,9 @@ def test_load_settings_reads_conservative_strategy_controls(monkeypatch):
     monkeypatch.setenv("PROBABILITY_STOP_DROP_THRESHOLD", "0.08")
     monkeypatch.setenv("ENTRY_MIN_EXPECTED_NET_RETURN_PCT", "0.07")
     monkeypatch.setenv("WEATHER_TAKER_FEE_RATE", "0.04")
+    monkeypatch.setenv("SETTLEMENT_RUNNER_ENABLED", "false")
+    monkeypatch.setenv("SETTLEMENT_RUNNER_MAX_FRACTION", "0.20")
+    monkeypatch.setenv("SETTLEMENT_RUNNER_MIN_EV_MARGIN_USD", "1.25")
 
     settings = load_settings()
 
@@ -62,6 +83,9 @@ def test_load_settings_reads_conservative_strategy_controls(monkeypatch):
     assert settings.probability_stop_drop_threshold == 0.08
     assert settings.entry_min_expected_net_return_pct == 0.07
     assert settings.weather_taker_fee_rate == 0.04
+    assert settings.settlement_runner_enabled is False
+    assert settings.settlement_runner_max_fraction == 0.20
+    assert settings.settlement_runner_min_ev_margin_usd == 1.25
 
 
 def test_load_settings_reads_forecast_cache_controls(monkeypatch):
@@ -128,3 +152,27 @@ def test_load_settings_reads_city_date_portfolio_controls(monkeypatch):
     assert settings.large_bankroll_event_date_exposure_fraction == 0.04
     assert settings.event_date_exposure_transition_usd == 1200.0
     assert settings.max_event_portfolio_legs == 3
+
+
+def test_load_settings_reads_shadow_signal_research_controls(monkeypatch):
+    monkeypatch.setenv("POLYMARKET_DATA_BASE", "https://example.test")
+    monkeypatch.setenv("SHADOW_SIGNALS_JSONL_PATH", "data/shadow.jsonl")
+    monkeypatch.setenv("SHADOW_PUBLIC_NOTES_JSONL_PATH", "data/notes.jsonl")
+    monkeypatch.setenv("SHADOW_REPORT_PATH", "reports/shadow.md")
+    monkeypatch.setenv("SHADOW_MAX_MARKETS", "12")
+    monkeypatch.setenv("SHADOW_MAX_TRADES_PER_MARKET", "34")
+    monkeypatch.setenv("SHADOW_MAX_ROWS", "56")
+    monkeypatch.setenv("SHADOW_MIN_TRADE_USDC", "789.5")
+    monkeypatch.setenv("SHADOW_COMPARE_WINDOW_SECONDS", "3600")
+
+    settings = load_settings()
+
+    assert settings.polymarket_data_base == "https://example.test"
+    assert settings.shadow_signals_jsonl_path == "data/shadow.jsonl"
+    assert settings.shadow_public_notes_jsonl_path == "data/notes.jsonl"
+    assert settings.shadow_report_path == "reports/shadow.md"
+    assert settings.shadow_max_markets == 12
+    assert settings.shadow_max_trades_per_market == 34
+    assert settings.shadow_max_rows == 56
+    assert settings.shadow_min_trade_usdc == 789.5
+    assert settings.shadow_compare_window_seconds == 3600

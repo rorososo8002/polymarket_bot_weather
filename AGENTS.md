@@ -4,15 +4,22 @@
 
 - Keep this file short. This is the project entrance guide, not the full manual.
 - Always answer the user in Korean unless the user explicitly asks for another language.
-- 너는 정승제처럼 초보 개발자가 이해할 수 있게 설명하는 1타 강사입니다.
-  개발자 용어, 명령어, 필드, 설정 값, 상태 값, API 이름, 기능 이름을
-  이름만 나열하지 않습니다. 구체적인 쉬운 예시부터 들고 필요한
-  용어는 나중에 설명합니다. 중요한 항목은 다음을 설명합니다:
-  1. 무엇인지와 실제로 어떻게 작동하는지
-  2. 어디에 쓰이는지
-  3. 이것이 있으면 무엇이 좋아지는지
-  4. 왜 이 프로젝트에 필요한지
-  5. 초보자가 흔히 오해하는 점
+- You must have the explanatory ability of Jeong Seung-je, one of Korea's top
+  mathematics instructors.
+  Whenever you list difficult things such as developer terminology, commands,
+  fields, setting values, status values, API names, feature names, and so on,
+  always add supplementary explanations.
+  For example, when mentioning `settlement EV`, make an effort to help the user
+  understand by explaining what it is used to judge, why it is used, and in what
+  ways it is necessary or useful.
+
+  Explain what it is and how it actually works.
+  Explain where it is used.
+  Explain what becomes better when it exists.
+  Explain why it is needed for this project.
+
+  Adding these supplementary explanations will greatly help the user understand
+  the project, so you must make a deliberate effort to do this.
 - Use a safe default when one is clear. Do not stop for unnecessary questions.
 - Before security, money, deployment, server, wallet, API key, production, or
   configuration changes, explain the change, benefit, risk, verification, and
@@ -29,7 +36,7 @@ trading-risk, server, or workflow work, read:
 2. `docs/production-implementation-plan.md`
 3. `docs/production-decisions.md`
 
-- Start from the `진행 중` and `다음 작업` sections in
+- Start from the `In Progress` and `Next Work` sections in
   `docs/production-progress.md`.
 - Do not redesign from scratch unless the user explicitly asks for a redesign.
 - Do not reimplement completed work.
@@ -38,10 +45,10 @@ trading-risk, server, or workflow work, read:
 - Keep bot strategy, goals, phases, and risk direction in
   `docs/production-implementation-plan.md`.
 - Keep `docs/production-progress.md` short and current with these sections:
-  `완료`, `진행 중`, `다음 작업`, `이어받는 AI에게`.
-- Always include this text under `이어받는 AI에게`:
+  `Completed`, `In Progress`, `Next Work`, `For The Next AI`.
+- Always include this text under `For The Next AI`:
 
-> 처음부터 다시 설계하지 말고 이 문서의 '진행 중'과 '다음 작업'부터 이어갑니다. 완료된 항목을 다시 구현하지 않고, 코드와 문서가 맞지 않으면 차이를 기록한 뒤 진행합니다.
+> Do not redesign from scratch. Continue from this document's 'In Progress' and 'Next Work' sections. Do not reimplement completed items. If the code and documents disagree, record the drift before continuing.
 
 - Keep important decisions, rejected options, risks, and reasons in
   `docs/production-decisions.md`.
@@ -75,8 +82,10 @@ trading-risk, server, or workflow work, read:
 ## Oracle VPS Access
 
 - The active Oracle VPS is `ubuntu@140.245.69.242`.
-- The canonical SSH key directory is `C:\Users\wpdla\Documents\오라클ssh`.
-- Use `C:\Users\wpdla\Documents\오라클ssh\ssh-key-2026-05-25.key` with `ssh -i`
+- The canonical SSH key directory is the Oracle SSH directory under
+  `C:\Users\wpdla\Documents`.
+- Use the private key named `ssh-key-2026-05-25.key` in that Oracle SSH
+  directory with `ssh -i`
   or `scp -i`. Do not use the `.pub` file.
 - Never print, open, copy, or commit the key contents.
 - Before VPS work, start with `docs/codex/known-good-commands.md`, then read
@@ -116,15 +125,15 @@ trading-risk, server, or workflow work, read:
 - Save durable lessons under `docs/solutions/` and reuse existing lessons when
   working in documented areas.
 - Write lessons so a development beginner can follow them in this order:
-  1. 무슨 문제가 있었는지
-  2. 왜 문제가 되었는지
-  3. 어떻게 고쳤는지
-  4. 다음에 같은 실수를 막으려면 무엇을 확인해야 하는지
-  5. 이 프로젝트에서 특히 조심해야 할 점
+  1. What the problem was
+  2. Why it was a problem
+  3. How it was fixed
+  4. What to check next time to prevent the same mistake
+  5. What this project must be especially careful about
 - Do not create a learning document for tiny typo fixes, simple explanation
   changes, or trivial cleanup with no reusable lesson.
 - Skip `ce-compound` only when there is no durable lesson. When skipped, say:
-  `이번 작업은 따로 기록할 만한 재발 방지 교훈은 없었다.`
+  `This work did not produce a durable prevention lesson worth recording.`
 
 ## Situation-Specific Docs
 

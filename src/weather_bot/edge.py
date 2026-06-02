@@ -151,12 +151,12 @@ def executable_buy_price(book: OrderBook, target_usd: float) -> tuple[float | No
 def executable_sell_price(book: OrderBook, shares: float) -> tuple[float | None, float]:
     """Estimate VWAP exit price and slippage for selling `shares` against bid levels.
 
-    진입(executable_buy_price)과 대칭 구조: bid 호가창 전체 깊이를 VWAP으로 계산.
-    보유 물량이 최우선 매수 호가 잔량보다 클 경우 슬리피지가 발생하며,
-    이를 가상매매 단계에서도 현실적으로 반영한다.
+    This is the exit-side mirror of executable_buy_price. It calculates VWAP
+    across the available bid-depth. If the held shares exceed the best-bid
+    depth, the resulting slippage is reflected even in paper trading.
 
     Returns:
-        (vwap_price, slippage): 유동성 부족 시 vwap_price는 None.
+        (vwap_price, slippage). vwap_price is None when liquidity is insufficient.
     """
     if shares <= 0:
         raise ValueError("shares must be positive")
@@ -165,24 +165,25 @@ def executable_sell_price(book: OrderBook, shares: float) -> tuple[float | None,
         return None, 0.0
     p_exec = vwap_for_size(book.bids, shares)
     if p_exec is None:
-        # Bid 호가창 유동성이 전체 물량을 소화 못할 경우
+        # The bid book cannot absorb the full share amount.
         return None, 0.0
     slippage = max(0.0, best_bid - p_exec)
     return p_exec, slippage
 
 
 def max_absorbable_shares(levels: list[OrderLevel], min_price: float = 0.01) -> float:
-    """Bid 호가창에서 min_price 이상 가격대의 총 소화 가능 수량을 반환한다.
+    """Return total bid-side shares available at or above `min_price`.
 
-    보유 물량(pos.shares)이 이 값을 초과하면 전량 청산이 불가능하다.
-    maybe_close_positions에서 부분 청산(Partial Close) 여부를 판단할 때 사용한다.
+    If a position's shares exceed this value, a full close is not executable.
+    maybe_close_positions uses this to decide whether a partial close is needed.
 
     Args:
-        levels: 호가창 Bid 레벨 목록 (price 내림차순 정렬 권장)
-        min_price: 이 가격 미만의 호가는 무시 (기본값 0.01 = 1센트 이하 쓰레기 호가 제외)
+        levels: Bid book levels, preferably sorted by descending price.
+        min_price: Ignore bids below this price. The default excludes dust bids
+            at one cent or below.
 
     Returns:
-        float: 소화 가능한 총 수량 (0이면 사실상 유동성 없음)
+        Total absorbable shares. Zero means there is effectively no liquidity.
     """
     return sum(level.size for level in levels if level.price >= min_price)
 

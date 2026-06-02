@@ -249,6 +249,15 @@ when sensible, then keep a controlled remainder for settlement.
   settlement-risk reduction, and low-liquidity behavior.
 - The policy remains configurable and paper-only.
 
+Local completion note: implemented on 2026-06-02. Profit exits now compare
+fee-adjusted sell-now value with conservative settlement expected value. When
+settlement is at least as good, the broker sells a principal-recovery tranche,
+caps the remaining settlement runner at 25% by default, and logs
+`PARTIAL_CLOSE` plus `HOLD_RUNNER` tranche decisions. Probability stops, valid
+edge-fade exits, max-hold exits, invalid-sentinel defense, low-liquidity limits,
+and nowcast fail-closed behavior remain in force. Deployment still requires
+explicit approval.
+
 ## Phase 7: Whale And External-Signal Shadow Research
 
 ### Goal
@@ -272,28 +281,39 @@ production execution.
 - Data retention is bounded and documented.
 - The report distinguishes evidence from speculation.
 
+Local completion note: implemented on 2026-06-02. Added a separate
+`src/weather_bot/shadow_signals.py` research module, `shadow-signal-report`
+CLI, bounded `SHADOW_*` settings, public Polymarket Data API trade/activity/
+holder client helpers, paper-decision timing/outcome comparison, manual public
+note evidence/speculation separation, and `docs/shadow-signal-research.md`.
+The paper runner does not consume these signals, no wallet/live execution was
+added, and no automatic copy trading was added. Current conclusion remains
+research-only until enough resolved matched public signals justify a later
+paper-only experiment.
+
 ## Fresh-Chat Prompt Template
 
 Copy one phase prompt at a time into a fresh chat:
 
 ```text
-이 저장소의 AGENTS.md와 docs/strategy-upgrade-roadmap.md를 먼저 읽어줘.
-이번 채팅에서는 로드맵의 Phase N만 끝까지 진행해줘.
+Read `AGENTS.md` and `docs/strategy-upgrade-roadmap.md` first.
+In this chat, complete only Phase N from the roadmap.
 
-중요 규칙:
-- 기존 변경사항을 절대 삭제하거나 되돌리지 말 것.
-- 실거래 기능은 추가하지 말고 paper trading 상태를 유지할 것.
-- 테스트를 먼저 추가하고, 수정 후 focused test와 전체 test를 실행할 것.
-- 코드 동작이 달라지면 production 문서와 progress 문서를 함께 갱신할 것.
-- VPS 배포나 운영 설정 변경은 자동으로 하지 말 것. 필요하면 변경 내용,
-  장점, 위험, 확인 방법, 되돌리는 방법을 초보자도 이해하게 설명하고
-  내 승인을 먼저 받을 것.
-- 작업 완료 전에 durable learning이 있는지 확인하고 필요하면
-  docs/solutions/에 기록할 것.
+Important rules:
+- Never delete or revert existing changes.
+- Do not add live-trading functionality; keep the project in paper-trading mode.
+- Add tests first, then run focused tests and the full test suite after changes.
+- If code behavior changes, update the production docs and progress docs.
+- Do not automatically deploy to the VPS or change operations settings. If a
+  deployment or operations change is needed, explain the change, benefit, risk,
+  verification method, and rollback method clearly enough for a beginner, then
+  wait for my approval.
+- Before finishing, check whether there is durable learning to record, and write
+  it under `docs/solutions/` when needed.
 
-Phase N의 목표, Required Work, Completion Gate를 기준으로 작업하고,
-마지막에 수정 파일, 테스트 결과, 남은 위험, 다음 Phase 인수인계를
-한국어로 간단히 보고해줘.
+Use Phase N's Goal, Required Work, and Completion Gate as the source of truth.
+At the end, briefly report changed files, test results, remaining risks, and the
+handoff for the next Phase.
 ```
 
 Replace `N` with the phase number. For best results, also paste the short

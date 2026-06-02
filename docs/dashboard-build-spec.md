@@ -42,30 +42,31 @@ so a new AI can recreate the same screen from the repository alone.
 
 Show only operator-useful summary rows:
 
-- `오픈 포지션`: current open position count from paper state.
-- `총 오픈 진입금액`: sum of `cost_usd` for current open positions.
-- `Open-Meteo 최근 예보`: latest `created_at` timestamp found in
+- `Open Positions`: current open position count from paper state.
+- `Total Open Entry Cost`: sum of `cost_usd` for current open positions.
+- `Latest Open-Meteo Forecast`: latest `created_at` timestamp found in
   `forecast_cache.json`.
-- `총 수익금`: cumulative positive PnL from closed/settled/partial-close trade
+- `Total Profit`: cumulative positive PnL from closed/settled/partial-close trade
   rows.
-- `총 손실금`: cumulative absolute value of negative PnL from closed/settled/
+- `Total Loss`: cumulative absolute value of negative PnL from closed/settled/
   partial-close trade rows.
-- `남은 현금`: current `cash_usd`.
+- `Remaining Cash`: current `cash_usd`.
 
-Do not show `누적 후보 판단`, `예보 없음`, `실제 진입`, or `YES/NO 판단` in the UI.
+Do not show `Cumulative Candidate Decisions`, `Forecast Unavailable`,
+`Actual Entries`, or `YES/NO Decisions` in the UI.
 Those counters may still exist internally for tests or future diagnostics, but
 they are not dashboard display rows.
 
 Below the summary rows, include three explanation boxes:
 
-- `예보 상태`: explain the last fresh-request attempt, last successful
+- `Forecast Health`: explain the last fresh-request attempt, last successful
   forecast timestamp, cache age, stale warning, recent failure reason, and
   disk-save error. A visible dashboard with an old forecast is not healthy.
-- `WebSocket 상태`: explain whether the background receiver thread is alive,
+- `WebSocket Health`: explain whether the background receiver thread is alive,
   reconnect count, last incoming message, last actual order-book price update,
   stale-book age, and recent stream error. Trade-only or tick-size-only events
   must not refresh the last order-book timestamp.
-- `이벤트 포트폴리오`: explain the latest city-date portfolio decision. Show
+- `Event Portfolio`: explain the latest city-date portfolio decision. Show
   the conservative reference bankroll, shared cap, selected legs, rejected
   legs, and worst logged scenario PnL. State that city-date exposure is 10%
   below `$1,000`, 5% from `$1,000`, and limited to two complementary legs.
@@ -101,15 +102,15 @@ Rows are sorted newest first by `closed_at`.
 
 Columns:
 
-- `날짜`
-- `도시`
-- `예측날씨`
-- `조건`
-- `예상 청산`
-- `진입`
-- `청산`
+- `Date`
+- `City`
+- `Forecast`
+- `Condition`
+- `Expected Exit`
+- `Entry`
+- `Exit`
 - `PNL`
-- `수익률`
+- `Return`
 
 Closed rows must avoid blank numeric cells. If historical logs are sparse, use
 the best available fallback:
@@ -125,7 +126,7 @@ the best available fallback:
 - The first chart point uses the earliest trade timestamp available from
   `paper_trades.csv`; if no trade exists, use the oldest available runtime
   timestamp and then the current generated time.
-- The range buttons are `1일`, `7일`, `1개월`, `1Y`, and `ALL`.
+- The range buttons are `1D`, `7D`, `1M`, `1Y`, and `ALL`.
 - Hovering over the line shows a tooltip with date/time, PnL versus initial
   bankroll, and equity.
 - The chart line is Poly Blue, with a subtle blue fill. Profit/loss semantics

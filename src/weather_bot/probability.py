@@ -477,9 +477,9 @@ def _target_date_from_hint(
 ) -> date:
     today = _today_for_timezone(timezone_name, now)
     hint = (parsed.date_hint or "").lower().strip()
-    if hint in {"today", "오늘"}:
+    if hint in {"today", "\uc624\ub298"}:
         return today
-    if hint in {"tomorrow", "내일"}:
+    if hint in {"tomorrow", "\ub0b4\uc77c"}:
         return today + timedelta(days=1)
     if hint in WEEKDAY_INDEX:
         days_ahead = (WEEKDAY_INDEX[hint] - today.weekday()) % 7
@@ -636,7 +636,7 @@ def _with_temperature_nowcast(
 
 
 # ---------------------------------------------------------------------------
-# 5) 강수 앙상블 확률 모델
+# 5) Precipitation ensemble probability model
 # ---------------------------------------------------------------------------
 
 def _ensemble_precipitation_probability(
@@ -645,17 +645,19 @@ def _ensemble_precipitation_probability(
     settings: Settings,
     ensemble_client: OpenMeteoEnsembleClient,
 ) -> WeatherSignal:
-    """앙상블 기반 강수 확률 모델.
+    """Ensemble-based precipitation probability model.
 
-    전략:
-    - Open-Meteo 앙상블 API의 precipitation_sum 멤버 데이터 사용.
-    - 경험적 투표: threshold_mm 이상인 멤버 비율.
-    - 강수는 정규분포가 아니라 CDF 블렌드 대신 80% 실험 투표 + 20% 기본율(0.5).
-    - 신뢰도 상한을 기온 모델보다 낙게 설정 (예측 난이도 반영).
+    Strategy:
+    - Use precipitation_sum member data from the Open-Meteo ensemble API.
+    - Empirical vote: share of members at or above threshold_mm.
+    - Precipitation is not modeled as a normal distribution. Instead of a CDF
+      blend, use an 80% empirical vote plus a 20% base rate of 0.5.
+    - Cap confidence lower than the temperature model because precipitation is
+      harder to forecast.
     """
     target = _target_date_from_hint(parsed, timezone_name=station.timezone)
     lead_days = _lead_time_days(target, timezone_name=station.timezone)
-    # 파싱된 임계값이 없으면 0.1mm 기본값 (어떤 비든)
+    # If no parsed threshold exists, use 0.1 mm as the "any rain" default.
     is_snow = parsed.variable == "snow"
     threshold_amount = parsed.threshold_precip_mm if parsed.threshold_precip_mm is not None else 0.1
     variable = "snowfall_sum" if is_snow else "precipitation_sum"
@@ -666,7 +668,7 @@ def _ensemble_precipitation_probability(
         station.latitude,
         station.longitude,
         timezone=station.timezone,
-        # 강수는 7일 이후 신뢰도 급낙 → 최대 7일
+        # Precipitation confidence drops sharply after seven days.
         forecast_days=max(3, min(7, int(lead_days) + 2)),
     )
     daily = data.get("daily") or {}
@@ -674,29 +676,29 @@ def _ensemble_precipitation_probability(
     member_values = _extract_member_values(daily, variable, idx, bias_f=0.0)
 
     if len(member_values) < 4:
-        raise ValueError(f"강수 앙상블 멤버 부족: {len(member_values)}개")
+        raise ValueError(f"insufficient precipitation ensemble members: {len(member_values)}")
 
-    # 경험적 투표 (threshold_mm 이상인 멤버 비율)
+    # Empirical vote: share of members at or above threshold_mm.
     votes = [x >= threshold_amount for x in member_values]
     empirical_p = sum(votes) / len(votes)
 
-    # 확률 계산: 80% 실험적 투표 + 20% 기본율(0.5) 블렌드
-    # (기온 대비 불확실성이 높아 기본율 쪽으로 더 많이 당김)
+    # Probability: 80% empirical vote + 20% base rate of 0.5.
+    # Precipitation is more uncertain than temperature, so pull harder toward the base rate.
     p = clamp_probability(0.80 * empirical_p + 0.20 * 0.5)
 
-    # 신뢰도 계산
+    # Confidence calculation.
     station_bonus = 0.08
     member_bonus = min(0.08, len(member_values) / 500.0)
-    # 리드타임 페널티: 강수는 2일 이후부터 하루당 6%씩 하락
+    # Lead-time penalty: precipitation confidence falls 6% per day after day two.
     lead_penalty = min(0.25, max(0.0, lead_days - 1) * 0.06)
-    # 멤버 합의 보너스: 80% 이상 동의 시 +보너스
-    agreement = abs(empirical_p - 0.5)  # 0=의견 반반, 0.5=만장일치
+    # Member agreement bonus: add confidence when at least 80% agree.
+    agreement = abs(empirical_p - 0.5)  # 0=split, 0.5=unanimous
     agreement_bonus = min(0.10, agreement * 0.20)
-    base_confidence = parsed.confidence * 0.70   # 기온 대비 기본 신뢰도 낙춤
+    base_confidence = parsed.confidence * 0.70   # Lower base confidence than temperature.
     confidence = clamp_probability(
         base_confidence + station_bonus + member_bonus + agreement_bonus - lead_penalty
     )
-    # 강수 신뢰도 하드 상한
+    # Hard cap for precipitation confidence.
     confidence = min(settings.precip_max_confidence, confidence)
 
     nonzero_count = sum(1 for v in member_values if v > 0.0)
@@ -810,7 +812,7 @@ def estimate_weather_probability(
             )
 
     if parsed.variable in {"precipitation", "snow"}:
-        # 앙상블 기반 강수 확률 모델 (개선된 버전)
+        # Improved ensemble-based precipitation probability model.
         try:
             return _ensemble_precipitation_probability(
                 parsed, station, settings, ensemble_client or OpenMeteoEnsembleClient.from_settings(settings)

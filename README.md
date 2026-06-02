@@ -31,6 +31,15 @@ The root `conftest.py` automatically keeps pytest temporary files under
 test and Oracle VPS commands are collected in
 `docs/codex/known-good-commands.md`.
 
+Build a public whale/external-signal shadow report without changing trading:
+
+```powershell
+shadow-signal-report
+```
+
+Add `--collect` only when you intentionally want to fetch a bounded public
+Polymarket Data API sample into `shadow_external_signals.jsonl`.
+
 ## Production Policy
 
 The bot must fail closed around settlement ambiguity.
@@ -129,6 +138,13 @@ Polymarket category/Gamma discovery
   -> risk, exposure, probability stop threshold
   -> PaperBroker open/close decision
   -> CSV, state JSON, event-portfolio JSONL, raw snapshot logs
+
+Public shadow research path:
+  -> discover supported weather markets
+  -> fetch bounded public Data API trades
+  -> store shadow_external_signals.jsonl
+  -> compare timing, side, and later outcome against paper_decisions.csv
+  -> write shadow_signal_report.md
 ```
 
 ## Strategy Logic
@@ -162,9 +178,9 @@ conservative reference bankroll:
 
 ```text
 cost_basis_bankroll = cash + open-position entry cost
-liquidation_bankroll = cash + executable sell value of open positions
+liquidation_bankroll = cash + executable sell value of open positions after exit fee
 entry_bankroll = min(cost_basis_bankroll, liquidation_bankroll)
-entry_usd = entry_bankroll * ENTRY_FRACTION
+entry_usd = entry_bankroll * ENTRY_FRACTION  # all-in budget including entry fee
 ```
 
 Below `$1,000`, at most two complementary city-date legs share one 10% event
@@ -175,6 +191,18 @@ combinations after normalizing event probabilities. One city's different dates
 share a 20% cap, total open paper exposure is capped at 90%, unrealized profits
 do not increase new-entry sizing, and missing held-position valuation pauses
 new entries.
+
+`PaperBroker` charges the modeled taker fee to the paper wallet on entry,
+partial close, and normal close. Dashboard market value and unrealized PnL use
+the same conservative after-exit-fee liquidation value. Settlement payouts are
+binary `0` or `1`, where the fee curve is zero.
+
+On profit exits, strong low-cost positions can recover principal while keeping
+a bounded settlement runner. The broker compares fee-adjusted sell-now value
+with conservative settlement expected value, sells the principal-recovery
+tranche when settlement is still worth holding, and caps the runner at 25% by
+default. Probability stops, edge-fade exits, max-hold exits, settlement
+resolution, and low-liquidity limits still override the runner.
 
 ## Files
 
@@ -190,6 +218,7 @@ src/weather_bot/paper.py              local paper broker and logs
 src/weather_bot/edge.py               YES/NO executable edge
 src/weather_bot/exit_policy.py        probability-stop, take-profit, overheat, edge-fade exits
 src/weather_bot/dashboard.py          local status dashboard
+src/weather_bot/shadow_signals.py     public external-signal research only
 ```
 
 Production handoff docs:
@@ -210,6 +239,9 @@ ENTRY_FRACTION=0.10
 MIN_NET_EDGE=0.05
 ENTRY_MIN_EXPECTED_NET_RETURN_PCT=0.06
 WEATHER_TAKER_FEE_RATE=0.05
+SETTLEMENT_RUNNER_ENABLED=true
+SETTLEMENT_RUNNER_MAX_FRACTION=0.25
+SETTLEMENT_RUNNER_MIN_EV_MARGIN_USD=0.00
 PROBABILITY_STOP_DROP_THRESHOLD=0.10
 MODEL_ERROR_MARGIN=0.03
 RESOLUTION_ERROR_MARGIN=0.01
@@ -222,6 +254,10 @@ LARGE_BANKROLL_EVENT_DATE_EXPOSURE_FRACTION=0.05
 EVENT_DATE_EXPOSURE_TRANSITION_USD=1000
 MAX_EVENT_PORTFOLIO_LEGS=2
 ENABLE_PRECIPITATION_MARKETS=false
+SHADOW_MAX_MARKETS=100
+SHADOW_MAX_TRADES_PER_MARKET=100
+SHADOW_MAX_ROWS=1000
+SHADOW_MIN_TRADE_USDC=100.0
 ```
 
 Precipitation and snow markets remain disabled by default because they are noisier than temperature markets.
@@ -231,5 +267,5 @@ Precipitation and snow markets remain disabled by default because they are noisi
 - Market discovery and forecast signal snapshots refresh on a 30-minute cycle.
 - Forecasts are station-based but station-level bias calibration is still neutral.
 - Execution is paper-only.
-
-Next strategy step: add verified settlement-station nowcasts.
+- Whale and external-signal research is shadow-only until enough resolved public
+  signals justify a separate paper-only experiment.

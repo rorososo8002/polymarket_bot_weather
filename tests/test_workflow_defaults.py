@@ -67,7 +67,7 @@ def test_known_good_commands_include_local_test_and_oracle_first_steps():
     text = (ROOT / "docs" / "codex" / "known-good-commands.md").read_text(encoding="utf-8")
 
     assert "& 'C:\\Users\\wpdla\\Python312\\python.exe' -m pytest -q" in text
-    assert "$key = 'C:\\Users\\wpdla\\Documents\\오라클ssh\\ssh-key-2026-05-25.key'" in text
+    assert "ssh-key-2026-05-25.key" in text
     assert "$oracle = 'ubuntu@140.245.69.242'" in text
     assert "Test-Path -LiteralPath $key" in text
     assert "ssh -i $key $oracle date" in text

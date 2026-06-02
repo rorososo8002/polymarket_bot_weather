@@ -33,6 +33,18 @@ Polymarket discovery
   -> write state, market decisions, event portfolios, trades, raw snapshots, and runner heartbeat
 ```
 
+Shadow research is a separate path:
+
+```text
+supported weather markets
+  -> bounded public Data API trade/activity sample
+  -> shadow_external_signals.jsonl
+  -> timing/side/outcome comparison with paper_decisions.csv
+  -> shadow_signal_report.md
+```
+
+The shadow path is never an execution input by default.
+
 ## Code Map
 
 ```text
@@ -48,6 +60,7 @@ src/weather_bot/live_paper_runner.py  paper loop and realtime stream orchestrati
 src/weather_bot/paper.py              paper broker, logs, settlements, exits
 src/weather_bot/exit_policy.py        probability stop and profit exits
 src/weather_bot/dashboard.py          local read-only dashboard
+src/weather_bot/shadow_signals.py     public whale/external-signal research only
 ```
 
 ## Strategy Contract
@@ -117,6 +130,13 @@ entry slippage. Do not subtract those costs a second time. For an expected early
 exit, use the current spread and observed slippage as a conservative future
 exit haircut and calculate the exit taker fee at the estimated executable exit
 price.
+
+`size_usd` is an all-in paper-entry budget. It includes the modeled entry taker
+fee, so the broker buys fewer shares than `size_usd / p_exec`. Normal closes
+and partial closes add only after-fee proceeds back to paper cash. Conservative
+entry bankroll and dashboard market value also subtract the executable exit
+fee. This keeps entry filtering, paper-wallet accounting, risk caps, and
+operator-visible PnL on one cost definition.
 
 A high entry price is not banned by itself. The runner also evaluates a
 hold-to-settlement route using the model probability after model-error and
@@ -307,23 +327,23 @@ contract lives in `docs/dashboard-build-spec.md`.
 The visible right-side Scanner Intelligence panel must stay focused on current
 operator decisions:
 
-- `오픈 포지션`: current open position count from paper state
-- `총 오픈 진입금액`: sum of `cost_usd` for currently open positions
-- `Open-Meteo 최근 예보`: latest `created_at` in `forecast_cache.json`
-- `총 수익금`: cumulative positive realized PnL from closed trade rows
-- `총 손실금`: cumulative absolute negative realized PnL from closed trade rows
-- `남은 현금`: current `cash_usd` in paper state
+- `Open Positions`: current open position count from paper state
+- `Total Open Entry Cost`: sum of `cost_usd` for currently open positions
+- `Latest Open-Meteo Forecast`: latest `created_at` in `forecast_cache.json`
+- `Total Profit`: cumulative positive realized PnL from closed trade rows
+- `Total Loss`: cumulative absolute negative realized PnL from closed trade rows
+- `Remaining Cash`: current `cash_usd` in paper state
 
 Below those summary rows, show three operational explanations:
 
-- `예보 상태`: show when a fresh Open-Meteo request was last attempted, when
+- `Forecast Health`: show when a fresh Open-Meteo request was last attempted, when
   one last succeeded, how old the reusable cache is, why the latest request
   failed, and whether disk persistence failed.
-- `WebSocket 상태`: show whether the background receiver thread is alive, how
+- `WebSocket Health`: show whether the background receiver thread is alive, how
   many reconnections occurred, when any message last arrived, when a real
   order-book price update last arrived, how old that book is, and the latest
   stream error.
-- `이벤트 포트폴리오`: show the latest city-date selection, conservative
+- `Event Portfolio`: show the latest city-date selection, conservative
   reference bankroll, shared cap, selected legs, rejected legs, and worst
   logged scenario PnL. Also show expected net profit and expected log growth.
   Explain the 10%-below-`$1,000`, 5%-from-`$1,000`, minimum-`$10`, city-20%,
@@ -348,11 +368,91 @@ Open positions are closed only by these rules:
   `EXIT_NET_EDGE`, while loss is no worse than `EDGE_FADE_MAX_LOSS_PCT`
 - max holding time: holding duration reaches `MAX_HOLDING_HOURS`
 
+Profit-taking exits first evaluate the Phase 6 principal-recovery runner policy.
+For a model-target or overheated profit exit, the runner compares the current
+executable sell value after the weather taker fee with the conservative
+hold-to-settlement expected value. If settlement value is at least as good,
+the paper broker sells a principal-recovery tranche and, if needed, extra
+shares to bound the remaining runner at `SETTLEMENT_RUNNER_MAX_FRACTION`
+of the current position. The default runner cap is 25%.
+
+Once a position has an active settlement runner, later model-target or
+overheated profit signals do not keep chopping it down. The runner is held
+until settlement unless a safety exit fires or the fresh settlement expected
+value becomes worse than the fee-adjusted sell-now value. Probability stops,
+valid edge fade exits, max-hold exits, settlement resolution, and
+low-liquidity limits still take precedence. If available bid depth cannot fill
+the desired principal-recovery tranche, the broker sells only executable
+shares, logs `low_liquidity`, and leaves the runner as pending for a later
+cycle.
+
+Each tranche decision is logged to `paper_trades.csv`: `PARTIAL_CLOSE` for the
+principal-recovery sale, `HOLD_RUNNER` for the remaining runner tranche, and
+`HOLD_NO_LIQUIDITY` when no executable tranche can be sold.
+
 Evaluation failure sentinels are not exit signals. In particular, `net_edge=-999`
 with no executable `p_exec` means the side could not be evaluated from the
 current order book; it must not trigger an edge-faded close. This prevents churn
 where a position closes on an invalid transient book update and immediately
 reopens when the next valid update arrives.
+
+## Shadow Signal Research Contract
+
+Phase 7 studies public external signals without copy trading. The research code
+uses public Polymarket Data API rows, optional manually classified public notes,
+and the bot's own paper decision logs. It does not connect wallets, sign orders,
+submit orders, alter open positions, or feed signals into
+`live_paper_runner.py`.
+
+Default public sources:
+
+```text
+Gamma API events/markets -> supported weather market discovery
+Data API /trades         -> public wallet trade rows by condition id
+Data API /activity       -> bounded user activity lookup when a wallet is intentionally studied
+Data API /holders        -> top public holders for a market
+```
+
+Every stored signal records the evidence level. `observed_public_api` means the
+row came from Polymarket's public API. Manually entered posts must be classified
+as `evidence` or `speculation` in `shadow_public_notes.jsonl`; the report counts
+them separately.
+
+The first whale filter is intentionally simple: `SHADOW_MIN_TRADE_USDC` keeps
+only public trades above a chosen notional size. A large trade is not a strategy
+by itself. It is only worth studying when enough later outcomes exist to compare
+the public signal against our paper decisions.
+
+The report compares:
+
+```text
+external signal timestamp vs nearest paper decision timestamp
+external implied side vs paper side
+later resolved outcome vs external side
+later resolved outcome vs paper side
+```
+
+When a closed Gamma market is available, the research helper can infer
+`later_outcome` from binary `outcomes` and `outcomePrices` by treating the
+YES/NO side priced near `1.0` as the winner.
+
+`implied_side` translates trade direction:
+
+```text
+BUY YES  -> YES
+BUY NO   -> NO
+SELL YES -> NO
+SELL NO  -> YES
+```
+
+The promotion rule is conservative. Report all resolved public signals for
+research, but calculate promotion only from paired rows where the public signal
+and a real bot `YES` or `NO` entry can both be scored. Bot `SKIP` rows remain
+useful diagnostics but cannot inflate the public-signal win rate. Fewer than 20
+paired resolved rows means no promotion. A public signal set must beat bot
+entries on that same paired sample by at least five percentage points before
+the report suggests a paper-only A/B experiment. Even then, automatic copy
+trading stays out of scope.
 
 ## Runtime Defaults
 
@@ -372,6 +472,18 @@ PORTFOLIO_DECISIONS_JSONL_PATH=paper_event_portfolios.jsonl
 BANKROLL_USD=100
 ENTRY_MIN_EXPECTED_NET_RETURN_PCT=0.06
 WEATHER_TAKER_FEE_RATE=0.05
+SETTLEMENT_RUNNER_ENABLED=true
+SETTLEMENT_RUNNER_MAX_FRACTION=0.25
+SETTLEMENT_RUNNER_MIN_EV_MARGIN_USD=0.00
+POLYMARKET_DATA_BASE=https://data-api.polymarket.com
+SHADOW_SIGNALS_JSONL_PATH=shadow_external_signals.jsonl
+SHADOW_PUBLIC_NOTES_JSONL_PATH=shadow_public_notes.jsonl
+SHADOW_REPORT_PATH=shadow_signal_report.md
+SHADOW_MAX_MARKETS=100
+SHADOW_MAX_TRADES_PER_MARKET=100
+SHADOW_MAX_ROWS=1000
+SHADOW_MIN_TRADE_USDC=100.0
+SHADOW_COMPARE_WINDOW_SECONDS=86400
 MAX_EVENT_DATE_EXPOSURE_FRACTION=0.10
 LARGE_BANKROLL_EVENT_DATE_EXPOSURE_FRACTION=0.05
 EVENT_DATE_EXPOSURE_TRANSITION_USD=1000
@@ -416,6 +528,12 @@ For VPS deployment, use `docs/VPS_LIVE_PAPER.md`.
 - Weather taker-fee defaults follow https://docs.polymarket.com/trading/fees.
 - Event-based discovery follows
   https://docs.polymarket.com/quickstart/fetching-data.
+- Shadow signal research uses Polymarket's public market-data overview and Data
+  API docs:
+  https://docs.polymarket.com/market-data/overview,
+  https://docs.polymarket.com/api-reference/core/get-trades-for-a-user-or-markets,
+  https://docs.polymarket.com/api-reference/core/get-user-activity,
+  https://docs.polymarket.com/api-reference/core/get-top-holders-for-markets.
 - Multi-outcome `NO` portfolio handling follows
   https://docs.polymarket.com/advanced/neg-risk.
 - Correlated city-date concentration controls apply the general concentration

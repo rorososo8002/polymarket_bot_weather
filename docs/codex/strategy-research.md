@@ -53,3 +53,7 @@ Read this file only for strategy changes, probability modeling, trading behavior
   held position cannot be valued from a usable order book, fail closed and
   pause new entries.
 - Never add private keys, live-wallet execution, or real orders unless the user explicitly asks for that separate safety project.
+- Public whale/external signals stay in shadow research. Collect only bounded
+  public data, separate evidence from speculation, compare timing/outcomes with
+  paper decisions, and promote only to a later paper-only experiment when enough
+  resolved evidence exists. Do not add automatic copy trading.

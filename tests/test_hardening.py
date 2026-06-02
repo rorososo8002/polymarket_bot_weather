@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+import csv
 from datetime import datetime, timedelta, timezone
 
+import pytest
 import requests
 
 from weather_bot.config import Settings
-from weather_bot.edge import no_net_edge, yes_net_edge
+from weather_bot.edge import no_net_edge, polymarket_taker_fee_usdc, yes_net_edge
 from weather_bot.live_paper_runner import _sleep_seconds_until_next_cycle, evaluate_market, refresh_open_position_edges, run_cycle
 from weather_bot.models import EdgeResult, OrderBook, OrderLevel, PaperPosition, PaperState, RawMarket, WeatherSignal
 from weather_bot.paper import PaperBroker, maybe_close_positions, maybe_settle_resolved_positions
@@ -458,6 +460,295 @@ def test_probability_stop_closes_immediately(tmp_path):
     assert broker.state.positions == []
 
 
+def test_profit_exit_recovers_principal_and_keeps_settlement_runner(tmp_path):
+    settings = Settings(
+        state_path=str(tmp_path / "state.json"),
+        trades_csv_path=str(tmp_path / "trades.csv"),
+        decisions_csv_path=str(tmp_path / "decisions.csv"),
+        raw_snapshots_path=str(tmp_path / "raw.jsonl"),
+        min_profit_pct=0.03,
+        weather_taker_fee_rate=0.0,
+        model_error_margin=0.0,
+        resolution_error_margin=0.0,
+        settlement_runner_max_fraction=0.25,
+    )
+    broker = PaperBroker(settings)
+    pos = PaperPosition(
+        position_id="p1",
+        market_id="m1",
+        question="Will NYC reach 90 F on May 25?",
+        token_id="yes",
+        side="YES",
+        entry_price=0.20,
+        shares=100.0,
+        cost_usd=20.0,
+        opened_at=datetime.now(timezone.utc).isoformat(),
+        metadata={"entry_p_true": 0.95, "probability_stop_threshold": 0.85},
+    )
+    broker.state.positions = [pos]
+    broker.state.cash_usd = 980.0
+    client = FakePolymarketClient(books={"yes": book("yes", bid=0.80, ask=0.82, bid_size=200.0)})
+    latest_edges = {("m1", "YES"): EdgeResult("YES", 0.95, 0.80, 0.10, 0.0, 0.0, "latest")}
+
+    messages = maybe_close_positions(broker, client, {"m1": temp_market()}, latest_edges)
+
+    assert any("PARTIAL_CLOSE YES" in msg for msg in messages)
+    assert len(broker.state.positions) == 1
+    runner = broker.state.positions[0]
+    assert round(runner.shares, 6) == 25.0
+    assert round(runner.cost_usd, 6) == 5.0
+    rows = list(csv.DictReader((tmp_path / "trades.csv").open(encoding="utf-8")))
+    assert [row["action"] for row in rows] == ["PARTIAL_CLOSE", "HOLD_RUNNER"]
+    assert "tranche=principal_recovery" in rows[0]["reason"]
+    assert "tranche=settlement_runner" in rows[1]["reason"]
+
+
+def test_probability_deterioration_still_full_closes_without_runner(tmp_path):
+    settings = Settings(
+        state_path=str(tmp_path / "state.json"),
+        trades_csv_path=str(tmp_path / "trades.csv"),
+        decisions_csv_path=str(tmp_path / "decisions.csv"),
+        raw_snapshots_path=str(tmp_path / "raw.jsonl"),
+        weather_taker_fee_rate=0.0,
+        model_error_margin=0.0,
+        resolution_error_margin=0.0,
+        settlement_runner_max_fraction=0.25,
+    )
+    broker = PaperBroker(settings)
+    broker.state.positions = [
+        PaperPosition(
+            position_id="p1",
+            market_id="m1",
+            question="Will NYC reach 90 F on May 25?",
+            token_id="yes",
+            side="YES",
+            entry_price=0.20,
+            shares=100.0,
+            cost_usd=20.0,
+            opened_at=datetime.now(timezone.utc).isoformat(),
+            metadata={"entry_p_true": 0.95, "probability_stop_threshold": 0.85},
+        )
+    ]
+    broker.state.cash_usd = 980.0
+    client = FakePolymarketClient(books={"yes": book("yes", bid=0.80, ask=0.82, bid_size=200.0)})
+    latest_edges = {("m1", "YES"): EdgeResult("YES", 0.84, 0.80, -0.01, 0.0, 0.0, "latest")}
+
+    messages = maybe_close_positions(broker, client, {"m1": temp_market()}, latest_edges)
+
+    assert any("probability stop" in msg for msg in messages)
+    assert broker.state.positions == []
+    rows = list(csv.DictReader((tmp_path / "trades.csv").open(encoding="utf-8")))
+    assert [row["action"] for row in rows] == ["CLOSE"]
+
+
+def test_probability_stop_low_liquidity_partial_close_does_not_mark_error(tmp_path):
+    settings = Settings(
+        state_path=str(tmp_path / "state.json"),
+        trades_csv_path=str(tmp_path / "trades.csv"),
+        decisions_csv_path=str(tmp_path / "decisions.csv"),
+        raw_snapshots_path=str(tmp_path / "raw.jsonl"),
+        weather_taker_fee_rate=0.0,
+        model_error_margin=0.0,
+        resolution_error_margin=0.0,
+    )
+    broker = PaperBroker(settings)
+    broker.state.positions = [
+        PaperPosition(
+            position_id="p1",
+            market_id="m1",
+            question="Will NYC reach 90 F on May 25?",
+            token_id="yes",
+            side="YES",
+            entry_price=0.50,
+            shares=100.0,
+            cost_usd=50.0,
+            opened_at=datetime.now(timezone.utc).isoformat(),
+            metadata={"entry_p_true": 0.70, "probability_stop_threshold": 0.60},
+        )
+    ]
+    broker.state.cash_usd = 950.0
+    client = FakePolymarketClient(books={"yes": book("yes", bid=0.50, ask=0.52, bid_size=20.0)})
+    latest_edges = {("m1", "YES"): EdgeResult("YES", 0.59, 0.50, -0.01, 0.0, 0.0, "latest")}
+
+    messages = maybe_close_positions(broker, client, {"m1": temp_market()}, latest_edges)
+
+    assert not any("MARK ERROR" in msg for msg in messages)
+    assert any("PARTIAL_CLOSE YES" in msg for msg in messages)
+    assert len(broker.state.positions) == 1
+    assert round(broker.state.positions[0].shares, 6) == 80.0
+    rows = list(csv.DictReader((tmp_path / "trades.csv").open(encoding="utf-8")))
+    assert [row["action"] for row in rows] == ["PARTIAL_CLOSE"]
+
+
+def test_settlement_risk_blocks_runner_and_closes_full_position(tmp_path):
+    settings = Settings(
+        state_path=str(tmp_path / "state.json"),
+        trades_csv_path=str(tmp_path / "trades.csv"),
+        decisions_csv_path=str(tmp_path / "decisions.csv"),
+        raw_snapshots_path=str(tmp_path / "raw.jsonl"),
+        min_profit_pct=0.03,
+        weather_taker_fee_rate=0.0,
+        model_error_margin=0.0,
+        resolution_error_margin=0.0,
+        settlement_runner_max_fraction=0.25,
+    )
+    broker = PaperBroker(settings)
+    broker.state.positions = [
+        PaperPosition(
+            position_id="p1",
+            market_id="m1",
+            question="Will NYC reach 90 F on May 25?",
+            token_id="yes",
+            side="YES",
+            entry_price=0.20,
+            shares=100.0,
+            cost_usd=20.0,
+            opened_at=datetime.now(timezone.utc).isoformat(),
+            metadata={"entry_p_true": 0.70, "probability_stop_threshold": 0.60},
+        )
+    ]
+    broker.state.cash_usd = 980.0
+    client = FakePolymarketClient(books={"yes": book("yes", bid=0.80, ask=0.82, bid_size=200.0)})
+    latest_edges = {("m1", "YES"): EdgeResult("YES", 0.65, 0.80, -0.05, 0.0, 0.0, "latest")}
+
+    messages = maybe_close_positions(broker, client, {"m1": temp_market()}, latest_edges)
+
+    assert any("settlement runner blocked" in msg for msg in messages)
+    assert broker.state.positions == []
+    rows = list(csv.DictReader((tmp_path / "trades.csv").open(encoding="utf-8")))
+    assert [row["action"] for row in rows] == ["CLOSE"]
+    assert "settlement runner blocked" in rows[0]["reason"]
+
+
+def test_active_runner_closes_when_settlement_value_turns_unfavorable(tmp_path):
+    settings = Settings(
+        state_path=str(tmp_path / "state.json"),
+        trades_csv_path=str(tmp_path / "trades.csv"),
+        decisions_csv_path=str(tmp_path / "decisions.csv"),
+        raw_snapshots_path=str(tmp_path / "raw.jsonl"),
+        min_profit_pct=0.03,
+        weather_taker_fee_rate=0.0,
+        model_error_margin=0.0,
+        resolution_error_margin=0.0,
+        settlement_runner_max_fraction=0.25,
+    )
+    broker = PaperBroker(settings)
+    broker.state.positions = [
+        PaperPosition(
+            position_id="p1",
+            market_id="m1",
+            question="Will NYC reach 90 F on May 25?",
+            token_id="yes",
+            side="YES",
+            entry_price=0.20,
+            shares=25.0,
+            cost_usd=5.0,
+            opened_at=datetime.now(timezone.utc).isoformat(),
+            metadata={
+                "entry_p_true": 0.70,
+                "probability_stop_threshold": 0.60,
+                "settlement_runner_active": True,
+            },
+        )
+    ]
+    broker.state.cash_usd = 995.0
+    client = FakePolymarketClient(books={"yes": book("yes", bid=0.80, ask=0.82, bid_size=200.0)})
+    latest_edges = {("m1", "YES"): EdgeResult("YES", 0.65, 0.80, -0.05, 0.0, 0.0, "latest")}
+
+    messages = maybe_close_positions(broker, client, {"m1": temp_market()}, latest_edges)
+
+    assert any("settlement runner blocked" in msg for msg in messages)
+    assert broker.state.positions == []
+    rows = list(csv.DictReader((tmp_path / "trades.csv").open(encoding="utf-8")))
+    assert [row["action"] for row in rows] == ["CLOSE"]
+
+
+def test_active_runner_hold_log_reports_actual_held_shares(tmp_path):
+    settings = Settings(
+        state_path=str(tmp_path / "state.json"),
+        trades_csv_path=str(tmp_path / "trades.csv"),
+        decisions_csv_path=str(tmp_path / "decisions.csv"),
+        raw_snapshots_path=str(tmp_path / "raw.jsonl"),
+        min_profit_pct=0.03,
+        weather_taker_fee_rate=0.0,
+        model_error_margin=0.0,
+        resolution_error_margin=0.0,
+        settlement_runner_max_fraction=0.25,
+    )
+    broker = PaperBroker(settings)
+    broker.state.positions = [
+        PaperPosition(
+            position_id="p1",
+            market_id="m1",
+            question="Will NYC reach 90 F on May 25?",
+            token_id="yes",
+            side="YES",
+            entry_price=0.20,
+            shares=25.0,
+            cost_usd=5.0,
+            opened_at=datetime.now(timezone.utc).isoformat(),
+            metadata={
+                "entry_p_true": 0.95,
+                "probability_stop_threshold": 0.85,
+                "settlement_runner_active": True,
+            },
+        )
+    ]
+    broker.state.cash_usd = 995.0
+    client = FakePolymarketClient(books={"yes": book("yes", bid=0.80, ask=0.82, bid_size=200.0)})
+    latest_edges = {("m1", "YES"): EdgeResult("YES", 0.95, 0.80, 0.10, 0.0, 0.0, "latest")}
+
+    messages = maybe_close_positions(broker, client, {"m1": temp_market()}, latest_edges)
+
+    assert any("HOLD_RUNNER YES shares=25.00" in msg for msg in messages)
+    assert broker.state.positions[0].shares == 25.0
+    rows = list(csv.DictReader((tmp_path / "trades.csv").open(encoding="utf-8")))
+    assert [row["action"] for row in rows] == ["HOLD_RUNNER"]
+    assert "held_shares=25.0000" in rows[0]["reason"]
+
+
+def test_low_liquidity_limits_principal_recovery_tranche(tmp_path):
+    settings = Settings(
+        state_path=str(tmp_path / "state.json"),
+        trades_csv_path=str(tmp_path / "trades.csv"),
+        decisions_csv_path=str(tmp_path / "decisions.csv"),
+        raw_snapshots_path=str(tmp_path / "raw.jsonl"),
+        min_profit_pct=0.03,
+        weather_taker_fee_rate=0.0,
+        model_error_margin=0.0,
+        resolution_error_margin=0.0,
+        settlement_runner_max_fraction=0.25,
+    )
+    broker = PaperBroker(settings)
+    broker.state.positions = [
+        PaperPosition(
+            position_id="p1",
+            market_id="m1",
+            question="Will NYC reach 90 F on May 25?",
+            token_id="yes",
+            side="YES",
+            entry_price=0.20,
+            shares=100.0,
+            cost_usd=20.0,
+            opened_at=datetime.now(timezone.utc).isoformat(),
+            metadata={"entry_p_true": 0.95, "probability_stop_threshold": 0.85},
+        )
+    ]
+    broker.state.cash_usd = 980.0
+    client = FakePolymarketClient(books={"yes": book("yes", bid=0.80, ask=0.82, bid_size=20.0)})
+    latest_edges = {("m1", "YES"): EdgeResult("YES", 0.95, 0.80, 0.10, 0.0, 0.0, "latest")}
+
+    messages = maybe_close_positions(broker, client, {"m1": temp_market()}, latest_edges)
+
+    assert any("low_liquidity" in msg for msg in messages)
+    assert len(broker.state.positions) == 1
+    runner = broker.state.positions[0]
+    assert round(runner.shares, 6) == 80.0
+    rows = list(csv.DictReader((tmp_path / "trades.csv").open(encoding="utf-8")))
+    assert [row["action"] for row in rows] == ["PARTIAL_CLOSE", "HOLD_RUNNER"]
+    assert "low_liquidity" in rows[0]["reason"]
+
+
 def test_forever_loop_sleep_subtracts_cycle_runtime():
     started_at = datetime(2026, 5, 24, 16, 0, tzinfo=timezone.utc)
 
@@ -559,6 +850,38 @@ def test_run_cycle_reuses_one_ensemble_client_for_all_markets(monkeypatch, tmp_p
 
     assert len(ensemble_ids) == 2
     assert len(set(ensemble_ids)) == 1
+
+
+def test_paper_round_trip_cash_and_pnl_include_taker_fees(tmp_path):
+    settings = Settings(
+        bankroll_usd=100.0,
+        state_path=str(tmp_path / "state.json"),
+        trades_csv_path=str(tmp_path / "trades.csv"),
+        decisions_csv_path=str(tmp_path / "decisions.csv"),
+        raw_snapshots_path=str(tmp_path / "raw.jsonl"),
+        min_order_usd=1.0,
+        weather_taker_fee_rate=0.05,
+    )
+    broker = PaperBroker(settings)
+    pos = broker.open_position(
+        temp_market(),
+        "yes",
+        EdgeResult("YES", 0.80, 0.50, 0.10, 10.0, 20.0, "test"),
+    )
+
+    assert pos is not None
+    entry_fee = polymarket_taker_fee_usdc(pos.shares, 0.50, settings.weather_taker_fee_rate)
+    assert pos.shares * 0.50 + entry_fee == pytest.approx(pos.cost_usd, abs=1e-5)
+    assert broker.state.cash_usd == pytest.approx(100.0 - pos.cost_usd)
+
+    shares = pos.shares
+    cost = pos.cost_usd
+    pnl = broker.close_position(pos, temp_market(), 0.60, "test")
+    exit_fee = polymarket_taker_fee_usdc(shares, 0.60, settings.weather_taker_fee_rate)
+    net_proceeds = shares * 0.60 - exit_fee
+
+    assert broker.state.cash_usd == pytest.approx(100.0 - cost + net_proceeds)
+    assert pnl == pytest.approx(net_proceeds - cost)
 
 
 def test_resolved_market_settles_to_binary_payout():

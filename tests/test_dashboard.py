@@ -3,6 +3,8 @@ from __future__ import annotations
 import csv
 import json
 
+import pytest
+
 from weather_bot import dashboard as dashboard_module
 from weather_bot.config import Settings
 from weather_bot.dashboard import HTML, _read_csv, build_dashboard_payload
@@ -69,16 +71,16 @@ def test_dashboard_payload_exposes_latest_event_portfolio_explanation(tmp_path):
 
 
 def test_dashboard_html_explains_adaptive_event_portfolio_budget():
-    assert "이벤트 포트폴리오" in HTML
-    assert "기준금" in HTML
+    assert "Event Portfolio" in HTML
+    assert "Reference bankroll" in HTML
     assert "$1,000" in HTML
-    assert "최대 2개" in HTML
-    assert "최소 $10" in HTML
-    assert "도시 전체 20%" in HTML
-    assert "전체 오픈 90%" in HTML
+    assert "max 2 legs" in HTML
+    assert "Minimum $10" in HTML
+    assert "city total 20%" in HTML
+    assert "total open 90%" in HTML
     assert "YES+NO" in HTML
     assert "NO+NO" in HTML
-    assert "기대 로그 성장" in HTML
+    assert "expected log growth" in HTML
 
 
 def test_dashboard_payload_summarizes_state_trades_and_decisions(tmp_path):
@@ -201,9 +203,9 @@ def test_dashboard_payload_summarizes_state_trades_and_decisions(tmp_path):
 
     assert payload["security"]["auth_required"] is True
     assert payload["summary"]["cash"] == 950.0
-    assert payload["summary"]["market_value"] == 60.0
-    assert payload["summary"]["equity"] == 1010.0
-    assert payload["summary"]["total_pnl"] == 10.0
+    assert payload["summary"]["market_value"] == pytest.approx(58.8)
+    assert payload["summary"]["equity"] == pytest.approx(1008.8)
+    assert payload["summary"]["total_pnl"] == pytest.approx(8.8)
     assert payload["summary"]["wins"] == 1
     assert payload["summary"]["losses"] == 1
     assert payload["scanner"]["decisions"] == 2
@@ -213,7 +215,7 @@ def test_dashboard_payload_summarizes_state_trades_and_decisions(tmp_path):
     assert payload["bot"]["last_event_at"] == "2026-05-24T11:00:00+00:00"
     assert payload["bot"]["scan_interval_seconds"] == 1800
     assert payload["bot"]["orderbook_mode"] == "websocket"
-    assert payload["positions"][0]["unrealized_pnl"] == 10.0
+    assert payload["positions"][0]["unrealized_pnl"] == pytest.approx(8.8)
     assert "events" not in payload
     assert "recent_decisions" not in payload
     assert "pressure" not in payload
@@ -758,21 +760,21 @@ def test_dashboard_summary_reports_latest_forecast_cache_time_and_profit_loss_to
     assert payload["scanner"]["latest_forecast_at"] == "2026-05-30T09:30:00+00:00"
 
 
-def test_dashboard_uses_clear_korean_scanner_labels():
-    assert "누적 후보 판단" not in HTML
-    assert "예보 없음" not in HTML
-    assert "실제 진입" not in HTML
-    assert "YES/NO 판단" not in HTML
-    assert "오픈 포지션" in HTML
-    assert "총 오픈 진입금액" in HTML
-    assert "Open-Meteo 최근 예보" in HTML
-    assert "총 수익금" in HTML
-    assert "총 손실금" in HTML
-    assert "예측날씨" in HTML
-    assert "누적 스킵" not in HTML
-    assert "남은 현금" in HTML
+def test_dashboard_uses_clear_english_scanner_labels():
+    assert "Cumulative candidate decisions" not in HTML
+    assert "Forecast unavailable" not in HTML
+    assert "Actual entries" not in HTML
+    assert "YES/NO decisions" not in HTML
+    assert "Open Positions" in HTML
+    assert "Total Open Entry Cost" in HTML
+    assert "Latest Open-Meteo Forecast" in HTML
+    assert "Total Profit" in HTML
+    assert "Total Loss" in HTML
+    assert "Forecast" in HTML
+    assert "Cumulative skips" not in HTML
+    assert "Remaining Cash" in HTML
     assert "NO FORECAST" not in HTML
-    assert "총 노출" not in HTML
+    assert "Total Exposure" not in HTML
     assert "Recent Candidates" not in HTML
     assert "Event Stream" not in HTML
     assert 'data-range="1D"' in HTML
@@ -905,8 +907,8 @@ def test_dashboard_payload_surfaces_forecast_and_websocket_health(tmp_path):
 
 
 def test_dashboard_html_explains_health_warnings():
-    assert "예보 상태" in HTML
-    assert "마지막 성공" in HTML
-    assert "WebSocket 상태" in HTML
-    assert "재접속" in HTML
-    assert "마지막 주문서" in HTML
+    assert "Forecast Health" in HTML
+    assert "Last success" in HTML
+    assert "WebSocket Health" in HTML
+    assert "Reconnects" in HTML
+    assert "Last order book" in HTML

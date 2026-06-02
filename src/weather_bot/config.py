@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 class Settings:
     # Public data endpoints
     gamma_base: str = "https://gamma-api.polymarket.com"
+    polymarket_data_base: str = "https://data-api.polymarket.com"
     clob_base: str = "https://clob.polymarket.com"
 
     # Paper-trading loop
@@ -25,6 +26,14 @@ class Settings:
     decisions_csv_path: str = "paper_decisions.csv"
     portfolio_decisions_jsonl_path: str = "paper_event_portfolios.jsonl"
     raw_snapshots_path: str = "paper_raw_snapshots.jsonl"
+    shadow_signals_jsonl_path: str = "shadow_external_signals.jsonl"
+    shadow_public_notes_jsonl_path: str = "shadow_public_notes.jsonl"
+    shadow_report_path: str = "shadow_signal_report.md"
+    shadow_max_markets: int = 100
+    shadow_max_trades_per_market: int = 100
+    shadow_max_rows: int = 1000
+    shadow_min_trade_usdc: float = 100.0
+    shadow_compare_window_seconds: int = 86400
     forecast_cache_path: str = ""
     forecast_cache_ttl_seconds: int = 1800
     station_nowcast_enabled: bool = True
@@ -58,11 +67,15 @@ class Settings:
     bankroll_usd: float = 100.0
     min_order_usd: float = 10.0
 
-    # 도시별 중복 노출 한도 (같은 날씨 이벤트 파생 마켓 몰빵 방지)
-    # NYC 70°F + NYC 72°F + NYC 75°F 모두 같은 기온 이벤트 → 각 5%씩 넣으면 15% 노출
-    # max_city_exposure_fraction: 한 도시의 모든 포지션 cost 합 / bankroll 상한
+    # City concentration cap. Related markets from the same weather event should
+    # not quietly multiply risk.
+    # Example: NYC 70F + NYC 72F + NYC 75F all belong to the same temperature
+    # event. Three 5% entries would create 15% exposure to one city.
+    # max_city_exposure_fraction caps total position cost for one city divided
+    # by bankroll.
     max_city_exposure_fraction: float = 0.20
-    # 작은 paper 계좌는 도시+날짜 예산을 10%로 시작하되, 기준금 $1,000부터 5%로 축소한다.
+    # Small paper accounts start with a 10% city-date budget. From a $1,000
+    # reference bankroll, that shared city-date budget shrinks to 5%.
     max_event_date_exposure_fraction: float = 0.10
     large_bankroll_event_date_exposure_fraction: float = 0.05
     event_date_exposure_transition_usd: float = 1000.0
@@ -74,19 +87,24 @@ class Settings:
     weather_taker_fee_rate: float = 0.05
     model_error_margin: float = 0.03
     resolution_error_margin: float = 0.01
+    settlement_runner_enabled: bool = True
+    settlement_runner_max_fraction: float = 0.25
+    settlement_runner_min_ev_margin_usd: float = 0.0
 
-    # 강수 마켓 전용 파라미터 (비/강수는 기온보다 예측이 훨씬 어렵다 → 더 엄격한 기준)
-    precip_min_net_edge: float = 0.08        # 기온 0.05 대비 높은 최소 엣지 요구
-    precip_entry_fraction: float = 0.025     # 기온 0.05 대비 절반 사이즈로 베팅
-    precip_min_confidence: float = 0.65      # 기온 0.50 대비 높은 파싱 신뢰도 요구
-    precip_max_confidence: float = 0.70      # 앙상블 신뢰도 상한선 (강수 특화)
+    # Precipitation-specific parameters. Rain and precipitation are harder to
+    # forecast than temperature, so the paper strategy requires stricter gates.
+    precip_min_net_edge: float = 0.08        # Higher than the 0.05 temperature edge floor.
+    precip_entry_fraction: float = 0.025     # Half-size entries versus the temperature default.
+    precip_min_confidence: float = 0.65      # Higher parser-confidence requirement than temperature.
+    precip_max_confidence: float = 0.70      # Precipitation-specific ensemble confidence ceiling.
 
     # Probability model controls
     probability_shrink_gamma: float = 0.65
     default_temperature_sigma_f: float = 4.5
     require_parse_for_trade: bool = True
-    # 날짜 파싱 불명확 마켓 SKIP: date_hint=None이면 오늘 날짜로 fallback되어
-    # 만료 마켓에 잘못 진입할 수 있으므로 기본값 True (SKIP 활성화)
+    # Skip markets whose date cannot be parsed. If date_hint=None fell back to
+    # today, the bot could enter an expired or wrong-date market by accident.
+    # The safe default is True, which enables this skip.
     require_date_hint_for_trade: bool = True
     # Probability stop compares the current side probability with the entry-side
     # probability. YES uses p_true; NO uses 1 - p_true.
@@ -117,6 +135,7 @@ def load_settings() -> Settings:
     load_dotenv()
     return Settings(
         gamma_base=os.getenv("POLYMARKET_GAMMA_BASE", Settings.gamma_base),
+        polymarket_data_base=os.getenv("POLYMARKET_DATA_BASE", Settings.polymarket_data_base),
         clob_base=os.getenv("POLYMARKET_CLOB_BASE", Settings.clob_base),
         orderbook_stream_enabled=_bool_env("ORDERBOOK_STREAM_ENABLED", Settings.orderbook_stream_enabled),
         orderbook_stream_url=os.getenv("ORDERBOOK_STREAM_URL", Settings.orderbook_stream_url),
@@ -135,6 +154,23 @@ def load_settings() -> Settings:
             Settings.portfolio_decisions_jsonl_path,
         ),
         raw_snapshots_path=os.getenv("RAW_SNAPSHOTS_PATH", Settings.raw_snapshots_path),
+        shadow_signals_jsonl_path=os.getenv("SHADOW_SIGNALS_JSONL_PATH", Settings.shadow_signals_jsonl_path),
+        shadow_public_notes_jsonl_path=os.getenv(
+            "SHADOW_PUBLIC_NOTES_JSONL_PATH",
+            Settings.shadow_public_notes_jsonl_path,
+        ),
+        shadow_report_path=os.getenv("SHADOW_REPORT_PATH", Settings.shadow_report_path),
+        shadow_max_markets=_int_env("SHADOW_MAX_MARKETS", Settings.shadow_max_markets),
+        shadow_max_trades_per_market=_int_env(
+            "SHADOW_MAX_TRADES_PER_MARKET",
+            Settings.shadow_max_trades_per_market,
+        ),
+        shadow_max_rows=_int_env("SHADOW_MAX_ROWS", Settings.shadow_max_rows),
+        shadow_min_trade_usdc=_float_env("SHADOW_MIN_TRADE_USDC", Settings.shadow_min_trade_usdc),
+        shadow_compare_window_seconds=_int_env(
+            "SHADOW_COMPARE_WINDOW_SECONDS",
+            Settings.shadow_compare_window_seconds,
+        ),
         forecast_cache_path=os.getenv("FORECAST_CACHE_PATH", Settings.forecast_cache_path),
         forecast_cache_ttl_seconds=_int_env("FORECAST_CACHE_TTL_SECONDS", Settings.forecast_cache_ttl_seconds),
         station_nowcast_enabled=_bool_env("STATION_NOWCAST_ENABLED", Settings.station_nowcast_enabled),
@@ -175,6 +211,15 @@ def load_settings() -> Settings:
         weather_taker_fee_rate=_float_env("WEATHER_TAKER_FEE_RATE", Settings.weather_taker_fee_rate),
         model_error_margin=_float_env("MODEL_ERROR_MARGIN", Settings.model_error_margin),
         resolution_error_margin=_float_env("RESOLUTION_ERROR_MARGIN", Settings.resolution_error_margin),
+        settlement_runner_enabled=_bool_env("SETTLEMENT_RUNNER_ENABLED", Settings.settlement_runner_enabled),
+        settlement_runner_max_fraction=_float_env(
+            "SETTLEMENT_RUNNER_MAX_FRACTION",
+            Settings.settlement_runner_max_fraction,
+        ),
+        settlement_runner_min_ev_margin_usd=_float_env(
+            "SETTLEMENT_RUNNER_MIN_EV_MARGIN_USD",
+            Settings.settlement_runner_min_ev_margin_usd,
+        ),
         precip_min_net_edge=_float_env("PRECIP_MIN_NET_EDGE", Settings.precip_min_net_edge),
         precip_entry_fraction=_float_env("PRECIP_ENTRY_FRACTION", Settings.precip_entry_fraction),
         precip_min_confidence=_float_env("PRECIP_MIN_CONFIDENCE", Settings.precip_min_confidence),

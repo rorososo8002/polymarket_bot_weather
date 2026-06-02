@@ -5,7 +5,8 @@ Read this file only when issuing SSH or SCP commands from Windows PowerShell.
 - Start with the verified first commands in `docs/codex/known-good-commands.md`.
   If they fail, inspect the concrete error before trying a different shape.
 - For the active Oracle VPS, use `ubuntu@140.245.69.242` with the private key
-  `C:\Users\wpdla\Documents\오라클ssh\ssh-key-2026-05-25.key`.
+  named `ssh-key-2026-05-25.key` in the Oracle SSH directory under
+  `C:\Users\wpdla\Documents`.
 - Do not use the adjacent `.pub` file with `ssh -i`. Never print, open, copy, or
   commit the private key contents.
 - Treat nested quoting from Windows PowerShell into `ssh` as fragile by default.

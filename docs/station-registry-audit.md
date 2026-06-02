@@ -1,42 +1,49 @@
 # Station Registry Audit
 
-이 문서는 41개 지원 도시가 어떤 예보 좌표와 어떤 관측소 nowcast 후보를
-쓰는지 한눈에 보기 위한 점검표입니다.
+This checklist shows which forecast coordinates and nowcast station candidates
+are used for the 41 supported cities.
 
-초보자용으로 비유하면 이렇습니다. 서울 날씨 시장에서 정산은 "서울역 온도"가
-아니라 "인천공항 관측소 온도"로 끝납니다. 그러면 예보도 서울 도심 좌표가
-아니라 인천공항 좌표를 넣어야 하고, 당일 진행 상황을 볼 때도 같은 인천공항
-관측소 자료만 봐야 합니다. 근처 다른 관측소를 섞으면 답안지를 다른 시험지로
-채점하는 것과 같습니다.
+Beginner explanation: a weather market is settled by a specific official
+station, not by a vague city-center weather reading. For example, a Seoul market
+may settle on Incheon International Airport station data rather than a downtown
+Seoul sensor. Forecast inputs and same-day observation checks must therefore use
+the same settlement station. Mixing nearby stations is like grading an answer
+sheet against the wrong exam.
 
-## 읽는 법
+## How To Read This
 
-- `forecast_source`: 예보를 어디서 받는지입니다. 현재는 Open-Meteo ensemble입니다.
-- `forecast 좌표`: Open-Meteo에 넣는 위도/경도입니다. 도시 중심이 아니라
-  `STATION_MAP`의 정산 관측소 좌표를 씁니다.
-- `nowcast_station`: 당일 관측 진행 상황을 볼 후보 관측소입니다.
-- `nowcast 상태`: 오늘 실제 관측값을 확률 계산에 반영할 수 있는지입니다.
-  - `provider_enabled`: 같은 정산 관측소의 공식 관측 API를 코드가 읽을 수 있습니다.
-  - `provider_unavailable`: 정산 관측소 코드는 있지만 공식 관측 API에서 최근 자료를
-    확인하지 못했으므로 예보만 씁니다.
-- `rule_evidence_status`: Polymarket 규칙 URL과 정산 관측소 문구가 코드에
-  보관되어 있는지입니다. 현재는 전부 `needs_rule_source_url`입니다. 이 말은
-  "관측소가 틀렸다"가 아니라 "나중에 사람이 확인할 수 있는 원문 증거 URL과
-  문구를 아직 코드 필드로 저장하지 않았다"는 뜻입니다.
+- `forecast_source`: where the forecast comes from. The current source is the
+  Open-Meteo ensemble forecast.
+- `forecast coordinates`: the latitude and longitude sent to Open-Meteo. These
+  are settlement-station coordinates from `STATION_MAP`, not city-center
+  coordinates.
+- `nowcast_station`: the station candidate used for same-day observation checks.
+- `nowcast status`: whether current observed values can be used in probability
+  calculation.
+- `provider_enabled`: the code can read an official observation API for the same
+  settlement station.
+- `provider_unavailable`: a settlement station code exists, but the official
+  observation API did not provide recent data, so the bot uses forecasts only.
+- `rule_evidence_status`: whether the Polymarket rules URL and settlement
+  station wording are stored in code. `needs_rule_source_url` means the station
+  is not being marked wrong; it only means the original rule evidence has not yet
+  been captured in code fields for later human review.
 
-## 현재 결론
+## Current Conclusion
 
-- 41개 도시 모두 Open-Meteo 예보 입력 좌표는 `STATION_MAP`의 관측소 좌표를 씁니다.
-- 39개 ICAO 관측소는 Aviation Weather Center METAR API로 오늘 실제 관측값을
-  읽습니다.
-- `hong kong/HKO`는 METAR가 아니라 Hong Kong Observatory의 자정 이후 최고/최저
-  기온 CSV를 읽습니다. 홍콩 최고기온 시장은 조사 시점에 거래량 상위권이라
-  제끼지 않고 구현했습니다.
-- `karachi/OPMR`은 AWC METAR에서 최근 자료가 확인되지 않아 현재는 예보만 씁니다.
-- Polymarket 규칙 원문 URL과 문구는 아직 전 도시 필드에 채우지 않았습니다.
-  다만 `STATION_MAP` 자체는 기존 정산 관측소 기준표로 유지합니다.
+- All 41 cities use `STATION_MAP` station coordinates for Open-Meteo forecast
+  input.
+- 39 ICAO stations read same-day observed values through the Aviation Weather
+  Center METAR API.
+- `hong kong/HKO` uses Hong Kong Observatory max/min temperature CSV data since
+  midnight instead of METAR. Hong Kong max-temperature markets were high-volume
+  during research, so this provider was implemented instead of skipping them.
+- `karachi/OPMR` currently uses forecasts only because recent AWC METAR data was
+  not available during verification.
+- Original Polymarket rule URLs and rule wording have not yet been filled for
+  every city. `STATION_MAP` remains the existing settlement-station baseline.
 
-| city | settlement station | station name | forecast 좌표 | forecast_source | nowcast_station | nowcast 종류 | nowcast 상태 | rule evidence |
+| city | settlement station | station name | forecast coordinates | forecast_source | nowcast_station | nowcast type | nowcast status | rule evidence |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | amsterdam | EHAM | Amsterdam Airport Schiphol Station | 52.3086, 4.7639 | open-meteo-ensemble | EHAM | metar | provider_enabled | needs_rule_source_url |
 | ankara | LTAC | Esenboga Intl Airport Station | 40.1281, 32.9951 | open-meteo-ensemble | LTAC | metar | provider_enabled | needs_rule_source_url |

@@ -1,382 +1,318 @@
-# 실거래 프로젝트 구현 계획
+# Live Trading Project Implementation Plan
 
 Created: 2026-06-01 Asia/Seoul
 
-## 문서 목적
-
-이 문서는 paper 전략이 충분히 완성된 뒤 Polymarket 실거래 기능을 붙일
-때 이어서 작업하기 위한 전용 인수인계 문서입니다.
-
-실거래 프로젝트에서는 paper 전략을 다시 설계하지 않습니다. 진입,
-청산, 수수료 계산, 리스크 한도, 지원 도시, 정산 관측소, 예보 검증,
-주문서 평가 규칙은 paper bot에서 검증한 전략을 그대로 재사용합니다.
-
-실거래 프로젝트에서 새로 만드는 것은 매매 아이디어가 아니라
-`실제 주문 실행 계층`입니다. 쉽게 말하면, 지금 bot의 판단 두뇌는
-그대로 두고 실제 주문을 보내고 결과를 확인하는 손과 눈만 추가합니다.
-
-## 시작 전 안전 경계
-
-- 이 문서는 향후 작업 목록입니다. 실거래 활성화 승인서가 아닙니다.
-- 사용자가 별도로 명시적으로 승인하기 전에는 실제 지갑 연결, 개인키
-  등록, 실제 주문 전송, 실거래 서버 배포를 하지 않습니다.
-- 개인키, API key, API secret, passphrase, seed phrase는 저장소, 로그,
-  대시보드, 채팅, 테스트 fixture에 기록하지 않습니다.
-- 실거래 기능을 붙여도 기본 실행 모드는 계속 paper trading입니다.
-  실거래 모드는 사용자가 의도적으로 켜야만 동작하게 만듭니다.
-- 실거래 서버가 주문을 보내기 전에 Polymarket 지역 제한 API로 실제
-  주문 전송 IP가 허용되는지 확인합니다. 이것은 전략을 보수적으로
-  만드는 규칙이 아니라 법적·운영적 전제 조건입니다. 공식 문서 기준
-  미국은 `Blocked` 지역입니다. 신규 진입뿐 아니라 기존 포지션 청산
-  주문도 제출할 수 없습니다. 제한을 우회하지 않습니다.
-
-## 완료한 것
-
-아래 항목은 paper bot에서 이미 구현한 기반입니다. 실거래 프로젝트는
-이 기능을 다시 만들지 않고 재사용합니다.
-
-- 검증된 정산 관측소가 있는 도시만 거래 후보로 평가합니다.
-  `src/weather_bot/stations.py`의 `STATION_MAP`이 단일 기준입니다.
-- Open-Meteo 예보는 기본 30분 TTL을 사용하고, 오래된 예보와 갱신
-  실패를 구분합니다.
-- Polymarket CLOB market WebSocket으로 실시간 주문서를 받고, 수신
-  스레드 사망과 오래된 주문서를 진단합니다.
-- 진입 VWAP, 스프레드, 슬리피지, weather taker 수수료를 반영한 예상
-  순수익률 필터가 있습니다.
-- paper 포지션, decision log, trade log, 노출 한도, 확률 기반 손절,
-  모델 목표 청산 규칙이 있습니다.
-
-## 진행 중인 것
-
-- 실거래 구현은 아직 시작하지 않았습니다.
-- 현재 저장소는 paper-only 상태입니다. 실제 지갑, 실제 주문 제출
-  코드, 실거래용 비밀정보는 추가하지 않았습니다.
-
-## 진행해야 할 것
-
-아래 항목은 paper 전략이 완성된 뒤 순서대로 진행합니다.
-
-### 1. Paper 전략 재사용 계약 고정
-
-실거래 실행기는 paper bot과 다른 매매전략을 만들지 않습니다.
-기존 전략이 `YES를 얼마만큼 산다`, `NO를 얼마만큼 판다`, `이번
-후보는 건너뛴다`라고 결정하면 실거래 실행기는 그 결과를 받아 주문으로
-변환합니다.
-
-왜 필요한가:
-
-- paper 결과와 실거래 결과가 달라졌을 때 원인이 전략인지 주문 처리인지
-  구분할 수 있습니다.
-- 실거래라는 이유만으로 진입 기준을 임의로 더 엄격하게 만들어 paper
-  전략의 성능을 바꾸는 실수를 막습니다.
-
-완료 기준:
-
-- 같은 입력에 대해 paper 실행기와 실거래 실행기가 같은 주문 의도를
-  받는 테스트가 있습니다.
-- 실거래 실행 계층에는 독자적인 매매전략 임계값이 없습니다.
-
-### 2. 주문 직전 마켓 상태와 토큰별 수수료 조회
-
-paper 단계에서는 weather 카테고리의 공식 기본 수수료율 `0.05`로
-예상 수익을 계산합니다. 실거래에서는 주문 직전에 실제 token ID로
-공식 `fee-rate` API를 조회하고, condition ID로
-`getClobMarketInfo(conditionID)`도 호출합니다.
-
-`token ID`는 YES 또는 NO 지분을 구분하는 고유 번호입니다. 같은 날씨
-질문이라도 YES 토큰과 NO 토큰은 서로 다른 상품이므로 주문 대상
-토큰을 정확히 지정해야 합니다.
-
-`condition ID`는 YES와 NO 토큰이 함께 속한 질문 자체의 고유
-번호입니다. 예를 들어 `내일 서울 최고기온이 26°C 이상인가?`라는
-질문 하나에는 condition ID 하나가 있고, 그 안에 YES token ID와
-NO token ID가 따로 있습니다. token ID는 실제 주문 대상을 찾을 때,
-condition ID는 그 마켓 전체의 공통 설정을 찾을 때 씁니다.
-
-함께 조회할 값:
-
-- `fee-rate`: 토큰별 기본 수수료입니다. API 응답의 `base_fee`는
-  `basis points`, 즉 10,000분의 몇인지 나타냅니다. 예를 들어 `30`은
-  `0.30%`입니다.
-- `feesEnabled`: 해당 마켓에서 수수료가 켜져 있는지 알려줍니다.
-  수수료가 꺼진 마켓에 불필요한 비용을 더하거나, 켜진 마켓의 비용을
-  빠뜨리는 일을 막습니다.
-- `fd.r`, `fd.e`, `fd.to`: 마켓별 수수료 곡선의 모양과 taker에게만
-  적용되는지 알려줍니다. `fd.r`은 곡선의 기본 비율, `fd.e`는 가격에
-  따라 비용이 달라지는 곡선 모양, `fd.to`는 주문서에 이미 올라와
-  있던 maker가 아니라 즉시 체결시키는 taker에게만 비용을 매기는지
-  나타냅니다.
-- `tick size`: 주문 가격을 몇 자리 간격으로 적어야 하는지 알려줍니다.
-  예를 들어 tick size가 `0.01`이면 `0.52`는 가능하지만 `0.523`은
-  거절됩니다.
-- `negRisk`: 여러 결과가 연결된 이벤트에서 특별한 교환 규칙을 써야
-  하는지 알려줍니다. 잘못 지정하면 주문 서명이 맞아도 주문이
-  거절될 수 있습니다.
-- 최소 주문 크기와 현재 거래 가능 상태: 너무 작은 주문이나 이미 닫힌
-  마켓 주문을 보내지 않게 합니다.
+## Purpose
+
+This document is a handoff plan for a future live-trading project after the
+paper strategy is mature enough.
+
+The live project must not redesign the trading strategy. Entry logic, exit
+logic, fee math, risk limits, supported cities, settlement stations, forecast
+validation, and order-book evaluation should reuse the strategy already proven
+in the paper bot.
+
+The new live component is only the real order execution layer. In plain terms:
+keep the bot's decision brain, then add the hands and eyes that submit orders,
+track fills, and reconcile the real exchange state.
+
+## Safety Boundary Before Starting
+
+- This document is a future work list, not permission to enable live trading.
+- Do not connect real wallets, register private keys, send real orders, or
+  deploy a live-trading server without explicit user approval.
+- Never store private keys, API keys, API secrets, passphrases, seed phrases, or
+  wallet secrets in the repository, logs, dashboard, chat, or test fixtures.
+- Paper trading remains the default mode even after live support exists.
+  Live mode must require an intentional user opt-in.
+- Before any real order is submitted, call Polymarket's geographic restriction
+  endpoint from the actual order-sending server IP. This is not a strategy
+  preference; it is a legal and operational prerequisite. Official docs identify
+  the United States as blocked. Do not submit new entries or exit orders from a
+  blocked location, and do not build bypass behavior.
 
-초보자가 흔히 오해하는 점:
+## Completed Paper Foundation
+
+The live project should reuse these paper-bot foundations instead of rebuilding
+them:
 
-- `fee-rate` API 하나만 호출하면 수수료 계산이 모두 끝나는 것이
-  아닙니다. 공식 문서는 마켓별 수수료 곡선 정보도 함께 조회하라고
-  안내합니다.
-- 수수료는 주문을 만들 때 bot이 임의로 주문서에 넣는 값이 아닙니다.
-  실제 체결 시점에 Polymarket protocol이 적용합니다. bot은 같은
-  공식 정보를 사용해 주문 전에 예상 순수익을 계산합니다.
-
-완료 기준:
+- Only cities with verified settlement stations are eligible for trading.
+  `src/weather_bot/stations.py` and `STATION_MAP` are the single source of truth.
+- Open-Meteo forecasts use a default 30-minute TTL, and the bot distinguishes
+  stale forecasts from refresh failures.
+- The bot uses the Polymarket CLOB market WebSocket for realtime order books and
+  diagnoses dead receiver threads and stale books.
+- Expected net-return filtering includes entry VWAP, spread, slippage, and the
+  weather taker fee curve.
+- Paper positions, decision logs, trade logs, exposure limits, probability-based
+  stops, model-target exits, and partial-runner exits already exist.
 
-- 마켓별 메타데이터가 없거나 오래되었거나 서로 모순되면 주문을 보내지
-  않고 이유를 로그에 남깁니다.
-- 예상 수익 계산과 실제 주문 준비가 같은 최신 수수료 정보를
-  사용합니다.
-- 공식 수수료 곡선 정보가 바뀌어도 고정 추정치로 조용히 대체하지
-  않습니다.
+## Current Status
 
-### 3. 지역 제한 확인
+- Live-trading implementation has not started.
+- The repository is still paper-only.
+- No real wallet, real order-submission code, or live-trading secret has been
+  added.
 
-Polymarket은 지역에 따라 주문 제출을 제한합니다. 실거래 서버는 실제
-주문을 보내기 직전에 `https://polymarket.com/api/geoblock`을 호출해
-서버 IP가 주문 가능한 지역인지 확인해야 합니다.
+## Work To Do
 
-왜 필요한가:
+The following items should be implemented in order only after the paper strategy
+is complete enough to justify live execution.
 
-- 로컬 PC가 허용 지역이어도 VPS가 제한 지역이면 주문은 거절됩니다.
-- 반대로 VPS 위치만 보고 사용자의 법적 자격을 임의로 추정해서도 안
-  됩니다.
-- 지역 제한을 우회하는 기능은 만들지 않습니다.
+### 1. Freeze The Paper Strategy Contract
 
-완료 기준:
+The live executor must not create a separate trading strategy. If the paper
+strategy says "buy this much YES", "sell this much NO", or "skip this
+candidate", the live executor converts that intent into an order without adding
+its own hidden strategy thresholds.
 
-- `blocked=true`이면 신규 진입과 기존 포지션 청산을 포함한 모든 실제
-  주문을 보내지 않습니다.
-- 제한 응답과 네트워크 오류를 운영자가 이해할 수 있게 기록합니다.
+Why this matters:
 
-### 4. 지갑 방식과 인증 구조 결정
+- If paper and live results diverge, we can tell whether the cause is strategy
+  logic or order execution.
+- It prevents accidental strategy changes that happen only because the order
+  path is live.
 
-Polymarket CLOB 인증은 두 층으로 나뉩니다.
+Completion gate:
 
-- `L1 인증`: 지갑 개인키로 서명해 지갑의 소유자임을 증명합니다.
-  API 자격 증명을 만들거나 주문 payload에 서명할 때 사용합니다.
-- `L2 인증`: L1으로 만든 `apiKey`, `secret`, `passphrase`를 사용해
-  주문 제출, 주문 취소, 잔액 확인 요청이 우리 bot에서 온 요청임을
-  증명합니다.
+- Tests prove that the same input produces the same order intent for paper and
+  live execution.
+- The live layer has no independent trading-strategy thresholds.
 
-초보자가 흔히 오해하는 점:
+### 2. Fetch Market State And Token Fees Immediately Before Ordering
 
-- L2 API key가 있으면 개인키가 완전히 필요 없어지는 것이 아닙니다.
-  실제 주문 payload는 여전히 서명이 필요합니다.
-- 개인키와 API key는 둘 다 비밀정보입니다. 하나만 숨기면 되는 것이
-  아닙니다.
-
-지갑 방식은 구현 전에 확인합니다.
+Paper mode uses the official weather-category default fee rate of `0.05` for
+expected-return math. Live mode must fetch the official `fee-rate` endpoint by
+token ID immediately before ordering, and fetch `getClobMarketInfo(conditionID)`
+by condition ID.
 
-- 기존 Safe 또는 Proxy 사용자는 현재 지갑 구조를 확인합니다.
-- 신규 API 사용자라면 공식 deposit wallet 흐름을 검토합니다.
-  deposit wallet은 실제 pUSD와 조건부 토큰을 보관하는 사용자별
-  지갑입니다. 신규 흐름은 `POLY_1271`, 즉 `signatureType=3`을
-  사용합니다.
+`token ID` means the unique identifier for one tradable side, such as YES or
+NO. Even inside the same weather question, YES and NO are separate assets, so a
+real order must target the exact token.
 
-여기서 `funder`는 주문 대금과 token이 실제로 보관되는 지갑
-주소입니다. `signer`는 주문에 서명해 “이 지갑 소유자가 승인한
-주문”임을 증명하는 역할입니다. 두 역할이 같은 주소일 수도 있고 지갑
-방식에 따라 다를 수도 있으므로, 이름만 보고 임의로 같은 값이라고
-가정하면 안 됩니다.
+`condition ID` means the identifier for the full question that contains both
+YES and NO tokens. Use token ID for the exact order target and condition ID for
+shared market settings.
 
-완료 기준:
+Values to fetch:
 
-- 선택한 지갑 방식, funder 주소, signer 역할을 문서화합니다.
-- 비밀정보는 저장소 파일이 아니라 운영 환경의 비밀 저장소에서만
-  주입합니다.
-- 로그와 예외 메시지에 비밀정보가 나오지 않는 테스트가 있습니다.
+- `fee-rate`: the token-level base fee. API `base_fee` values are in basis
+  points, meaning parts per 10,000. For example, `30` means `0.30%`.
+- `feesEnabled`: whether fees are active on that market.
+- `fd.r`, `fd.e`, `fd.to`: fee-curve parameters that describe the rate, price
+  curve shape, and whether the fee applies only to takers.
+- `tick size`: the valid price increment. If tick size is `0.01`, `0.52` is
+  valid and `0.523` is rejected.
+- `negRisk`: whether the market belongs to a negative-risk event that needs
+  special exchange rules.
+- Minimum order size and trading status, so the bot does not submit tiny orders
+  or orders for closed markets.
 
-### 5. 실거래 실행기를 paper 실행기와 분리
+Completion gate:
 
-현재 `PaperBroker`는 가상 체결만 기록합니다. 실거래에서는 별도
-실행기를 추가해 실제 CLOB 주문을 생성하고 서명하고 제출합니다.
+- Missing, stale, or contradictory market metadata fails closed and logs a clear
+  reason.
+- Expected-return math and order preparation use the same fresh fee metadata.
+- Official fee-curve changes are not silently replaced with a fixed estimate.
 
-왜 분리하는가:
+### 3. Check Geographic Restrictions
 
-- paper 모드가 계속 기본값으로 남습니다.
-- 실거래 코드에 문제가 생겨도 전략 계산과 paper 검증 경로를
-  망가뜨리지 않습니다.
-- 문제가 생기면 실거래 실행기만 끄고 즉시 paper 모드로 돌아갈 수
-  있습니다.
+Call `https://polymarket.com/api/geoblock` from the actual server IP right
+before enabling any real order path.
 
-완료 기준:
+Why this matters:
 
-- 기본 설정에서는 실제 주문 제출 함수가 호출되지 않습니다.
-- 실거래 설정을 명시적으로 켠 경우에만 실제 주문 제출 경로가
-  활성화됩니다.
-- 전략 결과를 주문으로 변환한 내용과 Polymarket 응답을 비밀정보 없이
-  기록합니다.
+- A local PC and a VPS can be in different legal or operational locations.
+- VPS location does not prove the user's legal eligibility.
+- The project must not include any restriction-bypass feature.
 
-### 6. 주문 종류를 전략 의도에 맞게 연결
+Completion gate:
 
-Polymarket 주문 종류는 하나만 고정해서 쓰지 않습니다. paper 전략의
-의도에 맞게 선택합니다.
+- If `blocked=true`, the bot submits no real orders, including entry and exit
+  orders.
+- Restriction responses and network errors are logged in a way an operator can
+  understand.
 
-- `GTC`: 취소할 때까지 주문서에 남아 기다리는 지정가 주문입니다.
-- `GTD`: 정해진 시각까지만 기다리고 자동 만료되는 지정가 주문입니다.
-- `FOK`: 지금 전량 체결할 수 있을 때만 체결하고, 아니면 전체
-  취소합니다.
-- `FAK`: 지금 가능한 수량만 체결하고, 남은 수량은 취소합니다.
+### 4. Decide Wallet And Authentication Structure
 
-예시:
+Polymarket CLOB authentication has two layers:
 
-- 전략이 `지금 주문서 가격으로 즉시 진입`을 원하면 `FOK` 또는
-  `FAK`가 맞습니다.
-- 전략이 `이 가격 이하가 오면 진입`을 원하면 `GTC` 또는 `GTD`가
-  맞습니다.
+- `L1 authentication`: proves wallet ownership with a wallet private-key
+  signature. It is used to create API credentials or sign order payloads.
+- `L2 authentication`: uses the derived `apiKey`, `secret`, and `passphrase` to
+  authenticate order submission, cancellation, and balance requests.
 
-초보자가 흔히 오해하는 점:
+Common beginner trap: an L2 API key does not remove the need for order-payload
+signing, and both the wallet key and API credentials are secrets.
 
-- `시장가 주문`도 무한히 비싼 가격에 사는 주문이 아닙니다. 최악의
-  허용 가격을 지정해 슬리피지를 제한해야 합니다.
-- `FOK`를 무조건 쓰는 것이 항상 안전한 것은 아닙니다. 부분 체결을
-  허용하는 전략이라면 `FAK`가 더 정확합니다.
+Before implementation, document the wallet type:
 
-완료 기준:
+- Existing Safe or proxy users must verify their current wallet structure.
+- New API users should review the official deposit-wallet flow. A deposit wallet
+  holds pUSD and conditional tokens; the modern flow uses `POLY_1271`, also
+  known as `signatureType=3`.
+- `funder` is the wallet address that actually holds funds and tokens.
+- `signer` is the address or key role that signs orders. It can differ from the
+  funder, so never assume they are the same just because the names look related.
 
-- 진입, 전체 청산, 부분 청산마다 어떤 주문 종류를 쓰는지 문서화하고
-  테스트합니다.
-- 최악의 허용 가격을 넘는 체결을 요청하지 않습니다.
+Completion gate:
 
-### 7. User WebSocket으로 주문과 체결 상태 추적
+- The wallet type, funder address, and signer role are documented.
+- Secrets are injected only from an operational secret store, not repo files.
+- Tests prove logs and exception messages do not expose secrets.
 
-market WebSocket은 공개 주문서를 보는 채널입니다. 실거래에서는
-별도로 user WebSocket을 연결해야 합니다. user WebSocket은 내 주문이
-접수되었는지, 일부 체결되었는지, 취소되었는지, 블록체인 반영까지
-끝났는지 알려주는 개인 전용 알림 채널입니다.
+### 5. Separate Live Execution From Paper Execution
 
-주문 이벤트:
+`PaperBroker` records simulated fills. Live mode needs a separate executor that
+creates, signs, submits, tracks, and reconciles real CLOB orders.
 
-- `PLACEMENT`: 주문이 접수되어 주문서에 올라갔다는 뜻입니다. 아직
-  돈을 벌거나 포지션이 확정된 것은 아닙니다.
-- `UPDATE`: 주문 수량 일부 또는 전부가 상대 주문과 매칭되었다는
-  뜻입니다. 부분 체결이면 남은 수량을 계속 추적해야 합니다.
-- `CANCELLATION`: 주문이 취소되어 더 이상 새 체결을 기다리지 않는다는
-  뜻입니다.
+Why this matters:
 
-체결 이후 블록체인 반영 상태:
+- Paper mode remains the default.
+- Live-order bugs cannot damage paper validation.
+- Operators can disable the live executor and return to paper mode quickly.
 
-- `MATCHED`: 상대 주문과 짝이 맞았고 체결 처리를 시작했다는 뜻입니다.
-  아직 최종 완료가 아닙니다.
-- `MINED`: 체결 거래가 블록체인에 포함되었지만 최종 확정 전입니다.
-- `CONFIRMED`: 체결이 충분히 확정되어 성공으로 처리할 수 있습니다.
-- `RETRYING`: 체결 반영 중 오류나 재구성이 생겨 Polymarket이 다시
-  시도하고 있습니다.
-- `FAILED`: 재시도도 끝나고 실패로 확정되었습니다. bot의 로컬 상태와
-  실제 상태를 다시 맞춰야 합니다.
+Completion gate:
 
-완료 기준:
+- Default settings never call real order-submission functions.
+- Real order submission is reachable only through explicit live settings.
+- Order-intent conversion and Polymarket responses are logged without secrets.
 
-- 부분 체결, 취소, 재시도, 실패를 각각 테스트합니다.
-- bot 재시작 후에도 열린 주문과 실제 포지션을 다시 조회해 로컬 상태를
-  맞춥니다.
+### 6. Match Order Type To Strategy Intent
 
-### 8. Heartbeat와 전체 주문 취소 비상 정지
+Do not hard-code one order type for every situation.
 
-`heartbeat`는 bot이 살아 있다고 Polymarket에 주기적으로 보내는
-신호입니다. 자동매매 프로그램이 멈췄는데 주문만 계속 남아 있으면
-원하지 않는 체결이 발생할 수 있습니다.
+- `GTC`: good until cancelled; the order rests on the book until cancelled.
+- `GTD`: good until date; the order rests until a chosen expiration time.
+- `FOK`: fill or kill; fill the whole quantity immediately or cancel all.
+- `FAK`: fill and kill; fill whatever is available immediately and cancel the
+  rest.
 
-공식 문서에 따르면 heartbeat가 정기적으로 오지 않으면 사용자의 열린
-주문은 자동 취소됩니다. 별도로 `cancelAll()`도 구현해 운영자가 모든
-열린 주문을 즉시 취소할 수 있게 합니다.
+Use `FOK` or `FAK` for immediate-entry intent. Use `GTC` or `GTD` only when the
+strategy intentionally wants to wait at a limit price.
 
-초보자가 흔히 오해하는 점:
+Completion gate:
 
-- 주문 취소는 이미 체결된 포지션을 없애지 않습니다. 열린 주문만
-  지웁니다.
-- 비상 정지 후에도 이미 보유한 포지션의 청산 또는 정산 회수 작업은
-  계속 필요합니다.
+- Entry, full exit, and partial exit each document and test the selected order
+  type.
+- No request is allowed without a worst acceptable price.
 
-완료 기준:
+### 7. Track Orders And Fills With User WebSocket
 
-- heartbeat 중단 테스트에서 열린 주문이 남지 않는지 확인합니다.
-- 운영자가 한 번의 명령으로 신규 주문을 막고 열린 주문을 취소할 수
-  있습니다.
+The market WebSocket is public order-book data. Live mode also needs the user
+WebSocket, which reports private order lifecycle events.
 
-### 9. 실제 주문, 실제 포지션, 로컬 상태 재조정
+Order events:
 
-`재조정`은 bot 메모리나 파일에 적힌 상태와 Polymarket 서버의 실제
-상태를 비교해 다르면 맞추는 작업입니다.
+- `PLACEMENT`: the order was accepted onto the order book; it does not prove a
+  fill yet.
+- `UPDATE`: quantity or price changed, often because of a partial fill.
+- `CANCELLATION`: the order was cancelled and no longer waits for fills.
 
-예시:
+Post-match states:
 
-- bot은 주문이 열려 있다고 기억하지만 실제로는 이미 체결되었습니다.
-- bot 재시작 중에 주문 일부가 체결되었습니다.
-- WebSocket 메시지를 놓쳤지만 서버에는 실제 포지션이 남아 있습니다.
+- `MATCHED`: an opposing order matched and settlement processing started.
+- `MINED`: the fill transaction was included on-chain but not fully final.
+- `CONFIRMED`: the fill is final enough to treat as successful.
+- `RETRYING`: Polymarket is retrying a recoverable fill-settlement issue.
+- `FAILED`: retries ended in failure and local state must be reconciled again.
 
-완료 기준:
+Completion gate:
 
-- 시작할 때와 주기적으로 열린 주문, 체결 기록, 실제 포지션을 다시
-  조회합니다.
-- 불일치가 있으면 새 주문을 잠시 멈추고 이유를 기록한 뒤 실제 상태를
-  기준으로 복구합니다.
-- 같은 전략 신호 때문에 중복 주문을 보내지 않습니다.
+- Partial fills, cancellations, retries, and failures have focused tests.
+- Startup reconciliation compares local open orders and positions with the real
+  exchange state.
 
-### 10. 정산 후 winning token 회수
+### 8. Add Heartbeat And Emergency Cancel-All
 
-`resolved`는 마켓의 공식 결과가 결정된 상태입니다. `winning token`은
-그 공식 결과와 일치해 가치가 남은 YES 또는 NO token입니다. 정산이
-끝난 마켓의 winning token은 자동으로 현금이 되는 것이 아닙니다.
-공식 `redeem` 흐름으로 pUSD를 회수해야 합니다.
+`heartbeat` tells Polymarket the bot is alive. If heartbeat stops, official
+behavior can cancel open orders. The bot should also provide an explicit
+operator-triggered `cancelAll()` path.
 
-예시:
+Important distinction: cancelling orders does not erase already-filled
+positions. It only removes resting open orders. Existing positions still need
+settlement, exit, or redemption handling.
 
-- YES가 이긴 마켓에서 YES token 100개를 보유했다면 redeem 후
-  `100 pUSD`를 받습니다.
-- 진 쪽 token은 가치가 `0`입니다.
+Completion gate:
 
-완료 기준:
+- Heartbeat-stop tests prove open orders do not remain unmanaged.
+- An operator can stop new orders and cancel open orders with one documented
+  emergency action.
 
-- 마켓 resolved 상태, winning token 보유량, condition ID를 확인한 뒤
-  redeem합니다.
-- 이미 회수한 마켓을 중복 처리하지 않습니다.
-- 실패하면 이유를 기록하고 다시 시도할 수 있습니다.
+### 9. Reconcile Real Orders, Real Positions, And Local State
 
-### 11. 운영 로그, 대시보드, 배포와 롤백
+Reconciliation means comparing the bot's memory or files with the real exchange
+state and correcting local state when they differ.
 
-실거래 대시보드는 전략 결과뿐 아니라 실제 주문 상태를 보여줘야
-합니다.
+Examples:
 
-표시할 내용:
+- The bot remembers an open order that was already filled.
+- An order partially filled while the bot was restarting.
+- A WebSocket message was missed but the server still has the real position.
 
-- 열린 주문 수와 남은 미체결 수량
-- 실제 보유 포지션과 평균 체결 가격
-- 마지막 user WebSocket 메시지 시각
-- 마지막 heartbeat 성공 시각
-- 마지막 지역 제한 확인 결과
-- 최근 주문 거절, 취소, 재시도, 실패 이유
-- redeem 대기 중인 winning token
+Completion gate:
 
-배포 원칙:
+- Startup and periodic tasks refetch open orders, fill history, and real
+  positions.
+- If state disagrees, new orders pause, the reason is logged, and local state is
+  rebuilt from the exchange.
+- Duplicate orders are blocked for the same strategy signal.
 
-- 첫 실거래 배포 전에 사용자가 변경 내용, 장점, 위험, 검증 방법,
-  롤백 방법을 확인하고 명시적으로 승인합니다.
-- 첫 주문은 작은 금액으로 주문 제출, 체결 추적, 취소, 재조정,
-  대시보드 표시가 실제로 이어지는지 확인합니다. 이것은 매매전략을
-  보수화하는 것이 아니라 실행 배선을 검증하는 단계입니다.
-- 문제가 생기면 신규 주문을 막고 `cancelAll()`로 열린 주문을 취소한
-  뒤 paper 모드로 돌아갑니다. 이미 체결된 포지션은 사라지지 않으므로
-  별도로 관리합니다.
+### 10. Redeem Winning Tokens After Resolution
 
-## 구현 전 결정해야 할 것
+`resolved` means the official market result has been decided. A `winning token`
+is the YES or NO token that matches that result. Winning tokens do not always
+turn into cash automatically; the bot must use the official `redeem` flow to
+recover pUSD.
 
-- 기존 Safe/Proxy 지갑을 쓸지, 신규 deposit wallet 흐름을 쓸지
-- 운영 비밀정보를 어떤 비밀 저장소에서 주입할지
-- 실제 주문을 제출할 서버 IP와 사용자 자격이 지역 제한 규칙을
-  만족하는지
-- 진입, 전체 청산, 부분 청산에 각각 어떤 주문 종류를 연결할지
-- 실거래 활성화 설정 이름과 비상 정지 명령을 어떻게 노출할지
+Completion gate:
 
-## 이어받는 AI에게
+- The bot confirms resolved status, winning-token holdings, and condition ID
+  before redeeming.
+- A market is not redeemed twice.
+- Redemption failures are logged and retryable.
 
-> 처음부터 실거래 전략을 다시 설계하지 않습니다. paper 전략이 충분히 완성된 뒤 그 전략을 그대로 재사용하고, 이 문서의 '진행해야 할 것'부터 실제 주문 실행 계층을 순서대로 구현합니다. 사용자의 별도 명시적 승인 전에는 실제 지갑 연결, 비밀정보 등록, 실제 주문 전송, 실거래 배포를 하지 않습니다.
+### 11. Add Operations Dashboard, Deployment, And Rollback
 
-## 공식 문서
+The live dashboard must show real execution state, not only strategy output.
+
+Show at least:
+
+- Open orders and remaining unfilled quantity.
+- Real positions and average fill price.
+- Last user-WebSocket message time.
+- Last heartbeat success time.
+- Last geographic restriction check result.
+- Recent order rejection, cancellation, retry, and failure reasons.
+- Winning tokens waiting for redemption.
+
+Deployment rule:
+
+- Before the first live deployment, explain the change, benefit, risk,
+  verification method, and rollback method, then get explicit approval.
+- The first real order should be tiny and should test submission, fill tracking,
+  cancellation, reconciliation, and dashboard visibility.
+- If a problem appears, stop new orders, run `cancelAll()`, return to paper mode,
+  and reconcile any already-filled positions separately.
+
+## Decisions Required Before Implementation
+
+- Whether to use an existing Safe/proxy wallet or the newer deposit-wallet flow.
+- Which secret store injects operational secrets.
+- Whether the real order-sending server IP and user eligibility satisfy
+  geographic restriction rules.
+- Which order type applies to entry, full exit, and partial exit.
+- Which live-mode setting name and emergency-stop command operators will use.
+
+## For The Next AI
+
+> Do not redesign the live trading strategy from scratch. After the paper
+> strategy is mature, reuse it and implement only the real order execution layer
+> from this document's "Work To Do" section. Do not connect real wallets, add
+> secrets, send real orders, or deploy live trading without the user's separate,
+> explicit approval.
+
+## Official Documents
 
 - Fees: https://docs.polymarket.com/trading/fees
 - Token fee-rate API: https://docs.polymarket.com/api-reference/market-data/get-fee-rate

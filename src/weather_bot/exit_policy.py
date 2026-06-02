@@ -27,6 +27,7 @@ class ExitAssessment:
     model_fair_price: float
     target_exit_price: float
     market_heat_score: float
+    trigger: str = "hold"
 
 
 def side_true_probability(side: Literal["YES", "NO"] | str, p_true_yes: float) -> float:
@@ -134,13 +135,28 @@ def assess_exit(
             fair,
             target,
             heat,
+            "probability_stop",
         )
 
     if mark_price >= target and pnl_pct >= settings.min_profit_pct:
-        return ExitAssessment(True, f"take profit: market reached model target {target:.4f} ({pnl_pct:.1%})", fair, target, heat)
+        return ExitAssessment(
+            True,
+            f"take profit: market reached model target {target:.4f} ({pnl_pct:.1%})",
+            fair,
+            target,
+            heat,
+            "take_profit",
+        )
 
     if mark_price >= fair + settings.overheat_margin and pnl_pct > 0:
-        return ExitAssessment(True, f"take profit: overheated vs model fair {fair:.4f}, heat={heat:.1%}", fair, target, heat)
+        return ExitAssessment(
+            True,
+            f"take profit: overheated vs model fair {fair:.4f}, heat={heat:.1%}",
+            fair,
+            target,
+            heat,
+            "overheated_take_profit",
+        )
 
     if (
         latest_edge is not None
@@ -148,9 +164,16 @@ def assess_exit(
         and latest_edge.net_edge <= settings.exit_net_edge
         and pnl_pct >= -settings.edge_fade_max_loss_pct
     ):
-        return ExitAssessment(True, f"edge faded: latest_edge={latest_edge.net_edge:.4f}, pnl={pnl_pct:.1%}", fair, target, heat)
+        return ExitAssessment(
+            True,
+            f"edge faded: latest_edge={latest_edge.net_edge:.4f}, pnl={pnl_pct:.1%}",
+            fair,
+            target,
+            heat,
+            "edge_faded",
+        )
 
     if holding_hours >= settings.max_holding_hours:
-        return ExitAssessment(True, f"max holding hours {holding_hours:.1f}", fair, target, heat)
+        return ExitAssessment(True, f"max holding hours {holding_hours:.1f}", fair, target, heat, "max_holding")
 
     return ExitAssessment(False, f"hold: mark={mark_price:.4f}, target={target:.4f}, fair={fair:.4f}, heat={heat:.1%}, pnl={pnl_pct:.1%}", fair, target, heat)

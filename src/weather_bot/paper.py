@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
@@ -10,8 +10,8 @@ from uuid import uuid4
 
 from .config import Settings
 from .models import EdgeResult, PaperPosition, PaperState, RawMarket
-from .edge import executable_sell_price, max_absorbable_shares
-from .exit_policy import assess_exit, build_entry_plan, side_true_probability
+from .edge import executable_sell_price, max_absorbable_shares, polymarket_taker_fee_per_share, polymarket_taker_fee_usdc
+from .exit_policy import assess_exit, build_entry_plan, conservative_settlement_value, side_true_probability
 from .polymarket_client import PolymarketClient
 from .portfolio import adaptive_event_cap_fraction, is_complementary_with_positions
 
@@ -22,6 +22,22 @@ def utc_now_iso() -> str:
 
 def parse_iso(ts: str) -> datetime:
     return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+
+
+@dataclass(frozen=True)
+class SettlementRunnerDecision:
+    keep_runner: bool
+    shares_to_close: float
+    runner_shares: float
+    max_runner_shares: float
+    principal_recovery_shares: float
+    net_sell_price: float
+    sell_now_net_usdc: float
+    settlement_ev_usdc: float
+    reason: str
+
+
+PROFIT_RUNNER_TRIGGERS = {"take_profit", "overheated_take_profit"}
 
 
 class PaperBroker:
@@ -44,7 +60,7 @@ class PaperBroker:
         if not self.state_path.exists():
             return PaperState(cash_usd=self.settings.bankroll_usd)
         raw = json.loads(self.state_path.read_text(encoding="utf-8"))
-        # stats 역직렬화: 기존 state 파일에 없어도 빈 dict로 초기화
+        # Deserialize stats. Older state files may not have this key, so use an empty dict.
         raw_stats = raw.get("stats", {})
         stats: dict[str, Any] = {
             mt: {
@@ -85,19 +101,20 @@ class PaperBroker:
         return any(p.market_id == market_id and p.side == side for p in self.state.positions)
 
     def has_any_position(self, market_id: str) -> bool:
-        """마켓 ID에 해당하는 포지션이 side에 관계없이 존재하면 True.
+        """Return True when any position exists for the market, regardless of side.
 
-        YES/NO 동시 진입(헷징) 차단에 사용.
-        같은 마켓에 YES + NO를 동시 보유하면 수수료 손실만 발생하므로
-        이미 한 쪽 포지션이 열려 있으면 반대 쪽 신호도 무시한다.
+        This blocks same-market YES/NO hedging. Holding both sides of one binary
+        market only burns fees, so a signal for the opposite side is ignored
+        when either side is already open.
         """
         return any(p.market_id == market_id for p in self.state.positions)
 
     def city_exposure(self, city: str) -> float:
-        """특정 도시의 현재 총 포지션 cost_usd 합계를 반환한다.
+        """Return total current position cost for one city.
 
-        같은 도시의 파생 마켓(기온 70F/72F/75F 등)에 중복 진입하면
-        단일 날씨 이벤트에 과도하게 노출된다. 이를 제한하기 위해 사용한다.
+        Multiple derived markets for one city, such as 70F, 72F, and 75F
+        temperature buckets, can overexpose the account to one weather event.
+        This value lets the broker enforce the city cap.
         """
         city_lower = city.lower()
         return sum(
@@ -107,10 +124,10 @@ class PaperBroker:
         )
 
     def event_date_exposure(self, city: str, date_hint: str) -> float:
-        """같은 도시 + 날짜 조합의 현재 총 포지션 cost_usd 합계를 반환한다.
+        """Return total current position cost for one city-date pair.
 
-        예: NYC + 'jun 15'에 기온 70F, 72F 두 포지션을 동시에 보유하면
-        같은 하루 날씨 이벤트에 이중으로 노출된다.
+        Example: NYC + 'jun 15' with both 70F and 72F positions is double
+        exposure to the same day's weather outcome.
         """
         city_lower = city.lower()
         date_lower = date_hint.lower()
@@ -160,7 +177,7 @@ class PaperBroker:
             self.log_trade("SKIP_EXPOSURE_CAP", market, result.side, token_id, 0, result.p_exec, 0, "total exposure cap")
             return None
 
-        # ── 도시별 중복 노출 한도 체크 ──────────────────────────────────────────
+        # City exposure cap.
         if city:
             city_exp = self.city_exposure(city)
             city_limit = risk_bankroll * self.settings.max_city_exposure_fraction
@@ -172,7 +189,7 @@ class PaperBroker:
                 self.log_trade("SKIP_CITY_CAP", market, result.side, token_id, 0, result.p_exec, 0, reason)
                 return None
 
-        # ── 도시+날짜 조합 중복 노출 한도 체크 ──────────────────────────────────
+        # City-date exposure cap.
         if city and date_hint:
             event_positions = self.event_date_positions(city, date_hint)
             event_leg_count = len(event_positions)
@@ -203,18 +220,20 @@ class PaperBroker:
             self.log_trade("SKIP_CASH", market, result.side, token_id, 0, result.p_exec, 0, "not enough cash")
             return None
         expected_profit = result.expected_net_profit_usd * spend / result.size_usd
+        entry_fee_per_share = polymarket_taker_fee_per_share(result.p_exec, self.settings.weather_taker_fee_rate)
+        shares = spend / (result.p_exec + entry_fee_per_share)
+        entry_fee_usdc = polymarket_taker_fee_usdc(shares, result.p_exec, self.settings.weather_taker_fee_rate)
         adjusted_result = EdgeResult(
             result.side,
             result.p_true,
             result.p_exec,
             result.net_edge,
             spend,
-            spend / result.p_exec,
+            shares,
             result.reason,
             expected_profit,
         )
         entry_plan = build_entry_plan(adjusted_result, risk_bankroll, self.settings)
-        shares = spend / result.p_exec
         pos = PaperPosition(
             position_id=str(uuid4()),
             market_id=market.market_id,
@@ -238,25 +257,30 @@ class PaperBroker:
                 "target_exit_price": entry_plan.target_exit_price,
                 "market_heat_score": entry_plan.market_heat_score,
                 "entry_rationale": entry_plan.rationale,
+                "entry_notional_usdc": round(shares * result.p_exec, 6),
+                "entry_fee_usdc": entry_fee_usdc,
                 "reason": result.reason,
                 "slug": market.slug,
                 "market_type": market_type,
-                "city": city,           # 도시별 중복 노출 한도 추적용
-                "date_hint": date_hint, # 도시+날짜 조합 중복 노출 한도 추적용
+                "city": city,           # Tracks city-level exposure caps.
+                "date_hint": date_hint, # Tracks city-date exposure caps.
             },
         )
         self.state.cash_usd -= spend
         self.state.positions.append(pos)
         self.save_state()
-        self.log_trade("OPEN", market, result.side, token_id, shares, result.p_exec, -spend, entry_plan.rationale, market_type)
+        open_reason = f"{entry_plan.rationale}; entry_fee=${entry_fee_usdc:.5f}"
+        self.log_trade("OPEN", market, result.side, token_id, shares, result.p_exec, -spend, open_reason, market_type)
         return pos
 
     def close_position(self, pos: PaperPosition, market: RawMarket | None, exit_price: float, reason: str) -> float:
-        proceeds = pos.shares * exit_price
+        gross_proceeds = pos.shares * exit_price
+        exit_fee_usdc = polymarket_taker_fee_usdc(pos.shares, exit_price, self.settings.weather_taker_fee_rate)
+        proceeds = gross_proceeds - exit_fee_usdc
         pnl = proceeds - pos.cost_usd
         self.state.cash_usd += proceeds
         self.state.realized_pnl_usd += pnl
-        # ── 마켓 타입별 승률 추적 ──────────────────────────────────
+        # Track win rate by market type.
         market_type = str(pos.metadata.get("market_type", "temperature"))
         st = self.state.stats.setdefault(market_type, {"wins": 0, "losses": 0, "pnl": 0.0})
         if pnl > 0:
@@ -267,7 +291,8 @@ class PaperBroker:
         self.state.positions = [p for p in self.state.positions if p.position_id != pos.position_id]
         self.save_state()
         dummy = market or RawMarket(pos.market_id, pos.question, None, True, False)
-        self.log_trade("CLOSE", dummy, pos.side, pos.token_id, pos.shares, exit_price, pnl, reason, market_type)
+        close_reason = f"{reason}; exit_fee=${exit_fee_usdc:.5f} gross=${gross_proceeds:.5f} net=${proceeds:.5f}"
+        self.log_trade("CLOSE", dummy, pos.side, pos.token_id, pos.shares, exit_price, pnl, close_reason, market_type)
         return pnl
 
     def partial_close_position(
@@ -277,44 +302,47 @@ class PaperBroker:
         exit_price: float,
         reason: str,
     ) -> float:
-        """보유 물량의 일부만 청산한다. 잔여 물량은 포지션에 남는다.
+        """Close only part of a position and leave the remainder open.
 
-        Bid 호가창 유동성이 전체 보유 물량을 소화하지 못할 때 사용한다.
-        shares_to_close만큼만 실현 손익을 계산하고, 잔여 shares/cost는
-        다음 사이클에서 재청산 시도 대상으로 유지된다.
+        This is used when bid-side liquidity cannot absorb the full held size.
+        The broker realizes PnL only for shares_to_close, then keeps the
+        remaining shares and cost basis for a later close attempt.
 
-        - 부분 청산은 승/패 카운트에 포함하지 않는다 (최종 청산 시 판단).
-        - PnL은 마켓 타입별 누적 합산에는 포함한다.
+        - Partial closes do not count as wins or losses; the final close does.
+        - Partial-close PnL still contributes to market-type cumulative PnL.
 
         Returns:
-            실현 PnL (부분 체결분)
+            Realized PnL for the partially executed close.
         """
         if shares_to_close <= 0 or exit_price <= 0:
             return 0.0
-        # 보유 물량 전체를 초과하면 full close로 위임
+        # Delegate to a full close when the requested size covers the position.
         if shares_to_close >= pos.shares:
             dummy = RawMarket(pos.market_id, pos.question, pos.metadata.get("slug"), True, False)
             return self.close_position(pos, dummy, exit_price, reason)
 
         fraction = shares_to_close / pos.shares
-        proceeds = shares_to_close * exit_price
+        gross_proceeds = shares_to_close * exit_price
+        exit_fee_usdc = polymarket_taker_fee_usdc(shares_to_close, exit_price, self.settings.weather_taker_fee_rate)
+        proceeds = gross_proceeds - exit_fee_usdc
         cost_basis_closed = pos.cost_usd * fraction
         pnl = proceeds - cost_basis_closed
 
         self.state.cash_usd += proceeds
         self.state.realized_pnl_usd += pnl
 
-        # 마켓 타입별 PnL 누적 (부분 청산은 승/패 카운트 제외)
+        # Add PnL by market type, but do not count a partial close as a win/loss.
         market_type = str(pos.metadata.get("market_type", "temperature"))
         st = self.state.stats.setdefault(market_type, {"wins": 0, "losses": 0, "pnl": 0.0})
         st["pnl"] = round(st["pnl"] + pnl, 6)
 
-        # 포지션 잔여분 업데이트 (in-place)
+        # Update the remaining position in place.
         pos.shares = round(pos.shares - shares_to_close, 6)
         pos.cost_usd = round(pos.cost_usd - cost_basis_closed, 6)
 
         dummy = RawMarket(pos.market_id, pos.question, pos.metadata.get("slug"), True, False)
-        self.log_trade("PARTIAL_CLOSE", dummy, pos.side, pos.token_id, shares_to_close, exit_price, pnl, reason, market_type)
+        close_reason = f"{reason}; exit_fee=${exit_fee_usdc:.5f} gross=${gross_proceeds:.5f} net=${proceeds:.5f}"
+        self.log_trade("PARTIAL_CLOSE", dummy, pos.side, pos.token_id, shares_to_close, exit_price, pnl, close_reason, market_type)
         self.save_state()
         return pnl
 
@@ -416,17 +444,17 @@ class PaperBroker:
 
 
     def stats_summary(self) -> str:
-        """온도/강수 마켓별 승률 요약 반환."""
-        lines = ["[타입별 승률 통계]"]
+        """Return win-rate summary by temperature/precipitation market type."""
+        lines = ["[Win-Rate Stats By Market Type]"]
         for mt, st in sorted(self.state.stats.items()):
             total = st["wins"] + st["losses"]
             wr = st["wins"] / total if total > 0 else 0.0
             lines.append(
-                f"  {mt:15s}: {st['wins']}승/{st['losses']}패  "
-                f"승률 {wr:.1%}  누적PnL ${st['pnl']:.2f}"
+                f"  {mt:15s}: {st['wins']} wins/{st['losses']} losses  "
+                f"win_rate {wr:.1%}  cumulative_pnl ${st['pnl']:.2f}"
             )
         if not self.state.stats:
-            lines.append("  아직 청산된 거래 없음")
+            lines.append("  no closed trades yet")
         return "\n".join(lines)
 
 
@@ -473,27 +501,115 @@ def maybe_settle_resolved_positions(
     return messages
 
 
+def _market_for_position(pos: PaperPosition, market: RawMarket | None = None) -> RawMarket:
+    return market or RawMarket(pos.market_id, pos.question, pos.metadata.get("slug"), True, False)
+
+
+def _runner_decision(
+    pos: PaperPosition,
+    mark_price: float,
+    latest_edge: EdgeResult | None,
+    settings: Settings,
+) -> SettlementRunnerDecision:
+    if not settings.settlement_runner_enabled:
+        return SettlementRunnerDecision(False, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, "settlement runner blocked: disabled")
+    if latest_edge is None:
+        return SettlementRunnerDecision(False, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, "settlement runner blocked: missing latest probability")
+
+    max_fraction = max(0.0, min(1.0, settings.settlement_runner_max_fraction))
+    if max_fraction <= 0.0:
+        return SettlementRunnerDecision(False, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, "settlement runner blocked: max fraction is zero")
+
+    fee_per_share = polymarket_taker_fee_per_share(mark_price, settings.weather_taker_fee_rate)
+    net_sell_price = max(0.0, mark_price - fee_per_share)
+    if net_sell_price <= 0.0:
+        return SettlementRunnerDecision(False, 0.0, 0.0, 0.0, 0.0, net_sell_price, 0.0, 0.0, "settlement runner blocked: net sell price is zero")
+
+    settlement_value = conservative_settlement_value(pos.side, latest_edge.p_true, settings)
+    sell_now_net = pos.shares * net_sell_price
+    settlement_ev = pos.shares * settlement_value
+    ev_margin = settlement_ev - sell_now_net
+    required_margin = settings.settlement_runner_min_ev_margin_usd
+    if ev_margin < required_margin:
+        reason = (
+            f"settlement runner blocked: sell_now_net=${sell_now_net:.2f} "
+            f"settlement_ev=${settlement_ev:.2f} margin=${ev_margin:.2f} "
+            f"< required=${required_margin:.2f}"
+        )
+        return SettlementRunnerDecision(False, 0.0, 0.0, 0.0, 0.0, net_sell_price, sell_now_net, settlement_ev, reason)
+
+    max_runner_shares = pos.shares * max_fraction
+    principal_recovery_shares = min(pos.shares, pos.cost_usd / net_sell_price)
+    cap_recovery_shares = max(0.0, pos.shares - max_runner_shares)
+    shares_to_close = min(pos.shares, max(principal_recovery_shares, cap_recovery_shares))
+    runner_shares = max(0.0, pos.shares - shares_to_close)
+    if shares_to_close <= 0.0 or runner_shares <= 0.000001:
+        reason = (
+            f"settlement runner blocked: no bounded runner after principal recovery "
+            f"shares_to_close={shares_to_close:.4f} runner={runner_shares:.4f}"
+        )
+        return SettlementRunnerDecision(False, shares_to_close, runner_shares, max_runner_shares, principal_recovery_shares, net_sell_price, sell_now_net, settlement_ev, reason)
+
+    reason = (
+        f"settlement runner ok: sell_now_net=${sell_now_net:.2f} "
+        f"settlement_ev=${settlement_ev:.2f} net_sell_price={net_sell_price:.4f} "
+        f"principal_recovery_shares={principal_recovery_shares:.4f} "
+        f"max_runner_shares={max_runner_shares:.4f}"
+    )
+    return SettlementRunnerDecision(
+        True,
+        shares_to_close,
+        runner_shares,
+        max_runner_shares,
+        principal_recovery_shares,
+        net_sell_price,
+        sell_now_net,
+        settlement_ev,
+        reason,
+    )
+
+
+def _runner_hold_reason(
+    decision: SettlementRunnerDecision,
+    *,
+    status: str,
+    held_shares: float,
+    assessment_reason: str,
+    low_liquidity: bool = False,
+) -> str:
+    low_liquidity_text = " low_liquidity" if low_liquidity else ""
+    return (
+        f"tranche=settlement_runner action=hold status={status}{low_liquidity_text} "
+        f"held_shares={held_shares:.4f} target_runner_shares={decision.runner_shares:.4f} "
+        f"max_runner_shares={decision.max_runner_shares:.4f} "
+        f"sell_now_net=${decision.sell_now_net_usdc:.2f} settlement_ev=${decision.settlement_ev_usdc:.2f} "
+        f"assessment={assessment_reason}"
+    )
+
+
 def maybe_close_positions(
     broker: PaperBroker,
     client: PolymarketClient,
     market_by_id: dict[str, RawMarket],
     latest_edges: dict[tuple[str, str], EdgeResult],
 ) -> list[str]:
-    """열린 포지션 청산 여부를 평가하고, 조건 충족 시 청산을 실행한다.
+    """Evaluate open positions and close them when an exit rule fires.
 
-    청산 가능 수량에 따라 세 가지 경로로 분기한다:
+    The close path depends on executable bid-side liquidity:
 
-    1. 전량 청산 (can_fully_close=True)
-       Bid 호가창이 보유 물량 전체를 소화할 수 있을 때.
-       VWAP 가격으로 전체 청산 → CLOSE 로그.
+    1. Full close (can_fully_close=True)
+       The bid book can absorb the whole position.
+       The broker closes the full position at VWAP and logs CLOSE.
 
-    2. 부분 청산 (0 < absorbable < pos.shares)
-       호가창이 일부만 소화 가능할 때.
-       흡수 가능 수량만 청산, 잔여 물량은 다음 사이클에서 재시도 → PARTIAL_CLOSE 로그.
+    2. Partial close (0 < absorbable < pos.shares)
+       The bid book can absorb only part of the position.
+       The broker closes only the absorbable shares, keeps the remainder for
+       the next cycle, and logs PARTIAL_CLOSE.
 
-    3. 유동성 없음 (absorbable ≈ 0)
-       실질적으로 체결 불가. 청산 보류 → HOLD_NO_LIQUIDITY 로그.
-       이전 코드처럼 best_bid로 전량 청산 기록하지 않음 (가짜 체결 방지).
+    3. No liquidity (absorbable approximately 0)
+       The close is effectively not executable. The broker holds the position
+       and logs HOLD_NO_LIQUIDITY instead of pretending a full best-bid fill
+       happened.
     """
     messages: list[str] = []
     now = datetime.now(timezone.utc)
@@ -504,16 +620,16 @@ def maybe_close_positions(
             if best_bid is None:
                 continue
 
-            # ── 1단계: 소화 가능 수량 파악 ────────────────────────────────────
+            # Step 1: measure executable absorbable size.
             vwap_exit, exit_slippage = executable_sell_price(book, pos.shares)
             absorbable = max_absorbable_shares(book.bids, min_price=0.01)
             can_fully_close = vwap_exit is not None
 
             if can_fully_close:
-                # 전량 소화 가능: VWAP 가격이 mark
+                # Full close is executable, so VWAP becomes the mark.
                 mark = vwap_exit
             elif absorbable >= 0.001:
-                # 부분 소화: 흡수 가능 수량 기준 VWAP 재계산
+                # Partial close is executable, so recalculate VWAP for that size.
                 partial_vwap, partial_slip = executable_sell_price(book, absorbable)
                 if partial_vwap is not None:
                     mark = partial_vwap
@@ -522,19 +638,21 @@ def maybe_close_positions(
                     mark = best_bid
                     exit_slippage = 0.0
             else:
-                # 유동성 사실상 없음: mark는 best_bid로 표시만 (청산 미실행)
+                # No practical liquidity. Mark at best bid, but do not close.
                 mark = best_bid
                 exit_slippage = 0.0
 
-            # ── 2단계: 미실현 PnL 및 메타데이터 갱신 ──────────────────────────
+            # Step 2: update unrealized PnL and diagnostic metadata.
             pos.last_mark_price = mark
-            pos.last_unrealized_pnl = pos.shares * mark - pos.cost_usd
+            exit_fee_usdc = polymarket_taker_fee_usdc(pos.shares, mark, broker.settings.weather_taker_fee_rate)
+            pos.last_unrealized_pnl = pos.shares * mark - exit_fee_usdc - pos.cost_usd
             pos.metadata["exit_slippage"] = round(exit_slippage, 6)
+            pos.metadata["exit_fee_usdc"] = exit_fee_usdc
             pos.metadata["best_bid"] = round(best_bid, 6)
             pos.metadata["absorbable_shares"] = round(absorbable, 4)
             pos.metadata["can_fully_close"] = can_fully_close
 
-            # ── 3단계: 청산 조건 평가 ─────────────────────────────────────────
+            # Step 3: evaluate exit conditions.
             hours = (now - parse_iso(pos.opened_at)).total_seconds() / 3600.0
             edge = latest_edges.get((pos.market_id, pos.side))
             assessment = assess_exit(pos, mark, edge, broker.settings, hours)
@@ -546,37 +664,117 @@ def maybe_close_positions(
             if not assessment.should_close:
                 continue
 
-            # ── 4단계: 실제 청산 실행 ─────────────────────────────────────────
+            market = _market_for_position(pos, market_by_id.get(pos.market_id))
+            market_type = str(pos.metadata.get("market_type", "temperature"))
+            runner_decision: SettlementRunnerDecision | None = None
+            close_reason = assessment.reason
+            if pos.metadata.get("settlement_runner_active") and assessment.trigger in PROFIT_RUNNER_TRIGGERS:
+                runner_decision = _runner_decision(pos, mark, edge, broker.settings)
+                if runner_decision.keep_runner:
+                    reason = _runner_hold_reason(
+                        runner_decision,
+                        status="active",
+                        held_shares=pos.shares,
+                        assessment_reason=assessment.reason,
+                    )
+                    pos.metadata["last_settlement_runner_decision"] = reason
+                    broker.log_trade("HOLD_RUNNER", market, pos.side, pos.token_id, pos.shares, mark, 0.0, reason, market_type)
+                    messages.append(f"HOLD_RUNNER {pos.side} shares={pos.shares:.2f} price={mark:.4f} reason={reason}")
+                    continue
+                close_reason = f"{assessment.reason}; {runner_decision.reason}"
+
+            if runner_decision is None and assessment.trigger in PROFIT_RUNNER_TRIGGERS:
+                runner_decision = _runner_decision(pos, mark, edge, broker.settings)
+                pos.metadata["last_settlement_runner_decision"] = runner_decision.reason
+                if runner_decision.keep_runner:
+                    desired_close = runner_decision.shares_to_close
+                    shares_to_close = min(desired_close, absorbable if not can_fully_close else desired_close)
+                    if shares_to_close < 0.001:
+                        no_liq = pos.metadata.get("no_liquidity_cycles", 0) + 1
+                        pos.metadata["no_liquidity_cycles"] = no_liq
+                        reason = (
+                            f"tranche=principal_recovery action=hold low_liquidity "
+                            f"desired_shares={desired_close:.4f} absorbable={absorbable:.4f}; "
+                            f"{runner_decision.reason}; assessment={assessment.reason}"
+                        )
+                        broker.log_trade("HOLD_NO_LIQUIDITY", market, pos.side, pos.token_id, pos.shares, mark, 0.0, reason, market_type)
+                        messages.append(
+                            f"HOLD_NO_LIQUIDITY {pos.side} shares={pos.shares:.2f} "
+                            f"best_bid={best_bid:.4f} cycles={no_liq} reason={reason}"
+                        )
+                        continue
+
+                    tranche_vwap, tranche_slippage = executable_sell_price(book, shares_to_close)
+                    if tranche_vwap is None:
+                        tranche_vwap = mark
+                        tranche_slippage = exit_slippage
+                    low_liquidity = shares_to_close + 0.000001 < desired_close
+                    principal_reason = (
+                        f"tranche=principal_recovery action=partial_close "
+                        f"desired_shares={desired_close:.4f} actual_shares={shares_to_close:.4f} "
+                        f"runner_target_shares={runner_decision.runner_shares:.4f} "
+                        f"exit_vwap={tranche_vwap:.4f} slippage={tranche_slippage:.4f} "
+                        f"{'low_liquidity ' if low_liquidity else ''}"
+                        f"{runner_decision.reason}; assessment={assessment.reason}"
+                    )
+                    pnl = broker.partial_close_position(pos, shares_to_close, tranche_vwap, principal_reason)
+                    if not low_liquidity and pos.shares <= runner_decision.max_runner_shares + 0.000001:
+                        pos.metadata["settlement_runner_active"] = True
+                        runner_status = "active"
+                    else:
+                        pos.metadata["settlement_runner_pending"] = True
+                        runner_status = "pending"
+                    hold_reason = _runner_hold_reason(
+                        runner_decision,
+                        status=runner_status,
+                        held_shares=pos.shares,
+                        assessment_reason=assessment.reason,
+                        low_liquidity=low_liquidity,
+                    )
+                    pos.metadata["last_settlement_runner_decision"] = hold_reason
+                    broker.log_trade("HOLD_RUNNER", market, pos.side, pos.token_id, pos.shares, tranche_vwap, 0.0, hold_reason, market_type)
+                    messages.append(
+                        f"PARTIAL_CLOSE {pos.side} closed={shares_to_close:.2f} remain={pos.shares:.2f} "
+                        f"pnl=${pnl:.2f} price={tranche_vwap:.4f} best_bid={best_bid:.4f} "
+                        f"{'low_liquidity ' if low_liquidity else ''}reason={principal_reason}"
+                    )
+                    messages.append(
+                        f"HOLD_RUNNER {pos.side} shares={pos.shares:.2f} "
+                        f"target_runner={runner_decision.runner_shares:.2f} status={runner_status} reason={hold_reason}"
+                    )
+                    continue
+                close_reason = f"{assessment.reason}; {runner_decision.reason}"
+
+            # Step 4: execute the selected close path.
             if can_fully_close:
-                pnl = broker.close_position(
-                    pos, market_by_id.get(pos.market_id), mark, assessment.reason
-                )
+                pnl = broker.close_position(pos, market, mark, close_reason)
                 messages.append(
                     f"CLOSE {pos.side} pnl=${pnl:.2f} "
                     f"exit_vwap={mark:.4f} best_bid={best_bid:.4f} "
-                    f"slippage={exit_slippage:.4f} reason={assessment.reason}"
+                    f"slippage={exit_slippage:.4f} reason={close_reason}"
                 )
             elif absorbable >= 0.001:
-                # 부분 청산: 흡수 가능 수량만 체결, 잔여는 다음 사이클
+                # Partial close: execute only the absorbable shares and keep the rest.
                 original_shares = pos.shares
                 pnl = broker.partial_close_position(
                     pos, absorbable, mark,
-                    f"PARTIAL({absorbable:.2f}/{original_shares:.2f}shares): {assessment.reason}",
+                    f"PARTIAL({absorbable:.2f}/{original_shares:.2f}shares): {close_reason}",
                 )
                 messages.append(
                     f"PARTIAL_CLOSE {pos.side} "
                     f"closed={absorbable:.2f} remain={pos.shares:.2f} "
                     f"pnl=${pnl:.2f} price={mark:.4f} best_bid={best_bid:.4f} "
-                    f"reason={assessment.reason}"
+                    f"reason={close_reason}"
                 )
             else:
-                # 유동성 부족 → 청산 보류, 누적 사이클 수 기록
+                # Insufficient liquidity: hold and count consecutive no-liquidity cycles.
                 no_liq = pos.metadata.get("no_liquidity_cycles", 0) + 1
                 pos.metadata["no_liquidity_cycles"] = no_liq
+                broker.log_trade("HOLD_NO_LIQUIDITY", market, pos.side, pos.token_id, pos.shares, mark, 0.0, close_reason, market_type)
                 messages.append(
                     f"HOLD_NO_LIQUIDITY {pos.side} shares={pos.shares:.2f} "
                     f"best_bid={best_bid:.4f} cycles={no_liq} "
-                    f"reason={assessment.reason}"
+                    f"reason={close_reason}"
                 )
 
         except Exception as exc:  # noqa: BLE001

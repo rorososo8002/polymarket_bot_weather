@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from weather_bot.config import Settings
 from weather_bot.live_paper_runner import _apply_event_portfolio, _evaluate_realtime_update, run_cycle
 from weather_bot.models import EdgeResult, OrderBook, OrderLevel, PaperPosition, PaperState, RawMarket, WeatherSignal
@@ -141,8 +143,8 @@ def test_entry_bankroll_uses_lower_executable_liquidation_value(tmp_path):
 
     assert snapshot.usable is True
     assert snapshot.cost_basis_bankroll == 100.0
-    assert snapshot.liquidation_bankroll == 98.0
-    assert snapshot.entry_bankroll == 98.0
+    assert snapshot.liquidation_bankroll == pytest.approx(97.76)
+    assert snapshot.entry_bankroll == pytest.approx(97.76)
 
 
 def test_entry_bankroll_fails_closed_when_held_position_cannot_be_priced(tmp_path):
