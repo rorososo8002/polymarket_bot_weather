@@ -16,6 +16,9 @@
   have stored official Polymarket rule evidence and are trading-ready; Karachi
   is excluded because its found rule source conflicts with the current station
   code.
+- Temperature nowcast uses observed high-so-far only for daily-high markets.
+  Daily-low markets remain forecast-only unless a same-station observed-low
+  provider is explicitly verified.
 - Realtime order-book cache treats `best_bid_ask` as indicative best-price
   reference only. Executable bid/ask depth comes only from `book` snapshots or
   `price_change` level updates.
@@ -42,8 +45,8 @@
 - Forecast target dates now require exact `daily.time` matches. If the target
   date is absent, the probability path returns `forecast-unavailable` with zero
   confidence instead of using a nearby forecast date.
-- Local verification after the latest paper-state persistence fix: focused
-  paper-state pytest and full `pytest -q`. Full result: `193 passed`.
+- Local verification after the latest daily-low nowcast fix: focused
+  probability pytest and full `pytest -q`. Full result: `207 passed`.
 
 ## In Progress
 

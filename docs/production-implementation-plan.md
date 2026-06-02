@@ -129,6 +129,9 @@ trade from guessed cash or hidden positions.
   mapped to the same settlement station. Current sources: AWC METAR for 39 ICAO
   stations, HKO max/min CSV for Hong Kong, and forecast-only for OPMR/Karachi
   until a same-station provider is verified.
+- Observed high-so-far nowcast applies only to daily-high temperature markets.
+  Daily-low markets stay forecast-only unless a separate observed low-so-far
+  provider is explicitly verified for the same settlement station.
 - Missing, stale, malformed, future-date, unmapped, or unsupported nowcast data
   is not guessed. It remains forecast-only or fail-closed depending on context.
 - Missing exact target-date forecasts are not guessed. Nearby forecast dates

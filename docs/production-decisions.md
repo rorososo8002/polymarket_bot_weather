@@ -32,7 +32,9 @@ specialized reference docs.
   when conservative settlement value beats fee-adjusted sell-now value. Active
   runners are rechecked; they are not risk exemptions.
 - Same-day nowcast is allowed only from explicitly mapped same-station official
-  sources. No nearby-station or city-center substitutions.
+  sources. Observed high-so-far is only evidence for daily-high markets; daily-low
+  markets stay forecast-only unless a same-station observed low provider is
+  verified. No nearby-station or city-center substitutions.
 - Public whale/external-signal research remains shadow-only. Promotion requires
   paired resolved public-signal and bot-entry samples, then only suggests a
   paper-only A/B experiment.
@@ -275,3 +277,12 @@ reach the URL, including automated scanners. Consequence: copied example files,
 empty tokens, or basic/default/change-me tokens fail before the HTTP server
 binds; local development can still run without a token, and query-token values
 are redacted from dashboard logs.
+
+### 2026-06-03: Do Not Use Observed High Nowcast For Daily-Low Markets
+
+Decision: `observed_high_so_far` nowcast applies only to daily-high temperature
+markets. Daily-low markets stay forecast-only unless a separate same-station
+observed low provider is verified. Why: today's observed high does not prove
+whether today's low was below a threshold. Consequence: lowest-temperature
+questions cannot be forced toward NO by an unrelated high-temperature
+observation.

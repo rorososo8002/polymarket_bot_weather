@@ -495,6 +495,55 @@ def test_temperature_nowcast_can_confirm_threshold_crossing_without_city_fallbac
     assert "evidence=forecast-plus-nowcast" in signal.note
 
 
+def test_lowest_temperature_ignores_observed_high_nowcast():
+    target = _today_for_timezone("Asia/Seoul")
+    member_values_f = [56.0, 57.0, 58.0, 59.0]
+
+    class FakeEnsembleClient:
+        models = "fake"
+
+        def forecast_daily_ensemble(self, *_args, **_kwargs):
+            daily = {"time": [target.isoformat()], "temperature_2m_min": [member_values_f[0]]}
+            daily.update(
+                {
+                    f"temperature_2m_min_member{idx:02d}": [value]
+                    for idx, value in enumerate(member_values_f[1:], start=1)
+                }
+            )
+            return {"daily": daily}
+
+    class FreshHighNowcastProvider:
+        def observed_high_so_far(self, station, *, target_date, now=None):
+            assert station.station_id == "RKSI"
+            assert target_date == target
+            return StationNowcastObservation(
+                station_id="RKSI",
+                station_name=station.station_name,
+                observed_high_c=30.0,
+                observed_at=datetime(2026, 6, 2, 8, 0, tzinfo=timezone.utc),
+                high_observed_at=datetime(2026, 6, 2, 8, 0, tzinfo=timezone.utc),
+                source="aviationweather-metar",
+                source_url="https://aviationweather.gov/api/data/metar",
+                settlement_source_url="https://www.wunderground.com/history/daily/kr/incheon/RKSI",
+                freshness_seconds=1800,
+                unavailable_reason="",
+                raw_observation_count=4,
+                update_cadence="fixture",
+            )
+
+    signal = estimate_weather_probability(
+        "Will the lowest temperature in Seoul be 15C or below today?",
+        settings=Settings(),
+        ensemble_client=FakeEnsembleClient(),
+        observation_provider=FreshHighNowcastProvider(),
+    )
+
+    assert signal.source == "open-meteo-ensemble-station"
+    assert signal.p_true > 0.50
+    assert "evidence=forecast-only" in signal.note
+    assert "nowcast_unavailable=observed-low-provider-not-supplied" in signal.note
+
+
 def test_temperature_nowcast_unavailable_keeps_forecast_only_signal():
     target = _today_for_timezone("Asia/Seoul")
 

@@ -588,6 +588,14 @@ def _with_temperature_nowcast(
 ) -> WeatherSignal:
     if not settings.station_nowcast_enabled:
         return replace(signal, note=f"{signal.note}; evidence=forecast-only; nowcast_unavailable=disabled")
+    if parsed.temperature_metric == "min":
+        return replace(
+            signal,
+            note=(
+                f"{signal.note}; evidence=forecast-only; "
+                "nowcast_unavailable=observed-low-provider-not-supplied"
+            ),
+        )
     if observation_provider is None:
         return replace(signal, note=f"{signal.note}; evidence=forecast-only; nowcast_unavailable=provider-not-supplied")
 
