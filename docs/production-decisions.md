@@ -12,6 +12,8 @@ specialized reference docs.
   without explicit approval and a separate live-trading safety pass.
 - The bot trades only verified Polymarket weather stations in `STATION_MAP`.
   Unknown, stale, malformed, unsupported, or suspicious data means skip.
+- Forecast rows must match the target market date exactly. Nearby forecast
+  dates are not substitutes and produce `forecast-unavailable`.
 - Forecasts refresh every 30 minutes by default. Order books use the Polymarket
   CLOB WebSocket stream, and open-position token IDs stay subscribed until the
   position closes or settles.
@@ -210,3 +212,11 @@ where the bot made a scoreable entry. Why: remote filters and unequal
 denominators can overstate public-signal edge. Consequence: shadow promotion
 requires at least 20 paired rows and a five-point advantage, then only
 paper-only A/B testing.
+
+### 2026-06-02: Require Exact Forecast Dates Before Strategy Evaluation
+
+Decision: `weather_bot.probability` rejects an Open-Meteo daily forecast unless
+`daily.time` contains the exact target market date. Why: a nearby date can make
+a different city-date event look tradable and contaminate paper-performance
+results. Consequence: missing target-date rows return `forecast-unavailable`
+with zero confidence, so paper trading skips instead of guessing.

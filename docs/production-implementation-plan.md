@@ -11,6 +11,9 @@ verified settlement stations and reproducible paper accounting.
 - Treat `STATION_MAP` as the single source of truth for settlement stations.
 - Skip unsupported cities, unsupported question shapes, stale data, missing
   order books, suspicious values, or invalid parsed data.
+- Forecast dates must match the target market date exactly. If the target date
+  is absent from the Open-Meteo daily forecast, skip as unavailable; do not use
+  a nearest-date substitute.
 - Refresh Open-Meteo forecasts no more often than every 30 minutes by default.
 - Use the Polymarket CLOB WebSocket market stream for order books by default.
 - Keep token IDs for open positions subscribed even when discovery moves to
@@ -104,6 +107,8 @@ value and new-entry liquidation bankroll also use after-exit-fee value.
   until a same-station provider is verified.
 - Missing, stale, malformed, future-date, unmapped, or unsupported nowcast data
   is not guessed. It remains forecast-only or fail-closed depending on context.
+- Missing exact target-date forecasts are not guessed. Nearby forecast dates
+  are not strategy data for the target city-date market.
 
 Detailed station evidence lives in `docs/station-registry-audit.md`.
 

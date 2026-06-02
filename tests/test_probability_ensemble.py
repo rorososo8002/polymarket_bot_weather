@@ -339,6 +339,37 @@ def test_temperature_ensemble_failure_is_not_strategy_data():
     assert "Ensemble forecast unavailable" in signal.note
 
 
+def test_missing_exact_target_forecast_date_is_not_replaced_by_nearest_date():
+    target = _today_for_timezone("Asia/Seoul")
+    wrong_date = target - timedelta(days=2)
+
+    class FakeEnsembleClient:
+        models = "fake"
+
+        def forecast_daily_ensemble(self, *_args, **_kwargs):
+            return {
+                "daily": {
+                    "time": [wrong_date.isoformat()],
+                    "temperature_2m_max": [100.0],
+                    "temperature_2m_max_member01": [101.0],
+                    "temperature_2m_max_member02": [102.0],
+                    "temperature_2m_max_member03": [103.0],
+                }
+            }
+
+    signal = estimate_weather_probability(
+        "Will the highest temperature in Seoul be 27C or higher today?",
+        settings=Settings(),
+        ensemble_client=FakeEnsembleClient(),
+    )
+
+    assert signal.source == "forecast-unavailable"
+    assert signal.confidence == 0.0
+    assert signal.p_true == 0.5
+    assert target.isoformat() in signal.note
+    assert wrong_date.isoformat() not in signal.note
+
+
 def test_highest_temperature_below_uses_daily_max_not_daily_min():
     target = _today_for_timezone("Europe/London")
 

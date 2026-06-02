@@ -502,18 +502,10 @@ def _target_date_from_hint(
 def _date_index(daily: dict[str, Any], target: date) -> int:
     times = daily.get("time") or []
     target_s = target.isoformat()
-    if target_s in times:
-        return times.index(target_s)
-    # fallback: nearest available date, not always index 0/last
-    parsed_dates: list[date] = []
-    for x in times:
-        try:
-            parsed_dates.append(date.fromisoformat(str(x)))
-        except ValueError:
-            pass
-    if parsed_dates:
-        return min(range(len(parsed_dates)), key=lambda i: abs((parsed_dates[i] - target).days))
-    return 0
+    for idx, value in enumerate(times):
+        if str(value) == target_s:
+            return idx
+    raise ValueError(f"missing exact forecast date for target_date={target_s}")
 
 
 def _extract_member_values(daily: dict[str, Any], variable: str, idx: int, bias_f: float = 0.0) -> list[float]:

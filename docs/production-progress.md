@@ -22,9 +22,11 @@
   locally size-checked, deduplicated by full row identity, bounded by
   `SHADOW_MAX_ROWS`, and compared to bot entries only on paired resolved
   samples.
-- Local verification after the latest strategy/accounting review: focused
-  pytest, full `pytest -q`, compileall, diff whitespace check, and tracked-text
-  Hangul scan. Full result: `187 passed in 2.76s`.
+- Forecast target dates now require exact `daily.time` matches. If the target
+  date is absent, the probability path returns `forecast-unavailable` with zero
+  confidence instead of using a nearby forecast date.
+- Local verification after the latest exact-date forecast guard: focused
+  probability pytest and full `pytest -q`. Full result: `188 passed in 3.02s`.
 
 ## In Progress
 
