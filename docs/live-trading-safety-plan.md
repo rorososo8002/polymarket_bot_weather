@@ -36,8 +36,10 @@ track fills, and reconcile the real exchange state.
 The live project should reuse these paper-bot foundations instead of rebuilding
 them:
 
-- Only cities with verified settlement stations are eligible for trading.
-  `src/weather_bot/stations.py` and `STATION_MAP` are the single source of truth.
+- Only cities with verified settlement stations and stored Polymarket rule
+  evidence are eligible for trading. `src/weather_bot/stations.py` and
+  `STATION_MAP` are the station metadata source of truth, while
+  `TRADING_READY_STATION_MAP` is the executable subset.
 - Open-Meteo forecasts use a default 30-minute TTL, and the bot distinguishes
   stale forecasts from refresh failures.
 - The bot uses the Polymarket CLOB market WebSocket for realtime order books and

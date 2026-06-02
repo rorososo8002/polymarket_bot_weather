@@ -1,4 +1,11 @@
-from weather_bot.stations import STATION_MAP, station_audit_rows
+from dataclasses import replace
+
+from weather_bot.stations import (
+    STATION_MAP,
+    TRADING_READY_STATION_MAP,
+    station_audit_rows,
+    station_is_trading_ready,
+)
 
 
 def _row_for(city: str) -> dict[str, object]:
@@ -12,14 +19,34 @@ def test_station_audit_rows_cover_every_supported_city():
     assert {row["city"] for row in rows} == set(STATION_MAP)
 
 
-def test_station_audit_rows_explain_forecast_and_rule_evidence_gap():
+def test_station_audit_rows_explain_forecast_and_rule_evidence_status():
     for row in station_audit_rows():
         assert row["forecast_source"] == "open-meteo-ensemble"
         assert row["forecast_location_source"] == "settlement_station_coordinates"
         assert row["station_verification_status"] == "verified_from_existing_registry"
-        assert row["rule_evidence_status"] == "needs_rule_source_url"
-        assert row["polymarket_rule_url"] == ""
-        assert row["polymarket_rule_station_text"] == ""
+        if row["trading_ready"]:
+            assert row["rule_evidence_status"] == "verified_rule_source"
+            assert str(row["polymarket_rule_url"]).startswith("https://polymarket.com/")
+            assert row["polymarket_rule_station_text"]
+        else:
+            assert row["rule_evidence_status"] != "verified_rule_source"
+
+
+def test_station_without_rule_evidence_is_not_trading_ready():
+    station = replace(
+        STATION_MAP["seoul"],
+        rule_evidence_status="needs_rule_source_url",
+        polymarket_rule_url="",
+        polymarket_rule_station_text="",
+    )
+
+    assert not station_is_trading_ready(station)
+
+
+def test_trading_ready_map_only_contains_verified_rule_evidence():
+    assert TRADING_READY_STATION_MAP
+    assert set(TRADING_READY_STATION_MAP).issubset(STATION_MAP)
+    assert all(station_is_trading_ready(station) for station in TRADING_READY_STATION_MAP.values())
 
 
 def test_seoul_uses_enabled_metar_observation_provider():

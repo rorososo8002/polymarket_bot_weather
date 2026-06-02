@@ -9,7 +9,7 @@ import requests
 from tenacity import RetryError, retry, stop_after_attempt, wait_exponential
 
 from .models import OrderBook, OrderLevel, RawMarket
-from .stations import STATION_MAP
+from .stations import TRADING_READY_STATION_MAP
 from .weather_client import parse_weather_question
 
 
@@ -172,7 +172,7 @@ class PolymarketClient:
     def _is_weather_market(cls, row: dict[str, Any]) -> bool:
         question = str(row.get("question") or row.get("title") or "")
         parsed = parse_weather_question(question)
-        if not parsed.city or parsed.city.lower() not in STATION_MAP:
+        if not parsed.city or parsed.city.lower() not in TRADING_READY_STATION_MAP:
             return False
         if parsed.city and parsed.variable == "temperature" and parsed.threshold_f is not None and parsed.operator:
             return True

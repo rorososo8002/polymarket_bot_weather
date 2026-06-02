@@ -7,8 +7,12 @@ verified settlement stations and reproducible paper accounting.
 
 ## Non-Negotiable Rules
 
-- Trade only the 41 cities in `src/weather_bot/stations.py`.
-- Treat `STATION_MAP` as the single source of truth for settlement stations.
+- Register only the 41 cities in `src/weather_bot/stations.py`.
+- Treat `STATION_MAP` as the single source of truth for settlement-station
+  metadata.
+- Treat `TRADING_READY_STATION_MAP` as the execution universe. A city is
+  trading-ready only when stored official Polymarket rule evidence confirms the
+  settlement station and no station-code conflict is known.
 - Skip unsupported cities, unsupported question shapes, stale data, missing
   order books, suspicious values, or invalid parsed data.
 - Forecast dates must match the target market date exactly. If the target date
@@ -126,6 +130,9 @@ trade from guessed cash or hidden positions.
   is not guessed. It remains forecast-only or fail-closed depending on context.
 - Missing exact target-date forecasts are not guessed. Nearby forecast dates
   are not strategy data for the target city-date market.
+- Rule evidence is also fail-closed. If a city lacks a stored Polymarket rules
+  URL/station phrase, or if the found rule source conflicts with the registry,
+  discovery and probability estimation exclude it from paper trading.
 
 Detailed station evidence lives in `docs/station-registry-audit.md`.
 

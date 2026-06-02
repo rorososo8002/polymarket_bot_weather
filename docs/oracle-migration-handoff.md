@@ -66,4 +66,6 @@ Do not copy old pre-Oracle runtime files to Oracle. Start the Oracle paper run f
 - If Open-Meteo is unavailable, do not trade from guessed data.
 - If a new forecast provider is added, record the provider in decision logs so results are not mixed with Open-Meteo results.
 - Keep Open-Meteo calls cached and counted. Add request/429 counters before relying on a longer run.
-- Keep 41-city station registry as the trading universe unless the user explicitly changes it.
+- Keep the 41-city station registry, but use `TRADING_READY_STATION_MAP` as the
+  trading universe so cities without rule evidence or with station-code conflicts
+  are excluded.

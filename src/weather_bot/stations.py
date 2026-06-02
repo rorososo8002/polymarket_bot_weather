@@ -1,12 +1,14 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 FORECAST_SOURCE = "open-meteo-ensemble"
 FORECAST_LOCATION_SOURCE = "settlement_station_coordinates"
 DEFAULT_STATION_VERIFICATION_STATUS = "verified_from_existing_registry"
 DEFAULT_RULE_EVIDENCE_STATUS = "needs_rule_source_url"
 DEFAULT_NOWCAST_PROVIDER_STATUS = "provider_enabled"
+RULE_EVIDENCE_TRADING_READY_STATUS = "verified_rule_source"
+RULE_EVIDENCE_STATION_ID_CONFLICT_STATUS = "rule_station_id_conflict"
 
 
 @dataclass(frozen=True)
@@ -57,7 +59,7 @@ def _station(
     )
 
 
-STATION_MAP: dict[str, StationMeta] = {
+_STATION_MAP_BASE: dict[str, StationMeta] = {
     "amsterdam": _station("amsterdam", "EHAM", "Amsterdam Airport Schiphol Station", 52.3086, 4.7639, "Europe/Amsterdam", -3),
     "ankara": _station("ankara", "LTAC", "Esenboga Intl Airport Station", 40.1281, 32.9951, "Europe/Istanbul", 953),
     "atlanta": _station("atlanta", "KATL", "Hartsfield-Jackson International Airport Station", 33.6407, -84.4277, "America/New_York", 313),
@@ -131,12 +133,229 @@ STATION_MAP: dict[str, StationMeta] = {
     "wuhan": _station("wuhan", "ZHHH", "Wuhan Tianhe International Airport Station", 30.7838, 114.2081, "Asia/Shanghai", 34),
 }
 
+
+def _rule(
+    url: str,
+    station_text: str,
+    status: str = RULE_EVIDENCE_TRADING_READY_STATUS,
+) -> dict[str, str]:
+    return {
+        "polymarket_rule_url": url,
+        "polymarket_rule_station_text": station_text,
+        "rule_evidence_status": status,
+    }
+
+
+_RULE_EVIDENCE: dict[str, dict[str, str]] = {
+    "amsterdam": _rule(
+        "https://polymarket.com/event/highest-temperature-in-amsterdam-on-april-30-2026",
+        "highest temperature recorded at the Amsterdam Airport Schiphol Station",
+    ),
+    "ankara": _rule(
+        "https://polymarket.com/pt/event/highest-temperature-in-ankara-on-march-26-2026/highest-temperature-in-ankara-on-march-26-2026-11c",
+        "highest temperature recorded at the Esenboga Intl Airport Station",
+    ),
+    "atlanta": _rule(
+        "https://polymarket.com/id/event/highest-temperature-in-atlanta-on-april-26-2026/highest-temperature-in-atlanta-on-april-26-2026-86-87f",
+        "highest temperature recorded at the Hartsfield-Jackson International Airport Station",
+    ),
+    "beijing": _rule(
+        "https://polymarket.com/event/highest-temperature-in-beijing-on-march-27-2026/highest-temperature-in-beijing-on-march-27-2026-17c",
+        "highest temperature recorded at the Beijing Capital International Airport Station",
+    ),
+    "buenos aires": _rule(
+        "https://polymarket.com/event/highest-temperature-in-buenos-aires-on-march-15-2026/highest-temperature-in-buenos-aires-on-march-15-2026-32corhigher",
+        "highest temperature recorded at the Minister Pistarini Intl Airport Station",
+    ),
+    "busan": _rule(
+        "https://polymarket.com/event/highest-temperature-in-busan-on-april-26-2026",
+        "highest temperature recorded at the Gimhae Intl Airport Station",
+    ),
+    "cape town": _rule(
+        "https://polymarket.com/event/highest-temperature-in-cape-town-on-may-6-2026/highest-temperature-in-cape-town-on-may-6-2026-18c",
+        "highest temperature recorded at the Cape Town International Airport Station",
+    ),
+    "chengdu": _rule(
+        "https://polymarket.com/event/highest-temperature-in-chengdu-on-may-14-2026/highest-temperature-in-chengdu-on-may-14-2026-33corhigher",
+        "highest temperature recorded at the Chengdu Shuangliu International Airport Station",
+    ),
+    "chicago": _rule(
+        "https://polymarket.com/event/highest-temperature-in-chicago-on-march-17-2026/highest-temperature-in-chicago-on-march-17-2026-22-23f",
+        "highest temperature recorded at the Chicago O'Hare Intl Airport Station",
+    ),
+    "chongqing": _rule(
+        "https://polymarket.com/event/highest-temperature-in-chongqing-on-march-22-2026/highest-temperature-in-chongqing-on-march-22-2026-20c",
+        "highest temperature recorded at the Chongqing Jiangbei International Airport Station",
+    ),
+    "dallas": _rule(
+        "https://polymarket.com/event/highest-temperature-in-dallas-on-march-26-2026/highest-temperature-in-dallas-on-march-26-2026-86-87f",
+        "highest temperature recorded at the Dallas Love Field Station",
+    ),
+    "guangzhou": _rule(
+        "https://polymarket.com/event/highest-temperature-in-guangzhou-on-may-14-2026/highest-temperature-in-guangzhou-on-may-14-2026-29c",
+        "highest temperature recorded at the Guangzhou Baiyun International Airport Station",
+    ),
+    "helsinki": _rule(
+        "https://polymarket.com/event/highest-temperature-in-helsinki-on-april-7-2026/highest-temperature-in-helsinki-on-april-7-2026-4c",
+        "highest temperature recorded at the Helsinki Vantaa Airport Station",
+    ),
+    "hong kong": _rule(
+        "https://polymarket.com/event/highest-temperature-in-hong-kong-on-march-27-2026",
+        "highest temperature recorded by the Hong Kong Observatory",
+    ),
+    "istanbul": _rule(
+        "https://polymarket.com/event/highest-temperature-in-istanbul-on-may-17-2026/highest-temperature-in-istanbul-on-may-17-2026-18c",
+        "highest temperature recorded by NOAA at the Istanbul Airport",
+    ),
+    "jeddah": _rule(
+        "https://polymarket.com/event/highest-temperature-in-jeddah-on-may-17-2026/highest-temperature-in-jeddah-on-may-17-2026-36c",
+        "highest temperature recorded at the King Abdulaziz International Airport Station",
+    ),
+    "karachi": _rule(
+        "https://polymarket.com/ru/event/highest-temperature-in-karachi-on-may-17-2026/highest-temperature-in-karachi-on-may-17-2026-37corhigher",
+        "highest temperature recorded at the Masroor Airbase Station; source URL uses OPKC, while registry uses OPMR",
+        RULE_EVIDENCE_STATION_ID_CONFLICT_STATUS,
+    ),
+    "london": _rule(
+        "https://polymarket.com/event/highest-temperature-in-london-on-february-16-2026/highest-temperature-in-london-on-february-16-2026-4corbelow",
+        "highest temperature recorded at the London City Airport Station",
+    ),
+    "los angeles": _rule(
+        "https://polymarket.com/event/highest-temperature-in-los-angeles-on-may-24-2026/highest-temperature-in-los-angeles-on-may-24-2026-62-63f",
+        "highest temperature recorded at the Los Angeles International Airport Station",
+    ),
+    "madrid": _rule(
+        "https://polymarket.com/event/highest-temperature-in-madrid-on-may-27-2026/highest-temperature-in-madrid-on-may-27-2026-35c",
+        "highest temperature recorded at the Adolfo Suarez Madrid-Barajas Airport Station",
+    ),
+    "manila": _rule(
+        "https://polymarket.com/event/highest-temperature-in-manila-on-april-26-2026/highest-temperature-in-manila-on-april-26-2026-39c",
+        "highest temperature recorded at the Ninoy Aquino International Airport Station",
+    ),
+    "miami": _rule(
+        "https://polymarket.com/event/highest-temperature-in-miami-on-march-28-2026/highest-temperature-in-miami-on-march-28-2026-82-83f",
+        "highest temperature recorded at the Miami Intl Airport Station",
+    ),
+    "milan": _rule(
+        "https://polymarket.com/event/highest-temperature-in-milan-on-april-29-2026/highest-temperature-in-milan-on-april-29-2026-17c",
+        "highest temperature recorded at the Malpensa Intl Airport Station",
+    ),
+    "moscow": _rule(
+        "https://polymarket.com/id/event/highest-temperature-in-moscow-on-may-9-2026/highest-temperature-in-moscow-on-may-9-2026-16c",
+        "highest temperature recorded by NOAA at the Vnukovo International Airport",
+    ),
+    "munich": _rule(
+        "https://polymarket.com/event/highest-temperature-in-munich-on-may-23-2026/highest-temperature-in-munich-on-may-23-2026-27c",
+        "highest temperature recorded at the Munich Airport Station",
+    ),
+    "nyc": _rule(
+        "https://polymarket.com/event/highest-temperature-in-nyc-on-february-22-2026/highest-temperature-in-nyc-on-february-22-2026-36-37f",
+        "highest temperature recorded at the LaGuardia Airport Station",
+    ),
+    "panama city": _rule(
+        "https://polymarket.com/event/highest-temperature-in-panama-city-on-may-12-2026/highest-temperature-in-panama-city-on-may-12-2026-29c",
+        "highest temperature recorded at the Marcos A. Gelabert Intl Airport Station",
+    ),
+    "paris": _rule(
+        "https://polymarket.com/event/lowest-temperature-in-paris-on-may-7-2026/lowest-temperature-in-paris-on-may-7-2026-8c",
+        "lowest temperature recorded at the Paris-Le Bourget Airport Station",
+    ),
+    "qingdao": _rule(
+        "https://polymarket.com/event/highest-temperature-in-qingdao-on-may-29-2026/highest-temperature-in-qingdao-on-may-29-2026-26corbelow",
+        "highest temperature recorded at the Qingdao Jiaodong International Airport Station",
+    ),
+    "seattle": _rule(
+        "https://polymarket.com/event/highest-temperature-in-seattle-on-may-13-2026",
+        "highest temperature recorded at the Seattle-Tacoma International Airport Station",
+    ),
+    "seoul": _rule(
+        "https://polymarket.com/event/highest-temperature-in-seoul-on-march-27-2026/highest-temperature-in-seoul-on-march-27-2026-16corhigher",
+        "highest temperature recorded at the Incheon Intl Airport Station",
+    ),
+    "shanghai": _rule(
+        "https://polymarket.com/event/highest-temperature-in-shanghai-on-may-6-2026/highest-temperature-in-shanghai-on-may-6-2026-29corhigher",
+        "highest temperature recorded at the Shanghai Pudong International Airport Station",
+    ),
+    "shenzhen": _rule(
+        "https://polymarket.com/event/highest-temperature-in-shenzhen-on-may-20-2026/highest-temperature-in-shenzhen-on-may-20-2026-31corhigher",
+        "highest temperature recorded at the Shenzhen Bao'an International Airport Station",
+    ),
+    "singapore": _rule(
+        "https://polymarket.com/event/highest-temperature-in-singapore-on-march-17-2026/highest-temperature-in-singapore-on-march-17-2026-24corbelow",
+        "highest temperature recorded at the Singapore Changi Airport Station",
+    ),
+    "taipei": _rule(
+        "https://polymarket.com/zh-hant/event/highest-temperature-in-taipei-on-may-17-2026/highest-temperature-in-taipei-on-may-17-2026-31c",
+        "highest temperature recorded at the Taipei Songshan Airport Station",
+    ),
+    "tel aviv": _rule(
+        "https://polymarket.com/event/highest-temperature-in-tel-aviv-on-march-26-2026/highest-temperature-in-tel-aviv-on-march-26-2026-17c",
+        "highest temperature recorded by NOAA at the Ben Gurion International Airport",
+    ),
+    "tokyo": _rule(
+        "https://polymarket.com/event/highest-temperature-in-tokyo-on-march-12-2026/highest-temperature-in-tokyo-on-march-12-2026-13c",
+        "highest temperature recorded at the Tokyo Haneda Airport Station",
+    ),
+    "toronto": _rule(
+        "https://polymarket.com/vi/event/highest-temperature-in-toronto-on-march-25-2026/highest-temperature-in-toronto-on-march-25-2026-8c",
+        "highest temperature recorded at the Toronto Pearson Intl Airport Station",
+    ),
+    "warsaw": _rule(
+        "https://polymarket.com/event/highest-temperature-in-warsaw-on-may-11-2026/highest-temperature-in-warsaw-on-may-11-2026-27c",
+        "highest temperature recorded at the Warsaw Chopin Airport Station",
+    ),
+    "wellington": _rule(
+        "https://polymarket.com/es/event/highest-temperature-in-wellington-on-march-27-2026",
+        "highest temperature recorded at the Wellington Intl Airport Station",
+    ),
+    "wuhan": _rule(
+        "https://polymarket.com/event/highest-temperature-in-wuhan-on-may-27-2026/highest-temperature-in-wuhan-on-may-27-2026-29c",
+        "highest temperature recorded at the Wuhan Tianhe International Airport Station",
+    ),
+}
+
+
+def _with_rule_evidence(city: str, station: StationMeta) -> StationMeta:
+    evidence = _RULE_EVIDENCE.get(city)
+    if evidence is None:
+        return station
+    return replace(
+        station,
+        rule_evidence_status=evidence["rule_evidence_status"],
+        polymarket_rule_url=evidence["polymarket_rule_url"],
+        polymarket_rule_station_text=evidence["polymarket_rule_station_text"],
+        note="Verified from stored Polymarket weather resolution-rule evidence.",
+    )
+
+
+STATION_MAP: dict[str, StationMeta] = {
+    city: _with_rule_evidence(city, station)
+    for city, station in _STATION_MAP_BASE.items()
+}
+
+
+def station_is_trading_ready(station: StationMeta) -> bool:
+    """Return True only when official Polymarket settlement-rule evidence is stored."""
+    return (
+        station.rule_evidence_status == RULE_EVIDENCE_TRADING_READY_STATUS
+        and station.polymarket_rule_url.startswith("https://polymarket.com/")
+        and bool(station.polymarket_rule_station_text.strip())
+    )
+
+
+TRADING_READY_STATION_MAP: dict[str, StationMeta] = {
+    city: station
+    for city, station in STATION_MAP.items()
+    if station_is_trading_ready(station)
+}
+
 CITY_COORDS: dict[str, tuple[float, float]] = {
     city: (station.latitude, station.longitude)
     for city, station in STATION_MAP.items()
 }
 
 SUPPORTED_CITY_COUNT = len(STATION_MAP)
+TRADING_READY_CITY_COUNT = len(TRADING_READY_STATION_MAP)
 
 
 def station_audit_rows() -> list[dict[str, object]]:
@@ -155,6 +374,7 @@ def station_audit_rows() -> list[dict[str, object]]:
             "rule_evidence_status": station.rule_evidence_status,
             "polymarket_rule_url": station.polymarket_rule_url,
             "polymarket_rule_station_text": station.polymarket_rule_station_text,
+            "trading_ready": station_is_trading_ready(station),
             "nowcast_source_type": station.nowcast_source_type,
             "nowcast_station_id": station.nowcast_station_id,
             "nowcast_provider_status": station.nowcast_provider_status,

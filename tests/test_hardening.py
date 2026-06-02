@@ -190,6 +190,14 @@ def test_discovery_rejects_weather_markets_outside_verified_station_set():
     )
 
 
+def test_discovery_rejects_supported_city_without_rule_evidence(monkeypatch):
+    monkeypatch.setattr("weather_bot.polymarket_client.TRADING_READY_STATION_MAP", {}, raising=False)
+
+    assert not PolymarketClient._is_weather_market(
+        {"question": "Will the highest temperature in NYC be 30\u00b0C or higher on May 25?"}
+    )
+
+
 def test_discovery_stops_at_page_limit_without_fetching_deep_offsets():
     seen_offsets: list[int] = []
 

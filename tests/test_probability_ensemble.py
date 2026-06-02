@@ -45,6 +45,14 @@ def test_unverified_city_is_not_parsed_or_mapped_for_trading():
     assert _station_for(parsed) is None
 
 
+def test_supported_city_without_rule_evidence_is_not_mapped_for_trading(monkeypatch):
+    monkeypatch.setattr("weather_bot.probability.TRADING_READY_STATION_MAP", {}, raising=False)
+    parsed = parse_weather_question("Will NYC be 90 F or higher today?")
+
+    assert parsed.city == "nyc"
+    assert _station_for(parsed) is None
+
+
 def test_dynamic_sigma_has_floor_and_uses_spread():
     assert dynamic_sigma_f([70, 70, 70], lead_days=0) >= 1.25
     assert dynamic_sigma_f([60, 70, 80], lead_days=2) > dynamic_sigma_f([70, 70, 70], lead_days=0)

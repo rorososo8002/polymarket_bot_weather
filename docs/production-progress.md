@@ -12,6 +12,10 @@
   cities, refresh Open-Meteo forecasts every 30 minutes by default, use the
   Polymarket CLOB WebSocket stream, keep held token IDs subscribed, fail closed
   on stale or unsupported data, and preserve paper-only execution.
+- Station evidence is now gated separately from station registration: 40 cities
+  have stored official Polymarket rule evidence and are trading-ready; Karachi
+  is excluded because its found rule source conflicts with the current station
+  code.
 - Realtime order-book cache treats `best_bid_ask` as indicative best-price
   reference only. Executable bid/ask depth comes only from `book` snapshots or
   `price_change` level updates.
@@ -41,6 +45,7 @@
 
 - Phase 0-7 local work is complete with review hardening and fee-adjusted
   paper-share consistency.
+- Station-rule evidence hardening is complete locally and remains paper-only.
 - Phase 0-7 changes have not been automatically deployed to the Oracle VPS.
 - Before any deployment, explain the change, benefit, risk, verification method,
   public exposure implications, and rollback method, then get explicit user
@@ -63,6 +68,8 @@
    strategy planning. It is not part of the default fresh-chat handoff.
 6. Before local pytest or VPS/SSH work, use the command shapes in
    `docs/codex/known-good-commands.md`.
+7. Do not bypass `TRADING_READY_STATION_MAP`; `STATION_MAP` is the registry,
+   while trading-ready means official rule evidence is stored and conflict-free.
 
 ## For The Next AI
 
@@ -77,3 +84,6 @@
   isolation in `src/weather_bot/shadow_signals.py`.
 - Shadow signals are research-only. Do not add real orders, wallet connection,
   automatic copy trading, operations deployment, or private data collection.
+- Use `TRADING_READY_STATION_MAP` for execution candidates. Karachi remains
+  excluded until the `OPMR` registry entry is reconciled with the official
+  Polymarket rule source that points to `OPKC`.

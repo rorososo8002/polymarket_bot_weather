@@ -17,7 +17,7 @@ from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponen
 from .config import Settings
 from .models import ParsedWeatherQuestion, WeatherSignal
 from .nowcast import StationNowcastObservation
-from .stations import STATION_MAP, StationMeta
+from .stations import STATION_MAP, TRADING_READY_STATION_MAP, StationMeta
 from .weather_client import parse_weather_question
 
 
@@ -526,7 +526,7 @@ def _extract_member_values(daily: dict[str, Any], variable: str, idx: int, bias_
 
 def _station_for(parsed: ParsedWeatherQuestion) -> StationMeta | None:
     if parsed.city:
-        return STATION_MAP.get(parsed.city.lower())
+        return TRADING_READY_STATION_MAP.get(parsed.city.lower())
     return None
 
 
@@ -743,7 +743,7 @@ def estimate_weather_probability(
             0.5,
             0.0,
             "unsupported-station",
-            f"{parsed.city} is not in the verified Polymarket settlement-station allowlist.",
+            f"{parsed.city} is not in the trading-ready Polymarket settlement-station allowlist with stored rule evidence.",
             parsed,
         )
 

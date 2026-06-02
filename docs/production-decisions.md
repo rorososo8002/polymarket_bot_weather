@@ -10,8 +10,10 @@ specialized reference docs.
 - Paper-only execution is the boundary. No private keys, wallet connection,
   signing, real orders, automatic copy trading, or live deployment are allowed
   without explicit approval and a separate live-trading safety pass.
-- The bot trades only verified Polymarket weather stations in `STATION_MAP`.
-  Unknown, stale, malformed, unsupported, or suspicious data means skip.
+- The bot trades only stations in `TRADING_READY_STATION_MAP`, the subset of
+  `STATION_MAP` with stored official Polymarket rule evidence and no known
+  station-code conflict. Unknown, stale, malformed, unsupported, or suspicious
+  data means skip.
 - Forecast rows must match the target market date exactly. Nearby forecast
   dates are not substitutes and produce `forecast-unavailable`.
 - Forecasts refresh every 30 minutes by default. Order books use the Polymarket
@@ -250,3 +252,13 @@ invalid existing state with `PaperStateLoadError`. Why: cash and open positions
 are the paper strategy's ledger, not a rebuildable cache. Consequence: missing
 state can initialize on first run, but an existing bad state stops paper trading
 until an operator investigates or restores a good file.
+
+### 2026-06-03: Require Rule Evidence Before Station Trading
+
+Decision: Keep all 41 registered cities in `STATION_MAP`, but use
+`TRADING_READY_STATION_MAP` for discovery and probability execution. Why:
+station coordinates alone do not prove the Polymarket settlement rule. A wrong
+settlement station contaminates paper-profit evidence. Consequence: 40 cities
+are trading-ready with stored Polymarket rule URLs and station wording; Karachi
+is excluded because its found rule source points to `OPKC` while the registry
+uses `OPMR`.
