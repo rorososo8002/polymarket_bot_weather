@@ -12,8 +12,10 @@ specialized reference docs.
   without explicit approval and a separate live-trading safety pass.
 - The bot trades only stations in `TRADING_READY_STATION_MAP`, the subset of
   `STATION_MAP` with stored official Polymarket rule evidence and no known
-  station-code conflict. Unknown, stale, malformed, unsupported, or suspicious
-  data means skip.
+  station-code conflict. Current count: 40 trading-ready cities. Karachi remains
+  registered in `STATION_MAP` but excluded because the official rule evidence
+  points to `OPKC` while the registry uses `OPMR`. Unknown, stale, malformed,
+  unsupported, or suspicious data means skip.
 - Forecast rows must match the target market date exactly. Nearby forecast
   dates are not substitutes and produce `forecast-unavailable`.
 - Forecasts refresh every 30 minutes by default. Order books use the Polymarket
@@ -61,11 +63,14 @@ specialized reference docs.
 
 ## Compact Ledger
 
-### 2026-05-26: Trade Only Verified Polymarket Weather Stations
+### 2026-05-26: Register Only Verified Polymarket Weather Stations
 
-Decision: Trade only the 41 cities mapped in `src/weather_bot/stations.py`.
+Status: Superseded for execution by the 2026-06-03 rule-evidence decision;
+retained as the registration boundary.
+Decision: Register only the 41 cities mapped in `src/weather_bot/stations.py`.
 Why: Forecasting the wrong station destroys weather-market edge. Consequence:
-weather-shaped markets are skipped unless their parsed city is in `STATION_MAP`.
+weather-shaped markets are skipped unless their parsed city is in `STATION_MAP`,
+and actual paper execution still requires `TRADING_READY_STATION_MAP`.
 
 ### 2026-05-26: Remove City-Centroid Trading Fallback
 
@@ -203,9 +208,11 @@ ID alone does not prove nowcast readiness. Consequence: readable audit table is
 
 ### 2026-06-02: Expand Same-Station Observation Providers After Source Checks
 
-Decision: Use AWC METAR for 39 ICAO stations, HKO daily max/min CSV for Hong
-Kong, and keep Karachi/OPMR forecast-only. Why: Hong Kong has official HKO data;
-OPMR lacked a verified same-station provider. Consequence: no substitutions.
+Decision: Use AWC METAR for 39 ICAO stations and HKO daily max/min CSV for Hong
+Kong, while keeping Karachi/OPMR as registered metadata only until its rule
+evidence conflict is resolved. Why: Hong Kong has official HKO data; Karachi's
+official rule evidence points to `OPKC` while the registry uses `OPMR`.
+Consequence: no substitutions and no Karachi paper execution.
 
 ### 2026-06-02: Recover Principal Before Holding A Settlement Runner
 

@@ -8,11 +8,14 @@ verified settlement stations and reproducible paper accounting.
 ## Non-Negotiable Rules
 
 - Register only the 41 cities in `src/weather_bot/stations.py`.
-- Treat `STATION_MAP` as the single source of truth for settlement-station
-  metadata.
-- Treat `TRADING_READY_STATION_MAP` as the execution universe. A city is
-  trading-ready only when stored official Polymarket rule evidence confirms the
-  settlement station and no station-code conflict is known.
+- Treat `STATION_MAP` as the single source of truth for registered
+  settlement-station metadata, not as proof that a city may be traded.
+- Treat `TRADING_READY_STATION_MAP` as the paper-trading execution universe. A
+  city is trading-ready only when stored official Polymarket rule evidence
+  confirms the settlement station and no station-code conflict is known.
+  Current count: 40 trading-ready cities. Karachi remains registered in
+  `STATION_MAP`, but excluded from execution until the `OPMR` registry entry is
+  reconciled with the official rule evidence that points to `OPKC`.
 - Skip unsupported cities, unsupported question shapes, stale data, missing
   order books, suspicious values, or invalid parsed data.
 - Forecast dates must match the target market date exactly. If the target date
@@ -65,7 +68,7 @@ The shadow path is never an execution input by default.
 ## Code Map
 
 ```text
-src/weather_bot/stations.py           city/station allowlist
+src/weather_bot/stations.py           station registry and trading-ready subset
 src/weather_bot/weather_client.py     question parser
 src/weather_bot/probability.py        Open-Meteo ensemble probability
 src/weather_bot/nowcast.py            same-station observed high/low providers
@@ -133,15 +136,17 @@ and `metadata` must be a JSON object when present.
 
 - A weather `event` is one city-date question; a `market` is one tradable
   binary result inside that event.
-- Discovery expands every supported binary market inside every supported
-  weather-category event it finds. The 41-city station map is not an event-count
-  cutoff.
+- Discovery expands every supported binary market inside every trading-ready
+  weather-category event it finds. The 41-city station registry is not an
+  event-count cutoff, and the executable universe is the 40-city
+  `TRADING_READY_STATION_MAP` subset.
 - Temperature bucket probabilities use shared non-overlapping boundaries so one
   event's buckets sum to 100%.
 - Same-day nowcast may adjust probability only when the provider is explicitly
-  mapped to the same settlement station. Current sources: AWC METAR for 39 ICAO
-  stations, HKO max/min CSV for Hong Kong, and forecast-only for OPMR/Karachi
-  until a same-station provider is verified.
+  mapped to the same settlement station. Current trading-ready sources: AWC
+  METAR for 39 ICAO stations and HKO max/min CSV for Hong Kong. Karachi/OPMR
+  remains registered metadata only and is excluded from paper trading until its
+  `OPMR`/`OPKC` rule-evidence conflict is resolved.
 - Temperature nowcast derives observed high-so-far and observed low-so-far from
   one station-date response when the source provides enough observations. Use
   observed high only for daily-high markets and observed low only for daily-low
@@ -285,8 +290,8 @@ DASHBOARD_TOKEN=
 ```
 
 `DISCOVERY_MAX_PAGES` and `DISCOVERY_PAGE_SIZE` only bound fallback Gamma
-pagination. They do not reduce the verified 41-city allowlist and do not cap
-normal category discovery.
+pagination. They do not reduce the registered 41-city station registry, the
+40-city trading-ready execution subset, or normal category discovery.
 
 For public dashboard hosts such as `0.0.0.0`, `DASHBOARD_TOKEN` must be a real
 long random value rather than empty, placeholder, basic, default, or change-me

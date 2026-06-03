@@ -4,7 +4,8 @@ Live-data paper-trading bot for Polymarket weather markets.
 
 This bot is intentionally conservative:
 
-- It trades only the 41 Polymarket weather cities with verified settlement stations.
+- It registers 41 Polymarket weather cities, but paper trading runs only on the
+  40 trading-ready cities with conflict-free Polymarket rule evidence.
 - It forecasts at the exact station used by the market rules, not a city center.
 - It refreshes forecast data every 30 minutes by default.
 - It monitors Polymarket order books through the CLOB WebSocket market stream by default.
@@ -44,11 +45,20 @@ Polymarket Data API sample into `shadow_external_signals.jsonl`.
 
 The bot must fail closed around settlement ambiguity.
 
-`src/weather_bot/stations.py` is the single source of truth for supported cities.
-Its 41-city `STATION_MAP` is an allowlist: each listed city has a verified
-settlement station and may be evaluated. If a market city is not in
-`STATION_MAP`, the bot should not discover, price, or trade it. The allowlist is
-not a discovery cutoff.
+`src/weather_bot/stations.py` is the single source of truth for station policy.
+Its 41-city `STATION_MAP` is the registered observation-station list: it records
+the cities and station metadata the project recognizes. `TRADING_READY_STATION_MAP`
+is the actual paper-trading execution list: a city enters this list only when
+stored official Polymarket rule evidence confirms the same station and no
+station-code conflict is known.
+
+Karachi remains registered in `STATION_MAP` as `OPMR` / Masroor Airbase Station,
+but it is excluded from `TRADING_READY_STATION_MAP` because the current official
+rule evidence source points to `OPKC` while the registry uses `OPMR`. Until that
+evidence conflict is reconciled, the bot must not discover, price, or trade
+Karachi paper markets. Market cities outside `STATION_MAP` are unsupported;
+registered cities outside `TRADING_READY_STATION_MAP` are not executable.
+Neither list is a discovery-result cutoff.
 
 Current cadence:
 
@@ -71,56 +81,63 @@ below`, exact buckets such as `19°C`, and `28°C or higher`.
 `DISCOVERY_MAX_PAGES` and `DISCOVERY_PAGE_SIZE` only bound the fallback Gamma
 API pagination path. Think of them as limiting how many backup-result pages the
 bot reads if the category page is unavailable. They do not reduce the 41-city
-allowlist and do not stop normal category discovery after 41 events. Runner
-status reports the actual event, city, market, and token coverage.
+registered station list, the 40-city trading-ready execution list, or normal
+category discovery after 41 events. Runner status reports the actual event,
+city, market, and token coverage.
 
 The order-book path is event-driven from the Polymarket CLOB WebSocket market channel. Forecast and market snapshots are refreshed every 30 minutes; forecast requests should not run on every order-book update.
 
-## Verified City Set
+## Registered Station Registry
 
-| City | Station ID | Settlement station |
-|---|---:|---|
-| Amsterdam | EHAM | Amsterdam Airport Schiphol Station |
-| Ankara | LTAC | Esenboga Intl Airport Station |
-| Atlanta | KATL | Hartsfield-Jackson International Airport Station |
-| Beijing | ZBAA | Beijing Capital International Airport Station |
-| Buenos Aires | SAEZ | Minister Pistarini Intl Airport Station |
-| Busan | RKPK | Gimhae Intl Airport Station |
-| Cape Town | FACT | Cape Town International Airport Station |
-| Chengdu | ZUUU | Chengdu Shuangliu International Airport Station |
-| Chicago | KORD | Chicago O'Hare Intl Airport Station |
-| Chongqing | ZUCK | Chongqing Jiangbei International Airport Station |
-| Dallas | KDAL | Dallas Love Field Station |
-| Guangzhou | ZGGG | Guangzhou Baiyun International Airport Station |
-| Helsinki | EFHK | Helsinki Vantaa Airport Station |
-| Hong Kong | HKO | Hong Kong Observatory |
-| Istanbul | LTFM | Istanbul Airport |
-| Jeddah | OEJN | King Abdulaziz International Airport Station |
-| Karachi | OPMR | Masroor Airbase Station |
-| London | EGLC | London City Airport Station |
-| Los Angeles | KLAX | Los Angeles International Airport Station |
-| Madrid | LEMD | Adolfo Suarez Madrid-Barajas Airport Station |
-| Manila | RPLL | Ninoy Aquino International Airport Station |
-| Miami | KMIA | Miami Intl Airport Station |
-| Milan | LIMC | Malpensa Intl Airport Station |
-| Moscow | UUWW | Vnukovo International Airport |
-| Munich | EDDM | Munich Airport Station |
-| NYC | KLGA | LaGuardia Airport Station |
-| Panama City | MPMG | Marcos A. Gelabert Intl Airport Station |
-| Paris | LFPB | Paris-Le Bourget Airport Station |
-| Qingdao | ZSQD | Qingdao Jiaodong International Airport Station |
-| Seattle | KSEA | Seattle-Tacoma International Airport Station |
-| Seoul | RKSI | Incheon Intl Airport Station |
-| Shanghai | ZSPD | Shanghai Pudong International Airport Station |
-| Shenzhen | ZGSZ | Shenzhen Bao'an International Airport Station |
-| Singapore | WSSS | Singapore Changi Airport Station |
-| Taipei | RCSS | Taipei Songshan Airport Station |
-| Tel Aviv | LLBG | Ben Gurion International Airport |
-| Tokyo | RJTT | Tokyo Haneda Airport Station |
-| Toronto | CYYZ | Toronto Pearson Intl Airport Station |
-| Warsaw | EPWA | Warsaw Chopin Airport Station |
-| Wellington | NZWN | Wellington Intl Airport Station |
-| Wuhan | ZHHH | Wuhan Tianhe International Airport Station |
+This table is `STATION_MAP`, the registered observation-station registry. It is
+not the executable trading list. Paper trading uses `TRADING_READY_STATION_MAP`;
+currently 40 of these 41 cities are trading-ready, and Karachi is excluded until
+the `OPMR` registry entry is reconciled with the official rule evidence that
+points to `OPKC`.
+
+| City | Station ID | Settlement station | Paper trading status |
+|---|---:|---|---|
+| Amsterdam | EHAM | Amsterdam Airport Schiphol Station | Trading-ready |
+| Ankara | LTAC | Esenboga Intl Airport Station | Trading-ready |
+| Atlanta | KATL | Hartsfield-Jackson International Airport Station | Trading-ready |
+| Beijing | ZBAA | Beijing Capital International Airport Station | Trading-ready |
+| Buenos Aires | SAEZ | Minister Pistarini Intl Airport Station | Trading-ready |
+| Busan | RKPK | Gimhae Intl Airport Station | Trading-ready |
+| Cape Town | FACT | Cape Town International Airport Station | Trading-ready |
+| Chengdu | ZUUU | Chengdu Shuangliu International Airport Station | Trading-ready |
+| Chicago | KORD | Chicago O'Hare Intl Airport Station | Trading-ready |
+| Chongqing | ZUCK | Chongqing Jiangbei International Airport Station | Trading-ready |
+| Dallas | KDAL | Dallas Love Field Station | Trading-ready |
+| Guangzhou | ZGGG | Guangzhou Baiyun International Airport Station | Trading-ready |
+| Helsinki | EFHK | Helsinki Vantaa Airport Station | Trading-ready |
+| Hong Kong | HKO | Hong Kong Observatory | Trading-ready |
+| Istanbul | LTFM | Istanbul Airport | Trading-ready |
+| Jeddah | OEJN | King Abdulaziz International Airport Station | Trading-ready |
+| Karachi | OPMR | Masroor Airbase Station | Excluded: rule evidence points to OPKC while the registry uses OPMR |
+| London | EGLC | London City Airport Station | Trading-ready |
+| Los Angeles | KLAX | Los Angeles International Airport Station | Trading-ready |
+| Madrid | LEMD | Adolfo Suarez Madrid-Barajas Airport Station | Trading-ready |
+| Manila | RPLL | Ninoy Aquino International Airport Station | Trading-ready |
+| Miami | KMIA | Miami Intl Airport Station | Trading-ready |
+| Milan | LIMC | Malpensa Intl Airport Station | Trading-ready |
+| Moscow | UUWW | Vnukovo International Airport | Trading-ready |
+| Munich | EDDM | Munich Airport Station | Trading-ready |
+| NYC | KLGA | LaGuardia Airport Station | Trading-ready |
+| Panama City | MPMG | Marcos A. Gelabert Intl Airport Station | Trading-ready |
+| Paris | LFPB | Paris-Le Bourget Airport Station | Trading-ready |
+| Qingdao | ZSQD | Qingdao Jiaodong International Airport Station | Trading-ready |
+| Seattle | KSEA | Seattle-Tacoma International Airport Station | Trading-ready |
+| Seoul | RKSI | Incheon Intl Airport Station | Trading-ready |
+| Shanghai | ZSPD | Shanghai Pudong International Airport Station | Trading-ready |
+| Shenzhen | ZGSZ | Shenzhen Bao'an International Airport Station | Trading-ready |
+| Singapore | WSSS | Singapore Changi Airport Station | Trading-ready |
+| Taipei | RCSS | Taipei Songshan Airport Station | Trading-ready |
+| Tel Aviv | LLBG | Ben Gurion International Airport | Trading-ready |
+| Tokyo | RJTT | Tokyo Haneda Airport Station | Trading-ready |
+| Toronto | CYYZ | Toronto Pearson Intl Airport Station | Trading-ready |
+| Warsaw | EPWA | Warsaw Chopin Airport Station | Trading-ready |
+| Wellington | NZWN | Wellington Intl Airport Station | Trading-ready |
+| Wuhan | ZHHH | Wuhan Tianhe International Airport Station | Trading-ready |
 
 ## Data Flow
 
@@ -128,8 +145,9 @@ The order-book path is event-driven from the Polymarket CLOB WebSocket market ch
 Polymarket category/Gamma discovery
   -> fetch city-date weather events
   -> expand exact, lower-tail, and upper-tail binary markets
-  -> parse supported 41-city weather question
+  -> parse registered 41-city weather question
   -> station lookup in STATION_MAP
+  -> trading-ready gate in TRADING_READY_STATION_MAP
   -> Open-Meteo ensemble forecast at settlement station
   -> CLOB WebSocket book/price_change events
   -> cached YES/NO order-book VWAP
@@ -168,7 +186,7 @@ net_edge > MIN_NET_EDGE
 expected_net_return >= ENTRY_MIN_EXPECTED_NET_RETURN_PCT
 confidence >= required confidence
 date_hint present
-station verified
+trading-ready station rule evidence verified
 exposure caps pass
 probability stop threshold recorded
 ```
@@ -207,7 +225,7 @@ resolution, and low-liquidity limits still override the runner.
 ## Files
 
 ```text
-src/weather_bot/stations.py           verified city/station allowlist
+src/weather_bot/stations.py           registered station registry and trading-ready subset
 src/weather_bot/weather_client.py     question parser for supported cities
 src/weather_bot/probability.py        Open-Meteo ensemble probability model
 src/weather_bot/polymarket_client.py  Polymarket Gamma/CLOB public data

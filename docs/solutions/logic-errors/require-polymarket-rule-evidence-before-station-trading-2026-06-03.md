@@ -1,6 +1,7 @@
 ---
 title: Require Polymarket rule evidence before station trading
 date: 2026-06-03
+last_updated: 2026-06-03
 category: logic-errors
 module: weather_bot.stations
 problem_type: logic_error
@@ -8,6 +9,7 @@ component: service_object
 symptoms:
   - "A city could be registered with station coordinates before the original Polymarket rule wording was stored."
   - "Paper trading could treat a supported city as executable even when rule evidence was missing or conflicted with the registry."
+  - "README or handoff docs could describe the 41-city registry as the executable trading universe and accidentally invite Karachi back into paper trading."
 root_cause: logic_error
 resolution_type: code_fix
 severity: high
@@ -44,6 +46,10 @@ The code now separates "registered city" from "trading-ready city":
   estimation.
 - Karachi remains registered but is excluded with `rule_station_id_conflict`
   until the `OPKC` versus `OPMR` conflict is resolved from a primary source.
+- README and production handoff docs must describe the same split: `STATION_MAP`
+  is the registered 41-city observation-station list, while
+  `TRADING_READY_STATION_MAP` is the current 40-city paper-trading execution
+  list.
 
 ## 4. What To Check Next Time To Prevent The Same Mistake
 
@@ -55,6 +61,9 @@ The code now separates "registered city" from "trading-ready city":
   mapped for trading.
 - Review discovery filters and probability lookup together so one cannot use the
   broad registry while the other uses the verified subset.
+- When editing README or production handoff docs, search for old wording such as
+  "trade only the 41" or "41-city allowlist" and rewrite it so registration and
+  paper execution stay separate.
 
 ## 5. What This Project Must Be Especially Careful About
 

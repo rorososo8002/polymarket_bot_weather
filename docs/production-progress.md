@@ -8,7 +8,8 @@
   forecast/WebSocket health, fee-aware entry filtering, exact weather-event
   discovery, city-date portfolio selection, same-station nowcast, settlement
   runners, and shadow public-signal research.
-- Current strategy guardrails are active: trade only the 41 `STATION_MAP`
+- Current strategy guardrails are active: register only the 41 `STATION_MAP`
+  cities, execute paper trading only for the 40 `TRADING_READY_STATION_MAP`
   cities, refresh Open-Meteo forecasts every 30 minutes by default, use the
   Polymarket CLOB WebSocket stream, keep held token IDs subscribed, fail closed
   on stale or unsupported data, and preserve paper-only execution.
