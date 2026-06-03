@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import threading
 import time
 from collections.abc import Callable, Iterable
@@ -33,6 +34,8 @@ def _contains_executable_orderbook_update(message: str | dict[str, Any] | list[d
             return False
     if isinstance(message, list):
         return any(_contains_executable_orderbook_update(item) for item in message)
+    if not isinstance(message, dict):
+        return False
     return str(message.get("event_type") or "") in {"book", "price_change"}
 
 
@@ -44,12 +47,42 @@ def market_subscription_message(asset_ids: Iterable[str]) -> dict[str, Any]:
     }
 
 
-def _levels(raw_levels: list[dict[str, Any]], *, reverse: bool) -> list[OrderLevel]:
-    levels = [
-        OrderLevel(float(level["price"]), float(level["size"]))
-        for level in raw_levels
-        if float(level.get("size", 0) or 0) > 0
-    ]
+def _finite_float(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number):
+        return None
+    return number
+
+
+def _valid_orderbook_price(value: Any) -> float | None:
+    price = _finite_float(value)
+    if price is None or not 0.0 < price < 1.0:
+        return None
+    return price
+
+
+def _valid_level_size(value: Any, *, allow_zero: bool) -> float | None:
+    size = _finite_float(value)
+    if size is None or size < 0.0 or (size == 0.0 and not allow_zero):
+        return None
+    return size
+
+
+def _levels(raw_levels: Any, *, reverse: bool) -> list[OrderLevel] | None:
+    if not isinstance(raw_levels, list):
+        return None
+    levels: list[OrderLevel] = []
+    for level in raw_levels:
+        if not isinstance(level, dict):
+            continue
+        price = _valid_orderbook_price(level.get("price"))
+        size = _valid_level_size(level.get("size"), allow_zero=False)
+        if price is None or size is None:
+            continue
+        levels.append(OrderLevel(price, size))
     return sorted(levels, key=lambda level: level.price, reverse=reverse)
 
 
@@ -74,12 +107,17 @@ class OrderBookStreamCache:
 
     def apply_message(self, message: str | dict[str, Any] | list[dict[str, Any]]) -> set[str]:
         if isinstance(message, str):
-            message = json.loads(message)
+            try:
+                message = json.loads(message)
+            except json.JSONDecodeError:
+                return set()
         if isinstance(message, list):
             updated: set[str] = set()
             for item in message:
                 updated.update(self.apply_message(item))
             return updated
+        if not isinstance(message, dict):
+            return set()
         event_type = str(message.get("event_type") or "")
         if event_type == "book":
             return self._apply_book(message)
@@ -97,10 +135,14 @@ class OrderBookStreamCache:
         token_id = str(message.get("asset_id") or "")
         if not token_id:
             return set()
+        bids = _levels(message.get("bids"), reverse=True)
+        asks = _levels(message.get("asks"), reverse=False)
+        if bids is None or asks is None:
+            return set()
         book = OrderBook(
             token_id=token_id,
-            bids=_levels(message.get("bids") or [], reverse=True),
-            asks=_levels(message.get("asks") or [], reverse=False),
+            bids=bids,
+            asks=asks,
             market=str(message.get("market") or "") or None,
             timestamp=str(message.get("timestamp") or "") or None,
             book_hash=str(message.get("hash") or "") or None,
@@ -112,22 +154,29 @@ class OrderBookStreamCache:
 
     def _apply_price_change(self, message: dict[str, Any]) -> set[str]:
         updated: set[str] = set()
+        price_changes = message.get("price_changes")
+        if not isinstance(price_changes, list):
+            return updated
         with self._lock:
-            for change in message.get("price_changes") or []:
+            for change in price_changes:
+                if not isinstance(change, dict):
+                    continue
                 token_id = str(change.get("asset_id") or "")
                 if not token_id:
                     continue
-                current = self._books.get(token_id) or OrderBook(token_id, [], [], market=str(message.get("market") or "") or None)
-                price = float(change.get("price") or 0)
-                size = float(change.get("size") or 0)
                 side = str(change.get("side") or "").upper()
+                if side not in {"BUY", "SELL"}:
+                    continue
+                price = _valid_orderbook_price(change.get("price"))
+                size = _valid_level_size(change.get("size"), allow_zero=True)
+                if price is None or size is None:
+                    continue
+                current = self._books.get(token_id) or OrderBook(token_id, [], [], market=str(message.get("market") or "") or None)
                 bids, asks = current.bids, current.asks
                 if side == "BUY":
                     bids = _set_level(bids, price, size, reverse=True)
                 elif side == "SELL":
                     asks = _set_level(asks, price, size, reverse=False)
-                else:
-                    continue
                 self._books[token_id] = OrderBook(
                     token_id=token_id,
                     bids=bids,
@@ -150,8 +199,10 @@ class OrderBookStreamCache:
         token_id = str(message.get("asset_id") or "")
         if not token_id:
             return set()
-        bid = float(message.get("best_bid") or 0)
-        ask = float(message.get("best_ask") or 0)
+        bid = _valid_orderbook_price(message.get("best_bid"))
+        ask = _valid_orderbook_price(message.get("best_ask"))
+        if bid is None and ask is None:
+            return set()
         with self._lock:
             current = self._books.get(token_id) or OrderBook(token_id, [], [], market=str(message.get("market") or "") or None)
             self._books[token_id] = OrderBook(
@@ -166,14 +217,17 @@ class OrderBookStreamCache:
                 book_hash=current.book_hash,
                 last_trade_price=current.last_trade_price,
                 raw=message,
-                indicative_best_bid=bid if bid > 0 else current.indicative_best_bid,
-                indicative_best_ask=ask if ask > 0 else current.indicative_best_ask,
+                indicative_best_bid=bid if bid is not None else current.indicative_best_bid,
+                indicative_best_ask=ask if ask is not None else current.indicative_best_ask,
             )
         return {token_id}
 
     def _apply_last_trade_price(self, message: dict[str, Any]) -> set[str]:
         token_id = str(message.get("asset_id") or "")
         if not token_id:
+            return set()
+        last_trade_price = _valid_orderbook_price(message.get("price"))
+        if last_trade_price is None:
             return set()
         with self._lock:
             current = self._books.get(token_id) or OrderBook(token_id, [], [], market=str(message.get("market") or "") or None)
@@ -187,7 +241,7 @@ class OrderBookStreamCache:
                 tick_size=current.tick_size,
                 neg_risk=current.neg_risk,
                 book_hash=current.book_hash,
-                last_trade_price=float(message.get("price") or 0) or current.last_trade_price,
+                last_trade_price=last_trade_price,
                 raw=message,
                 indicative_best_bid=current.indicative_best_bid,
                 indicative_best_ask=current.indicative_best_ask,
@@ -197,6 +251,9 @@ class OrderBookStreamCache:
     def _apply_tick_size(self, message: dict[str, Any]) -> set[str]:
         token_id = str(message.get("asset_id") or "")
         if not token_id:
+            return set()
+        tick_size = _finite_float(message.get("new_tick_size"))
+        if tick_size is None or tick_size <= 0.0:
             return set()
         with self._lock:
             current = self._books.get(token_id)
@@ -209,7 +266,7 @@ class OrderBookStreamCache:
                 market=current.market,
                 timestamp=str(message.get("timestamp") or "") or current.timestamp,
                 min_order_size=current.min_order_size,
-                tick_size=float(message.get("new_tick_size") or 0) or current.tick_size,
+                tick_size=tick_size,
                 neg_risk=current.neg_risk,
                 book_hash=current.book_hash,
                 last_trade_price=current.last_trade_price,

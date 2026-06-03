@@ -26,6 +26,9 @@ specialized reference docs.
   the market is skipped rather than guessed from list order.
 - `best_bid_ask` is indicative price data only. Executable depth comes from
   `book` snapshots or `price_change` updates, not assumed sizes.
+- Executable order-book levels are used only after defensive numeric parsing.
+  Non-numeric, non-finite, negative, or out-of-range prices/sizes are discarded;
+  malformed snapshot shapes do not replace the current executable book.
 - Entry decisions are fee-aware. `p_exec` is executable VWAP; `size_usd` is the
   all-in paper-entry budget; `size_shares` is the fee-adjusted actual held
   quantity; paper cash, liquidation bankroll, and dashboard PnL use after-fee
@@ -390,3 +393,14 @@ Consequence: stale/dead WebSocket health blocks new entries, records the
 operator-readable reason in runner status and decision snapshots, pauses
 held-position exit evaluation with `HOLD_STREAM_UNHEALTHY`, and can rebuild a
 dead WebSocket receiver thread without falling back to REST polling.
+
+### 2026-06-03: Ignore Malformed Order-Book Price And Size Levels
+
+Decision: `realtime_orderbook.py` parses `book` and `price_change` levels
+defensively. Non-numeric, NaN, infinite, negative, or out-of-range prices and
+sizes are ignored at the individual level/change boundary; malformed snapshot
+shapes fail closed without replacing the current executable book. Why: the
+order book is the paper bot's executable price calculator, and guessed price or
+size contaminates entry, exit, and liquidity evidence. Consequence: valid levels
+continue updating normally, while broken external stream rows cannot crash the
+cache or create guessed paper trades.

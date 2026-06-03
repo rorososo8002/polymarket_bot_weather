@@ -55,6 +55,96 @@ def test_stream_cache_applies_book_snapshot_and_price_changes():
     assert book.best_ask == 0.53
 
 
+def test_book_snapshot_ignores_malformed_levels_and_keeps_valid_levels():
+    cache = OrderBookStreamCache()
+
+    updated = cache.apply_message(
+        {
+            "event_type": "book",
+            "asset_id": "yes",
+            "market": "condition",
+            "bids": [
+                {"price": "bad", "size": "10"},
+                {"price": "-0.10", "size": "10"},
+                {"price": "nan", "size": "10"},
+                {"price": "0.49", "size": "bad"},
+                {"price": "0.48", "size": "inf"},
+                {"price": "0.47", "size": "-1"},
+                {"price": "0.46", "size": "12"},
+            ],
+            "asks": [
+                {"price": "0.52", "size": "20"},
+                {"price": "inf", "size": "20"},
+                {"price": "0.53", "size": "bad"},
+            ],
+            "timestamp": "1",
+        }
+    )
+
+    assert updated == {"yes"}
+    book = cache.get_order_book("yes")
+    assert [(level.price, level.size) for level in book.bids] == [(0.46, 12.0)]
+    assert [(level.price, level.size) for level in book.asks] == [(0.52, 20.0)]
+
+
+def test_price_change_ignores_malformed_changes_and_keeps_valid_changes():
+    cache = OrderBookStreamCache()
+    cache.apply_message(
+        {
+            "event_type": "book",
+            "asset_id": "yes",
+            "market": "condition",
+            "bids": [{"price": "0.49", "size": "10"}],
+            "asks": [{"price": "0.52", "size": "20"}],
+            "timestamp": "1",
+        }
+    )
+
+    updated = cache.apply_message(
+        {
+            "event_type": "price_change",
+            "market": "condition",
+            "price_changes": [
+                {"asset_id": "yes", "side": "BUY", "price": "bad", "size": "15"},
+                {"asset_id": "yes", "side": "BUY", "price": "nan", "size": "15"},
+                {"asset_id": "yes", "side": "BUY", "price": "-0.10", "size": "15"},
+                {"asset_id": "yes", "side": "SELL", "price": "0.53", "size": "bad"},
+                {"asset_id": "yes", "side": "SELL", "price": "0.53", "size": "inf"},
+                {"asset_id": "yes", "side": "SELL", "price": "0.53", "size": "-1"},
+                {"asset_id": "yes", "side": "BUY", "price": "0.50", "size": "15"},
+                {"asset_id": "yes", "side": "SELL", "price": "0.52", "size": "0"},
+                {"asset_id": "yes", "side": "SELL", "price": "0.53", "size": "25"},
+            ],
+            "timestamp": "2",
+        }
+    )
+
+    assert updated == {"yes"}
+    book = cache.get_order_book("yes")
+    assert [(level.price, level.size) for level in book.bids] == [(0.50, 15.0), (0.49, 10.0)]
+    assert [(level.price, level.size) for level in book.asks] == [(0.53, 25.0)]
+
+
+def test_malformed_book_shape_fails_closed_without_replacing_existing_book():
+    cache = OrderBookStreamCache()
+    cache.apply_message(
+        {
+            "event_type": "book",
+            "asset_id": "yes",
+            "market": "condition",
+            "bids": [{"price": "0.49", "size": "10"}],
+            "asks": [{"price": "0.52", "size": "20"}],
+            "timestamp": "1",
+        }
+    )
+
+    assert cache.apply_message({"event_type": "book", "asset_id": "yes", "bids": "bad", "asks": []}) == set()
+
+    book = cache.get_order_book("yes")
+    assert [(level.price, level.size) for level in book.bids] == [(0.49, 10.0)]
+    assert [(level.price, level.size) for level in book.asks] == [(0.52, 20.0)]
+
+
 def test_stream_cache_accepts_json_message_lists():
     cache = OrderBookStreamCache()
     raw = json.dumps(

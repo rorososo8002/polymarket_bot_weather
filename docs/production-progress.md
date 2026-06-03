@@ -23,6 +23,10 @@
 - Realtime order-book cache treats `best_bid_ask` as indicative best-price
   reference only. Executable bid/ask depth comes only from `book` snapshots or
   `price_change` level updates.
+- Realtime order-book parsing now ignores malformed, non-finite, out-of-range,
+  or negative `price`/`size` values inside `book` and `price_change` messages.
+  Malformed whole-message shapes fail closed without replacing the current
+  executable book.
 - Paper accounting is fee-aware end to end: `size_usd` is the all-in entry
   budget, closes add after-fee proceeds, and dashboard/liquidation values use
   after-exit-fee marks.
@@ -70,6 +74,9 @@
   stream without falling back to REST polling.
 - Local verification after numeric Settings range validation: focused
   config/deployment pytest and full `pytest -q`. Full result: `273 passed`.
+- Local verification after malformed order-book level hardening: focused
+  realtime order-book/runner/edge pytest and full `pytest -q`. Full result:
+  `276 passed`.
 
 ## In Progress
 
@@ -82,6 +89,8 @@
 - Boolean config parsing hardening is complete locally and remains paper-only.
 - WebSocket stale/dead order-book hardening is complete locally and remains
   paper-only.
+- WebSocket malformed order-book level hardening is complete locally and
+  remains paper-only.
 - Public-dashboard token-strength hardening is complete locally and remains
   paper-only.
 - Numeric Settings range validation is complete locally and remains paper-only.

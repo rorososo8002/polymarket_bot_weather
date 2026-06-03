@@ -36,6 +36,10 @@ verified settlement stations and reproducible paper accounting.
   blocks new entries and pauses held-position exit evaluation until executable
   WebSocket depth resumes. A dead receiver thread may rebuild the WebSocket
   stream, but the bot must not silently fall back to REST polling.
+- Parse `book` snapshots and `price_change` level updates defensively. A level
+  with non-numeric, non-finite, negative, or out-of-range price/size is ignored,
+  and malformed whole-message shapes fail closed instead of replacing the
+  executable order book.
 - Persist `paper_state.json` through an atomic temp-file replace. Existing
   corrupt, unreadable, structurally invalid, or position-field invalid paper
   state fails closed instead of starting a new default account.
@@ -114,6 +118,9 @@ slippage. Do not subtract entry spread or entry slippage a second time.
 `best_bid_ask` may update displayed/reference best bid and ask prices, but
 `p_exec` must be computed only from confirmed order-book depth carried by
 `book` snapshots or `price_change` updates.
+Those executable levels must have finite prices in the valid Polymarket token
+range and finite non-negative sizes. Bad levels are discarded; a malformed
+snapshot shape does not overwrite the previous executable book.
 `WEATHER_TAKER_FEE_RATE=0.05` follows the Polymarket formula:
 
 ```text
