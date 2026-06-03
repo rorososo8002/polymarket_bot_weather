@@ -38,7 +38,8 @@
 - Dashboard operator labels are Korean, the right rail uses tabs for
   `스캐너 정보` and `최근 체결`, realized PnL sorts by parsed close time newest
   first, and open-position Polymarket links target the event slug rather than
-  condition-specific market slugs.
+  condition-specific market slugs. Deployed to the Oracle VPS on 2026-06-03 as
+  commit `a52f3bb`.
 - Closed binary markets can settle paper positions from exact Polymarket
   `outcomePrices` only when YES/NO prices are provably `1/0` or `0/1`.
   Ambiguous closed markets remain open until a clear winner is available.
@@ -123,7 +124,13 @@
 - Dashboard trade-history filtering, closed-market `outcomePrices` settlement
   fallback, and realtime pre-stream settlement are complete locally and remain
   paper-only.
-- Phase 0-7 changes have not been automatically deployed to the Oracle VPS.
+- Dashboard localization, right-rail tabs, realized-PnL newest-first sorting,
+  and event-slug open-position links are deployed to the Oracle VPS. Remote
+  focused tests passed with `67 passed`; remote full tests passed with
+  `289 passed`.
+- Other Phase 0-7 changes have not all been treated as one automatic deployment
+  bundle; verify the specific commit and service state before assuming a future
+  local change is live.
 - Before any deployment, explain the change, benefit, risk, verification method,
   public exposure implications, and rollback method, then get explicit user
   approval.
@@ -158,10 +165,11 @@
 10. If full-history reports become too slow on very large ledgers, add an
     explicit operator option such as `--since` or `--max-rows`; do not silently
     change the default full-history report semantics.
-11. After deploying the dashboard/settlement fix, restart the paper bot and
-    dashboard, then verify that older closed positions with exact binary
-    `outcomePrices` settle on the next paper cycle and that `Recent Trades`
-    excludes SKIP-only diagnostic rows.
+11. After any future dashboard change, deploy it immediately to the Oracle VPS,
+    restart the affected service, and verify both the server-rendered HTML and
+    `/api/status` with the dashboard token. For settlement changes, also restart
+    the paper bot and verify that older closed positions with exact binary
+    `outcomePrices` settle on the next paper cycle.
 
 ## For The Next AI
 

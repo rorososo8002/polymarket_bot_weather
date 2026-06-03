@@ -125,6 +125,11 @@ trading-risk, server, or workflow work, read:
 - Make failure modes observable. A running process is not enough when a
   background thread, cache, or external API can fail separately.
 - Report test gaps honestly.
+- When dashboard code or dashboard UI is changed, deploy it to the Oracle VPS
+  immediately after local verification and commit, then restart the affected
+  service and verify the live dashboard HTML plus `/api/status`. If the change
+  also affects paper-position metadata, settlement, or runner behavior, restart
+  `polymarket-weather-bot` too.
 - Run git mutations serially. Do not run `git add`, `git commit`, branch
   changes, or other index-locking commands in parallel.
 
