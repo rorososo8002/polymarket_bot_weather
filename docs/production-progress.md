@@ -27,6 +27,10 @@
   or negative `price`/`size` values inside `book` and `price_change` messages.
   Malformed whole-message shapes fail closed without replacing the current
   executable book.
+- Paper analysis and shadow research reports now stream
+  `paper_decisions.csv` and `paper_trades.csv` rows instead of materializing
+  whole CSV files. The default report meaning remains full-history; only the
+  memory posture changed.
 - Paper accounting is fee-aware end to end: `size_usd` is the all-in entry
   budget, closes add after-fee proceeds, and dashboard/liquidation values use
   after-exit-fee marks.
@@ -100,6 +104,8 @@
 - Numeric Settings range validation is complete locally and remains paper-only.
 - Explicit forecast-bias file fail-closed hardening is complete locally and
   remains paper-only.
+- Analysis/shadow-report CSV streaming is complete locally and remains
+  paper-only.
 - Phase 0-7 changes have not been automatically deployed to the Oracle VPS.
 - Before any deployment, explain the change, benefit, risk, verification method,
   public exposure implications, and rollback method, then get explicit user
@@ -132,6 +138,9 @@
    SKIPs as strategy failure. Use `docs/codex/skip-diagnostics.md` to classify
    whether the blocker is account safety, minimum order, market liquidity,
    weather/parsing data, or strategy threshold.
+10. If full-history reports become too slow on very large ledgers, add an
+    explicit operator option such as `--since` or `--max-rows`; do not silently
+    change the default full-history report semantics.
 
 ## For The Next AI
 

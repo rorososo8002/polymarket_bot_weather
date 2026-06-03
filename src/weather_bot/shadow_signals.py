@@ -4,7 +4,7 @@ import argparse
 import csv
 import json
 import re
-from collections import Counter
+from collections import Counter, defaultdict
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -302,26 +302,45 @@ def compare_signals_to_bot(
     *,
     comparison_window_seconds: int = 86_400,
 ) -> list[SignalComparison]:
-    decisions = _read_bot_decisions(decisions_path)
-    comparisons: list[SignalComparison] = []
+    signal_refs: list[tuple[ShadowSignal, datetime]] = []
+    signals_by_slug: dict[str, list[int]] = defaultdict(list)
+    signals_by_market_id: dict[str, list[int]] = defaultdict(list)
     for signal in signals:
         if signal is None:
             continue
         signal_dt = _parse_iso(signal.observed_at)
         if signal_dt is None:
             continue
-        candidate: tuple[int, BotDecision] | None = None
-        for decision in decisions:
-            if not _same_market(signal, decision):
-                continue
-            decision_dt = _parse_iso(decision.ts)
-            if decision_dt is None:
-                continue
+        index = len(signal_refs)
+        signal_refs.append((signal, signal_dt))
+        if signal.market_slug:
+            signals_by_slug[signal.market_slug].append(index)
+        if signal.market_id:
+            signals_by_market_id[signal.market_id].append(index)
+        if signal.condition_id:
+            signals_by_market_id[signal.condition_id].append(index)
+
+    candidates: dict[int, tuple[int, BotDecision]] = {}
+    for decision in _iter_bot_decisions(decisions_path):
+        decision_dt = _parse_iso(decision.ts)
+        if decision_dt is None:
+            continue
+        matching_signal_indexes: set[int] = set()
+        if decision.slug:
+            matching_signal_indexes.update(signals_by_slug.get(decision.slug, ()))
+        if decision.market_id:
+            matching_signal_indexes.update(signals_by_market_id.get(decision.market_id, ()))
+        for index in matching_signal_indexes:
+            _signal, signal_dt = signal_refs[index]
             lag = int((signal_dt - decision_dt).total_seconds())
             if abs(lag) > comparison_window_seconds:
                 continue
-            if candidate is None or abs(lag) < abs(candidate[0]):
-                candidate = (lag, decision)
+            if index not in candidates or abs(lag) < abs(candidates[index][0]):
+                candidates[index] = (lag, decision)
+
+    comparisons: list[SignalComparison] = []
+    for index, (signal, _signal_dt) in enumerate(signal_refs):
+        candidate = candidates.get(index)
         if candidate is None:
             continue
         lag, decision = candidate
@@ -507,26 +526,21 @@ def _experiment_conclusion(
     return "paper-only experiment promotion: hold - public signals do not yet show enough evidence of outperforming current paper decisions."
 
 
-def _read_bot_decisions(path: Path) -> list[BotDecision]:
-    rows = _read_csv(path)
-    decisions: list[BotDecision] = []
-    for row in rows:
-        decisions.append(
-            BotDecision(
-                ts=str(row.get("ts") or ""),
-                market_id=str(row.get("market_id") or ""),
-                slug=str(row.get("slug") or ""),
-                side=_normalize_side(row.get("side")),
-                p_true=_float_value(row.get("p_true")),
-                reason=str(row.get("reason") or ""),
-            )
+def _iter_bot_decisions(path: Path) -> Iterable[BotDecision]:
+    for row in _iter_csv_rows(path):
+        yield BotDecision(
+            ts=str(row.get("ts") or ""),
+            market_id=str(row.get("market_id") or ""),
+            slug=str(row.get("slug") or ""),
+            side=_normalize_side(row.get("side")),
+            p_true=_float_value(row.get("p_true")),
+            reason=str(row.get("reason") or ""),
         )
-    return decisions
 
 
 def _resolved_outcomes_from_trades(path: Path) -> dict[tuple[str, str], str]:
     outcomes: dict[tuple[str, str], str] = {}
-    for row in _read_csv(path):
+    for row in _iter_csv_rows(path):
         winner = _resolved_winner(str(row.get("reason") or ""))
         if not winner:
             continue
@@ -568,19 +582,11 @@ def _public_note_counts(path: Path | None) -> Counter:
     return counts
 
 
-def _same_market(signal: ShadowSignal, decision: BotDecision) -> bool:
-    return bool(
-        (signal.market_slug and signal.market_slug == decision.slug)
-        or (signal.market_id and signal.market_id == decision.market_id)
-        or (signal.condition_id and signal.condition_id == decision.market_id)
-    )
-
-
-def _read_csv(path: Path) -> list[dict[str, str]]:
+def _iter_csv_rows(path: Path) -> Iterable[dict[str, str]]:
     if not path.exists():
-        return []
+        return
     with path.open("r", encoding="utf-8", newline="") as f:
-        return list(csv.DictReader(f))
+        yield from csv.DictReader(f)
 
 
 def _signal_from_dict(data: dict[str, Any]) -> ShadowSignal:

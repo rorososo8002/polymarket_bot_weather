@@ -23,3 +23,10 @@ Read this file only for runtime logs, paper-trading data, dashboard readers, or 
 - Preserve bounded reads and cached totals for multi-GB files. Never reintroduce full startup scans of `paper_decisions.csv` or raw snapshots.
 - Dashboard live views should not push high-volume SKIP or candidate rows every refresh.
 - Prefer operator-useful summaries, open positions, realized trades, bounded recent trades, cached totals, a moderate visible refresh interval, and a slower hidden-tab interval.
+
+## Analysis And Reports
+
+- `paper_decisions.csv` and `paper_trades.csv` are paper-performance source ledgers, not disposable cache files. Do not truncate, rewrite, or delete them to make reports faster.
+- Full-history reports may still scan every row when their meaning depends on all rows, but they should stream rows and keep only aggregate counters, market-level lookups, or bounded result sets in memory.
+- `analyze_paper.py` keeps the existing full-history report meaning by streaming decision and trade rows instead of materializing whole CSV files.
+- `shadow_signals.py` keeps shadow research separate from execution and streams bot decision/trade CSV rows while comparing only the bounded signal set loaded from `shadow_external_signals.jsonl`.

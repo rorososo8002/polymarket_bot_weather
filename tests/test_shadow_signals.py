@@ -10,6 +10,7 @@ from weather_bot.shadow_signals import (
     public_trade_to_signal,
     write_bounded_shadow_jsonl,
 )
+from weather_bot import shadow_signals
 from weather_bot.models import RawMarket
 
 
@@ -383,3 +384,74 @@ def test_shadow_report_compares_external_and_bot_win_rates_on_the_same_entry_sam
     assert "matched_bot_entry_wins=8/10" in report
     assert "paper-only experiment promotion: hold" in report
     assert "paper-only experiment promotion: candidate" not in report
+
+
+def test_shadow_report_streams_large_decision_and_trade_csv_readers(tmp_path, monkeypatch):
+    signals_path = tmp_path / "shadow.jsonl"
+    decisions_path = tmp_path / "paper_decisions.csv"
+    trades_path = tmp_path / "paper_trades.csv"
+    signal = public_trade_to_signal(
+        {
+            "proxyWallet": "0x1111111111111111111111111111111111111111",
+            "side": "BUY",
+            "conditionId": "0x" + "a" * 64,
+            "size": 100,
+            "price": 0.60,
+            "timestamp": 1_799_996_700,
+            "title": "Highest temperature in Seoul on June 2?",
+            "slug": "target-market",
+            "outcome": "YES",
+            "transactionHash": "0xtarget",
+        }
+    )
+    write_bounded_shadow_jsonl(signals_path, [signal], max_rows=10)
+
+    decisions = [
+        "ts,market_id,slug,question,market_type,side,p_true,p_exec,net_edge,size_usd,size_shares,entry_fraction,probability_stop_threshold,model_fair_price,target_exit_price,market_heat_score,reason,note"
+    ]
+    for index in range(1_000):
+        slug = "target-market" if index == 999 else f"other-market-{index}"
+        decisions.append(
+            f"2027-01-15T07:03:00+00:00,m{index},{slug},q,temperature,YES,0.70,0.55,0.15,10,18,,,,,,decision,"
+        )
+    write(decisions_path, "\n".join(decisions) + "\n")
+    write(
+        trades_path,
+        "\n".join(
+            [
+                "ts,action,market_id,slug,question,market_type,side,token_id,shares,price,cash_delta_or_pnl,reason",
+                "2027-01-16T00:00:00+00:00,CLOSE,m999,target-market,q,temperature,YES,yes,18,1.0,18,resolved winner=YES",
+            ]
+        )
+        + "\n",
+    )
+
+    original_dict_reader = shadow_signals.csv.DictReader
+
+    class GuardedDictReader:
+        def __init__(self, *args, **kwargs):
+            self._reader = original_dict_reader(*args, **kwargs)
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            return next(self._reader)
+
+        def __length_hint__(self):
+            raise AssertionError("CSV readers must be streamed, not materialized with list().")
+
+    monkeypatch.setattr(shadow_signals.csv, "DictReader", GuardedDictReader)
+
+    report = build_shadow_report(
+        signals_path,
+        decisions_path,
+        trades_path=trades_path,
+        max_rows=10,
+        min_resolved_for_experiment=3,
+    )
+
+    assert "compared=1" in report
+    assert "same_side=1" in report
+    assert "external_signal_wins=1/1" in report
+    assert "matched_bot_entry_wins=1/1" in report

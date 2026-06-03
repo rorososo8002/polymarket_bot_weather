@@ -79,6 +79,11 @@ supported weather markets -> bounded public Data API rows
 
 The shadow path is never an execution input by default.
 
+Paper-report readers treat `paper_decisions.csv` and `paper_trades.csv` as
+source ledgers. Full-history analysis may scan every row to preserve its
+meaning, but it must stream rows and keep only aggregates, market-level lookup
+state, or bounded research samples in memory.
+
 ## Code Map
 
 ```text

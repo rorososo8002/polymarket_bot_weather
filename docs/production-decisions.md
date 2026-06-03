@@ -78,6 +78,10 @@ specialized reference docs.
   entries, pauses held-position exit evaluation with explicit
   `HOLD_STREAM_UNHEALTHY` logs, and may rebuild a dead WebSocket receiver
   without switching to REST polling.
+- Paper analysis reports treat `paper_decisions.csv` and `paper_trades.csv` as
+  source ledgers. Reports may scan full history when that is the promised
+  meaning, but they must stream rows and keep only aggregates or bounded
+  lookups in memory instead of materializing whole CSV files.
 
 ## Compact Ledger
 
@@ -418,3 +422,13 @@ missing or broken, paper results no longer measure the intended calibrated
 strategy. Consequence: invalid explicit bias files surface as
 `forecast-unavailable` with zero confidence, so paper entries skip instead of
 quietly using uncorrected forecasts.
+
+### 2026-06-03: Stream Paper Report Ledgers Instead Of Materializing CSVs
+
+Decision: `analyze_paper.py` and `shadow_signals.py` read
+`paper_decisions.csv` and `paper_trades.csv` as streams, keeping aggregate
+counts, market-level latest decisions, resolved outcomes, and bounded shadow
+signals rather than whole CSV row lists. Why: these files are the paper
+strategy's evidence ledger and naturally grow during long VPS operation.
+Consequence: default report semantics stay full-history, but memory use scales
+with the number of tracked markets/signals instead of the total row count.
