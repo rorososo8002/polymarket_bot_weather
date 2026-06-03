@@ -38,7 +38,17 @@ def load_text_fixture(name: str):
     return (FIXTURES / name).read_text(encoding="utf-8")
 
 
-def provider_for(payload, *, freshness_seconds: int = 5400, cache_ttl_seconds: int = 0):
+def read_jsonl(path: Path) -> list[dict[str, object]]:
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+
+
+def provider_for(
+    payload,
+    *,
+    freshness_seconds: int = 5400,
+    cache_ttl_seconds: int = 0,
+    request_log_path: Path | None = None,
+):
     calls = []
 
     def fake_get(url, *, params, timeout, headers):
@@ -49,6 +59,7 @@ def provider_for(payload, *, freshness_seconds: int = 5400, cache_ttl_seconds: i
         http_get=fake_get,
         freshness_seconds=freshness_seconds,
         cache_ttl_seconds=cache_ttl_seconds,
+        request_log_path=request_log_path,
     )
     return provider, calls
 
@@ -92,6 +103,39 @@ def test_aviationweather_provider_returns_high_and_low_from_one_cached_fetch():
     assert low_observation.observed_low_c == 18.0
     assert low_observation.low_observed_at.isoformat() == "2026-06-02T00:00:00+00:00"
     assert len(calls) == 1
+
+
+def test_aviationweather_request_log_records_external_fetch_not_cache_hit(tmp_path):
+    request_log_path = tmp_path / "station_nowcast_request_log.jsonl"
+    provider, calls = provider_for(
+        load_fixture("aviationweather_rksi_fresh.json"),
+        cache_ttl_seconds=900,
+        request_log_path=request_log_path,
+    )
+
+    provider.observed_high_so_far(
+        STATION_MAP["seoul"],
+        target_date=date(2026, 6, 2),
+        now=datetime(2026, 6, 2, 8, 30, tzinfo=timezone.utc),
+    )
+    provider.observed_low_so_far(
+        STATION_MAP["seoul"],
+        target_date=date(2026, 6, 2),
+        now=datetime(2026, 6, 2, 8, 31, tzinfo=timezone.utc),
+    )
+
+    rows = read_jsonl(request_log_path)
+
+    assert len(calls) == 1
+    assert len(rows) == 1
+    assert rows[0]["city"] == "seoul"
+    assert rows[0]["station_id"] == STATION_MAP["seoul"].station_id
+    assert rows[0]["station_name"] == STATION_MAP["seoul"].station_name
+    assert rows[0]["source"] == "aviationweather-metar"
+    assert rows[0]["status"] == "success"
+    assert rows[0]["status_code"] == 200
+    assert rows[0]["cache_miss_reason"] == "empty-cache"
+    assert rows[0]["requested_at"] == "2026-06-02T08:30:00+00:00"
 
 
 def test_aviationweather_provider_supports_verified_icao_station_beyond_seoul():
@@ -155,7 +199,13 @@ def test_aviationweather_provider_skips_station_without_verified_observation_sou
     assert calls == []
 
 
-def hko_provider_for(payload: str, *, freshness_seconds: int = 5400):
+def hko_provider_for(
+    payload: str,
+    *,
+    freshness_seconds: int = 5400,
+    cache_ttl_seconds: int = 0,
+    request_log_path: Path | None = None,
+):
     calls = []
 
     def fake_get(url, *, params=None, timeout, headers):
@@ -165,7 +215,8 @@ def hko_provider_for(payload: str, *, freshness_seconds: int = 5400):
     provider = AviationWeatherMetarNowcastProvider(
         http_get=fake_get,
         freshness_seconds=freshness_seconds,
-        cache_ttl_seconds=0,
+        cache_ttl_seconds=cache_ttl_seconds,
+        request_log_path=request_log_path,
     )
     return provider, calls
 
@@ -188,6 +239,38 @@ def test_hko_provider_returns_max_temperature_since_midnight_from_fixture():
     assert observation.freshness_seconds == 900
     assert observation.source == "hko-maxmin-since-midnight"
     assert "latest_since_midnight_maxmin.csv" in calls[0]["url"]
+
+
+def test_hko_request_log_records_external_fetch_not_cache_hit(tmp_path):
+    request_log_path = tmp_path / "station_nowcast_request_log.jsonl"
+    provider, calls = hko_provider_for(
+        load_text_fixture("hko_maxmin_fresh.csv"),
+        cache_ttl_seconds=900,
+        request_log_path=request_log_path,
+    )
+
+    provider.observed_high_so_far(
+        STATION_MAP["hong kong"],
+        target_date=date(2026, 6, 2),
+        now=datetime(2026, 6, 2, 3, 45, tzinfo=timezone.utc),
+    )
+    provider.observed_low_so_far(
+        STATION_MAP["hong kong"],
+        target_date=date(2026, 6, 2),
+        now=datetime(2026, 6, 2, 3, 46, tzinfo=timezone.utc),
+    )
+
+    rows = read_jsonl(request_log_path)
+
+    assert len(calls) == 1
+    assert len(rows) == 1
+    assert rows[0]["city"] == "hong kong"
+    assert rows[0]["station_id"] == STATION_MAP["hong kong"].station_id
+    assert rows[0]["source"] == "hko-maxmin-since-midnight"
+    assert rows[0]["status"] == "success"
+    assert rows[0]["status_code"] == 200
+    assert rows[0]["cache_miss_reason"] == "empty-cache"
+    assert rows[0]["requested_at"] == "2026-06-02T03:45:00+00:00"
 
 
 def test_hko_provider_marks_malformed_csv_unusable():

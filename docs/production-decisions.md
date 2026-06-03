@@ -96,6 +96,12 @@ specialized reference docs.
   HTTP attempts are recorded in `forecast_request_log.jsonl` with cache-miss
   reason and safe city/station metadata; the log rotates at 10MB into
   `data/archive/` with zstd compression.
+- Station nowcast caches are not METAR/HKO call ledgers. Real AWC METAR and
+  HKO max/min HTTP attempts are recorded in
+  `station_nowcast_request_log.jsonl` with city, settlement-station code,
+  source, request time, status, and cache-miss reason. Cache hits do not write
+  rows, and the VPS log rotates at 10MB into `data/archive/` with zstd
+  compression.
 - Dashboard trade-history panels treat SKIP rows as diagnostics, not executed
   trades. Recent trades, realized rows, and realized equity points use cached
   actual trade actions so SKIP bursts cannot hide older closes.
@@ -452,6 +458,16 @@ signals rather than whole CSV row lists. Why: these files are the paper
 strategy's evidence ledger and naturally grow during long VPS operation.
 Consequence: default report semantics stay full-history, but memory use scales
 with the number of tracked markets/signals instead of the total row count.
+
+### 2026-06-04: Record Real Station Nowcast HTTP Attempts
+
+Decision: Write one `station_nowcast_request_log.jsonl` row only when the
+nowcast provider makes a real AWC METAR or HKO max/min HTTP request. Cache hits
+do not write rows. Why: the 15-minute station nowcast cache can only be audited
+if observation API attempts are counted separately from cached reuse.
+Consequence: operators can compare external observation request volume against
+cache settings without treating `StationNowcastObservation` reuse as new API
+usage.
 
 ### 2026-06-03: Keep SKIP Diagnostics Out Of Recent Trades
 

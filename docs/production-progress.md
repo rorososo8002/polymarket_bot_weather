@@ -138,6 +138,11 @@
   to infer calls from overwritten `forecast_cache.json` entries. Rows include
   cache-miss reason plus safe city/station metadata, and the request log rotates
   at 10MB into `data/archive/` with zstd compression.
+- Station nowcast request logging is implemented so METAR/HKO usage reviews
+  count real observation HTTP attempts from `station_nowcast_request_log.jsonl`.
+  Rows include city, settlement-station code, source, request time, status, and
+  cache-miss reason. Cache hits do not write rows, and the VPS log rotates at
+  10MB into `data/archive/` with zstd compression.
 - Other Phase 0-7 changes have not all been treated as one automatic deployment
   bundle; verify the specific commit and service state before assuming a future
   local change is live.
@@ -180,10 +185,10 @@
     `/api/status` with the dashboard token. For settlement changes, also restart
     the paper bot and verify that older closed positions with exact binary
     `outcomePrices` settle on the next paper cycle.
-12. `paper_raw_snapshots.jsonl` and `forecast_request_log.jsonl` have automatic
-    rotation. Do not rotate or truncate `paper_decisions.csv` until
-    reports/dashboard readers have an explicit archive-aware path or bounded
-    operator option.
+12. `paper_raw_snapshots.jsonl`, `forecast_request_log.jsonl`, and
+    `station_nowcast_request_log.jsonl` have automatic rotation. Do not rotate
+    or truncate `paper_decisions.csv` until reports/dashboard readers have an
+    explicit archive-aware path or bounded operator option.
 
 ## For The Next AI
 

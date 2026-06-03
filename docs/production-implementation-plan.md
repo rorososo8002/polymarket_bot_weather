@@ -173,6 +173,9 @@ and `metadata` must be a JSON object when present.
   one station-date response when the source provides enough observations. Use
   observed high only for daily-high markets and observed low only for daily-low
   markets; do not cross-apply one metric to the other.
+- Real AWC METAR and HKO max/min HTTP attempts are counted in
+  `station_nowcast_request_log.jsonl`. Cache hits do not write rows, so the log
+  measures external observation usage rather than in-memory reuse.
 - Missing, stale, malformed, future-date, unmapped, or unsupported nowcast data
   is not guessed. It remains forecast-only or fail-closed depending on context.
 - Missing exact target-date forecasts are not guessed. Nearby forecast dates
@@ -305,6 +308,7 @@ WEATHER_BIAS_JSON=
 STATION_NOWCAST_ENABLED=true
 STATION_NOWCAST_CACHE_TTL_SECONDS=900
 STATION_NOWCAST_FRESHNESS_SECONDS=5400
+STATION_NOWCAST_REQUEST_LOG_PATH=station_nowcast_request_log.jsonl
 DISCOVERY_MAX_PAGES=8
 DISCOVERY_PAGE_SIZE=100
 WEATHER_TAKER_FEE_RATE=0.05

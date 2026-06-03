@@ -20,6 +20,7 @@ def test_default_station_nowcast_is_pilot_cached_and_freshness_bounded():
     assert Settings.station_nowcast_enabled is True
     assert Settings.station_nowcast_cache_ttl_seconds == 900
     assert Settings.station_nowcast_freshness_seconds == 5400
+    assert Settings.station_nowcast_request_log_path == ""
 
 
 def test_default_entry_net_return_filter_uses_official_weather_fee_rate():
@@ -187,12 +188,14 @@ def test_load_settings_reads_station_nowcast_controls(monkeypatch):
     monkeypatch.setenv("STATION_NOWCAST_ENABLED", "false")
     monkeypatch.setenv("STATION_NOWCAST_CACHE_TTL_SECONDS", "300")
     monkeypatch.setenv("STATION_NOWCAST_FRESHNESS_SECONDS", "1800")
+    monkeypatch.setenv("STATION_NOWCAST_REQUEST_LOG_PATH", "data/custom_station_nowcast_request_log.jsonl")
 
     settings = load_settings()
 
     assert settings.station_nowcast_enabled is False
     assert settings.station_nowcast_cache_ttl_seconds == 300
     assert settings.station_nowcast_freshness_seconds == 1800
+    assert settings.station_nowcast_request_log_path == "data/custom_station_nowcast_request_log.jsonl"
 
 
 def test_load_settings_reads_realtime_orderbook_stream(monkeypatch):

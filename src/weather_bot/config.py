@@ -102,6 +102,7 @@ class Settings:
     station_nowcast_enabled: bool = True
     station_nowcast_cache_ttl_seconds: int = 900
     station_nowcast_freshness_seconds: int = 5400
+    station_nowcast_request_log_path: str = ""
     dashboard_host: str = "127.0.0.1"
     dashboard_port: int = 8787
     dashboard_token: str = ""
@@ -323,6 +324,10 @@ def load_settings() -> Settings:
         station_nowcast_freshness_seconds=_int_env(
             "STATION_NOWCAST_FRESHNESS_SECONDS",
             Settings.station_nowcast_freshness_seconds,
+        ),
+        station_nowcast_request_log_path=os.getenv(
+            "STATION_NOWCAST_REQUEST_LOG_PATH",
+            Settings.station_nowcast_request_log_path,
         ),
         dashboard_host=os.getenv("DASHBOARD_HOST", Settings.dashboard_host),
         dashboard_port=_int_env("DASHBOARD_PORT", Settings.dashboard_port),

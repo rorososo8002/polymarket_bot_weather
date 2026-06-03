@@ -4,8 +4,10 @@ import math
 import re
 import csv
 import io
+import json
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
+from pathlib import Path
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
@@ -231,20 +233,27 @@ class AviationWeatherMetarNowcastProvider:
         timeout: float = 20.0,
         freshness_seconds: int = 5400,
         cache_ttl_seconds: int = 900,
+        request_log_path: str | Path | None = None,
         sources: dict[str, StationNowcastSource] | None = None,
     ) -> None:
         self.http_get = http_get
         self.timeout = timeout
         self.freshness_seconds = max(0, int(freshness_seconds))
         self.cache_ttl_seconds = max(0, int(cache_ttl_seconds))
+        self.request_log_path = Path(request_log_path) if request_log_path else None
+        self._request_log_error = ""
         self.sources = sources or PILOT_NOWCAST_SOURCES
         self._cache: dict[tuple[str, str], tuple[datetime, StationNowcastObservation]] = {}
 
     @classmethod
     def from_settings(cls, settings: Any) -> "AviationWeatherMetarNowcastProvider":
+        request_log_path = settings.station_nowcast_request_log_path or str(
+            Path(settings.state_path).with_name("station_nowcast_request_log.jsonl")
+        )
         return cls(
             freshness_seconds=settings.station_nowcast_freshness_seconds,
             cache_ttl_seconds=settings.station_nowcast_cache_ttl_seconds,
+            request_log_path=request_log_path,
         )
 
     def observed_high_so_far(
@@ -282,15 +291,31 @@ class AviationWeatherMetarNowcastProvider:
 
         cache_key = (station.station_id, target_date.isoformat())
         cached = self._cache.get(cache_key)
+        cache_miss_reason = "empty-cache"
         if cached is not None and self.cache_ttl_seconds > 0:
             cached_at, observation = cached
             if (current - cached_at).total_seconds() <= self.cache_ttl_seconds:
                 return observation
+            cache_miss_reason = "expired-cache"
+        elif cached is not None:
+            cache_miss_reason = "cache-disabled"
 
         if source.source == "aviationweather-metar":
-            observation = self._fetch_aviationweather(station, target_date, current, source)
+            observation = self._fetch_aviationweather(
+                station,
+                target_date,
+                current,
+                source,
+                cache_miss_reason=cache_miss_reason,
+            )
         elif source.source == "hko-maxmin-since-midnight":
-            observation = self._fetch_hko_maxmin(station, target_date, current, source)
+            observation = self._fetch_hko_maxmin(
+                station,
+                target_date,
+                current,
+                source,
+                cache_miss_reason=cache_miss_reason,
+            )
         else:
             observation = self._unavailable(station, "unsupported-nowcast-source", source)
 
@@ -303,7 +328,10 @@ class AviationWeatherMetarNowcastProvider:
         target_date: date,
         now: datetime,
         source: StationNowcastSource,
+        *,
+        cache_miss_reason: str,
     ) -> StationNowcastObservation:
+        response: Any | None = None
         try:
             response = self.http_get(
                 source.source_url,
@@ -316,10 +344,46 @@ class AviationWeatherMetarNowcastProvider:
                 headers={"User-Agent": "polymarket-weather-bot/nowcast"},
             )
             if getattr(response, "status_code", 200) == 204:
+                self._append_request_log(
+                    self._request_log_row(
+                        requested_at=now,
+                        station=station,
+                        target_date=target_date,
+                        source=source,
+                        cache_miss_reason=cache_miss_reason,
+                        status="no_observations",
+                        status_code=204,
+                    )
+                )
                 return self._unavailable(station, "no-observations-returned", source)
             response.raise_for_status()
-            return self._parse_payload(response.json(), station, target_date, now, source)
+            observation = self._parse_payload(response.json(), station, target_date, now, source)
+            self._append_request_log(
+                self._request_log_row(
+                    requested_at=now,
+                    station=station,
+                    target_date=target_date,
+                    source=source,
+                    cache_miss_reason=cache_miss_reason,
+                    status="success",
+                    status_code=getattr(response, "status_code", None),
+                    unavailable_reason=observation.unavailable_reason,
+                )
+            )
+            return observation
         except Exception as exc:  # noqa: BLE001
+            self._append_request_log(
+                self._request_log_row(
+                    requested_at=now,
+                    station=station,
+                    target_date=target_date,
+                    source=source,
+                    cache_miss_reason=cache_miss_reason,
+                    status="error",
+                    status_code=getattr(response, "status_code", None),
+                    error=type(exc).__name__,
+                )
+            )
             return self._unavailable(station, f"nowcast-fetch-error:{type(exc).__name__}", source)
 
     def _fetch_hko_maxmin(
@@ -328,7 +392,10 @@ class AviationWeatherMetarNowcastProvider:
         target_date: date,
         now: datetime,
         source: StationNowcastSource,
+        *,
+        cache_miss_reason: str,
     ) -> StationNowcastObservation:
+        response: Any | None = None
         try:
             response = self.http_get(
                 source.source_url,
@@ -337,11 +404,88 @@ class AviationWeatherMetarNowcastProvider:
                 headers={"User-Agent": "polymarket-weather-bot/nowcast"},
             )
             if getattr(response, "status_code", 200) == 204:
+                self._append_request_log(
+                    self._request_log_row(
+                        requested_at=now,
+                        station=station,
+                        target_date=target_date,
+                        source=source,
+                        cache_miss_reason=cache_miss_reason,
+                        status="no_observations",
+                        status_code=204,
+                    )
+                )
                 return self._unavailable(station, "no-observations-returned", source)
             response.raise_for_status()
-            return self._parse_hko_payload(response.text, station, target_date, now, source)
+            observation = self._parse_hko_payload(response.text, station, target_date, now, source)
+            self._append_request_log(
+                self._request_log_row(
+                    requested_at=now,
+                    station=station,
+                    target_date=target_date,
+                    source=source,
+                    cache_miss_reason=cache_miss_reason,
+                    status="success",
+                    status_code=getattr(response, "status_code", None),
+                    unavailable_reason=observation.unavailable_reason,
+                )
+            )
+            return observation
         except Exception as exc:  # noqa: BLE001
+            self._append_request_log(
+                self._request_log_row(
+                    requested_at=now,
+                    station=station,
+                    target_date=target_date,
+                    source=source,
+                    cache_miss_reason=cache_miss_reason,
+                    status="error",
+                    status_code=getattr(response, "status_code", None),
+                    error=type(exc).__name__,
+                )
+            )
             return self._unavailable(station, f"nowcast-fetch-error:{type(exc).__name__}", source)
+
+    def _append_request_log(self, row: dict[str, Any]) -> None:
+        if self.request_log_path is None:
+            return
+        try:
+            self.request_log_path.parent.mkdir(parents=True, exist_ok=True)
+            with self.request_log_path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True))
+                handle.write("\n")
+            self._request_log_error = ""
+        except Exception as exc:  # noqa: BLE001
+            self._request_log_error = type(exc).__name__
+
+    def _request_log_row(
+        self,
+        *,
+        requested_at: datetime,
+        station: StationMeta,
+        target_date: date,
+        source: StationNowcastSource,
+        cache_miss_reason: str,
+        status: str,
+        status_code: int | None = None,
+        error: str = "",
+        unavailable_reason: str = "",
+    ) -> dict[str, Any]:
+        return {
+            "cache_miss_reason": cache_miss_reason,
+            "city": station.city,
+            "error": error,
+            "requested_at": _iso_or_empty(requested_at),
+            "source": source.source,
+            "source_url": source.source_url,
+            "station_id": station.station_id,
+            "station_name": station.station_name,
+            "status": status,
+            "status_code": status_code,
+            "target_date": target_date.isoformat(),
+            "timezone": station.timezone,
+            "unavailable_reason": unavailable_reason,
+        }
 
     def _parse_payload(
         self,

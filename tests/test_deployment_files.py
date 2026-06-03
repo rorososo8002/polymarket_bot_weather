@@ -16,6 +16,7 @@ def test_local_env_example_exposes_settlement_runner_defaults():
     assert "SETTLEMENT_RUNNER_MAX_FRACTION=0.25" in text
     assert "SETTLEMENT_RUNNER_MIN_EV_MARGIN_USD=0.00" in text
     assert "FORECAST_REQUEST_LOG_PATH=runtime/forecast_request_log.jsonl" in text
+    assert "STATION_NOWCAST_REQUEST_LOG_PATH=runtime/station_nowcast_request_log.jsonl" in text
 
 
 def test_systemd_service_runs_live_paper_bot_from_venv():
@@ -39,6 +40,10 @@ def test_vps_env_example_keeps_runtime_state_under_data_dir():
     assert "PORTFOLIO_DECISIONS_JSONL_PATH=/opt/polymarket-weather-bot/data/paper_event_portfolios.jsonl" in text
     assert "RAW_SNAPSHOTS_PATH=/opt/polymarket-weather-bot/data/paper_raw_snapshots.jsonl" in text
     assert "FORECAST_REQUEST_LOG_PATH=/opt/polymarket-weather-bot/data/forecast_request_log.jsonl" in text
+    assert (
+        "STATION_NOWCAST_REQUEST_LOG_PATH=/opt/polymarket-weather-bot/data/station_nowcast_request_log.jsonl"
+        in text
+    )
     assert "STATION_NOWCAST_ENABLED=true" in text
     assert "STATION_NOWCAST_CACHE_TTL_SECONDS=900" in text
     assert "STATION_NOWCAST_FRESHNESS_SECONDS=5400" in text
@@ -68,13 +73,14 @@ def test_vps_env_example_keeps_runtime_state_under_data_dir():
     assert "POLYMARKET_PRIVATE_KEY" not in text
 
 
-def test_runtime_logrotate_rotates_raw_snapshots_and_forecast_request_log_only():
+def test_runtime_logrotate_rotates_raw_snapshots_and_request_logs_only():
     logrotate = ROOT / "deploy" / "logrotate" / "polymarket-weather-bot-runtime"
 
     text = logrotate.read_text(encoding="utf-8")
 
     assert "/opt/polymarket-weather-bot/data/paper_raw_snapshots.jsonl" in text
     assert "/opt/polymarket-weather-bot/data/forecast_request_log.jsonl" in text
+    assert "/opt/polymarket-weather-bot/data/station_nowcast_request_log.jsonl" in text
     assert "size 1G" in text
     assert "size 10M" in text
     assert "compresscmd /usr/bin/zstd" in text
