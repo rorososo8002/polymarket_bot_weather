@@ -22,7 +22,13 @@ Read this file only for runtime logs, paper-trading data, dashboard readers, or 
 
 - Preserve bounded reads and cached totals for multi-GB files. Never reintroduce full startup scans of `paper_decisions.csv` or raw snapshots.
 - Dashboard live views should not push high-volume SKIP or candidate rows every refresh.
+- `paper_trades.csv` may contain both executed paper actions and SKIP diagnostics. `Recent Trades`, realized rows, and realized equity points should show executed paper actions only: `OPEN`, `CLOSE`, `SETTLED`, and `PARTIAL_CLOSE`.
 - Prefer operator-useful summaries, open positions, realized trades, bounded recent trades, cached totals, a moderate visible refresh interval, and a slower hidden-tab interval.
+
+## Settlement Review
+
+- A closed Polymarket binary market may have empty winner fields while `outcomePrices` carries the final payout. Treat exact YES/NO `1/0` or `0/1` prices as settlement evidence for paper accounting.
+- Do not settle from ambiguous outcome prices. If the values are not exact binary payout prices, keep the paper position open until a clear winner field or exact payout prices appear.
 
 ## Analysis And Reports
 

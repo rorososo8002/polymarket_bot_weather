@@ -1045,6 +1045,81 @@ def test_resolved_market_settles_to_binary_payout():
     assert broker.state.positions == []
 
 
+def test_closed_market_settles_from_binary_outcome_prices_when_winner_field_missing():
+    settings = Settings()
+    broker = PaperBroker(settings)
+    broker.state = PaperState(
+        cash_usd=900.0,
+        positions=[
+            PaperPosition(
+                position_id="p1",
+                market_id="m1",
+                question="Will NYC reach 90째F on May 25?",
+                token_id="yes",
+                side="YES",
+                entry_price=0.40,
+                shares=100.0,
+                cost_usd=40.0,
+                opened_at=datetime.now(timezone.utc).isoformat(),
+            )
+        ],
+    )
+    market = RawMarket(
+        market_id="m1",
+        question="Will NYC reach 90째F on May 25?",
+        slug="nyc-90f-may-25",
+        active=False,
+        closed=True,
+        yes_token_id="yes",
+        no_token_id="no",
+        raw={
+            "outcomes": json.dumps(["Yes", "No"]),
+            "outcomePrices": json.dumps(["1", "0"]),
+        },
+    )
+
+    messages = maybe_settle_resolved_positions(broker, {"m1": market})
+
+    assert messages == ["SETTLED YES pnl=$60.00 payout=1.0000 reason=resolved winner=YES"]
+    assert broker.state.cash_usd == 1000.0
+    assert broker.state.positions == []
+
+
+def test_closed_market_does_not_settle_from_ambiguous_outcome_prices():
+    settings = Settings()
+    broker = PaperBroker(settings)
+    position = PaperPosition(
+        position_id="p1",
+        market_id="m1",
+        question="Will NYC reach 90째F on May 25?",
+        token_id="yes",
+        side="YES",
+        entry_price=0.40,
+        shares=100.0,
+        cost_usd=40.0,
+        opened_at=datetime.now(timezone.utc).isoformat(),
+    )
+    broker.state = PaperState(cash_usd=900.0, positions=[position])
+    market = RawMarket(
+        market_id="m1",
+        question="Will NYC reach 90째F on May 25?",
+        slug="nyc-90f-may-25",
+        active=False,
+        closed=True,
+        yes_token_id="yes",
+        no_token_id="no",
+        raw={
+            "outcomes": json.dumps(["Yes", "No"]),
+            "outcomePrices": json.dumps(["0.52", "0.48"]),
+        },
+    )
+
+    messages = maybe_settle_resolved_positions(broker, {"m1": market})
+
+    assert messages == []
+    assert broker.state.positions == [position]
+
+
 def test_raw_snapshot_log_is_jsonl(tmp_path):
     settings = Settings(
         state_path=str(tmp_path / "state.json"),

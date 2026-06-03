@@ -21,6 +21,9 @@ _DECISION_TOTALS_LOCK = threading.Lock()
 _DECISION_TOTALS_CACHE: dict[str, dict[str, Any]] = {}
 _TRADE_TOTALS_LOCK = threading.Lock()
 _TRADE_TOTALS_CACHE: dict[str, dict[str, Any]] = {}
+TRADE_ACTIVITY_ACTIONS = {"OPEN", "CLOSE", "SETTLED", "PARTIAL_CLOSE"}
+REALIZED_TRADE_ACTIONS = {"CLOSE", "SETTLED", "PARTIAL_CLOSE"}
+TRADE_CACHE_RECENT_LIMIT = 400
 MAX_INITIAL_DECISION_TOTAL_SCAN_BYTES = 128 * 1024 * 1024
 MIN_PUBLIC_DASHBOARD_TOKEN_LENGTH = 32
 LOCAL_DASHBOARD_HOSTS = {"127.0.0.1", "localhost", "::1"}
@@ -1098,11 +1101,32 @@ def _empty_trade_totals() -> dict[str, float]:
     return {"opens": 0, "closes": 0, "realized_profit_usd": 0.0, "realized_loss_usd": 0.0}
 
 
+def _empty_trade_cache(mtime_ns: int = 0) -> dict[str, Any]:
+    return {
+        "totals": _empty_trade_totals(),
+        "fieldnames": [],
+        "offset": 0,
+        "pending": b"",
+        "mtime_ns": mtime_ns,
+        "recent_trades": [],
+        "recent_realized_trades": [],
+        "open_by_market": {},
+        "realized_points": [],
+        "realized_running_pnl": 0.0,
+    }
+
+
+def _trim_recent_cache_rows(rows: list[Any], limit: int = TRADE_CACHE_RECENT_LIMIT) -> None:
+    overflow = len(rows) - limit
+    if overflow > 0:
+        del rows[:overflow]
+
+
 def _count_trade_row(totals: dict[str, float], row: dict[str, str]) -> None:
     action = (row.get("action") or "").upper()
     if action == "OPEN":
         totals["opens"] += 1
-    elif action in {"CLOSE", "SETTLED", "PARTIAL_CLOSE"}:
+    elif action in REALIZED_TRADE_ACTIONS:
         totals["closes"] += 1
         pnl = _float(row.get("cash_delta_or_pnl"))
         if pnl >= 0:
@@ -1111,9 +1135,28 @@ def _count_trade_row(totals: dict[str, float], row: dict[str, str]) -> None:
             totals["realized_loss_usd"] += abs(pnl)
 
 
+def _record_trade_cache_row(cache: dict[str, Any], row: dict[str, str]) -> None:
+    stored = dict(row)
+    action = (stored.get("action") or "").upper()
+    market_id = stored.get("market_id") or ""
+    _count_trade_row(cache["totals"], stored)
+    if action in TRADE_ACTIVITY_ACTIONS:
+        cache["recent_trades"].append(stored)
+        _trim_recent_cache_rows(cache["recent_trades"])
+    if action == "OPEN" and market_id:
+        cache["open_by_market"][market_id] = stored
+    if action in REALIZED_TRADE_ACTIONS:
+        cache["recent_realized_trades"].append(stored)
+        _trim_recent_cache_rows(cache["recent_realized_trades"])
+        cache["realized_running_pnl"] = _float(cache.get("realized_running_pnl")) + _float(stored.get("cash_delta_or_pnl"))
+        cache["realized_points"].append(
+            {"ts": stored.get("ts", ""), "realized_pnl": cache["realized_running_pnl"]}
+        )
+        _trim_recent_cache_rows(cache["realized_points"], 160)
+
+
 def _scan_trade_totals(path: Path, stat_size: int, mtime_ns: int) -> dict[str, Any]:
-    totals = _empty_trade_totals()
-    fieldnames: list[str] = []
+    cache = _empty_trade_cache(mtime_ns)
     offset = 0
     pending = b""
     try:
@@ -1121,20 +1164,24 @@ def _scan_trade_totals(path: Path, stat_size: int, mtime_ns: int) -> dict[str, A
             header_raw = f.readline()
             offset += len(header_raw)
             if not header_raw:
-                return {"totals": totals, "fieldnames": fieldnames, "offset": offset, "pending": pending, "mtime_ns": mtime_ns}
+                cache["offset"] = offset
+                return cache
             header = header_raw.decode("utf-8", errors="replace").rstrip("\r\n")
-            fieldnames = next(csv.reader([header]), [])
+            cache["fieldnames"] = next(csv.reader([header]), [])
             for raw_line in f:
                 offset += len(raw_line)
                 if not raw_line.endswith(b"\n"):
                     pending = raw_line
                     break
                 line = raw_line.decode("utf-8", errors="replace").rstrip("\r\n")
-                for row in csv.DictReader([line], fieldnames=fieldnames):
-                    _count_trade_row(totals, row)
+                for row in csv.DictReader([line], fieldnames=cache["fieldnames"]):
+                    _record_trade_cache_row(cache, row)
     except (OSError, csv.Error):
-        return {"totals": _empty_trade_totals(), "fieldnames": [], "offset": 0, "pending": b"", "mtime_ns": 0}
-    return {"totals": totals, "fieldnames": fieldnames, "offset": min(offset, stat_size), "pending": pending, "mtime_ns": mtime_ns}
+        return _empty_trade_cache()
+    cache["offset"] = min(offset, stat_size)
+    cache["pending"] = pending
+    cache["mtime_ns"] = mtime_ns
+    return cache
 
 
 def _add_appended_trades(cache: dict[str, Any], chunk: bytes) -> None:
@@ -1148,41 +1195,50 @@ def _add_appended_trades(cache: dict[str, Any], chunk: bytes) -> None:
     lines = complete.decode("utf-8", errors="replace").splitlines()
     if not lines:
         return
-    totals = cache["totals"]
     try:
         for row in csv.DictReader(lines, fieldnames=fieldnames):
-            _count_trade_row(totals, row)
+            _record_trade_cache_row(cache, row)
     except csv.Error:
         return
 
 
-def _trade_action_totals(path: Path) -> dict[str, float]:
+def _trade_dashboard_cache(path: Path) -> dict[str, Any]:
     if not path.exists():
-        return _empty_trade_totals()
+        return _empty_trade_cache()
     key = str(path.resolve())
     with _TRADE_TOTALS_LOCK:
         try:
             stat = path.stat()
         except OSError:
-            return _empty_trade_totals()
+            return _empty_trade_cache()
         cache = _TRADE_TOTALS_CACHE.get(key)
         cache_offset = int(cache.get("offset", 0)) if cache else 0
         cache_mtime_ns = int(cache.get("mtime_ns", 0)) if cache else 0
         if cache is None or stat.st_size < cache_offset or (stat.st_size == cache_offset and stat.st_mtime_ns != cache_mtime_ns):
             cache = _scan_trade_totals(path, stat.st_size, stat.st_mtime_ns)
             _TRADE_TOTALS_CACHE[key] = cache
-            return dict(cache["totals"])
-        if stat.st_size > cache_offset:
+        elif stat.st_size > cache_offset:
             try:
                 with path.open("rb") as f:
                     f.seek(cache_offset)
                     chunk = f.read(stat.st_size - cache_offset)
             except OSError:
-                return dict(cache["totals"])
-            _add_appended_trades(cache, chunk)
-            cache["offset"] = stat.st_size
-            cache["mtime_ns"] = stat.st_mtime_ns
-        return dict(cache["totals"])
+                pass
+            else:
+                _add_appended_trades(cache, chunk)
+                cache["offset"] = stat.st_size
+                cache["mtime_ns"] = stat.st_mtime_ns
+        return {
+            "totals": dict(cache.get("totals") or _empty_trade_totals()),
+            "recent_trades": list(cache.get("recent_trades") or []),
+            "recent_realized_trades": list(cache.get("recent_realized_trades") or []),
+            "open_by_market": dict(cache.get("open_by_market") or {}),
+            "realized_points": list(cache.get("realized_points") or []),
+        }
+
+
+def _trade_action_totals(path: Path) -> dict[str, float]:
+    return dict(_trade_dashboard_cache(path)["totals"])
 
 
 def _float(value: Any, default: float = 0.0) -> float:
@@ -1414,19 +1470,24 @@ def _websocket_health(settings: Settings, runner_status: dict[str, Any]) -> dict
     }
 
 
-def _realized_results(trades: list[dict[str, str]], decisions: list[dict[str, str]], limit: int = 80) -> list[dict[str, Any]]:
-    open_by_market: dict[str, dict[str, str]] = {}
+def _realized_results(
+    trades: list[dict[str, str]],
+    decisions: list[dict[str, str]],
+    limit: int = 80,
+    open_by_market: dict[str, dict[str, str]] | None = None,
+) -> list[dict[str, Any]]:
+    opened_by_market: dict[str, dict[str, str]] = dict(open_by_market or {})
     decision_by_market = _latest_entry_decisions(decisions)
     rows: list[dict[str, Any]] = []
     for trade in trades:
         action = (trade.get("action") or "").upper()
         market_id = trade.get("market_id") or ""
         if action == "OPEN" and market_id:
-            open_by_market[market_id] = trade
+            opened_by_market[market_id] = trade
             continue
-        if action not in {"CLOSE", "SETTLED", "PARTIAL_CLOSE"}:
+        if action not in REALIZED_TRADE_ACTIONS:
             continue
-        opened = open_by_market.get(market_id, {})
+        opened = opened_by_market.get(market_id, {})
         decision = decision_by_market.get(market_id, {})
         question = trade.get("question") or opened.get("question") or decision.get("question") or ""
         summary = _question_summary(question)
@@ -1512,11 +1573,25 @@ def _started_at(trades_path: Path, trades: list[dict[str, str]], decisions: list
     return min(parsed).replace(microsecond=0).isoformat() if parsed else _now_iso()
 
 
-def _equity_points(settings: Settings, trades: list[dict[str, str]], current_curve_value: float, started_at: str) -> list[dict[str, Any]]:
+def _equity_points(
+    settings: Settings,
+    trades: list[dict[str, str]],
+    current_curve_value: float,
+    started_at: str,
+    realized_points: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
     points: list[dict[str, Any]] = [{"ts": started_at, "equity": settings.bankroll_usd}]
+    if realized_points is not None:
+        for point in realized_points:
+            points.append({
+                "ts": str(point.get("ts") or ""),
+                "equity": settings.bankroll_usd + _float(point.get("realized_pnl")),
+            })
+        points.append({"ts": _now_iso(), "equity": current_curve_value})
+        return points[-160:]
     realized = 0.0
     for row in trades:
-        if row.get("action") in {"CLOSE", "SETTLED", "PARTIAL_CLOSE"}:
+        if row.get("action") in REALIZED_TRADE_ACTIONS:
             realized += _float(row.get("cash_delta_or_pnl"))
             points.append({"ts": row.get("ts", ""), "equity": settings.bankroll_usd + realized})
     points.append({"ts": _now_iso(), "equity": current_curve_value})
@@ -1623,7 +1698,8 @@ def build_dashboard_payload(settings: Settings | None = None, auth_required: boo
     decision_by_market = _latest_entry_decisions(decisions)
     scanner_totals = _decision_totals(decisions_path)
     trades_path = Path(settings.trades_csv_path)
-    trade_totals = _trade_action_totals(trades_path)
+    trade_history = _trade_dashboard_cache(trades_path)
+    trade_totals = trade_history["totals"]
     runner_status = read_runner_status(settings)
     event_portfolios = _read_jsonl(Path(settings.portfolio_decisions_jsonl_path), 20)
     health = {
@@ -1649,8 +1725,13 @@ def build_dashboard_payload(settings: Settings | None = None, auth_required: boo
     curve_value = settings.bankroll_usd + total_pnl
     wins, losses, _ = _stats_summary(state, trades)
     closed_total = wins + losses
-    recent_trades = _sorted_recent(trades, 80)
-    realized_results = _realized_results(trades, decisions, 80)
+    recent_trades = _sorted_recent(trade_history["recent_trades"], 80)
+    realized_results = _realized_results(
+        trade_history["recent_realized_trades"],
+        decisions,
+        80,
+        trade_history["open_by_market"],
+    )
     started_at = _started_at(trades_path, trades, decisions, positions)
     return {
         "generated_at": _now_iso(),
@@ -1688,7 +1769,13 @@ def build_dashboard_payload(settings: Settings | None = None, auth_required: boo
             "latest_forecast_at": _latest_forecast_cache_at(settings),
             "latest_event_portfolio": event_portfolios[-1] if event_portfolios else {},
         },
-        "equity_points": _equity_points(settings, trades, curve_value, started_at),
+        "equity_points": _equity_points(
+            settings,
+            trades,
+            curve_value,
+            started_at,
+            trade_history["realized_points"],
+        ),
     }
 
 

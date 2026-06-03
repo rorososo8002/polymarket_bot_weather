@@ -47,6 +47,9 @@ specialized reference docs.
 - Profit exits may recover principal and keep a bounded settlement runner only
   when conservative settlement value beats fee-adjusted sell-now value. Active
   runners are rechecked; they are not risk exemptions.
+- Resolved paper settlement requires a proven binary winner. Explicit winner
+  fields are preferred; exact closed-market `outcomePrices` of YES/NO `1/0` or
+  `0/1` are accepted. Ambiguous closed-market prices are not guessed.
 - Same-day nowcast is allowed only from explicitly mapped same-station official
   sources. Observed high-so-far is evidence only for daily-high markets, and
   observed low-so-far is evidence only for daily-low markets. Providers should
@@ -82,6 +85,9 @@ specialized reference docs.
   source ledgers. Reports may scan full history when that is the promised
   meaning, but they must stream rows and keep only aggregates or bounded
   lookups in memory instead of materializing whole CSV files.
+- Dashboard trade-history panels treat SKIP rows as diagnostics, not executed
+  trades. Recent trades, realized rows, and realized equity points use cached
+  actual trade actions so SKIP bursts cannot hide older closes.
 
 ## Compact Ledger
 
@@ -432,3 +438,23 @@ signals rather than whole CSV row lists. Why: these files are the paper
 strategy's evidence ledger and naturally grow during long VPS operation.
 Consequence: default report semantics stay full-history, but memory use scales
 with the number of tracked markets/signals instead of the total row count.
+
+### 2026-06-03: Keep SKIP Diagnostics Out Of Recent Trades
+
+Decision: Dashboard `Recent Trades`, realized rows, and realized equity points
+use cached actual trade actions: `OPEN`, `CLOSE`, `SETTLED`, and
+`PARTIAL_CLOSE`. SKIP actions remain ledger diagnostics but are not shown as
+executed trades. Why: repeated exposure-cap or data-quality SKIPs can dominate
+the tail of `paper_trades.csv` and hide older closes. Consequence: the
+dashboard shows paper-trading activity rather than scanner rejection noise,
+while cumulative scanner totals still preserve SKIP context.
+
+### 2026-06-03: Settle Closed Markets From Exact Binary Outcome Prices
+
+Decision: If a closed Polymarket binary market has no explicit winner field,
+paper settlement may infer the winner only from exact YES/NO `outcomePrices`
+of `1/0` or `0/1`. Why: some closed weather markets expose the final payout
+prices without `winningOutcome`; leaving those open makes the paper account
+look riskier and hides realized PnL. Consequence: clear closed markets settle
+in paper mode, while ambiguous prices such as `0.52/0.48` remain open until
+clear evidence appears.

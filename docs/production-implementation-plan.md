@@ -240,6 +240,12 @@ Open positions close only through:
 - max holding time
 - resolved settlement
 
+Resolved settlement requires a proven YES/NO winner. Explicit winner fields
+such as `winningOutcome` are preferred. If those fields are absent on a closed
+binary market, `outcomePrices` may be used only when the YES and NO prices are
+exactly `1/0` or `0/1`. Ambiguous prices are not guessed and leave the paper
+position open for later evidence.
+
 Profit-taking exits first evaluate the settlement-runner policy. The broker
 compares fee-adjusted sell-now value with conservative hold-to-settlement value.
 If settlement value is at least as good, it sells a principal-recovery tranche

@@ -719,6 +719,94 @@ def test_dashboard_realized_rows_are_latest_first_and_numeric_when_history_is_sp
     assert first["roi"] == 1.25
 
 
+def test_dashboard_realized_rows_survive_recent_skip_trade_noise(tmp_path):
+    state_path = tmp_path / "state.json"
+    trades_path = tmp_path / "trades.csv"
+    decisions_path = tmp_path / "decisions.csv"
+    state_path.write_text(json.dumps({"cash_usd": 1008.0, "realized_pnl_usd": 8.0, "positions": []}), encoding="utf-8")
+    rows = [
+        {
+            "ts": "2026-05-29T10:00:00+00:00",
+            "action": "OPEN",
+            "market_id": "m-seoul",
+            "slug": "seoul-27c",
+            "question": "Will the highest temperature in Seoul be 27째C or higher on May 29?",
+            "market_type": "temperature",
+            "side": "YES",
+            "token_id": "yes",
+            "shares": "100",
+            "price": "0.21",
+            "cash_delta_or_pnl": "-21",
+            "reason": "target_exit=0.320",
+        },
+        {
+            "ts": "2026-05-29T11:00:00+00:00",
+            "action": "CLOSE",
+            "market_id": "m-seoul",
+            "slug": "seoul-27c",
+            "question": "Will the highest temperature in Seoul be 27째C or higher on May 29?",
+            "market_type": "temperature",
+            "side": "YES",
+            "token_id": "yes",
+            "shares": "100",
+            "price": "0.35",
+            "cash_delta_or_pnl": "14",
+            "reason": "take profit",
+        },
+    ]
+    rows.extend(
+        {
+            "ts": f"2026-06-03T10:{idx % 60:02d}:00+00:00",
+            "action": "SKIP_CITY_CAP",
+            "market_id": f"m-skip-{idx}",
+            "slug": "hong-kong-34c",
+            "question": "Will the highest temperature in Hong Kong be 34째C or higher on June 4?",
+            "market_type": "temperature",
+            "side": "NO",
+            "token_id": "no",
+            "shares": "0",
+            "price": "0.331",
+            "cash_delta_or_pnl": "0",
+            "reason": "SKIP_CITY_CAP: hong kong exposure=50.00+59.59 > limit=95.35",
+        }
+        for idx in range(900)
+    )
+    write_csv(trades_path, rows)
+    write_csv(
+        decisions_path,
+        [
+            {
+                "ts": "2026-05-29T10:00:01+00:00",
+                "market_id": "m-seoul",
+                "slug": "seoul-27c",
+                "question": "Will the highest temperature in Seoul be 27째C or higher on May 29?",
+                "market_type": "temperature",
+                "side": "YES",
+                "p_true": "0.70",
+                "p_exec": "0.21",
+                "net_edge": "0.20",
+                "size_usd": "21",
+                "size_shares": "100",
+                "entry_fraction": "0.02",
+                "probability_stop_threshold": "0.60",
+                "model_fair_price": "0.40",
+                "target_exit_price": "0.32",
+                "market_heat_score": "0.1",
+                "reason": "edge ok",
+                "note": "station target_date=2026-05-29; >=27.0C/80.6F; members=82; vote=0.70; mean=86.0F; spread=2.0F",
+            }
+        ],
+    )
+
+    payload = build_dashboard_payload(
+        Settings(state_path=str(state_path), trades_csv_path=str(trades_path), decisions_csv_path=str(decisions_path))
+    )
+
+    assert [row["action"] for row in payload["recent_trades"]] == ["CLOSE", "OPEN"]
+    assert payload["realized_results"][0]["market_id"] == "m-seoul"
+    assert payload["realized_results"][0]["pnl"] == 14.0
+
+
 def test_dashboard_open_positions_include_polymarket_link_and_forecast_weather(tmp_path):
     state_path = tmp_path / "state.json"
     trades_path = tmp_path / "trades.csv"

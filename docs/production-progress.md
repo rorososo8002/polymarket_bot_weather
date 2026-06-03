@@ -31,6 +31,13 @@
   `paper_decisions.csv` and `paper_trades.csv` rows instead of materializing
   whole CSV files. The default report meaning remains full-history; only the
   memory posture changed.
+- Dashboard trade panels separate actual paper trade actions from high-volume
+  SKIP diagnostics. `Recent Trades`, realized rows, and realized equity points
+  use cached `OPEN`/`CLOSE`/`SETTLED`/`PARTIAL_CLOSE` rows so late SKIP bursts
+  do not hide older closed trades.
+- Closed binary markets can settle paper positions from exact Polymarket
+  `outcomePrices` only when YES/NO prices are provably `1/0` or `0/1`.
+  Ambiguous closed markets remain open until a clear winner is available.
 - Paper accounting is fee-aware end to end: `size_usd` is the all-in entry
   budget, closes add after-fee proceeds, and dashboard/liquidation values use
   after-exit-fee marks.
@@ -106,6 +113,8 @@
   remains paper-only.
 - Analysis/shadow-report CSV streaming is complete locally and remains
   paper-only.
+- Dashboard trade-history filtering and closed-market `outcomePrices`
+  settlement fallback are complete locally and remain paper-only.
 - Phase 0-7 changes have not been automatically deployed to the Oracle VPS.
 - Before any deployment, explain the change, benefit, risk, verification method,
   public exposure implications, and rollback method, then get explicit user
@@ -141,6 +150,10 @@
 10. If full-history reports become too slow on very large ledgers, add an
     explicit operator option such as `--since` or `--max-rows`; do not silently
     change the default full-history report semantics.
+11. After deploying the dashboard/settlement fix, restart the paper bot and
+    dashboard, then verify that older closed positions with exact binary
+    `outcomePrices` settle on the next paper cycle and that `Recent Trades`
+    excludes SKIP-only diagnostic rows.
 
 ## For The Next AI
 

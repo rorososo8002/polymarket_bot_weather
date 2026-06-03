@@ -583,6 +583,49 @@ def resolved_winning_side(market: RawMarket) -> Literal["YES", "NO"] | None:
             return "YES"
         if market.no_token_id and token_id_s == market.no_token_id:
             return "NO"
+    outcome_price_winner = _resolved_side_from_outcome_prices(raw)
+    if outcome_price_winner is not None:
+        return outcome_price_winner
+    return None
+
+
+def _raw_list(value: Any) -> list[Any]:
+    if isinstance(value, list):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return []
+        if isinstance(parsed, list):
+            return parsed
+    return []
+
+
+def _resolved_side_from_outcome_prices(raw: dict[str, Any]) -> Literal["YES", "NO"] | None:
+    outcomes = _raw_list(raw.get("outcomes") or raw.get("outcome_names"))
+    prices = _raw_list(raw.get("outcomePrices") or raw.get("outcome_prices"))
+    if len(outcomes) != len(prices):
+        return None
+    price_by_side: dict[str, float] = {}
+    for outcome, price in zip(outcomes, prices):
+        side = str(outcome or "").strip().upper()
+        if side not in {"YES", "NO"}:
+            continue
+        try:
+            price_value = float(price)
+        except (TypeError, ValueError):
+            return None
+        price_by_side[side] = price_value
+    yes_price = price_by_side.get("YES")
+    no_price = price_by_side.get("NO")
+    if yes_price is None or no_price is None:
+        return None
+    epsilon = 1e-9
+    if abs(yes_price - 1.0) <= epsilon and abs(no_price) <= epsilon:
+        return "YES"
+    if abs(no_price - 1.0) <= epsilon and abs(yes_price) <= epsilon:
+        return "NO"
     return None
 
 
