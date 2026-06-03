@@ -4,13 +4,29 @@ Read this file only for runtime logs, paper-trading data, dashboard readers, or 
 
 ## Safe Reading
 
-- Runtime outputs such as `paper_raw_snapshots.jsonl`, `paper_decisions.csv`, `paper_trades.csv`, `forecast_cache.json`, `paper_state.json`, and `paper_runner_status.json` can become very large.
+- Runtime outputs such as `paper_raw_snapshots.jsonl`, `paper_decisions.csv`, `paper_trades.csv`, `forecast_cache.json`, `forecast_request_log.jsonl`, `paper_state.json`, and `paper_runner_status.json` can become very large.
 - Treat `runtime/live-paper-bot.restart.out.log`, `paper_raw_snapshots.jsonl`, and `paper_decisions.csv` as token-dangerous.
 - Do not run bare `Get-Content`, `cat`, `type`, `more`, or unrestricted `python read_text()` against token-dangerous files.
 - For normal health checks, recent errors, or "why is it not trading now" questions, inspect only the latest 100 lines by default.
 - Increase the window only when needed, and state why.
 - For older data, filter by time range, market, city, event type, or decision reason.
 - Prefer counts, summaries, tails, targeted searches, and small samples over opening complete files.
+- `paper_raw_snapshots.jsonl` is detailed diagnostic evidence, not the paper
+  account book. It may be rotated and compressed when it grows large. The
+  Oracle VPS uses `/etc/logrotate.d/polymarket-weather-bot-runtime`, matching
+  `deploy/logrotate/polymarket-weather-bot-runtime`, to move raw snapshots over
+  1GB into `data/archive/` and compress them with zstd.
+- `forecast_cache.json` is a forecast result cache, not an API request ledger.
+  It overwrites entries by location/model cache key, so it cannot reconstruct
+  total Open-Meteo calls after the fact.
+- `forecast_request_log.jsonl` is the Open-Meteo request ledger. It records real
+  HTTP attempts only, including cache-miss reason, safe city/station metadata,
+  rounded coordinates, and 429 rate-limit responses. The same VPS logrotate
+  rule moves it to `data/archive/` over 10MB and compresses it with zstd.
+- Do not delete `paper_state.json`, `paper_trades.csv`, or
+  `paper_decisions.csv` as a cleanup shortcut. `paper_state.json` is the current
+  paper account book, `paper_trades.csv` is the execution ledger, and
+  `paper_decisions.csv` is the strategy evidence ledger.
 
 ## Trading Interpretation
 

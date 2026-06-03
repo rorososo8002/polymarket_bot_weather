@@ -128,6 +128,16 @@
   and event-slug open-position links are deployed to the Oracle VPS. Remote
   focused tests passed with `67 passed`; remote full tests passed with
   `289 passed`.
+- Oracle VPS runtime cleanup on 2026-06-03 UTC archived the 18GB
+  `paper_raw_snapshots.jsonl` diagnostic ledger to
+  `data/archive/paper_raw_snapshots.20260603T115820Z.jsonl.zst` at 136MB,
+  created a fresh active raw snapshot file, installed raw-snapshot logrotate,
+  and reduced root disk use from 84% to 48%.
+- Forecast request logging is implemented so future Open-Meteo usage reviews
+  count real HTTP attempts from `forecast_request_log.jsonl` instead of trying
+  to infer calls from overwritten `forecast_cache.json` entries. Rows include
+  cache-miss reason plus safe city/station metadata, and the request log rotates
+  at 10MB into `data/archive/` with zstd compression.
 - Other Phase 0-7 changes have not all been treated as one automatic deployment
   bundle; verify the specific commit and service state before assuming a future
   local change is live.
@@ -170,6 +180,10 @@
     `/api/status` with the dashboard token. For settlement changes, also restart
     the paper bot and verify that older closed positions with exact binary
     `outcomePrices` settle on the next paper cycle.
+12. `paper_raw_snapshots.jsonl` and `forecast_request_log.jsonl` have automatic
+    rotation. Do not rotate or truncate `paper_decisions.csv` until
+    reports/dashboard readers have an explicit archive-aware path or bounded
+    operator option.
 
 ## For The Next AI
 

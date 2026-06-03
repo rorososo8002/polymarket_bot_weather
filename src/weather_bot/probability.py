@@ -324,11 +324,13 @@ class OpenMeteoEnsembleClient:
         timeout: float = 20.0,
         cache_path: str | Path | None = None,
         cache_ttl_seconds: int = 21600,
+        request_log_path: str | Path | None = None,
     ) -> None:
         self.timeout = timeout
         self.base_url = os.getenv("OPEN_METEO_ENSEMBLE_BASE", "https://ensemble-api.open-meteo.com/v1/ensemble")
         self.models = os.getenv("OPEN_METEO_ENSEMBLE_MODELS", DEFAULT_ENSEMBLE_MODELS)
         self.cache_path = Path(cache_path) if cache_path else None
+        self.request_log_path = Path(request_log_path) if request_log_path else None
         self.cache_ttl_seconds = max(0, int(cache_ttl_seconds))
         self.disabled_reason = ""
         self._cache: dict[str, dict[str, Any]] = {}
@@ -336,12 +338,21 @@ class OpenMeteoEnsembleClient:
         self._last_success_at: datetime | None = None
         self._last_failure_reason = ""
         self._persistence_error = ""
+        self._request_log_error = ""
+        self._last_cache_miss_reason = ""
         self._latest_cache_created_at: datetime | None = None
 
     @classmethod
     def from_settings(cls, settings: Settings) -> "OpenMeteoEnsembleClient":
         cache_path = settings.forecast_cache_path or str(Path(settings.state_path).with_name("forecast_cache.json"))
-        return cls(cache_path=cache_path, cache_ttl_seconds=settings.forecast_cache_ttl_seconds)
+        request_log_path = settings.forecast_request_log_path or str(
+            Path(settings.state_path).with_name("forecast_request_log.jsonl")
+        )
+        return cls(
+            cache_path=cache_path,
+            cache_ttl_seconds=settings.forecast_cache_ttl_seconds,
+            request_log_path=request_log_path,
+        )
 
     def _cache_key(self, latitude: float, longitude: float, timezone: str, forecast_days: int) -> str:
         return "|".join([
@@ -386,26 +397,43 @@ class OpenMeteoEnsembleClient:
 
     def _fresh_cached_data(self, cache_key: str) -> dict[str, Any] | None:
         now = _utc_now()
+        memory_miss_reason = ""
         memory_entry = self._cache.get(cache_key)
         if isinstance(memory_entry, dict):
             data = self._fresh_entry_data(memory_entry, now)
             if data is not None:
+                self._last_cache_miss_reason = ""
                 return data
             self._cache.pop(cache_key, None)
-        if self.cache_ttl_seconds <= 0 or self.cache_path is None or not self.cache_path.exists():
+            memory_miss_reason = "memory-cache-stale-or-invalid"
+        if self.cache_ttl_seconds <= 0:
+            self._last_cache_miss_reason = "cache-disabled"
+            return None
+        if self.cache_path is None:
+            self._last_cache_miss_reason = memory_miss_reason or "cache-not-configured"
+            return None
+        if not self.cache_path.exists():
+            self._last_cache_miss_reason = memory_miss_reason or "disk-cache-missing"
             return None
         try:
             raw = json.loads(self.cache_path.read_text(encoding="utf-8"))
-            entry = raw.get(cache_key) if isinstance(raw, dict) else None
+            if not isinstance(raw, dict):
+                self._last_cache_miss_reason = "disk-cache-invalid"
+                return None
+            entry = raw.get(cache_key)
             if not isinstance(entry, dict):
+                self._last_cache_miss_reason = memory_miss_reason or "disk-entry-missing"
                 return None
             data = self._fresh_entry_data(entry, now)
             created_at = self._created_at(entry)
             if data is not None and created_at is not None:
                 self._remember_cached_data(cache_key, data, created_at)
+                self._last_cache_miss_reason = ""
                 return data
+            self._last_cache_miss_reason = memory_miss_reason or "disk-entry-stale-or-invalid"
         except Exception as exc:
             self._persistence_error = _safe_error(exc)
+            self._last_cache_miss_reason = "disk-cache-read-error"
             return None
         return None
 
@@ -435,6 +463,53 @@ class OpenMeteoEnsembleClient:
         except Exception as exc:
             self._persistence_error = _safe_error(exc)
 
+    def _append_request_log(self, row: dict[str, Any]) -> None:
+        if self.request_log_path is None:
+            return
+        try:
+            self.request_log_path.parent.mkdir(parents=True, exist_ok=True)
+            with self.request_log_path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True))
+                handle.write("\n")
+            self._request_log_error = ""
+        except Exception as exc:
+            self._request_log_error = _safe_error(exc)
+
+    def _request_log_row(
+        self,
+        *,
+        attempted_at: datetime,
+        cache_key: str,
+        latitude: float,
+        longitude: float,
+        timezone_name: str,
+        forecast_days: int,
+        status: str,
+        status_code: int | None = None,
+        error: str = "",
+        cache_miss_reason: str = "",
+        city: str = "",
+        station_id: str = "",
+        station_name: str = "",
+    ) -> dict[str, Any]:
+        return {
+            "attempted_at": _utc_iso(attempted_at),
+            "base_url": self.base_url,
+            "cache_miss_reason": cache_miss_reason,
+            "cache_key": cache_key,
+            "city": city,
+            "forecast_days": int(forecast_days),
+            "latitude": round(float(latitude), 4),
+            "longitude": round(float(longitude), 4),
+            "models": self.models,
+            "station_id": station_id,
+            "station_name": station_name,
+            "status": status,
+            "status_code": status_code,
+            "timezone": timezone_name,
+            "error": error,
+        }
+
     def health_snapshot(self, now: datetime | None = None) -> dict[str, Any]:
         current = (now or _utc_now()).astimezone(timezone.utc)
         cache_age_seconds: int | None = None
@@ -450,6 +525,9 @@ class OpenMeteoEnsembleClient:
             "cache_age_seconds": cache_age_seconds,
             "stale": stale,
             "persistence_error": self._persistence_error,
+            "request_log_path": str(self.request_log_path or ""),
+            "request_log_error": self._request_log_error,
+            "last_cache_miss_reason": self._last_cache_miss_reason,
         }
 
     @retry(
@@ -464,11 +542,16 @@ class OpenMeteoEnsembleClient:
         longitude: float,
         timezone: str = "auto",
         forecast_days: int = 7,
+        *,
+        city: str = "",
+        station_id: str = "",
+        station_name: str = "",
     ) -> dict[str, Any]:
         cache_key = self._cache_key(latitude, longitude, timezone, forecast_days)
         cached = self._fresh_cached_data(cache_key)
         if cached is not None:
             return cached
+        cache_miss_reason = self._last_cache_miss_reason
         if self.disabled_reason:
             self._last_failure_reason = self.disabled_reason
             raise RuntimeError(f"ensemble disabled for cycle: {self.disabled_reason}")
@@ -482,7 +565,8 @@ class OpenMeteoEnsembleClient:
             "forecast_days": forecast_days,
         }
         try:
-            self._last_attempt_at = _utc_now()
+            attempted_at = _utc_now()
+            self._last_attempt_at = attempted_at
             resp = requests.get(self.base_url, params=params, timeout=self.timeout)
             resp.raise_for_status()
         except requests.HTTPError as exc:
@@ -492,15 +576,83 @@ class OpenMeteoEnsembleClient:
                 self._last_failure_reason = self.disabled_reason
             else:
                 self._last_failure_reason = _safe_error(exc)
+            response = getattr(exc, "response", None)
+            status_code = getattr(response, "status_code", getattr(resp, "status_code", None))
+            self._append_request_log(
+                self._request_log_row(
+                    attempted_at=attempted_at,
+                    cache_key=cache_key,
+                    latitude=latitude,
+                    longitude=longitude,
+                    timezone_name=timezone,
+                    forecast_days=forecast_days,
+                    status="http_error",
+                    status_code=status_code,
+                    error=self._last_failure_reason,
+                    cache_miss_reason=cache_miss_reason,
+                    city=city,
+                    station_id=station_id,
+                    station_name=station_name,
+                )
+            )
             raise
         except Exception as exc:
             self._last_failure_reason = _safe_error(exc)
+            self._append_request_log(
+                self._request_log_row(
+                    attempted_at=attempted_at,
+                    cache_key=cache_key,
+                    latitude=latitude,
+                    longitude=longitude,
+                    timezone_name=timezone,
+                    forecast_days=forecast_days,
+                    status="error",
+                    error=self._last_failure_reason,
+                    cache_miss_reason=cache_miss_reason,
+                    city=city,
+                    station_id=station_id,
+                    station_name=station_name,
+                )
+            )
             raise
         try:
             data = resp.json()
         except Exception as exc:
             self._last_failure_reason = _safe_error(exc)
+            self._append_request_log(
+                self._request_log_row(
+                    attempted_at=attempted_at,
+                    cache_key=cache_key,
+                    latitude=latitude,
+                    longitude=longitude,
+                    timezone_name=timezone,
+                    forecast_days=forecast_days,
+                    status="json_error",
+                    status_code=getattr(resp, "status_code", None),
+                    error=self._last_failure_reason,
+                    cache_miss_reason=cache_miss_reason,
+                    city=city,
+                    station_id=station_id,
+                    station_name=station_name,
+                )
+            )
             raise
+        self._append_request_log(
+            self._request_log_row(
+                attempted_at=attempted_at,
+                cache_key=cache_key,
+                latitude=latitude,
+                longitude=longitude,
+                timezone_name=timezone,
+                forecast_days=forecast_days,
+                status="success",
+                status_code=getattr(resp, "status_code", None),
+                cache_miss_reason=cache_miss_reason,
+                city=city,
+                station_id=station_id,
+                station_name=station_name,
+            )
+        )
         self._store_cached_data(cache_key, data)
         return data
 
@@ -783,6 +935,9 @@ def _ensemble_precipitation_probability(
         timezone=station.timezone,
         # Precipitation confidence drops sharply after seven days.
         forecast_days=max(3, min(7, int(lead_days) + 2)),
+        city=parsed.city or "",
+        station_id=station.station_id,
+        station_name=station.station_name,
     )
     daily = data.get("daily") or {}
     idx = _date_index(daily, target)
@@ -880,6 +1035,9 @@ def estimate_weather_probability(
                 station.longitude,
                 timezone=station.timezone,
                 forecast_days=max(3, min(16, int(_lead_time_days(target, timezone_name=station.timezone)) + 2)),
+                city=parsed.city or "",
+                station_id=station.station_id,
+                station_name=station.station_name,
             )
             daily = data.get("daily") or {}
             idx = _date_index(daily, target)

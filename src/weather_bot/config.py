@@ -98,6 +98,7 @@ class Settings:
     shadow_compare_window_seconds: int = 86400
     forecast_cache_path: str = ""
     forecast_cache_ttl_seconds: int = 1800
+    forecast_request_log_path: str = ""
     station_nowcast_enabled: bool = True
     station_nowcast_cache_ttl_seconds: int = 900
     station_nowcast_freshness_seconds: int = 5400
@@ -310,6 +311,10 @@ def load_settings() -> Settings:
         ),
         forecast_cache_path=os.getenv("FORECAST_CACHE_PATH", Settings.forecast_cache_path),
         forecast_cache_ttl_seconds=_int_env("FORECAST_CACHE_TTL_SECONDS", Settings.forecast_cache_ttl_seconds),
+        forecast_request_log_path=os.getenv(
+            "FORECAST_REQUEST_LOG_PATH",
+            Settings.forecast_request_log_path,
+        ),
         station_nowcast_enabled=_bool_env("STATION_NOWCAST_ENABLED", Settings.station_nowcast_enabled),
         station_nowcast_cache_ttl_seconds=_int_env(
             "STATION_NOWCAST_CACHE_TTL_SECONDS",

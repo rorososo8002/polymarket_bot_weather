@@ -87,6 +87,15 @@ specialized reference docs.
   source ledgers. Reports may scan full history when that is the promised
   meaning, but they must stream rows and keep only aggregates or bounded
   lookups in memory instead of materializing whole CSV files.
+- `paper_raw_snapshots.jsonl` is diagnostic evidence and may be archived and
+  compressed separately from source ledgers. On the Oracle VPS it rotates at
+  1GB into `data/archive/` with zstd compression. Do not apply the same cleanup
+  rule to `paper_state.json`, `paper_trades.csv`, or `paper_decisions.csv`.
+- `forecast_cache.json` is not the Open-Meteo call ledger. It caches the latest
+  successful forecast per key and can overwrite older evidence. Real Open-Meteo
+  HTTP attempts are recorded in `forecast_request_log.jsonl` with cache-miss
+  reason and safe city/station metadata; the log rotates at 10MB into
+  `data/archive/` with zstd compression.
 - Dashboard trade-history panels treat SKIP rows as diagnostics, not executed
   trades. Recent trades, realized rows, and realized equity points use cached
   actual trade actions so SKIP bursts cannot hide older closes.

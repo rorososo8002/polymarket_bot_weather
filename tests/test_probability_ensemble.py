@@ -1,3 +1,4 @@
+import json
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
@@ -324,20 +325,120 @@ def test_ensemble_client_persists_successful_forecasts_to_disk(monkeypatch, tmp_
         return FakeResponse()
 
     cache_path = tmp_path / "forecast_cache.json"
+    request_log_path = tmp_path / "forecast_request_log.jsonl"
     monkeypatch.setattr("weather_bot.probability.requests.get", fake_get)
 
-    first_client = OpenMeteoEnsembleClient(cache_path=cache_path, cache_ttl_seconds=21600)
+    first_client = OpenMeteoEnsembleClient(
+        cache_path=cache_path,
+        cache_ttl_seconds=21600,
+        request_log_path=request_log_path,
+    )
     first = first_client.forecast_daily_ensemble(1.0, 2.0, timezone="UTC", forecast_days=3)
 
     def fail_get(*_args, **_kwargs):
         raise AssertionError("disk cache should avoid network")
 
     monkeypatch.setattr("weather_bot.probability.requests.get", fail_get)
-    second_client = OpenMeteoEnsembleClient(cache_path=cache_path, cache_ttl_seconds=21600)
+    second_client = OpenMeteoEnsembleClient(
+        cache_path=cache_path,
+        cache_ttl_seconds=21600,
+        request_log_path=request_log_path,
+    )
     second = second_client.forecast_daily_ensemble(1.0, 2.0, timezone="UTC", forecast_days=3)
 
+    rows = [json.loads(line) for line in request_log_path.read_text(encoding="utf-8").splitlines()]
     assert first == second
     assert calls == 1
+    assert len(rows) == 1
+    assert rows[0]["cache_miss_reason"] == "disk-cache-missing"
+
+
+def test_ensemble_client_logs_successful_network_attempts(monkeypatch, tmp_path):
+    now = [datetime(2026, 6, 1, 0, 0, tzinfo=timezone.utc)]
+    calls = 0
+
+    class FakeResponse:
+        status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"daily": {"time": ["2026-06-01"], "calls": calls}}
+
+    def fake_get(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return FakeResponse()
+
+    request_log_path = tmp_path / "forecast_request_log.jsonl"
+    monkeypatch.setattr("weather_bot.probability._utc_now", lambda: now[0])
+    monkeypatch.setattr("weather_bot.probability.requests.get", fake_get)
+    client = OpenMeteoEnsembleClient(
+        cache_ttl_seconds=60,
+        request_log_path=request_log_path,
+    )
+
+    client.forecast_daily_ensemble(
+        1.0,
+        2.0,
+        timezone="UTC",
+        forecast_days=3,
+        city="test city",
+        station_id="TEST",
+        station_name="Test Station",
+    )
+    client.forecast_daily_ensemble(
+        1.0,
+        2.0,
+        timezone="UTC",
+        forecast_days=3,
+        city="test city",
+        station_id="TEST",
+        station_name="Test Station",
+    )
+
+    rows = [json.loads(line) for line in request_log_path.read_text(encoding="utf-8").splitlines()]
+    assert calls == 1
+    assert len(rows) == 1
+    assert rows[0]["attempted_at"] == "2026-06-01T00:00:00+00:00"
+    assert rows[0]["status"] == "success"
+    assert rows[0]["status_code"] == 200
+    assert rows[0]["forecast_days"] == 3
+    assert rows[0]["latitude"] == 1.0
+    assert rows[0]["longitude"] == 2.0
+    assert rows[0]["timezone"] == "UTC"
+    assert rows[0]["cache_miss_reason"] == "cache-not-configured"
+    assert rows[0]["city"] == "test city"
+    assert rows[0]["station_id"] == "TEST"
+    assert rows[0]["station_name"] == "Test Station"
+
+
+def test_ensemble_client_logs_rate_limit_network_attempt(monkeypatch, tmp_path):
+    now = [datetime(2026, 6, 1, 0, 0, tzinfo=timezone.utc)]
+
+    class RateLimitedResponse:
+        status_code = 429
+        text = "Daily API request limit exceeded"
+
+        def raise_for_status(self):
+            err = requests.HTTPError("429 Client Error")
+            err.response = self
+            raise err
+
+    request_log_path = tmp_path / "forecast_request_log.jsonl"
+    monkeypatch.setattr("weather_bot.probability._utc_now", lambda: now[0])
+    monkeypatch.setattr("weather_bot.probability.requests.get", lambda *_args, **_kwargs: RateLimitedResponse())
+    client = OpenMeteoEnsembleClient(request_log_path=request_log_path)
+
+    with pytest.raises(requests.HTTPError):
+        client.forecast_daily_ensemble(1.0, 2.0, timezone="UTC", forecast_days=3)
+
+    rows = [json.loads(line) for line in request_log_path.read_text(encoding="utf-8").splitlines()]
+    assert len(rows) == 1
+    assert rows[0]["status"] == "http_error"
+    assert rows[0]["status_code"] == 429
+    assert rows[0]["error"].startswith("Open-Meteo rate limited")
 
 
 def test_ensemble_client_can_read_cached_forecast_after_rate_limit(monkeypatch, tmp_path):

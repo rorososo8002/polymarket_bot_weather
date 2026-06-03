@@ -174,11 +174,13 @@ def test_load_settings_reads_conservative_strategy_controls(monkeypatch):
 def test_load_settings_reads_forecast_cache_controls(monkeypatch):
     monkeypatch.setenv("FORECAST_CACHE_PATH", "data/custom_forecast_cache.json")
     monkeypatch.setenv("FORECAST_CACHE_TTL_SECONDS", "600")
+    monkeypatch.setenv("FORECAST_REQUEST_LOG_PATH", "data/custom_forecast_request_log.jsonl")
 
     settings = load_settings()
 
     assert settings.forecast_cache_path == "data/custom_forecast_cache.json"
     assert settings.forecast_cache_ttl_seconds == 600
+    assert settings.forecast_request_log_path == "data/custom_forecast_request_log.jsonl"
 
 
 def test_load_settings_reads_station_nowcast_controls(monkeypatch):

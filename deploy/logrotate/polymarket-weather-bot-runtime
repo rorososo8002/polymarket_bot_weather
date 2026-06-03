@@ -1,0 +1,31 @@
+/opt/polymarket-weather-bot/data/paper_raw_snapshots.jsonl {
+    su polymarket polymarket
+    size 1G
+    rotate 14
+    missingok
+    notifempty
+    create 0644 polymarket polymarket
+    olddir /opt/polymarket-weather-bot/data/archive
+    createolddir 0755 polymarket polymarket
+    compress
+    compresscmd /usr/bin/zstd
+    uncompresscmd /usr/bin/unzstd
+    compressext .zst
+    compressoptions -T0 -3
+}
+
+/opt/polymarket-weather-bot/data/forecast_request_log.jsonl {
+    su polymarket polymarket
+    size 10M
+    rotate 30
+    missingok
+    notifempty
+    create 0644 polymarket polymarket
+    olddir /opt/polymarket-weather-bot/data/archive
+    createolddir 0755 polymarket polymarket
+    compress
+    compresscmd /usr/bin/zstd
+    uncompresscmd /usr/bin/unzstd
+    compressext .zst
+    compressoptions -T0 -3
+}

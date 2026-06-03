@@ -31,6 +31,7 @@ shadow_external_signals.jsonl
 shadow_public_notes.jsonl
 shadow_signal_report.md
 forecast_cache.json
+forecast_request_log.jsonl
 runtime/
 
 .antigravitycli/
