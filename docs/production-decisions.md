@@ -90,6 +90,9 @@ specialized reference docs.
 - Dashboard trade-history panels treat SKIP rows as diagnostics, not executed
   trades. Recent trades, realized rows, and realized equity points use cached
   actual trade actions so SKIP bursts cannot hide older closes.
+- Dashboard open-position links point to Polymarket event pages using
+  `event_slug`; condition-specific market slug suffixes such as `-25corbelow`
+  or `-30corhigher` are not event URLs.
 
 ## Compact Ledger
 
@@ -465,3 +468,14 @@ The realtime WebSocket runner must run this settlement check before opening a
 stream cycle and remove newly settled markets from the token subscription set.
 The batch `run_cycle()` path already checked settlements; the live service path
 needs the same behavior.
+
+### 2026-06-03: Dashboard Links Use Event Slugs
+
+Decision: Open-position dashboard cards link to
+`https://polymarket.com/ko/event/{event_slug}`. If old state only has a market
+slug with a terminal weather condition suffix, the dashboard strips that suffix
+before building the link. Why: Polymarket event pages exist at the event slug,
+while condition-specific suffixes such as `-25corbelow` and `-30corhigher`
+produce 404 pages. Consequence: new paper positions persist `RawMarket.event_slug`
+in metadata, and old positions remain linkable through conservative suffix
+normalization.

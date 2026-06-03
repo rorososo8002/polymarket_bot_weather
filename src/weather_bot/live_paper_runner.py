@@ -388,6 +388,7 @@ def _market_from_position(pos: PaperPosition) -> RawMarket:
         closed=False,
         yes_token_id=pos.token_id if pos.side == "YES" else None,
         no_token_id=pos.token_id if pos.side == "NO" else None,
+        event_slug=pos.metadata.get("event_slug"),
     )
 
 

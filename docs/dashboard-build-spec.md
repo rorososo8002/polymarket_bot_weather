@@ -29,28 +29,31 @@ so a new AI can recreate the same screen from the repository alone.
 
 ## Layout
 
-- Left rail: open positions.
-- Center: top account metrics, `Equity / PnL Curve`, then `Realized PnL`.
-- Right rail: `Scanner Intelligence`, then `Recent Trades`.
-- The right rail must be a grid whose `Recent Trades` body fills the remaining
-  viewport height. The trade list owns the scrollbar, so the scroll thumb should
-  cover the whole visible recent-trades area rather than stopping halfway.
-- `Realized PnL` uses a single table with consistent left padding. Numeric
+- Left rail: `보유 포지션`.
+- Center: top account metrics, `자산 / 손익 곡선`, then `확정 손익`.
+- Right rail: one fixed-height tab container. The default tab is `스캐너 정보`;
+  the second tab is `최근 체결`.
+- The right rail tab body owns the scrollbar. Switching to `최근 체결` must keep
+  the same bordered layout instead of pushing a separate trade panel below the
+  scanner panel.
+- Dashboard display labels are Korean. Internal payload keys can remain English
+  so tests and readers do not need a data-contract migration.
+- `확정 손익` uses a single table with consistent left padding. Numeric
   columns are right-aligned with tabular numbers.
 
 ## Scanner Intelligence Contract
 
-Show only operator-useful summary rows:
+Show only operator-useful summary rows with Korean display labels:
 
-- `Open Positions`: current open position count from paper state.
-- `Total Open Entry Cost`: sum of `cost_usd` for current open positions.
-- `Latest Open-Meteo Forecast`: latest `created_at` timestamp found in
+- `보유 포지션`: current open position count from paper state.
+- `총 진입 비용`: sum of `cost_usd` for current open positions.
+- `최근 Open-Meteo 예보`: latest `created_at` timestamp found in
   `forecast_cache.json`.
-- `Total Profit`: cumulative positive PnL from closed/settled/partial-close trade
+- `총 이익`: cumulative positive PnL from closed/settled/partial-close trade
   rows.
-- `Total Loss`: cumulative absolute value of negative PnL from closed/settled/
+- `총 손실`: cumulative absolute value of negative PnL from closed/settled/
   partial-close trade rows.
-- `Remaining Cash`: current `cash_usd`.
+- `남은 현금`: current `cash_usd`.
 
 Do not show `Cumulative Candidate Decisions`, `Forecast Unavailable`,
 `Actual Entries`, or `YES/NO Decisions` in the UI.
@@ -59,14 +62,14 @@ they are not dashboard display rows.
 
 Below the summary rows, include three explanation boxes:
 
-- `Forecast Health`: explain the last fresh-request attempt, last successful
+- `예보 상태`: explain the last fresh-request attempt, last successful
   forecast timestamp, cache age, stale warning, recent failure reason, and
   disk-save error. A visible dashboard with an old forecast is not healthy.
-- `WebSocket Health`: explain whether the background receiver thread is alive,
+- `실시간 주문장 상태`: explain whether the background receiver thread is alive,
   reconnect count, last incoming message, last actual order-book price update,
   stale-book age, and recent stream error. Trade-only or tick-size-only events
   must not refresh the last order-book timestamp.
-- `Event Portfolio`: explain the latest city-date portfolio decision. Show
+- `이벤트 포트폴리오`: explain the latest city-date portfolio decision. Show
   the conservative reference bankroll, shared cap, selected legs, rejected
   legs, and worst logged scenario PnL. State that city-date exposure is 10%
   below `$1,000`, 5% from `$1,000`, and limited to two complementary legs.
@@ -82,8 +85,15 @@ entire runtime log on each dashboard refresh.
 
 Each open-position card must include:
 
-- Clickable market title linking to `https://polymarket.com/event/{slug}` when a
-  slug exists.
+- Clickable market title linking to `https://polymarket.com/ko/event/{event_slug}`
+  when an event slug exists.
+- `event_slug` means the Polymarket event page slug, not the market/outcome slug.
+  For existing state that only has a market slug such as
+  `highest-temperature-in-beijing-on-june-4-2026-25corbelow`, strip the terminal
+  condition suffix and link to
+  `highest-temperature-in-beijing-on-june-4-2026`.
+- New paper positions should persist `RawMarket.event_slug` in position metadata
+  so the dashboard does not need to infer it from the market slug.
 - Side badge: `YES` or `NO`.
 - `LONG` badge.
 - Forecast-weather badge between `LONG` and entry price. It comes from the
@@ -100,18 +110,19 @@ why a `NO` position may make sense.
 
 Rows are sorted newest first by `closed_at`.
 
-Columns:
+Display columns:
 
-- `Date`
-- `City`
-- `Forecast`
-- `Condition`
-- `Expected Exit`
-- `Entry`
-- `Exit`
-- `PNL`
-- `Return`
+- `날짜`
+- `도시`
+- `예보`
+- `조건`
+- `예상 청산가`
+- `진입가`
+- `청산가`
+- `손익`
+- `수익률`
 
+Rows are sorted newest first by parsed `closed_at` time, not by display text.
 Closed rows must avoid blank numeric cells. If historical logs are sparse, use
 the best available fallback:
 

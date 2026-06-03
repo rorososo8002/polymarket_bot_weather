@@ -71,16 +71,16 @@ def test_dashboard_payload_exposes_latest_event_portfolio_explanation(tmp_path):
 
 
 def test_dashboard_html_explains_adaptive_event_portfolio_budget():
-    assert "Event Portfolio" in HTML
-    assert "Reference bankroll" in HTML
+    assert "이벤트 포트폴리오" in HTML
+    assert "기준 자금" in HTML
     assert "$1,000" in HTML
-    assert "max 2 legs" in HTML
-    assert "Minimum $10" in HTML
-    assert "city total 20%" in HTML
-    assert "total open 90%" in HTML
+    assert "최대 2개" in HTML
+    assert "최소 $10" in HTML
+    assert "도시 전체 20%" in HTML
+    assert "전체 보유 90%" in HTML
     assert "YES+NO" in HTML
     assert "NO+NO" in HTML
-    assert "expected log growth" in HTML
+    assert "예상 로그 성장" in HTML
 
 
 def test_dashboard_refuses_public_host_with_empty_token(monkeypatch):
@@ -884,8 +884,47 @@ def test_dashboard_open_positions_include_polymarket_link_and_forecast_weather(t
     )
 
     position = payload["positions"][0]
-    assert position["market_url"] == "https://polymarket.com/event/seoul-27c"
+    assert position["market_url"] == "https://polymarket.com/ko/event/seoul-27c"
     assert position["forecast_c"] == 30.0
+
+
+def test_dashboard_open_position_link_strips_condition_suffix_from_weather_slug(tmp_path):
+    state_path = tmp_path / "state.json"
+    state_path.write_text(
+        json.dumps(
+            {
+                "cash_usd": 900.0,
+                "positions": [
+                    {
+                        "position_id": "p1",
+                        "market_id": "m-beijing",
+                        "question": "Will the highest temperature in Beijing be 25°C or below on June 4?",
+                        "token_id": "no",
+                        "side": "NO",
+                        "entry_price": 0.549,
+                        "shares": 108.24,
+                        "cost_usd": 59.43,
+                        "opened_at": "2026-06-03T10:00:00+00:00",
+                        "last_mark_price": 0.242,
+                        "metadata": {
+                            "city": "beijing",
+                            "date_hint": "june 4",
+                            "slug": "highest-temperature-in-beijing-on-june-4-2026-25corbelow",
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = build_dashboard_payload(Settings(state_path=str(state_path)))
+
+    position = payload["positions"][0]
+    assert (
+        position["market_url"]
+        == "https://polymarket.com/ko/event/highest-temperature-in-beijing-on-june-4-2026"
+    )
 
 
 def test_dashboard_summary_reports_latest_forecast_cache_time_and_profit_loss_totals(tmp_path):
@@ -976,19 +1015,27 @@ def test_dashboard_summary_reports_latest_forecast_cache_time_and_profit_loss_to
     assert payload["scanner"]["latest_forecast_at"] == "2026-05-30T09:30:00+00:00"
 
 
-def test_dashboard_uses_clear_english_scanner_labels():
+def test_dashboard_uses_korean_labels_and_tabbed_right_rail():
     assert "Cumulative candidate decisions" not in HTML
     assert "Forecast unavailable" not in HTML
     assert "Actual entries" not in HTML
     assert "YES/NO decisions" not in HTML
-    assert "Open Positions" in HTML
-    assert "Total Open Entry Cost" in HTML
-    assert "Latest Open-Meteo Forecast" in HTML
-    assert "Total Profit" in HTML
-    assert "Total Loss" in HTML
-    assert "Forecast" in HTML
+    assert "Open Positions" not in HTML
+    assert "Recent Trades" not in HTML
+    assert "Scanner Intelligence" not in HTML
+    assert "보유 포지션" in HTML
+    assert "총 진입 비용" in HTML
+    assert "최근 Open-Meteo 예보" in HTML
+    assert "총 이익" in HTML
+    assert "총 손실" in HTML
+    assert "예보" in HTML
+    assert "스캐너 정보" in HTML
+    assert "최근 체결" in HTML
+    assert 'role="tablist"' in HTML
+    assert 'id="scanner-panel"' in HTML
+    assert 'id="trades-panel"' in HTML
     assert "Cumulative skips" not in HTML
-    assert "Remaining Cash" in HTML
+    assert "남은 현금" in HTML
     assert "NO FORECAST" not in HTML
     assert "Total Exposure" not in HTML
     assert "Recent Candidates" not in HTML
@@ -1123,8 +1170,8 @@ def test_dashboard_payload_surfaces_forecast_and_websocket_health(tmp_path):
 
 
 def test_dashboard_html_explains_health_warnings():
-    assert "Forecast Health" in HTML
-    assert "Last success" in HTML
-    assert "WebSocket Health" in HTML
-    assert "Reconnects" in HTML
-    assert "Last order book" in HTML
+    assert "예보 상태" in HTML
+    assert "마지막 성공" in HTML
+    assert "실시간 주문장 상태" in HTML
+    assert "재연결" in HTML
+    assert "마지막 주문장" in HTML

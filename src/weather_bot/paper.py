@@ -364,6 +364,7 @@ class PaperBroker:
                 "entry_fee_usdc": entry_fee_usdc,
                 "reason": result.reason,
                 "slug": market.slug,
+                "event_slug": market.event_slug,
                 "market_type": market_type,
                 "city": city,           # Tracks city-level exposure caps.
                 "date_hint": date_hint, # Tracks city-date exposure caps.

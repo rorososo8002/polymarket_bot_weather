@@ -317,6 +317,40 @@ def test_fee_adjusted_shares_drive_portfolio_scenario_and_open_position(tmp_path
     assert decision.scenario_pnl_usd["seoul-26"] == pytest.approx(position.shares - position.cost_usd, abs=1e-6)
 
 
+def test_open_position_preserves_polymarket_event_slug_for_dashboard_links(tmp_path):
+    cfg = settings(tmp_path, min_order_usd=1.0)
+    raw_market = RawMarket(
+        market_id="m-beijing",
+        question="Will the highest temperature in Beijing be 25°C or below on June 4?",
+        slug="highest-temperature-in-beijing-on-june-4-2026-25corbelow",
+        active=True,
+        closed=False,
+        yes_token_id="yes",
+        no_token_id="no",
+        event_id="beijing-june-4",
+        event_slug="highest-temperature-in-beijing-on-june-4-2026",
+    )
+    broker = PaperBroker(cfg)
+
+    position = broker.open_position(
+        raw_market,
+        "no",
+        EdgeResult(
+            side="NO",
+            p_true=0.20,
+            p_exec=0.55,
+            net_edge=0.15,
+            size_usd=10.0,
+            size_shares=18.0,
+            reason="edge ok",
+        ),
+        "temperature",
+    )
+
+    assert position.metadata["slug"] == "highest-temperature-in-beijing-on-june-4-2026-25corbelow"
+    assert position.metadata["event_slug"] == "highest-temperature-in-beijing-on-june-4-2026"
+
+
 def test_event_portfolio_allows_two_profitable_no_legs_when_growth_improves(tmp_path):
     broker = PaperBroker(settings(tmp_path, bankroll_usd=200.0))
 

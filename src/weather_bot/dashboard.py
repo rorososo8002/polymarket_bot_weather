@@ -44,6 +44,10 @@ WEAK_DASHBOARD_TOKEN_MARKERS = (
     "password",
 )
 _TOKEN_QUERY_LOG_RE = re.compile(r"(?i)([?&]token=)([^&\s]*)")
+_WEATHER_MARKET_SUFFIX_RE = re.compile(
+    r"-(?:\d+(?:\.\d+)?(?:-\d+(?:\.\d+)?)?[cf]|\d+(?:\.\d+)?(?:c|f)?or(?:higher|below))$",
+    re.IGNORECASE,
+)
 
 
 def _is_public_dashboard_host(host: str) -> bool:
@@ -94,11 +98,11 @@ def _redact_dashboard_log_message(message: str) -> str:
 
 
 HTML = r"""<!doctype html>
-<html lang="en">
+<html lang="ko">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Polymarket Weather Bot Dashboard</title>
+  <title>폴리마켓 날씨 봇 대시보드</title>
   <style>
     :root {
       color-scheme: dark;
@@ -139,15 +143,21 @@ HTML = r"""<!doctype html>
       display: flex;
       align-items: center;
       justify-content: space-between;
+      gap: 12px;
       padding: 0 18px;
       background: rgba(8, 10, 15, .94);
       backdrop-filter: blur(14px);
+      min-width: 0;
     }
     .brand {
       color: var(--text);
       font-size: 15px;
       font-weight: 800;
       letter-spacing: -.01em;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
     .statusline {
       display: flex;
@@ -155,6 +165,7 @@ HTML = r"""<!doctype html>
       color: var(--muted);
       font-size: 11px;
       white-space: nowrap;
+      min-width: 0;
     }
     .statusline b { color: var(--green); font-weight: 800; }
     .grid {
@@ -163,6 +174,10 @@ HTML = r"""<!doctype html>
       gap: 8px;
       padding: 8px;
       min-height: calc(100vh - 42px);
+    }
+    .grid > *,
+    section {
+      min-width: 0;
     }
     .col, .panel {
       border: 1px solid var(--line);
@@ -184,7 +199,7 @@ HTML = r"""<!doctype html>
       font-weight: 700;
       letter-spacing: .02em;
     }
-    .panel-body { padding: 10px; }
+    .panel-body { padding: 10px; min-width: 0; }
     .metric-row {
       display: grid;
       grid-template-columns: repeat(6, minmax(0, 1fr));
@@ -222,16 +237,61 @@ HTML = r"""<!doctype html>
     .trade-list, .position-list, .realized-list { display: grid; gap: 8px; }
     .position-list { max-height: calc(100vh - 96px); overflow: auto; padding: 10px; }
     .realized-list { max-height: min(32vh, 360px); overflow: auto; }
-    .trade-list { height: 100%; min-height: 0; overflow: auto; align-content: start; }
+    .trade-list { min-height: 0; align-content: start; }
     .right-col {
       display: grid;
-      grid-template-rows: auto auto auto 1fr;
+      grid-template-rows: auto minmax(0, 1fr);
       min-height: 0;
+      max-height: calc(100vh - 58px);
     }
-    .recent-trades-body {
+    .right-tabs {
+      display: flex;
+      border-bottom: 1px solid var(--line);
+      background: var(--panel);
+    }
+    .tab-btn {
+      flex: 1 1 0;
+      appearance: none;
+      border: 0;
+      border-right: 1px solid var(--line);
+      background: transparent;
+      color: var(--muted);
+      padding: 9px 10px;
+      font: inherit;
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: .02em;
+      cursor: pointer;
+    }
+    .tab-btn:last-child { border-right: 0; }
+    .tab-btn:hover,
+    .tab-btn:focus-visible {
+      color: var(--text);
+      outline: none;
+      background: rgba(46, 92, 255, .10);
+    }
+    .tab-btn.active {
+      color: #ffffff;
+      background: var(--blue);
+    }
+    .right-panels {
       min-height: 0;
       overflow: hidden;
+    }
+    .tab-panel {
+      display: none;
+      height: 100%;
+      min-height: 0;
+    }
+    .tab-panel.active {
+      display: grid;
+      grid-template-rows: minmax(0, 1fr);
+    }
+    .scanner-body,
+    .recent-trades-body {
+      min-height: 0;
       padding: 10px;
+      overflow: auto;
     }
     .event {
       display: grid;
@@ -250,6 +310,7 @@ HTML = r"""<!doctype html>
       background: var(--panel-2);
       padding: 12px;
       border-radius: 8px;
+      min-width: 0;
     }
     .card.open { border-left: 3px solid var(--blue); }
     .card.close { border-left: 3px solid var(--blue); }
@@ -262,6 +323,7 @@ HTML = r"""<!doctype html>
       color: var(--text);
       margin-bottom: 8px;
       font-weight: 650;
+      overflow-wrap: anywhere;
     }
     .market-link {
       display: inline-block;
@@ -296,7 +358,7 @@ HTML = r"""<!doctype html>
     .badge.neutral { color: var(--blue); border-color: rgba(46, 92, 255, .46); background: var(--blue-soft); }
     .badge.forecast { color: var(--text); border-color: rgba(46, 92, 255, .7); background: var(--blue); }
     .muted { color: var(--muted); }
-    .small { font-size: 11px; line-height: 1.45; }
+    .small { font-size: 11px; line-height: 1.45; overflow-wrap: anywhere; }
     .split-2 {
       display: grid;
       grid-template-columns: 1fr 1fr;
@@ -307,6 +369,7 @@ HTML = r"""<!doctype html>
       border-collapse: collapse;
       table-layout: fixed;
       font-size: 11px;
+      min-width: 620px;
     }
     .result-table th,
     .result-table td {
@@ -438,10 +501,27 @@ HTML = r"""<!doctype html>
       margin: 8px;
     }
     @media (max-width: 1100px) {
+      .topbar {
+        height: auto;
+        min-height: 42px;
+        align-items: flex-start;
+        flex-direction: column;
+        gap: 5px;
+        padding: 7px 10px;
+      }
+      .statusline {
+        flex-wrap: wrap;
+        gap: 5px 12px;
+        white-space: normal;
+      }
       .grid { grid-template-columns: 1fr; }
       .metric-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .chart-wrap { height: 320px; }
-      .position-list, .trade-list, .realized-list { max-height: 360px; }
+      .position-list, .realized-list { max-height: 360px; }
+      .right-col { max-height: 640px; }
+      .result-table { min-width: 0; font-size: 10px; }
+      .result-table th,
+      .result-table td { padding: 8px 5px; }
     }
     @media (min-width: 1101px) and (max-width: 1500px) {
       .metric-row { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -451,40 +531,40 @@ HTML = r"""<!doctype html>
 <body>
 <div class="shell">
   <header class="topbar">
-    <div class="brand">Polymarket Weather Bot</div>
+    <div class="brand">폴리마켓 날씨 봇</div>
     <div class="statusline">
-      <span>SYS <b id="sys-status">SYNC</b></span>
-      <span>BOT <b id="bot-status">--</b></span>
-      <span>MODE <b>PAPER</b></span>
-      <span>UPDATED <b id="updated">--</b></span>
+      <span>시스템 <b id="sys-status">동기화</b></span>
+      <span>봇 <b id="bot-status">--</b></span>
+      <span>모드 <b>종이매매</b></span>
+      <span>업데이트 <b id="updated">--</b></span>
     </div>
   </header>
-  <div id="lock" class="lock">Dashboard token is missing or invalid. Check the <b>?token=...</b> value in the URL.</div>
+  <div id="lock" class="lock">대시보드 토큰이 없거나 맞지 않습니다. 주소의 <b>?token=...</b> 값을 확인하세요.</div>
   <main class="grid">
     <aside class="col">
-      <div class="panel-title">Open Positions <span id="open-count">0</span></div>
+      <div class="panel-title">보유 포지션 <span id="open-count">0</span></div>
       <div id="open-positions" class="position-list"></div>
     </aside>
 
     <section>
       <div class="metric-row">
-        <div class="metric"><div class="label">Initial</div><div id="m-initial" class="value">$0</div></div>
-        <div class="metric" id="m-pnl-box"><div class="label">PnL</div><div id="m-pnl" class="value">$0</div></div>
-        <div class="metric"><div class="label">Equity</div><div id="m-equity" class="value">$0</div></div>
-        <div class="metric good"><div class="label">Wins</div><div id="m-wins" class="value">0</div></div>
-        <div class="metric bad"><div class="label">Losses</div><div id="m-losses" class="value">0</div></div>
-        <div class="metric warn"><div class="label">Win Rate</div><div id="m-winrate" class="value">0%</div></div>
+        <div class="metric"><div class="label">초기 자금</div><div id="m-initial" class="value">$0</div></div>
+        <div class="metric" id="m-pnl-box"><div class="label">손익</div><div id="m-pnl" class="value">$0</div></div>
+        <div class="metric"><div class="label">평가자산</div><div id="m-equity" class="value">$0</div></div>
+        <div class="metric good"><div class="label">이긴 거래</div><div id="m-wins" class="value">0</div></div>
+        <div class="metric bad"><div class="label">진 거래</div><div id="m-losses" class="value">0</div></div>
+        <div class="metric warn"><div class="label">승률</div><div id="m-winrate" class="value">0%</div></div>
       </div>
 
       <div class="panel">
         <div class="panel-title chart-title">
-          <span>Equity / PnL Curve <span id="chart-caption" class="chart-caption">live</span></span>
-          <div class="range-controls" aria-label="Chart range">
-            <button class="range-btn" data-range="1D" type="button">1D</button>
-            <button class="range-btn" data-range="7D" type="button">7D</button>
-            <button class="range-btn" data-range="1M" type="button">1M</button>
-            <button class="range-btn" data-range="1Y" type="button">1Y</button>
-            <button class="range-btn active" data-range="ALL" type="button">ALL</button>
+          <span>자산 / 손익 곡선 <span id="chart-caption" class="chart-caption">실시간</span></span>
+          <div class="range-controls" aria-label="차트 기간">
+            <button class="range-btn" data-range="1D" type="button">1일</button>
+            <button class="range-btn" data-range="7D" type="button">7일</button>
+            <button class="range-btn" data-range="1M" type="button">1개월</button>
+            <button class="range-btn" data-range="1Y" type="button">1년</button>
+            <button class="range-btn active" data-range="ALL" type="button">전체</button>
           </div>
         </div>
         <div class="panel-body chart-wrap">
@@ -494,7 +574,7 @@ HTML = r"""<!doctype html>
       </div>
 
       <div class="panel">
-        <div class="panel-title">Realized PnL <span id="realized-count">0</span></div>
+        <div class="panel-title">확정 손익 <span id="realized-count">0</span></div>
         <div class="panel-body">
           <div id="realized-results" class="realized-list"></div>
         </div>
@@ -502,43 +582,51 @@ HTML = r"""<!doctype html>
     </section>
 
     <aside class="col right-col">
-      <div class="panel-title">Scanner Intelligence</div>
-      <div class="panel-body">
-        <div class="right-stat"><span>Open Positions</span><strong id="r-open">0</strong></div>
-        <div class="right-stat"><span>Total Open Entry Cost</span><strong id="r-exposure">$0</strong></div>
-        <div class="right-stat"><span>Latest Open-Meteo Forecast</span><strong id="r-latest-forecast" class="neutral">--</strong></div>
-        <div class="right-stat"><span>Total Profit</span><strong id="r-total-profit">$0</strong></div>
-        <div class="right-stat"><span>Total Loss</span><strong id="r-total-loss" class="bad">$0</strong></div>
-        <div class="right-stat"><span>Remaining Cash</span><strong id="r-cash">$0</strong></div>
+      <div class="right-tabs" role="tablist" aria-label="오른쪽 정보">
+        <button id="scanner-tab" class="tab-btn active" type="button" role="tab" aria-selected="true" aria-controls="scanner-panel" data-tab-target="scanner-panel">스캐너 정보</button>
+        <button id="trades-tab" class="tab-btn" type="button" role="tab" aria-selected="false" aria-controls="trades-panel" data-tab-target="trades-panel">최근 체결 <span id="trade-count">0</span></button>
+      </div>
+      <div class="right-panels">
+        <div id="scanner-panel" class="tab-panel active" role="tabpanel" aria-labelledby="scanner-tab">
+          <div class="panel-body scanner-body">
+        <div class="right-stat"><span>보유 포지션</span><strong id="r-open">0</strong></div>
+        <div class="right-stat"><span>총 진입 비용</span><strong id="r-exposure">$0</strong></div>
+        <div class="right-stat"><span>최근 Open-Meteo 예보</span><strong id="r-latest-forecast" class="neutral">--</strong></div>
+        <div class="right-stat"><span>총 이익</span><strong id="r-total-profit">$0</strong></div>
+        <div class="right-stat"><span>총 손실</span><strong id="r-total-loss" class="bad">$0</strong></div>
+        <div class="right-stat"><span>남은 현금</span><strong id="r-cash">$0</strong></div>
         <div class="health-box">
-          <div class="health-title"><span>Forecast Health</span><strong id="r-forecast-health">--</strong></div>
-          <div id="r-forecast-success" class="health-detail">Last success --</div>
-          <div id="r-forecast-attempt" class="health-detail">Last attempt --</div>
-          <div id="r-forecast-age" class="health-detail">Cache age --</div>
-          <div id="r-forecast-error" class="health-detail">Latest failure reason --</div>
-          <div id="r-forecast-persistence" class="health-detail">Disk persistence error --</div>
+          <div class="health-title"><span>예보 상태</span><strong id="r-forecast-health">--</strong></div>
+          <div id="r-forecast-success" class="health-detail">마지막 성공 --</div>
+          <div id="r-forecast-attempt" class="health-detail">마지막 시도 --</div>
+          <div id="r-forecast-age" class="health-detail">예보 저장 후 경과 --</div>
+          <div id="r-forecast-error" class="health-detail">최근 실패 이유 --</div>
+          <div id="r-forecast-persistence" class="health-detail">파일 저장 오류 --</div>
         </div>
         <div class="health-box">
-          <div class="health-title"><span>WebSocket Health</span><strong id="r-websocket-health">--</strong></div>
-          <div id="r-websocket-thread" class="health-detail">Realtime receiver thread --</div>
-          <div id="r-websocket-reconnects" class="health-detail">Reconnects --</div>
-          <div id="r-websocket-message" class="health-detail">Last message --</div>
-          <div id="r-websocket-book" class="health-detail">Last order book --</div>
-          <div id="r-websocket-error" class="health-detail">Latest error --</div>
+          <div class="health-title"><span>실시간 주문장 상태</span><strong id="r-websocket-health">--</strong></div>
+          <div id="r-websocket-thread" class="health-detail">실시간 수신 스레드 --</div>
+          <div id="r-websocket-reconnects" class="health-detail">재연결 --</div>
+          <div id="r-websocket-message" class="health-detail">마지막 메시지 --</div>
+          <div id="r-websocket-book" class="health-detail">마지막 주문장 --</div>
+          <div id="r-websocket-error" class="health-detail">최근 오류 --</div>
         </div>
         <div class="health-box">
-          <div class="health-title"><span>Event Portfolio</span><strong id="r-portfolio-event">--</strong></div>
-          <div class="health-detail">Reference bankroll &lt; $1,000: city-date 10% · $1,000 or more: 5% · max 2 legs</div>
-          <div class="health-detail">Minimum $10 per leg · city total 20% · total open 90%</div>
-          <div class="health-detail">Compares distinct-bucket YES+YES · YES+NO · NO+NO</div>
-          <div id="r-portfolio-budget" class="health-detail">Latest budget --</div>
-          <div id="r-portfolio-selected" class="health-detail">Selected legs --</div>
-          <div id="r-portfolio-rejected" class="health-detail">Rejected legs --</div>
-          <div id="r-portfolio-scenario" class="health-detail">Worst scenario --</div>
+          <div class="health-title"><span>이벤트 포트폴리오</span><strong id="r-portfolio-event">--</strong></div>
+          <div class="health-detail">기준 자금 &lt; $1,000: 도시-날짜 10% · $1,000 이상: 5% · 최대 2개</div>
+          <div class="health-detail">다리 1개당 최소 $10 · 도시 전체 20% · 전체 보유 90%</div>
+          <div class="health-detail">서로 다른 구간 조합 비교: YES+YES · YES+NO · NO+NO</div>
+          <div id="r-portfolio-budget" class="health-detail">최근 기준 예산 --</div>
+          <div id="r-portfolio-selected" class="health-detail">선택된 다리 --</div>
+          <div id="r-portfolio-rejected" class="health-detail">거절된 다리 --</div>
+          <div id="r-portfolio-scenario" class="health-detail">최악 시나리오 --</div>
+        </div>
+          </div>
+        </div>
+        <div id="trades-panel" class="tab-panel" role="tabpanel" aria-labelledby="trades-tab">
+          <div class="panel-body recent-trades-body"><div id="recent-trades" class="trade-list"></div></div>
         </div>
       </div>
-      <div class="panel-title">Recent Trades <span id="trade-count">0</span></div>
-      <div class="panel-body recent-trades-body"><div id="recent-trades" class="trade-list"></div></div>
     </aside>
   </main>
 </div>
@@ -583,10 +671,10 @@ function signedMoney(v) { return money(Number(v || 0)); }
 function roi(v) { return (v === null || v === undefined || isNaN(v)) ? "--" : pct(Number(v)); }
 function duration(sec) {
   sec = Math.max(0, Math.round(Number(sec || 0)));
-  if (sec < 60) return sec + "s";
+  if (sec < 60) return sec + "초";
   const min = Math.floor(sec / 60);
   const rem = sec % 60;
-  return rem ? min + "m " + rem + "s" : min + "m";
+  return rem ? min + "분 " + rem + "초" : min + "분";
 }
 function shortTime(ts) {
   if (!ts) return "--";
@@ -603,11 +691,61 @@ function shortDateTime(ts) {
 function esc(s) {
   return String(s ?? "").replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]));
 }
+const STATUS_KO = {
+  "LOCKED": "잠김",
+  "OPEN": "열림",
+  "AUTH": "인증 필요",
+  "ERROR": "오류",
+  "RUNNING": "실행중",
+  "WAIT": "대기",
+  "LATE": "지연",
+  "STALE": "오래됨",
+  "FAILED": "실패",
+  "DEGRADED": "불안정",
+  "HEALTHY": "정상",
+  "UNKNOWN": "알 수 없음",
+  "WAITING": "대기",
+  "NO DATA": "데이터 없음",
+};
+const PHASE_KO = {
+  "starting": "시작중",
+  "discovering": "시장 탐색중",
+  "evaluating": "평가중",
+  "closing": "청산 확인중",
+  "streaming": "실시간 수신중",
+  "stream_error": "실시간 오류",
+};
+const ACTION_KO = {
+  "OPEN": "진입",
+  "CLOSE": "청산",
+  "SETTLED": "정산",
+  "PARTIAL_CLOSE": "부분 청산",
+};
+function statusKo(status) {
+  const raw = String(status || "").toUpperCase();
+  return STATUS_KO[raw] || status || "--";
+}
+function phaseKo(phase) { return PHASE_KO[String(phase || "")] || phase; }
+function sideKo(side) {
+  const raw = String(side || "").toUpperCase();
+  return raw === "YES" ? "예" : (raw === "NO" ? "아니오" : (side || "--"));
+}
+function actionKo(action) {
+  const raw = String(action || "").toUpperCase();
+  return ACTION_KO[raw] || action || "--";
+}
+function conditionKo(label) {
+  const raw = String(label || "").toLowerCase();
+  if (raw === "or higher") return "이상";
+  if (raw === "or lower") return "이하";
+  return label || "";
+}
 function setText(id, text) { document.getElementById(id).textContent = text; }
 function setHealthStatus(id, status) {
   const element = document.getElementById(id);
-  element.textContent = status || "--";
-  element.className = status === "FAILED" ? "bad" : (status === "STALE" || status === "DEGRADED" ? "warn" : "");
+  const raw = String(status || "").toUpperCase();
+  element.textContent = statusKo(raw);
+  element.className = raw === "FAILED" ? "bad" : (raw === "STALE" || raw === "DEGRADED" ? "warn" : "");
 }
 
 function cardForPosition(p) {
@@ -619,14 +757,14 @@ function cardForPosition(p) {
   return `<div class="card open">
     ${titleHtml}
     <div class="badges">
-      <span class="badge ${p.side === "YES" ? "yes" : "no"}">${esc(p.side)}</span>
-      <span class="badge long">LONG</span>
+      <span class="badge ${p.side === "YES" ? "yes" : "no"}">${esc(sideKo(p.side))}</span>
+      <span class="badge long">보유</span>
       <span class="badge forecast">${tempC(p.forecast_c)}</span>
-      <span class="badge price">${price(p.entry_price)} entry</span>
-      <span class="badge neutral">mark ${price(p.mark_price)}</span>
+      <span class="badge price">진입 ${price(p.entry_price)}</span>
+      <span class="badge neutral">현재가 ${price(p.mark_price)}</span>
       <span class="badge ${pnlClass}">${money(p.unrealized_pnl)}</span>
     </div>
-    <div class="small muted" style="margin-top:8px">${esc(p.city || "")} ${esc(p.date_hint || "")} · shares ${Number(p.shares || 0).toFixed(2)}</div>
+    <div class="small muted" style="margin-top:8px">${esc(p.city || "")} ${esc(p.date_hint || "")} · 수량 ${Number(p.shares || 0).toFixed(2)}</div>
   </div>`;
 }
 
@@ -637,8 +775,8 @@ function cardForTrade(t) {
   return `<div class="card ${isClose ? "close" : "open"}">
     <div class="market-title">${esc(t.question)}</div>
     <div class="badges">
-      <span class="badge neutral">${esc(action)}</span>
-      <span class="badge ${t.side === "YES" ? "yes" : "no"}">${esc(t.side)}</span>
+      <span class="badge neutral">${esc(actionKo(action))}</span>
+      <span class="badge ${t.side === "YES" ? "yes" : "no"}">${esc(sideKo(t.side))}</span>
       <span class="badge price">${price(t.price)}</span>
       <span class="badge ${pnl >= 0 ? "win" : "loss"}">${money(pnl)}</span>
     </div>
@@ -647,12 +785,12 @@ function cardForTrade(t) {
 }
 
 function realizedTable(rows) {
-  if (!rows.length) return `<div class="small muted">No closed trades</div>`;
+  if (!rows.length) return `<div class="small muted">확정된 거래가 없습니다</div>`;
   return `<table class="result-table">
     <thead><tr>
-      <th>Date</th><th>City</th><th class="num">Forecast</th><th>Condition</th>
-      <th class="num">Expected Exit</th><th class="num">Entry</th><th class="num">Exit</th>
-      <th class="num">PNL</th><th class="num">Return</th>
+      <th>날짜</th><th>도시</th><th class="num">예보</th><th>조건</th>
+      <th class="num">예상 청산가</th><th class="num">진입가</th><th class="num">청산가</th>
+      <th class="num">손익</th><th class="num">수익률</th>
     </tr></thead>
     <tbody>${rows.map(r => {
       const good = Number(r.pnl || 0) >= 0;
@@ -660,7 +798,7 @@ function realizedTable(rows) {
         <td>${esc(r.date_hint || shortTime(r.closed_at))}</td>
         <td>${esc(r.city || "--")}</td>
         <td class="num">${tempC(r.forecast_c)}</td>
-        <td>${tempC(r.threshold_c)} ${esc(r.condition_label || "")}</td>
+        <td>${tempC(r.threshold_c)} ${esc(conditionKo(r.condition_label))}</td>
         <td class="num">${price(r.expected_exit_price)}</td>
         <td class="num">${price(r.entry_price)}</td>
         <td class="num">${price(r.exit_price)}</td>
@@ -756,26 +894,26 @@ function drawChart(payload) {
     ctx.fillStyle = "#2E5CFF";
     ctx.beginPath(); ctx.arc(nearestX, nearestY, 4, 0, Math.PI * 2); ctx.fill();
     const pnl = nearest.equity - Number(payload.summary.initial_bankroll || 0);
-    tooltip.innerHTML = `${shortDateTime(nearest.ts)}<br><b>${money(pnl)}</b><br><span class="muted">Equity ${money(nearest.equity)}</span>`;
+    tooltip.innerHTML = `${shortDateTime(nearest.ts)}<br><b>${money(pnl)}</b><br><span class="muted">평가자산 ${money(nearest.equity)}</span>`;
     tooltip.style.display = "block";
     tooltip.style.left = Math.min(Math.max(8, nearestX + 10), rect.width - 150) + "px";
     tooltip.style.top = Math.max(8, nearestY - 54) + "px";
   } else {
     tooltip.style.display = "none";
   }
-  const started = payload.summary.started_at ? "from " + shortDateTime(payload.summary.started_at) : "live";
+  const started = payload.summary.started_at ? shortDateTime(payload.summary.started_at) + "부터" : "실시간";
   setText("chart-caption", started);
 }
 
 function render(payload) {
   window.__lastPayload = payload;
   document.getElementById("lock").style.display = "none";
-  setText("sys-status", payload.security.auth_required ? "LOCKED" : "OPEN");
+  setText("sys-status", payload.security.auth_required ? statusKo("LOCKED") : statusKo("OPEN"));
   const bot = payload.bot || {};
-  const phase = bot.phase ? " · " + bot.phase.toUpperCase() : "";
+  const phase = bot.phase ? " · " + phaseKo(bot.phase) : "";
   const progress = bot.markets_total ? " " + (bot.markets_done || 0) + "/" + bot.markets_total : "";
-  const next = bot.next_scan_in_seconds > 0 ? " next " + duration(bot.next_scan_in_seconds) : "";
-  setText("bot-status", (bot.status || "--") + phase + progress + " " + duration(bot.age_seconds) + next);
+  const next = bot.next_scan_in_seconds > 0 ? " 다음 " + duration(bot.next_scan_in_seconds) : "";
+  setText("bot-status", statusKo(bot.status) + phase + progress + " " + duration(bot.age_seconds) + next);
   setText("updated", shortTime(payload.generated_at));
   setText("m-initial", money(payload.summary.initial_bankroll));
   setText("m-pnl", money(payload.summary.total_pnl));
@@ -792,35 +930,35 @@ function render(payload) {
   setText("r-cash", money(payload.summary.cash));
   const forecastHealth = (payload.health || {}).forecast || {};
   setHealthStatus("r-forecast-health", forecastHealth.status);
-  setText("r-forecast-success", "Last success " + shortDateTime(forecastHealth.last_success_at));
-  setText("r-forecast-attempt", "Last attempt " + shortDateTime(forecastHealth.last_attempt_at));
-  setText("r-forecast-age", "Cache age " + (forecastHealth.cache_age_seconds == null ? "--" : duration(forecastHealth.cache_age_seconds)));
-  setText("r-forecast-error", "Latest failure reason " + (forecastHealth.last_failure_reason || "--"));
-  setText("r-forecast-persistence", "Disk persistence error " + (forecastHealth.persistence_error || "--"));
+  setText("r-forecast-success", "마지막 성공 " + shortDateTime(forecastHealth.last_success_at));
+  setText("r-forecast-attempt", "마지막 시도 " + shortDateTime(forecastHealth.last_attempt_at));
+  setText("r-forecast-age", "예보 저장 후 경과 " + (forecastHealth.cache_age_seconds == null ? "--" : duration(forecastHealth.cache_age_seconds)));
+  setText("r-forecast-error", "최근 실패 이유 " + (forecastHealth.last_failure_reason || "--"));
+  setText("r-forecast-persistence", "파일 저장 오류 " + (forecastHealth.persistence_error || "--"));
   const websocketHealth = (payload.health || {}).websocket || {};
   setHealthStatus("r-websocket-health", websocketHealth.status);
-  setText("r-websocket-thread", "Realtime receiver thread " + (websocketHealth.thread_alive === true ? "running" : (websocketHealth.thread_alive === false ? "stopped" : "--")));
-  setText("r-websocket-reconnects", "Reconnects " + Number(websocketHealth.reconnect_count || 0));
-  setText("r-websocket-message", "Last message " + shortDateTime(websocketHealth.last_message_at));
-  setText("r-websocket-book", "Last order book " + shortDateTime(websocketHealth.last_book_at) + " · age " + (websocketHealth.stale_book_age_seconds == null ? "--" : duration(websocketHealth.stale_book_age_seconds)));
-  setText("r-websocket-error", "Latest error " + (websocketHealth.last_error || "--"));
+  setText("r-websocket-thread", "실시간 수신 스레드 " + (websocketHealth.thread_alive === true ? "실행중" : (websocketHealth.thread_alive === false ? "중지" : "--")));
+  setText("r-websocket-reconnects", "재연결 " + Number(websocketHealth.reconnect_count || 0));
+  setText("r-websocket-message", "마지막 메시지 " + shortDateTime(websocketHealth.last_message_at));
+  setText("r-websocket-book", "마지막 주문장 " + shortDateTime(websocketHealth.last_book_at) + " · 경과 " + (websocketHealth.stale_book_age_seconds == null ? "--" : duration(websocketHealth.stale_book_age_seconds)));
+  setText("r-websocket-error", "최근 오류 " + (websocketHealth.last_error || "--"));
   const eventPortfolio = (payload.scanner || {}).latest_event_portfolio || {};
   const selectedLegs = eventPortfolio.selected_legs || [];
   const rejectedLegs = eventPortfolio.rejected_legs || [];
   const scenarios = eventPortfolio.scenario_pnl_usd || {};
   const worstScenario = Object.values(scenarios).length ? Math.min(...Object.values(scenarios).map(Number)) : null;
   setText("r-portfolio-event", eventPortfolio.event_key || "--");
-  setText("r-portfolio-budget", "Latest reference bankroll " + money(eventPortfolio.entry_bankroll_usd || 0) + " · cap " + money(eventPortfolio.event_cap_usd || 0) + " · expected net profit " + money(eventPortfolio.expected_net_profit_usd || 0) + " · expected log growth " + pct(eventPortfolio.expected_log_growth || 0));
-  setText("r-portfolio-selected", "Selected legs " + (selectedLegs.length ? selectedLegs.map(item => (item.market_id || "?") + " " + (item.side || "") + " " + money(item.size_usd || 0)).join(" | ") : "--"));
-  setText("r-portfolio-rejected", "Rejected legs " + (rejectedLegs.length ? rejectedLegs.map(item => (item.market_id || "?") + ": " + (item.reason || "")).join(" | ") : "--"));
-  setText("r-portfolio-scenario", "Worst scenario " + (worstScenario == null ? "--" : money(worstScenario)));
+  setText("r-portfolio-budget", "최근 기준 자금 " + money(eventPortfolio.entry_bankroll_usd || 0) + " · 한도 " + money(eventPortfolio.event_cap_usd || 0) + " · 예상 순이익 " + money(eventPortfolio.expected_net_profit_usd || 0) + " · 예상 로그 성장 " + pct(eventPortfolio.expected_log_growth || 0));
+  setText("r-portfolio-selected", "선택된 다리 " + (selectedLegs.length ? selectedLegs.map(item => (item.market_id || "?") + " " + sideKo(item.side || "") + " " + money(item.size_usd || 0)).join(" | ") : "--"));
+  setText("r-portfolio-rejected", "거절된 다리 " + (rejectedLegs.length ? rejectedLegs.map(item => (item.market_id || "?") + ": " + (item.reason || "")).join(" | ") : "--"));
+  setText("r-portfolio-scenario", "최악 시나리오 " + (worstScenario == null ? "--" : money(worstScenario)));
   setText("open-count", payload.positions.length);
   setText("trade-count", payload.recent_trades.length);
   const realizedRows = payload.realized_results || [];
   setText("realized-count", realizedRows.length);
-  document.getElementById("open-positions").innerHTML = payload.positions.length ? payload.positions.map(cardForPosition).join("") : `<div class="small muted">No open positions</div>`;
+  document.getElementById("open-positions").innerHTML = payload.positions.length ? payload.positions.map(cardForPosition).join("") : `<div class="small muted">보유 포지션이 없습니다</div>`;
   document.getElementById("realized-results").innerHTML = realizedTable(realizedRows);
-  document.getElementById("recent-trades").innerHTML = payload.recent_trades.length ? payload.recent_trades.map(cardForTrade).join("") : `<div class="small muted">No trade history</div>`;
+  document.getElementById("recent-trades").innerHTML = payload.recent_trades.length ? payload.recent_trades.map(cardForTrade).join("") : `<div class="small muted">최근 체결 내역이 없습니다</div>`;
   drawChart(payload);
 }
 
@@ -829,12 +967,12 @@ async function tick() {
     const res = await fetch("/api/status", {headers: token ? {"X-Dashboard-Token": token} : {}});
     if (res.status === 403) {
       document.getElementById("lock").style.display = "block";
-      setText("sys-status", "AUTH");
+      setText("sys-status", statusKo("AUTH"));
       return;
     }
     render(await res.json());
   } catch (err) {
-    setText("sys-status", "ERROR");
+    setText("sys-status", statusKo("ERROR"));
     console.error(err);
   }
 }
@@ -854,6 +992,19 @@ document.querySelectorAll(".range-btn").forEach(button => {
     chartRange = button.dataset.range || "ALL";
     document.querySelectorAll(".range-btn").forEach(item => item.classList.toggle("active", item === button));
     drawChart(window.__lastPayload || {summary:{equity:0,total_pnl:0,initial_bankroll:0}, equity_points:[]});
+  });
+});
+document.querySelectorAll(".tab-btn").forEach(button => {
+  button.addEventListener("click", () => {
+    const targetId = button.dataset.tabTarget || "scanner-panel";
+    document.querySelectorAll(".tab-btn").forEach(item => {
+      const active = item === button;
+      item.classList.toggle("active", active);
+      item.setAttribute("aria-selected", active ? "true" : "false");
+    });
+    document.querySelectorAll(".tab-panel").forEach(panel => {
+      panel.classList.toggle("active", panel.id === targetId);
+    });
   });
 });
 let refreshTimer = null;
@@ -1271,14 +1422,41 @@ def _status_interval_seconds(settings: Settings) -> int:
 
 
 def _sorted_recent(rows: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
-    return sorted(rows, key=_parse_ts, reverse=True)[:limit]
+    def sort_key(row: dict[str, Any]) -> tuple[datetime, str]:
+        timestamp = _parse_ts(row)
+        parsed = _parse_datetime(timestamp)
+        return (parsed or datetime.min.replace(tzinfo=timezone.utc), timestamp)
+
+    return sorted(rows, key=sort_key, reverse=True)[:limit]
 
 
-def _polymarket_market_url(slug: Any) -> str:
-    text = str(slug or "").strip()
+def _slug_text(value: Any) -> str:
+    text = str(value or "").strip()
     if not text:
         return ""
-    return f"https://polymarket.com/event/{quote(text, safe='')}"
+    if "://" in text:
+        path_parts = [part for part in urlparse(text).path.split("/") if part]
+        if "event" in path_parts:
+            event_index = path_parts.index("event")
+            if len(path_parts) > event_index + 1:
+                return path_parts[event_index + 1].strip()
+    return text.strip("/")
+
+
+def _event_slug_from_market_slug(slug: Any) -> str:
+    text = _slug_text(slug)
+    if not text:
+        return ""
+    if "temperature" not in text or "-on-" not in text:
+        return text
+    return _WEATHER_MARKET_SUFFIX_RE.sub("", text)
+
+
+def _polymarket_market_url(slug: Any, event_slug: Any = None) -> str:
+    text = _slug_text(event_slug) or _event_slug_from_market_slug(slug)
+    if not text:
+        return ""
+    return f"https://polymarket.com/ko/event/{quote(text, safe='')}"
 
 
 def _position_payload(
@@ -1295,13 +1473,15 @@ def _position_payload(
     exit_fee_usdc = polymarket_taker_fee_usdc(shares, mark, fee_rate)
     value = shares * mark - exit_fee_usdc
     slug = metadata.get("slug") or latest_decision.get("slug") or ""
+    event_slug = metadata.get("event_slug") or latest_decision.get("event_slug") or ""
     forecast_c = _forecast_c_from_note(latest_decision.get("note", ""))
     return {
         "position_id": pos.get("position_id", ""),
         "market_id": pos.get("market_id", ""),
         "question": pos.get("question", ""),
         "slug": slug,
-        "market_url": _polymarket_market_url(slug),
+        "event_slug": _slug_text(event_slug) or _event_slug_from_market_slug(slug),
+        "market_url": _polymarket_market_url(slug, event_slug),
         "side": pos.get("side", ""),
         "entry_price": entry,
         "mark_price": mark,

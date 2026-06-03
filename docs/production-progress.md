@@ -35,6 +35,10 @@
   SKIP diagnostics. `Recent Trades`, realized rows, and realized equity points
   use cached `OPEN`/`CLOSE`/`SETTLED`/`PARTIAL_CLOSE` rows so late SKIP bursts
   do not hide older closed trades.
+- Dashboard operator labels are Korean, the right rail uses tabs for
+  `스캐너 정보` and `최근 체결`, realized PnL sorts by parsed close time newest
+  first, and open-position Polymarket links target the event slug rather than
+  condition-specific market slugs.
 - Closed binary markets can settle paper positions from exact Polymarket
   `outcomePrices` only when YES/NO prices are provably `1/0` or `0/1`.
   Ambiguous closed markets remain open until a clear winner is available.
