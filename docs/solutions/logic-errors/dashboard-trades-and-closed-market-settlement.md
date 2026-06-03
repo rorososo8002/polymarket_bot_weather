@@ -30,6 +30,11 @@ but had empty explicit winner fields. The paper broker only settled when fields
 such as `winningOutcome` were present, so clear closed markets could remain in
 `paper_state.json` as open positions.
 
+There was one more execution-path trap: the batch `run_cycle()` path checked
+settlements, but the actual long-running realtime WebSocket service path did
+not run settlement before starting its stream cycle. A settlement helper can be
+correct and still have no production effect if the service loop never calls it.
+
 ## Symptoms
 
 - `Recent Trades` showed `SKIP_CITY_CAP` cards instead of buy/close activity.
@@ -50,6 +55,8 @@ such as `winningOutcome` were present, so clear closed markets could remain in
   for paper performance.
 - Treating every `closed=True` market as settled would be unsafe. A closed
   market without a clear YES/NO winner should not be guessed.
+- Verifying only `run_cycle()` was incomplete because the deployed service uses
+  `run_realtime_forever()` for the long-running WebSocket path.
 
 ## Solution
 
@@ -77,6 +84,12 @@ anything else -> do not settle
 This fixed the closed-weather-market case without turning ambiguous prices into
 guessed paper PnL.
 
+The realtime runner now applies that same settlement check immediately after it
+hydrates held-position markets and before it starts WebSocket subscriptions.
+If a held market settles, the runner removes that market from the stream token
+set so the bot does not keep waiting for order-book snapshots from a resolved
+market.
+
 ## Why This Works
 
 `paper_trades.csv` is a source ledger, not a clean UI feed. The dashboard must
@@ -95,6 +108,8 @@ must keep failing closed.
   The panel should still show older `OPEN`/`CLOSE` activity.
 - When a closed market is still in `paper_state.json`, check both explicit
   winner fields and exact binary `outcomePrices`.
+- Test the actual long-running service path, not only a one-cycle helper path,
+  whenever a fix is meant to affect the live VPS bot.
 - Do not truncate runtime ledgers to fix UI problems. Fix the reader or cache.
 - Keep tests for both safe paths: exact `1/0` settlement should close, and
   ambiguous prices should leave the paper position open.

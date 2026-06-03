@@ -49,7 +49,9 @@ specialized reference docs.
   runners are rechecked; they are not risk exemptions.
 - Resolved paper settlement requires a proven binary winner. Explicit winner
   fields are preferred; exact closed-market `outcomePrices` of YES/NO `1/0` or
-  `0/1` are accepted. Ambiguous closed-market prices are not guessed.
+  `0/1` are accepted. Ambiguous closed-market prices are not guessed. The
+  realtime WebSocket runner applies this settlement check before starting each
+  stream cycle so old resolved markets do not stay subscribed as open risk.
 - Same-day nowcast is allowed only from explicitly mapped same-station official
   sources. Observed high-so-far is evidence only for daily-high markets, and
   observed low-so-far is evidence only for daily-low markets. Providers should
@@ -458,3 +460,8 @@ prices without `winningOutcome`; leaving those open makes the paper account
 look riskier and hides realized PnL. Consequence: clear closed markets settle
 in paper mode, while ambiguous prices such as `0.52/0.48` remain open until
 clear evidence appears.
+
+The realtime WebSocket runner must run this settlement check before opening a
+stream cycle and remove newly settled markets from the token subscription set.
+The batch `run_cycle()` path already checked settlements; the live service path
+needs the same behavior.

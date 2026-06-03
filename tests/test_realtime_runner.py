@@ -1,3 +1,6 @@
+import csv
+import json
+
 import pytest
 
 from weather_bot import live_paper_runner as runner_module
@@ -122,6 +125,96 @@ def test_stream_registry_reconstructs_open_position_when_market_hydration_fails(
     assert set(registry) == {"held"}
     assert registry["held"].yes_token_id is None
     assert registry["held"].no_token_id == "held-no"
+
+
+def test_realtime_forever_settles_resolved_open_positions_before_streaming(tmp_path, monkeypatch):
+    state_path = tmp_path / "state.json"
+    trades_path = tmp_path / "trades.csv"
+    decisions_path = tmp_path / "decisions.csv"
+    raw_path = tmp_path / "raw.jsonl"
+    portfolio_path = tmp_path / "portfolio.jsonl"
+    state_path.write_text(
+        json.dumps(
+            {
+                "cash_usd": 960.0,
+                "realized_pnl_usd": 0.0,
+                "positions": [
+                    {
+                        "position_id": "p1",
+                        "market_id": "held",
+                        "question": "Will the highest temperature in Seoul be 25째C or higher on May 28?",
+                        "token_id": "held-no",
+                        "side": "NO",
+                        "entry_price": 0.40,
+                        "shares": 100.0,
+                        "cost_usd": 40.0,
+                        "opened_at": "2026-05-27T16:21:30+00:00",
+                        "last_mark_price": 0.40,
+                        "last_unrealized_pnl": 0.0,
+                        "metadata": {"slug": "held"},
+                    }
+                ],
+                "stats": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    closed_market = RawMarket(
+        market_id="held",
+        question="Will the highest temperature in Seoul be 25째C or higher on May 28?",
+        slug="held",
+        active=False,
+        closed=True,
+        yes_token_id="held-yes",
+        no_token_id="held-no",
+        raw={
+            "outcomes": json.dumps(["Yes", "No"]),
+            "outcomePrices": json.dumps(["1", "0"]),
+        },
+    )
+
+    class FakeClient:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def discover_weather_markets(self, *, max_pages, page_size):
+            return []
+
+        def get_market(self, market_id):
+            assert market_id == "held"
+            return closed_market
+
+    class StopStream:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def start(self, token_ids):
+            assert list(token_ids) == []
+            raise RuntimeError("stop after settlement")
+
+    monkeypatch.setattr(runner_module, "PolymarketClient", FakeClient)
+    monkeypatch.setattr(runner_module, "OrderBookMarketStream", StopStream)
+
+    settings = Settings(
+        state_path=str(state_path),
+        trades_csv_path=str(trades_path),
+        decisions_csv_path=str(decisions_path),
+        raw_snapshots_path=str(raw_path),
+        portfolio_decisions_jsonl_path=str(portfolio_path),
+    )
+
+    with pytest.raises(RuntimeError, match="stop after settlement"):
+        runner_module.run_realtime_forever(settings)
+
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["positions"] == []
+    assert state["cash_usd"] == 960.0
+    with trades_path.open("r", newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    assert rows[-1]["action"] == "CLOSE"
+    assert rows[-1]["market_id"] == "held"
+    assert float(rows[-1]["cash_delta_or_pnl"]) == -40.0
+    assert "resolved winner=YES" in rows[-1]["reason"]
 
 
 def test_stream_status_phase_surfaces_dead_and_stale_websocket():

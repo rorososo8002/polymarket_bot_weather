@@ -38,6 +38,9 @@
 - Closed binary markets can settle paper positions from exact Polymarket
   `outcomePrices` only when YES/NO prices are provably `1/0` or `0/1`.
   Ambiguous closed markets remain open until a clear winner is available.
+- The realtime WebSocket runner now applies resolved settlement before starting
+  a stream cycle and removes newly settled old markets from the stream token
+  set, matching the batch `run_cycle()` settlement behavior.
 - Paper accounting is fee-aware end to end: `size_usd` is the all-in entry
   budget, closes add after-fee proceeds, and dashboard/liquidation values use
   after-exit-fee marks.
@@ -113,8 +116,9 @@
   remains paper-only.
 - Analysis/shadow-report CSV streaming is complete locally and remains
   paper-only.
-- Dashboard trade-history filtering and closed-market `outcomePrices`
-  settlement fallback are complete locally and remain paper-only.
+- Dashboard trade-history filtering, closed-market `outcomePrices` settlement
+  fallback, and realtime pre-stream settlement are complete locally and remain
+  paper-only.
 - Phase 0-7 changes have not been automatically deployed to the Oracle VPS.
 - Before any deployment, explain the change, benefit, risk, verification method,
   public exposure implications, and rollback method, then get explicit user

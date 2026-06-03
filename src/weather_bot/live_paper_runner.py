@@ -454,6 +454,19 @@ def _stream_market_registry(
     return market_by_id
 
 
+def _settle_resolved_positions_before_streaming(
+    broker: PaperBroker,
+    market_by_id: dict[str, RawMarket],
+) -> list[str]:
+    open_market_ids_before = {pos.market_id for pos in broker.state.positions}
+    messages = maybe_settle_resolved_positions(broker, market_by_id)
+    if messages:
+        open_market_ids_after = {pos.market_id for pos in broker.state.positions}
+        for market_id in open_market_ids_before - open_market_ids_after:
+            market_by_id.pop(market_id, None)
+    return messages
+
+
 def _market_event_key(market: RawMarket) -> str:
     if market.event_id:
         return market.event_id
@@ -806,6 +819,8 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
         event_groups = _group_weather_markets_by_event(discovered_markets)
         markets = [market for group in event_groups for market in group]
         market_by_id = _stream_market_registry(discovery_client, broker, markets)
+        for msg in _settle_resolved_positions_before_streaming(broker, market_by_id):
+            print(msg)
         stream_markets = list(market_by_id.values())
         coverage = _discovery_coverage(stream_markets)
         market_by_token = {
