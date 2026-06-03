@@ -548,7 +548,7 @@ class PaperBroker:
 
 
     def stats_summary(self) -> str:
-        """Return win-rate summary by temperature/precipitation market type."""
+        """Return win-rate summary by market type."""
         lines = ["[Win-Rate Stats By Market Type]"]
         for mt, st in sorted(self.state.stats.items()):
             total = st["wins"] + st["losses"]

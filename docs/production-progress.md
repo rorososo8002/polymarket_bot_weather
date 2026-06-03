@@ -13,6 +13,10 @@
   cities, refresh Open-Meteo forecasts every 30 minutes by default, use the
   Polymarket CLOB WebSocket stream, keep held token IDs subscribed, fail closed
   on stale or unsupported data, and preserve paper-only execution.
+- The paper strategy is now temperature-only. Rain, snow, precipitation, and
+  other non-temperature markets are excluded before forecast probability
+  calculation, so Open-Meteo requests use only temperature daily variables and
+  the realtime stream subscribes only temperature discovery tokens.
 - Station evidence is now gated separately from station registration: 40 cities
   have stored official Polymarket rule evidence and are trading-ready; Karachi
   is excluded because its found rule source conflicts with the current station
@@ -128,6 +132,9 @@
   and event-slug open-position links are deployed to the Oracle VPS. Remote
   focused tests passed with `67 passed`; remote full tests passed with
   `289 passed`.
+- Temperature-only market filtering is complete locally and remains paper-only:
+  disabled/out-of-scope market types are removed before probability estimation
+  rather than being scored and skipped later in the runner.
 - Oracle VPS runtime cleanup on 2026-06-03 UTC archived the 18GB
   `paper_raw_snapshots.jsonl` diagnostic ledger to
   `data/archive/paper_raw_snapshots.20260603T115820Z.jsonl.zst` at 136MB,

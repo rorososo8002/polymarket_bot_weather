@@ -60,14 +60,21 @@ def test_parse_upper_tail_temperature_bucket():
     assert parsed.threshold_original == 28
 
 
-def test_parse_precipitation_market():
+def test_rain_question_is_not_a_supported_temperature_market():
     parsed = parse_weather_question("Will it rain in Chicago on Friday?")
+
     assert parsed.city == "chicago"
-    assert parsed.variable == "precipitation"
+    assert parsed.variable == "temperature"
+    assert parsed.threshold_f is None
+    assert parsed.operator is None
+    assert "event condition not fully parsed" in parsed.note
 
 
-def test_parse_snow_market_for_verified_city():
+def test_snow_question_is_not_a_supported_temperature_market():
     parsed = parse_weather_question("Will Tokyo get any snow tomorrow?")
+
     assert parsed.city == "tokyo"
-    assert parsed.variable == "snow"
+    assert parsed.variable == "temperature"
+    assert parsed.threshold_f is None
+    assert parsed.operator is None
     assert parsed.date_hint == "tomorrow"

@@ -49,10 +49,6 @@ _RATIO_SETTINGS = (
     "model_error_margin",
     "resolution_error_margin",
     "settlement_runner_max_fraction",
-    "precip_min_net_edge",
-    "precip_entry_fraction",
-    "precip_min_confidence",
-    "precip_max_confidence",
     "probability_shrink_gamma",
 )
 
@@ -106,7 +102,6 @@ class Settings:
     dashboard_host: str = "127.0.0.1"
     dashboard_port: int = 8787
     dashboard_token: str = ""
-    enable_precipitation_markets: bool = False
 
     # Strategy thresholds
     min_net_edge: float = 0.05
@@ -154,13 +149,6 @@ class Settings:
     settlement_runner_enabled: bool = True
     settlement_runner_max_fraction: float = 0.25
     settlement_runner_min_ev_margin_usd: float = 0.0
-
-    # Precipitation-specific parameters. Rain and precipitation are harder to
-    # forecast than temperature, so the paper strategy requires stricter gates.
-    precip_min_net_edge: float = 0.08        # Higher than the 0.05 temperature edge floor.
-    precip_entry_fraction: float = 0.025     # Half-size entries versus the temperature default.
-    precip_min_confidence: float = 0.65      # Higher parser-confidence requirement than temperature.
-    precip_max_confidence: float = 0.70      # Precipitation-specific ensemble confidence ceiling.
 
     # Probability model controls
     probability_shrink_gamma: float = 0.65
@@ -332,7 +320,6 @@ def load_settings() -> Settings:
         dashboard_host=os.getenv("DASHBOARD_HOST", Settings.dashboard_host),
         dashboard_port=_int_env("DASHBOARD_PORT", Settings.dashboard_port),
         dashboard_token=os.getenv("DASHBOARD_TOKEN", Settings.dashboard_token).strip(),
-        enable_precipitation_markets=_bool_env("ENABLE_PRECIPITATION_MARKETS", Settings.enable_precipitation_markets),
         min_net_edge=_float_env("MIN_NET_EDGE", Settings.min_net_edge),
         exit_net_edge=_float_env("EXIT_NET_EDGE", Settings.exit_net_edge),
         probability_stop_drop_threshold=_float_env(
@@ -367,10 +354,6 @@ def load_settings() -> Settings:
             "SETTLEMENT_RUNNER_MIN_EV_MARGIN_USD",
             Settings.settlement_runner_min_ev_margin_usd,
         ),
-        precip_min_net_edge=_float_env("PRECIP_MIN_NET_EDGE", Settings.precip_min_net_edge),
-        precip_entry_fraction=_float_env("PRECIP_ENTRY_FRACTION", Settings.precip_entry_fraction),
-        precip_min_confidence=_float_env("PRECIP_MIN_CONFIDENCE", Settings.precip_min_confidence),
-        precip_max_confidence=_float_env("PRECIP_MAX_CONFIDENCE", Settings.precip_max_confidence),
         probability_shrink_gamma=_float_env("PROBABILITY_SHRINK_GAMMA", Settings.probability_shrink_gamma),
         default_temperature_sigma_f=_float_env("DEFAULT_TEMPERATURE_SIGMA_F", Settings.default_temperature_sigma_f),
         require_parse_for_trade=_bool_env("REQUIRE_PARSE_FOR_TRADE", Settings.require_parse_for_trade),

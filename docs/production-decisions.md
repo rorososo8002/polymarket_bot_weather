@@ -16,6 +16,9 @@ specialized reference docs.
   registered in `STATION_MAP` but excluded because the official rule evidence
   points to `OPKC` while the registry uses `OPMR`. Unknown, stale, malformed,
   unsupported, or suspicious data means skip.
+- Execution is temperature-only. Rain, snow, precipitation, and other
+  non-temperature markets are outside the paper strategy and are excluded
+  before forecast probability calculation.
 - Forecast rows must match the target market date exactly. Nearby forecast
   dates are not substitutes and produce `forecast-unavailable`.
 - Explicit `WEATHER_BIAS_JSON` files are part of the forecast evidence. Empty
@@ -504,3 +507,14 @@ while condition-specific suffixes such as `-25corbelow` and `-30corhigher`
 produce 404 pages. Consequence: new paper positions persist `RawMarket.event_slug`
 in metadata, and old positions remain linkable through conservative suffix
 normalization.
+
+### 2026-06-04: Keep Paper Execution Temperature-Only
+
+Decision: Remove rain, snow, precipitation, and other non-temperature markets
+from the paper strategy path. Why: those markets have too little useful
+liquidity for the current profitability experiment, and scoring them wastes
+forecast calls and adds SKIP noise. Consequence: discovery uses temperature
+category pages only, the parser treats non-temperature weather questions as
+unsupported, Open-Meteo requests only temperature daily variables, and the
+runner filters out-of-scope markets before probability estimation or WebSocket
+subscription.

@@ -76,7 +76,7 @@ class PolymarketClient:
 
     def _discover_weather_markets_from_category_pages(self) -> tuple[list[RawMarket], set[str]]:
         slugs: list[str] = []
-        for path in ("/weather/temperature", "/weather/high-temperature", "/weather/low-temperature", "/weather/precipitation"):
+        for path in ("/weather/temperature", "/weather/high-temperature", "/weather/low-temperature"):
             try:
                 slugs.extend(self._event_slugs_from_page(path))
             except (requests.HTTPError, RetryError, requests.RequestException):
@@ -137,7 +137,7 @@ class PolymarketClient:
         return bool(
             re.search(
                 r"(^|-)("
-                r"highest-temperature|lowest-temperature|temperature|rainfall|rain|precipitation|snowfall|snow"
+                r"highest-temperature|lowest-temperature|temperature"
                 r")($|-)",
                 slug,
             )
@@ -176,10 +176,8 @@ class PolymarketClient:
             return False
         if parsed.city and parsed.variable == "temperature" and parsed.threshold_f is not None and parsed.operator:
             return True
-        if parsed.city and parsed.variable in {"precipitation", "snow"}:
-            return True
         metadata = cls._flatten_metadata_text(row)
-        supported_metadata = re.search(r"\b(weather|climate|temperature|rainfall|snowfall|precipitation)\b", metadata)
+        supported_metadata = re.search(r"\b(weather|climate|temperature)\b", metadata)
         return bool(supported_metadata and parsed.city and parsed.confidence >= 0.70)
 
     def _parse_market(

@@ -164,31 +164,57 @@ def test_timezone_fallback_uses_winter_new_york_offset(monkeypatch):
     assert _today_for_timezone("America/New_York", winter_utc) == date(2026, 1, 1)
 
 
-def test_snow_market_uses_ensemble_snowfall_probability():
-    target = _today_for_timezone("America/New_York")
+def test_snow_market_is_unsupported_and_does_not_fetch_forecast():
+    calls = 0
 
-    class FakeEnsembleClient:
+    class ForbiddenEnsembleClient:
         models = "fake"
 
         def forecast_daily_ensemble(self, *_args, **_kwargs):
-            return {
-                "daily": {
-                    "time": [target.isoformat()],
-                    "snowfall_sum": [0.2],
-                    "snowfall_sum_member01": [0.0],
-                    "snowfall_sum_member02": [0.3],
-                    "snowfall_sum_member03": [0.4],
-                }
-            }
+            nonlocal calls
+            calls += 1
+            raise AssertionError("snow markets are outside the temperature-only strategy")
 
     signal = estimate_weather_probability(
         "Will NYC get any snow today?",
-        ensemble_client=FakeEnsembleClient(),
+        settings=Settings(),
+        ensemble_client=ForbiddenEnsembleClient(),
     )
 
-    assert signal.source == "open-meteo-ensemble-snow"
-    assert signal.p_true > 0.5
-    assert signal.confidence > 0.0
+    assert calls == 0
+    assert signal.source == "fallback"
+    assert signal.confidence == 0.0
+    assert "Unsupported" in signal.note
+
+
+def test_ensemble_client_requests_temperature_daily_variables_only(monkeypatch, tmp_path):
+    captured_daily_params: list[str] = []
+
+    class FakeResponse:
+        status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"daily": {"time": ["2026-06-01"], "temperature_2m_max": [80.0]}}
+
+    def fake_get(_url, *, params, timeout):
+        captured_daily_params.append(params["daily"])
+        return FakeResponse()
+
+    monkeypatch.setattr("weather_bot.probability.requests.get", fake_get)
+    client = OpenMeteoEnsembleClient.from_settings(
+        Settings(
+            state_path=str(tmp_path / "state.json"),
+        )
+    )
+
+    client.forecast_daily_ensemble(1.0, 2.0, timezone="UTC", forecast_days=3)
+
+    assert len(captured_daily_params) == 1
+    daily = captured_daily_params[0]
+    assert daily == "temperature_2m_max,temperature_2m_min"
 
 
 def test_ensemble_client_caches_identical_forecast_requests(monkeypatch):

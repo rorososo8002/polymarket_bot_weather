@@ -153,7 +153,6 @@ def test_load_settings_reads_dashboard_env(monkeypatch):
 
 
 def test_load_settings_reads_conservative_strategy_controls(monkeypatch):
-    monkeypatch.setenv("ENABLE_PRECIPITATION_MARKETS", "true")
     monkeypatch.setenv("PROBABILITY_STOP_DROP_THRESHOLD", "0.08")
     monkeypatch.setenv("ENTRY_MIN_EXPECTED_NET_RETURN_PCT", "0.07")
     monkeypatch.setenv("WEATHER_TAKER_FEE_RATE", "0.04")
@@ -163,7 +162,7 @@ def test_load_settings_reads_conservative_strategy_controls(monkeypatch):
 
     settings = load_settings()
 
-    assert settings.enable_precipitation_markets is True
+    assert not hasattr(settings, "enable_precipitation_markets")
     assert settings.probability_stop_drop_threshold == 0.08
     assert settings.entry_min_expected_net_return_pct == 0.07
     assert settings.weather_taker_fee_rate == 0.04

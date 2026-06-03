@@ -8,6 +8,9 @@ verified settlement stations and reproducible paper accounting.
 ## Non-Negotiable Rules
 
 - Register only the 41 cities in `src/weather_bot/stations.py`.
+- Execute the paper strategy only on temperature markets. Rain, snow,
+  precipitation, and other non-temperature markets are outside the current
+  experiment and are excluded before forecast probability calculation.
 - Treat `STATION_MAP` as the single source of truth for registered
   settlement-station metadata, not as proof that a city may be traded.
 - Treat `TRADING_READY_STATION_MAP` as the paper-trading execution universe. A
@@ -158,10 +161,10 @@ and `metadata` must be a JSON object when present.
 
 - A weather `event` is one city-date question; a `market` is one tradable
   binary result inside that event.
-- Discovery expands every supported binary market inside every trading-ready
-  weather-category event it finds. The 41-city station registry is not an
-  event-count cutoff, and the executable universe is the 40-city
-  `TRADING_READY_STATION_MAP` subset.
+- Discovery expands every supported temperature binary market inside every
+  trading-ready weather-category event it finds. The 41-city station registry
+  is not an event-count cutoff, and the executable universe is the 40-city
+  `TRADING_READY_STATION_MAP` subset after the temperature-only filter.
 - Temperature bucket probabilities use shared non-overlapping boundaries so one
   event's buckets sum to 100%.
 - Same-day nowcast may adjust probability only when the provider is explicitly
@@ -321,7 +324,6 @@ SHADOW_MAX_TRADES_PER_MARKET=100
 SHADOW_MAX_ROWS=1000
 SHADOW_MIN_TRADE_USDC=100.0
 SHADOW_COMPARE_WINDOW_SECONDS=86400
-ENABLE_PRECIPITATION_MARKETS=false
 REQUIRE_DATE_HINT_FOR_TRADE=true
 DASHBOARD_HOST=127.0.0.1
 DASHBOARD_PORT=8787

@@ -6,7 +6,8 @@ import pytest
 from weather_bot import live_paper_runner as runner_module
 from weather_bot.config import Settings
 from weather_bot.live_paper_runner import StreamBackedPolymarketClient, _stream_market_registry, run_forever
-from weather_bot.models import OrderBook, OrderLevel, PaperPosition, PaperState, RawMarket
+from weather_bot.models import OrderBook, OrderLevel, PaperPosition, PaperState, RawMarket, WeatherSignal
+from weather_bot.weather_client import parse_weather_question
 
 
 class FakeStream:
@@ -215,6 +216,63 @@ def test_realtime_forever_settles_resolved_open_positions_before_streaming(tmp_p
     assert rows[-1]["market_id"] == "held"
     assert float(rows[-1]["cash_delta_or_pnl"]) == -40.0
     assert "resolved winner=YES" in rows[-1]["reason"]
+
+
+def test_realtime_forever_filters_non_temperature_before_probability_estimator(tmp_path, monkeypatch):
+    rain_question = "Will it rain in Chicago on Friday?"
+    temperature_question = "Will NYC reach 90 F on May 25?"
+    markets = [
+        RawMarket("rain", rain_question, "rain", True, False, "rain-yes", "rain-no"),
+        RawMarket("temperature", temperature_question, "temperature", True, False, "temp-yes", "temp-no"),
+    ]
+    probability_calls: list[str] = []
+    stream_tokens: list[str] = []
+
+    class FakeClient:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def discover_weather_markets(self, *, max_pages, page_size):
+            return markets
+
+        def get_market(self, market_id):
+            return next(market for market in markets if market.market_id == market_id)
+
+    class StopStream:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def start(self, token_ids):
+            stream_tokens.extend(list(token_ids))
+            raise RuntimeError("stop after stream setup")
+
+        def stop(self):
+            return None
+
+        def health_snapshot(self):
+            return {"thread_alive": True, "stale": False}
+
+    def estimate(question, **_kwargs):
+        probability_calls.append(question)
+        return WeatherSignal(0.5, 0.9, "test", "test", parse_weather_question(question))
+
+    monkeypatch.setattr(runner_module, "PolymarketClient", FakeClient)
+    monkeypatch.setattr(runner_module, "OrderBookMarketStream", StopStream)
+    monkeypatch.setattr(runner_module, "estimate_weather_probability", estimate)
+
+    settings = Settings(
+        state_path=str(tmp_path / "state.json"),
+        trades_csv_path=str(tmp_path / "trades.csv"),
+        decisions_csv_path=str(tmp_path / "decisions.csv"),
+        raw_snapshots_path=str(tmp_path / "raw.jsonl"),
+        portfolio_decisions_jsonl_path=str(tmp_path / "portfolio.jsonl"),
+    )
+
+    with pytest.raises(RuntimeError, match="stop after stream setup"):
+        runner_module.run_realtime_forever(settings)
+
+    assert probability_calls == [temperature_question]
+    assert set(stream_tokens) == {"temp-yes", "temp-no"}
 
 
 def test_stream_status_phase_surfaces_dead_and_stale_websocket():

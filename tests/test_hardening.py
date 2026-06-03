@@ -133,6 +133,19 @@ def test_discovery_uses_polymarket_weather_category_event_slugs():
     assert [market.market_id for market in markets] == ["m1", "m2"]
 
 
+def test_category_discovery_uses_temperature_pages_only():
+    seen_paths: list[str] = []
+
+    class CategoryClient(FakePolymarketClient):
+        def _get_web_text(self, path: str) -> str:
+            seen_paths.append(path)
+            return ""
+
+    CategoryClient().discover_weather_markets()
+
+    assert seen_paths == ["/weather/temperature", "/weather/high-temperature", "/weather/low-temperature"]
+
+
 def test_category_discovery_does_not_stop_after_supported_city_count():
     event_count = 42
 
@@ -228,12 +241,21 @@ def test_discovery_keeps_supported_weather_question_shapes():
         "Will NYC reach 90 F on May 25?",
         "Will the highest temperature in Seoul be 27\u00b0C or higher on May 25?",
         "Will the highest temperature in London be 26\u00b0C or below on May 25?",
-        "Will it rain in NYC on Friday?",
-        "Will Chicago get more than 0.5 inches of rain on May 25?",
     ]
 
     for question in true_weather_questions:
         assert PolymarketClient._is_weather_market({"question": question})
+
+
+def test_discovery_rejects_non_temperature_weather_questions():
+    non_temperature_questions = [
+        "Will it rain in NYC on Friday?",
+        "Will Chicago get more than 0.5 inches of rain on May 25?",
+        "Will Tokyo get any snow tomorrow?",
+    ]
+
+    for question in non_temperature_questions:
+        assert not PolymarketClient._is_weather_market({"question": question})
 
 
 def test_discovery_keeps_exact_temperature_bucket():
@@ -888,7 +910,7 @@ def test_today_date_uses_station_timezone_not_local_machine_timezone():
 
 
 def test_weekday_date_hint_is_parsed():
-    parsed = parse_weather_question("Will it rain in Chicago on Friday?")
+    parsed = parse_weather_question("Will Chicago reach 90 F on Friday?")
 
     assert parsed.date_hint == "friday"
 

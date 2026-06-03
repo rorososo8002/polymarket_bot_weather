@@ -61,22 +61,6 @@ def _extract_temp_threshold(q: str) -> tuple[float | None, str, str | None, str]
     return threshold_raw, "F", operator, bucket
 
 
-def _extract_precip_threshold(q: str) -> float | None:
-    high_words = r"above|over|at least|exceed|exceeds|more than|greater than"
-    match = re.search(rf"(?:{high_words})\s*(\d+(?:\.\d+)?)\s*(mm|millimeter|inch|inches)\b", q, re.IGNORECASE)
-    if match:
-        value = float(match.group(1))
-        unit = match.group(2).lower()
-        return value * 25.4 if "inch" in unit else value
-
-    match = re.search(r"(\d+(?:\.\d+)?)\s*(mm|inch|inches)\s*(?:of\s+)?(?:rain|rainfall|precipitation)", q, re.IGNORECASE)
-    if match:
-        value = float(match.group(1))
-        unit = match.group(2).lower()
-        return value * 25.4 if "inch" in unit else value
-    return None
-
-
 def parse_weather_question(question: str) -> ParsedWeatherQuestion:
     q = question.lower()
     city = None
@@ -88,26 +72,16 @@ def parse_weather_question(question: str) -> ParsedWeatherQuestion:
             break
 
     variable = "temperature"
-    if re.search(r"\b(rain|rainfall|precip(?:itation)?|wet)\b", q) or "\uac15\uc218" in q or "\ube44" in q:
-        variable = "precipitation"
-    elif re.search(r"\b(snow|snowfall)\b", q) or "\ub208" in q:
-        variable = "snow"
-
     threshold_f = threshold_original = None
     threshold_unit: str = "UNKNOWN"
     operator = None
     temperature_metric = "max"
     temperature_bucket = "threshold"
-    if variable == "temperature":
-        threshold_f, threshold_unit, operator, temperature_bucket = _extract_temp_threshold(q)
-        if threshold_f is not None:
-            threshold_original = round((threshold_f - 32.0) * 5.0 / 9.0, 6) if threshold_unit == "C" else threshold_f
-        if re.search(r"\b(lowest|minimum|min(?:imum)?|overnight\s+low|low\s+temperature)\b", q):
-            temperature_metric = "min"
-
-    threshold_precip_mm: float | None = None
-    if variable in {"precipitation", "snow"}:
-        threshold_precip_mm = _extract_precip_threshold(q)
+    threshold_f, threshold_unit, operator, temperature_bucket = _extract_temp_threshold(q)
+    if threshold_f is not None:
+        threshold_original = round((threshold_f - 32.0) * 5.0 / 9.0, 6) if threshold_unit == "C" else threshold_f
+    if re.search(r"\b(lowest|minimum|min(?:imum)?|overnight\s+low|low\s+temperature)\b", q):
+        temperature_metric = "min"
 
     date_hint = None
     month_match = re.search(r"\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+\d{1,2}\b", q)
@@ -130,8 +104,6 @@ def parse_weather_question(question: str) -> ParsedWeatherQuestion:
         notes.append("city not parsed")
     if variable == "temperature" and threshold_f is not None and operator is not None:
         confidence += 0.45
-    elif variable in {"precipitation", "snow"}:
-        confidence += 0.35
     else:
         notes.append("event condition not fully parsed")
     if date_hint:
@@ -151,7 +123,6 @@ def parse_weather_question(question: str) -> ParsedWeatherQuestion:
         date_hint=date_hint,
         confidence=min(confidence, 0.90),
         note="; ".join(notes),
-        threshold_precip_mm=threshold_precip_mm,
         temperature_metric=temperature_metric,  # type: ignore[arg-type]
         temperature_bucket=temperature_bucket,  # type: ignore[arg-type]
     )

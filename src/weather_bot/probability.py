@@ -558,7 +558,7 @@ class OpenMeteoEnsembleClient:
         params = {
             "latitude": latitude,
             "longitude": longitude,
-            "daily": "temperature_2m_max,temperature_2m_min,precipitation_sum,snowfall_sum",
+            "daily": "temperature_2m_max,temperature_2m_min",
             "models": self.models,
             "temperature_unit": "fahrenheit",
             "timezone": timezone,
@@ -898,100 +898,8 @@ def _with_temperature_nowcast(
         nowcast=payload,
     )
 
-
-
 # ---------------------------------------------------------------------------
-# 5) Precipitation ensemble probability model
-# ---------------------------------------------------------------------------
-
-def _ensemble_precipitation_probability(
-    parsed: ParsedWeatherQuestion,
-    station: StationMeta,
-    settings: Settings,
-    ensemble_client: OpenMeteoEnsembleClient,
-) -> WeatherSignal:
-    """Ensemble-based precipitation probability model.
-
-    Strategy:
-    - Use precipitation_sum member data from the Open-Meteo ensemble API.
-    - Empirical vote: share of members at or above threshold_mm.
-    - Precipitation is not modeled as a normal distribution. Instead of a CDF
-      blend, use an 80% empirical vote plus a 20% base rate of 0.5.
-    - Cap confidence lower than the temperature model because precipitation is
-      harder to forecast.
-    """
-    target = _target_date_from_hint(parsed, timezone_name=station.timezone)
-    lead_days = _lead_time_days(target, timezone_name=station.timezone)
-    # If no parsed threshold exists, use 0.1 mm as the "any rain" default.
-    is_snow = parsed.variable == "snow"
-    threshold_amount = parsed.threshold_precip_mm if parsed.threshold_precip_mm is not None else 0.1
-    variable = "snowfall_sum" if is_snow else "precipitation_sum"
-    label = "snow" if is_snow else "precip"
-    unit = "cm" if is_snow else "mm"
-
-    data = ensemble_client.forecast_daily_ensemble(
-        station.latitude,
-        station.longitude,
-        timezone=station.timezone,
-        # Precipitation confidence drops sharply after seven days.
-        forecast_days=max(3, min(7, int(lead_days) + 2)),
-        city=parsed.city or "",
-        station_id=station.station_id,
-        station_name=station.station_name,
-    )
-    daily = data.get("daily") or {}
-    idx = _date_index(daily, target)
-    member_values = _extract_member_values(daily, variable, idx, bias_f=0.0)
-
-    if len(member_values) < 4:
-        raise ValueError(f"insufficient precipitation ensemble members: {len(member_values)}")
-
-    # Empirical vote: share of members at or above threshold_mm.
-    votes = [x >= threshold_amount for x in member_values]
-    empirical_p = sum(votes) / len(votes)
-
-    # Probability: 80% empirical vote + 20% base rate of 0.5.
-    # Precipitation is more uncertain than temperature, so pull harder toward the base rate.
-    p = clamp_probability(0.80 * empirical_p + 0.20 * 0.5)
-
-    # Confidence calculation.
-    station_bonus = 0.08
-    member_bonus = min(0.08, len(member_values) / 500.0)
-    # Lead-time penalty: precipitation confidence falls 6% per day after day two.
-    lead_penalty = min(0.25, max(0.0, lead_days - 1) * 0.06)
-    # Member agreement bonus: add confidence when at least 80% agree.
-    agreement = abs(empirical_p - 0.5)  # 0=split, 0.5=unanimous
-    agreement_bonus = min(0.10, agreement * 0.20)
-    base_confidence = parsed.confidence * 0.70   # Lower base confidence than temperature.
-    confidence = clamp_probability(
-        base_confidence + station_bonus + member_bonus + agreement_bonus - lead_penalty
-    )
-    # Hard cap for precipitation confidence.
-    confidence = min(settings.precip_max_confidence, confidence)
-
-    nonzero_count = sum(1 for v in member_values if v > 0.0)
-    mean_precip = _mean(member_values)
-    date_used = (daily.get("time") or [target.isoformat()])[
-        min(idx, max(0, len(daily.get("time") or []) - 1))
-    ]
-    note = (
-        f"{station.station_name} [{station.station_id}] target_date={date_used}; "
-        f"{label}>={threshold_amount:.1f}{unit}; members={len(member_values)}; "
-        f"vote={empirical_p:.3f}; nonzero={nonzero_count}; "
-        f"mean={mean_precip:.2f}{unit}; lead={lead_days:.0f}days; "
-        f"models={ensemble_client.models}. {station.note}"
-    )
-    return WeatherSignal(
-        p_true=clamp_probability(p),
-        confidence=confidence,
-        source="open-meteo-ensemble-snow" if is_snow else "open-meteo-ensemble-precipitation",
-        note=note,
-        parsed=parsed,
-    )
-
-
-# ---------------------------------------------------------------------------
-# 6) Main probability function used by live_paper_runner.py
+# 5) Main probability function used by live_paper_runner.py
 # ---------------------------------------------------------------------------
 
 def estimate_weather_probability(
@@ -1079,21 +987,6 @@ def estimate_weather_probability(
                 confidence=0.0,
                 source="forecast-unavailable",
                 note=f"Ensemble forecast unavailable: {exc}",
-                parsed=parsed,
-            )
-
-    if parsed.variable in {"precipitation", "snow"}:
-        # Improved ensemble-based precipitation probability model.
-        try:
-            return _ensemble_precipitation_probability(
-                parsed, station, settings, ensemble_client or OpenMeteoEnsembleClient.from_settings(settings)
-            )
-        except Exception as exc:  # noqa: BLE001
-            return WeatherSignal(
-                p_true=0.5,
-                confidence=0.0,
-                source="forecast-unavailable",
-                note=f"Ensemble precipitation forecast unavailable: {exc}",
                 parsed=parsed,
             )
 

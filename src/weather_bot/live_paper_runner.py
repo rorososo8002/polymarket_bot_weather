@@ -93,8 +93,6 @@ def position_size_usd(
 
 
 def _market_params(settings: Settings, market_type: str) -> tuple[float, float, float | None]:
-    if market_type == "precipitation":
-        return settings.precip_min_confidence, settings.precip_min_net_edge, settings.precip_entry_fraction
     return 0.50, settings.min_net_edge, None
 
 
@@ -280,10 +278,6 @@ def evaluate_market(
     """Evaluate live YES/NO books and return the best executable paper result."""
     min_confidence, min_edge, entry_fraction_override = _market_params(settings, market_type)
 
-    if market_type == "precipitation" and not settings.enable_precipitation_markets:
-        result = EdgeResult("SKIP", signal.p_true, None, -999.0, 0.0, 0.0, "precipitation/snow markets disabled by config")
-        return result, {}
-
     if settings.require_parse_for_trade and signal.confidence < min_confidence:
         result = EdgeResult("SKIP", signal.p_true, None, -999.0, 0.0, 0.0, f"confidence too low: {signal.confidence:.2f} < {min_confidence:.2f} [{market_type}]")
         return result, {}
@@ -373,10 +367,13 @@ def _event_portfolio_candidates(
     return executable or [PortfolioCandidate(market, signal, result, market_type)]
 
 
-def _market_type_from_signal(signal: WeatherSignal) -> str:
-    if signal.parsed is not None and signal.parsed.variable in {"precipitation", "snow"}:
-        return "precipitation"
-    return "temperature"
+def _is_temperature_market(market: RawMarket) -> bool:
+    parsed = parse_weather_question(market.question)
+    return parsed.variable == "temperature" and parsed.threshold_f is not None and parsed.operator is not None
+
+
+def _temperature_markets_only(markets: list[RawMarket]) -> list[RawMarket]:
+    return [market for market in markets if _is_temperature_market(market)]
 
 
 def _market_from_position(pos: PaperPosition) -> RawMarket:
@@ -414,6 +411,8 @@ def refresh_open_position_edges(
         if key in latest_edges:
             continue
         market = market_by_id.get(pos.market_id) or _market_from_position(pos)
+        if not _is_temperature_market(market):
+            continue
         signal = _call_probability_estimator(
             probability_estimator,
             pos.question,
@@ -421,7 +420,7 @@ def refresh_open_position_edges(
             ensemble_client=ensemble_client,
             observation_provider=observation_provider,
         )
-        market_type = str(pos.metadata.get("market_type") or _market_type_from_signal(signal))
+        market_type = "temperature"
         _best, per_side = evaluate_market(
             market,
             signal,
@@ -517,6 +516,7 @@ def run_cycle(settings: Settings | None = None) -> list[MarketDecision]:
         print("Check internet/DNS/VPN, then run live-paper-bot again.")
         return []
 
+    discovered_markets = _temperature_markets_only(discovered_markets)
     event_groups = _group_weather_markets_by_event(discovered_markets)
     markets = [market for group in event_groups for market in group]
     coverage = _discovery_coverage(markets)
@@ -557,7 +557,7 @@ def run_cycle(settings: Settings | None = None) -> list[MarketDecision]:
                     ensemble_client=ensemble_client,
                     observation_provider=observation_provider,
                 )
-                market_type = _market_type_from_signal(signal)
+                market_type = "temperature"
                 result, per_side = evaluate_market(
                     market,
                     signal,
@@ -817,12 +817,13 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
             max_pages=settings.discovery_max_pages,
             page_size=settings.discovery_page_size,
         )
+        discovered_markets = _temperature_markets_only(discovered_markets)
         event_groups = _group_weather_markets_by_event(discovered_markets)
         markets = [market for group in event_groups for market in group]
         market_by_id = _stream_market_registry(discovery_client, broker, markets)
         for msg in _settle_resolved_positions_before_streaming(broker, market_by_id):
             print(msg)
-        stream_markets = list(market_by_id.values())
+        stream_markets = _temperature_markets_only(list(market_by_id.values()))
         coverage = _discovery_coverage(stream_markets)
         market_by_token = {
             token_id: market
@@ -840,7 +841,7 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
                 observation_provider=observation_provider,
             )
             signals_by_market[market.market_id] = signal
-            market_types[market.market_id] = _market_type_from_signal(signal)
+            market_types[market.market_id] = "temperature"
 
         latest_edges: dict[tuple[str, str], EdgeResult] = {}
         update_lock = threading.RLock()
