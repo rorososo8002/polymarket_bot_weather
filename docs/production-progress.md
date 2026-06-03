@@ -63,6 +63,10 @@
 - Forecast target dates now require exact `daily.time` matches. If the target
   date is absent, the probability path returns `forecast-unavailable` with zero
   confidence instead of using a nearby forecast date.
+- Explicit `WEATHER_BIAS_JSON` forecast-bias files now fail closed. An empty
+  setting still uses neutral defaults, but a missing, unreadable, invalid JSON,
+  malformed, or non-numeric explicit file returns `forecast-unavailable` with
+  zero confidence instead of silently trading from uncorrected forecasts.
 - Polymarket market discovery no longer trusts `clobTokenIds` list order for
   YES/NO side mapping. It maps token IDs only from explicit `tokens` or
   `outcomes` labels and skips markets when the side cannot be proven.
@@ -94,6 +98,8 @@
 - Public-dashboard token-strength hardening is complete locally and remains
   paper-only.
 - Numeric Settings range validation is complete locally and remains paper-only.
+- Explicit forecast-bias file fail-closed hardening is complete locally and
+  remains paper-only.
 - Phase 0-7 changes have not been automatically deployed to the Oracle VPS.
 - Before any deployment, explain the change, benefit, risk, verification method,
   public exposure implications, and rollback method, then get explicit user

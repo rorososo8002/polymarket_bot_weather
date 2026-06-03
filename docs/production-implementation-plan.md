@@ -172,6 +172,12 @@ and `metadata` must be a JSON object when present.
   is not guessed. It remains forecast-only or fail-closed depending on context.
 - Missing exact target-date forecasts are not guessed. Nearby forecast dates
   are not strategy data for the target city-date market.
+- `WEATHER_BIAS_JSON` is optional forecast calibration data. If it is empty,
+  the bot uses conservative neutral defaults. If it is explicitly set, the file
+  must be readable valid JSON shaped as station IDs to numeric variable bias
+  values in Fahrenheit. Missing, invalid, malformed, or non-numeric explicit
+  bias files produce `forecast-unavailable` with zero confidence instead of an
+  uncorrected forecast.
 - Rule evidence is also fail-closed. If a city lacks a stored Polymarket rules
   URL/station phrase, or if the found rule source conflicts with the registry,
   discovery and probability estimation exclude it from paper trading.
@@ -284,6 +290,7 @@ ORDERBOOK_STREAM_STALE_SECONDS=60
 RUNNER_HEALTH_STATUS_INTERVAL_SECONDS=5
 FORECAST_REFRESH_INTERVAL_SECONDS=1800
 FORECAST_CACHE_TTL_SECONDS=1800
+WEATHER_BIAS_JSON=
 STATION_NOWCAST_ENABLED=true
 STATION_NOWCAST_CACHE_TTL_SECONDS=900
 STATION_NOWCAST_FRESHNESS_SECONDS=5400

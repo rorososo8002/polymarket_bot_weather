@@ -244,18 +244,69 @@ DEFAULT_BIAS_F: dict[str, dict[str, float]] = {
 }
 
 
-def load_bias_table() -> dict[str, dict[str, float]]:
-    table = {k: dict(v) for k, v in DEFAULT_BIAS_F.items()}
-    path = os.getenv("WEATHER_BIAS_JSON", "").strip()
-    if not path:
-        return table
+class WeatherBiasLoadError(ValueError):
+    """Raised when an explicit WEATHER_BIAS_JSON file cannot be trusted."""
+
+
+def _read_explicit_bias_json(path: str) -> dict[str, dict[str, float]]:
     try:
-        raw = json.loads(Path(path).read_text(encoding="utf-8"))
-        for station_id, variables in raw.items():
-            table.setdefault(station_id, {}).update({k: float(v) for k, v in variables.items()})
-    except Exception:
-        # Never crash trading loop because a calibration file is missing/bad.
-        pass
+        raw_text = Path(path).read_text(encoding="utf-8")
+    except OSError as exc:
+        raise WeatherBiasLoadError(
+            f"WEATHER_BIAS_JSON points to unreadable bias file {path}: {_safe_error(exc)}"
+        ) from exc
+
+    try:
+        raw = json.loads(raw_text)
+    except json.JSONDecodeError as exc:
+        raise WeatherBiasLoadError(
+            f"WEATHER_BIAS_JSON contains invalid JSON in {path}: {_safe_error(exc)}"
+        ) from exc
+
+    if not isinstance(raw, dict):
+        raise WeatherBiasLoadError(
+            f"WEATHER_BIAS_JSON file {path} must contain a JSON object mapping station IDs to variable bias values."
+        )
+
+    parsed: dict[str, dict[str, float]] = {}
+    for station_id, variables in raw.items():
+        if not isinstance(station_id, str) or not station_id.strip():
+            raise WeatherBiasLoadError(
+                f"WEATHER_BIAS_JSON file {path!r} contains an invalid station ID {station_id!r}."
+            )
+        if not isinstance(variables, dict):
+            raise WeatherBiasLoadError(
+                f"WEATHER_BIAS_JSON station {station_id!r} must map to a JSON object of variable bias values."
+            )
+        parsed_variables: dict[str, float] = {}
+        for variable, value in variables.items():
+            if not isinstance(variable, str) or not variable.strip():
+                raise WeatherBiasLoadError(
+                    f"WEATHER_BIAS_JSON station {station_id!r} contains an invalid variable name {variable!r}."
+                )
+            try:
+                numeric_value = float(value)
+            except (TypeError, ValueError) as exc:
+                raise WeatherBiasLoadError(
+                    f"WEATHER_BIAS_JSON station {station_id!r} variable {variable!r} must be numeric; got {value!r}."
+                ) from exc
+            if not math.isfinite(numeric_value):
+                raise WeatherBiasLoadError(
+                    f"WEATHER_BIAS_JSON station {station_id!r} variable {variable!r} must be finite; got {value!r}."
+                )
+            parsed_variables[variable] = numeric_value
+        parsed[station_id] = parsed_variables
+    return parsed
+
+
+def load_bias_table(path: str | Path | None = None) -> dict[str, dict[str, float]]:
+    table = {k: dict(v) for k, v in DEFAULT_BIAS_F.items()}
+    bias_path = os.getenv("WEATHER_BIAS_JSON", "").strip() if path is None else str(path).strip()
+    if not bias_path:
+        return table
+    raw = _read_explicit_bias_json(bias_path)
+    for station_id, variables in raw.items():
+        table.setdefault(station_id, {}).update(variables)
     return table
 
 
@@ -820,10 +871,10 @@ def estimate_weather_probability(
     if parsed.variable == "temperature" and parsed.threshold_f is not None and parsed.operator is not None:
         target = _target_date_from_hint(parsed, timezone_name=station.timezone)
         variable = _temperature_daily_variable(parsed)
-        bias_f = bias_for(station, variable)
-        ensemble_client = ensemble_client or OpenMeteoEnsembleClient.from_settings(settings)
 
         try:
+            bias_f = bias_for(station, variable)
+            ensemble_client = ensemble_client or OpenMeteoEnsembleClient.from_settings(settings)
             data = ensemble_client.forecast_daily_ensemble(
                 station.latitude,
                 station.longitude,

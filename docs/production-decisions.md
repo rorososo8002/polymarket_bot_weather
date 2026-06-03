@@ -18,6 +18,10 @@ specialized reference docs.
   unsupported, or suspicious data means skip.
 - Forecast rows must match the target market date exactly. Nearby forecast
   dates are not substitutes and produce `forecast-unavailable`.
+- Explicit `WEATHER_BIAS_JSON` files are part of the forecast evidence. Empty
+  means use neutral defaults, but a missing, unreadable, invalid JSON,
+  malformed, or non-numeric explicit file produces `forecast-unavailable` with
+  zero confidence instead of silently removing calibration.
 - Forecasts refresh every 30 minutes by default. Order books use the Polymarket
   CLOB WebSocket stream, and open-position token IDs stay subscribed until the
   position closes or settles.
@@ -404,3 +408,13 @@ order book is the paper bot's executable price calculator, and guessed price or
 size contaminates entry, exit, and liquidity evidence. Consequence: valid levels
 continue updating normally, while broken external stream rows cannot crash the
 cache or create guessed paper trades.
+
+### 2026-06-03: Fail Closed On Explicit Weather Bias Files
+
+Decision: Empty `WEATHER_BIAS_JSON` keeps the neutral default bias table, but an
+explicit file must be readable valid JSON with numeric Fahrenheit bias values.
+Why: a requested calibration file is part of the forecast evidence. If it is
+missing or broken, paper results no longer measure the intended calibrated
+strategy. Consequence: invalid explicit bias files surface as
+`forecast-unavailable` with zero confidence, so paper entries skip instead of
+quietly using uncorrected forecasts.

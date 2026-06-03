@@ -7,13 +7,17 @@ from weather_bot.config import Settings
 from weather_bot.probability import (
     OpenMeteoEnsembleClient,
     STATION_MAP,
+    WeatherBiasLoadError,
     _extract_member_values,
     _station_for,
     _today_for_timezone,
     blend_empirical_and_cdf,
     dynamic_sigma_f,
     estimate_weather_probability,
+    load_bias_table,
 )
+from weather_bot.live_paper_runner import evaluate_market
+from weather_bot.models import RawMarket
 from weather_bot.nowcast import StationNowcastObservation
 from weather_bot.weather_client import parse_weather_question
 
@@ -28,6 +32,90 @@ def test_extract_member_values_accepts_suffixed_keys_and_bias():
     }
     vals = _extract_member_values(daily, "temperature_2m_max", 0, bias_f=1.0)
     assert vals == [79.0, 81.0, 83.0]
+
+
+def test_bias_table_uses_defaults_when_weather_bias_json_is_empty(monkeypatch):
+    monkeypatch.delenv("WEATHER_BIAS_JSON", raising=False)
+
+    table = load_bias_table()
+
+    assert table["RKSI"]["temperature_2m_max"] == 0.0
+    assert table["RKSI"]["temperature_2m_min"] == 0.0
+
+
+def test_bias_table_rejects_missing_explicit_weather_bias_json(monkeypatch, tmp_path):
+    missing_path = tmp_path / "missing-bias.json"
+    monkeypatch.setenv("WEATHER_BIAS_JSON", str(missing_path))
+
+    with pytest.raises(WeatherBiasLoadError, match="WEATHER_BIAS_JSON") as exc_info:
+        load_bias_table()
+
+    assert str(missing_path) in str(exc_info.value)
+
+
+def test_bias_table_rejects_broken_explicit_weather_bias_json(monkeypatch, tmp_path):
+    bias_path = tmp_path / "broken-bias.json"
+    bias_path.write_text("{", encoding="utf-8")
+    monkeypatch.setenv("WEATHER_BIAS_JSON", str(bias_path))
+
+    with pytest.raises(WeatherBiasLoadError, match="WEATHER_BIAS_JSON") as exc_info:
+        load_bias_table()
+
+    assert "invalid JSON" in str(exc_info.value)
+
+
+def test_bias_table_loads_valid_explicit_weather_bias_json(monkeypatch, tmp_path):
+    bias_path = tmp_path / "bias.json"
+    bias_path.write_text('{"RKSI": {"temperature_2m_max": 1.25}}', encoding="utf-8")
+    monkeypatch.setenv("WEATHER_BIAS_JSON", str(bias_path))
+
+    table = load_bias_table()
+
+    assert table["RKSI"]["temperature_2m_max"] == 1.25
+    assert table["RKSI"]["temperature_2m_min"] == 0.0
+
+
+def test_broken_explicit_bias_table_blocks_temperature_entry(monkeypatch, tmp_path):
+    bias_path = tmp_path / "broken-bias.json"
+    bias_path.write_text("{", encoding="utf-8")
+    monkeypatch.setenv("WEATHER_BIAS_JSON", str(bias_path))
+    question = "Will the highest temperature in Seoul be 27C or higher today?"
+
+    class ForbiddenEnsembleClient:
+        models = "fake"
+
+        def forecast_daily_ensemble(self, *_args, **_kwargs):
+            raise AssertionError("broken bias table should block before forecast fetch")
+
+    signal = estimate_weather_probability(
+        question,
+        settings=Settings(),
+        ensemble_client=ForbiddenEnsembleClient(),
+    )
+
+    assert signal.source == "forecast-unavailable"
+    assert signal.confidence == 0.0
+    assert "WEATHER_BIAS_JSON" in signal.note
+
+    market = RawMarket("m1", question, "m1", True, False, "yes-token", "no-token")
+
+    class ForbiddenOrderBookClient:
+        def get_order_book(self, _token_id):
+            raise AssertionError("forecast-unavailable signal should skip before order books")
+
+    result, per_side = evaluate_market(
+        market,
+        signal,
+        ForbiddenOrderBookClient(),
+        Settings(),
+        100.0,
+        "temperature",
+    )
+
+    assert result.side == "SKIP"
+    assert result.size_usd == 0.0
+    assert per_side == {}
+    assert "confidence too low" in result.reason
 
 
 def test_station_map_contains_only_verified_polymarket_cities():
