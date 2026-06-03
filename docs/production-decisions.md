@@ -60,6 +60,11 @@ specialized reference docs.
   stop startup before binding to a public host.
 - Boolean environment settings accept only explicit true/false aliases. Unknown
   values fail startup instead of silently disabling safety switches.
+- WebSocket health is based on executable order-book depth, not indicative
+  `best_bid_ask` reference quotes. Stale/dead WebSocket health blocks new
+  entries, pauses held-position exit evaluation with explicit
+  `HOLD_STREAM_UNHEALTHY` logs, and may rebuild a dead WebSocket receiver
+  without switching to REST polling.
 
 ## Compact Ledger
 
@@ -355,3 +360,15 @@ Decision: Boolean environment variables accept only explicit true aliases
 silently disable a safety switch if every unknown value becomes `False`.
 Consequence: startup raises `ValueError` for unknown boolean values, so the
 operator must fix the setting before paper trading continues.
+
+### 2026-06-03: Use Executable Depth Health For WebSocket Safety
+
+Decision: WebSocket freshness is refreshed only by executable depth messages:
+`book` snapshots and `price_change` level updates. `best_bid_ask` remains an
+indicative reference quote and does not refresh the usable order-book clock.
+Why: `best_bid_ask` does not carry executable size, so treating it as fresh
+depth can let the bot value entries or exits from stale bid/ask levels.
+Consequence: stale/dead WebSocket health blocks new entries, records the
+operator-readable reason in runner status and decision snapshots, pauses
+held-position exit evaluation with `HOLD_STREAM_UNHEALTHY`, and can rebuild a
+dead WebSocket receiver thread without falling back to REST polling.

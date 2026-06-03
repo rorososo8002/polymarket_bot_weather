@@ -174,6 +174,31 @@ def test_entry_bankroll_fails_closed_when_held_position_cannot_be_priced(tmp_pat
     assert "missing-token" in snapshot.reason
 
 
+def test_entry_bankroll_explains_unhealthy_websocket_stream(tmp_path):
+    broker = PaperBroker(settings(tmp_path))
+    client = FakeClient()
+
+    class StaleStream:
+        def health_snapshot(self):
+            return {
+                "thread_alive": True,
+                "stale": True,
+                "status_reason": "last executable order book depth age 61s exceeds 60s",
+                "reconnect_count": 2,
+                "last_error": "socket closed",
+            }
+
+    client.stream = StaleStream()
+
+    snapshot = available_entry_bankroll(broker, client)
+
+    assert snapshot.usable is False
+    assert snapshot.entry_bankroll == 0.0
+    assert "websocket order book stream unhealthy" in snapshot.reason
+    assert "last executable order book depth age 61s exceeds 60s" in snapshot.reason
+    assert "new entries blocked" in snapshot.reason
+
+
 def test_evaluate_market_skips_when_entry_bankroll_is_zero(tmp_path):
     cfg = settings(
         tmp_path,

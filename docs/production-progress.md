@@ -57,8 +57,15 @@
 - Polymarket market discovery no longer trusts `clobTokenIds` list order for
   YES/NO side mapping. It maps token IDs only from explicit `tokens` or
   `outcomes` labels and skips markets when the side cannot be proven.
-- Local verification after the latest boolean config fail-closed fix: focused
-  config pytest and full `pytest -q`. Full result: `243 passed`.
+- Realtime order-book health now treats only `book` snapshots and
+  `price_change` updates as executable depth refreshes. Indicative
+  `best_bid_ask` messages keep reference prices only, stale/dead WebSocket
+  health blocks new entries, held-position exit evaluation pauses with
+  `HOLD_STREAM_UNHEALTHY`, and a dead receiver thread can rebuild a WebSocket
+  stream without falling back to REST polling.
+- Local verification after the latest WebSocket stale/dead hardening: focused
+  realtime/portfolio/hardening/dashboard pytest and full `pytest -q`. Full
+  result: `248 passed`.
 
 ## In Progress
 
@@ -69,6 +76,8 @@
 - Station-rule evidence hardening is complete locally and remains paper-only.
 - YES/NO token mapping hardening is complete locally and remains paper-only.
 - Boolean config parsing hardening is complete locally and remains paper-only.
+- WebSocket stale/dead order-book hardening is complete locally and remains
+  paper-only.
 - Phase 0-7 changes have not been automatically deployed to the Oracle VPS.
 - Before any deployment, explain the change, benefit, risk, verification method,
   public exposure implications, and rollback method, then get explicit user

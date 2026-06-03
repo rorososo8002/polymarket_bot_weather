@@ -108,18 +108,46 @@ def adaptive_event_cap_fraction(entry_bankroll: float, settings: Settings) -> fl
     return settings.max_event_date_exposure_fraction
 
 
+def websocket_pricing_block_reason(health: dict[str, Any]) -> str | None:
+    if not health:
+        return None
+    thread_alive = bool(health.get("thread_alive"))
+    stale = bool(health.get("stale"))
+    if thread_alive and not stale:
+        return None
+
+    if health.get("status_reason"):
+        detail = str(health["status_reason"])
+    elif not thread_alive:
+        detail = "websocket receiver thread is not running"
+    else:
+        detail = "websocket executable order book depth is stale"
+
+    reconnect_count = health.get("reconnect_count")
+    if reconnect_count not in (None, "", 0, "0") and "reconnects=" not in detail:
+        detail = f"{detail}; reconnects={reconnect_count}"
+    last_error = str(health.get("last_error") or "")
+    if last_error and "last_error=" not in detail:
+        detail = f"{detail}; last_error={last_error}"
+    return (
+        f"websocket order book stream unhealthy: {detail}; "
+        "new entries blocked and held-position exit evaluation paused until executable WebSocket depth resumes"
+    )
+
+
 def available_entry_bankroll(broker: PaperBroker, client: PolymarketClient) -> EntryBankrollSnapshot:
     cost_basis_bankroll = broker.current_bankroll_before_entry()
     stream = getattr(client, "stream", None)
     if stream is not None and hasattr(stream, "health_snapshot"):
         health = stream.health_snapshot()
-        if not health.get("thread_alive") or health.get("stale"):
+        block_reason = websocket_pricing_block_reason(health)
+        if block_reason:
             return EntryBankrollSnapshot(
                 False,
                 cost_basis_bankroll,
                 0.0,
                 0.0,
-                "websocket order book is unavailable or stale",
+                block_reason,
             )
 
     liquidation_bankroll = broker.state.cash_usd

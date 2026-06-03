@@ -25,15 +25,15 @@ def _safe_error(exc: BaseException) -> str:
     return f"{type(exc).__name__}: {text}"[:240]
 
 
-def _contains_orderbook_price_update(message: str | dict[str, Any] | list[dict[str, Any]]) -> bool:
+def _contains_executable_orderbook_update(message: str | dict[str, Any] | list[dict[str, Any]]) -> bool:
     if isinstance(message, str):
         try:
             message = json.loads(message)
         except json.JSONDecodeError:
             return False
     if isinstance(message, list):
-        return any(_contains_orderbook_price_update(item) for item in message)
-    return str(message.get("event_type") or "") in {"book", "price_change", "best_bid_ask"}
+        return any(_contains_executable_orderbook_update(item) for item in message)
+    return str(message.get("event_type") or "") in {"book", "price_change"}
 
 
 def market_subscription_message(asset_ids: Iterable[str]) -> dict[str, Any]:
@@ -277,7 +277,7 @@ class OrderBookMarketStream:
         with self._health_lock:
             self._last_message_at = now
         updated = self.cache.apply_message(message)
-        if updated and _contains_orderbook_price_update(message):
+        if updated and _contains_executable_orderbook_update(message):
             with self._health_lock:
                 self._last_book_at = now
         if updated and self.on_update is not None:
@@ -303,6 +303,12 @@ class OrderBookMarketStream:
         stale_book_age_seconds: int | None = None
         if last_book_at is not None:
             stale_book_age_seconds = max(0, int((current_time - last_book_at).total_seconds()))
+        last_message_age_seconds: int | None = None
+        if last_message_at is not None:
+            last_message_age_seconds = max(0, int((current_time - last_message_at).total_seconds()))
+        seconds_since_start: int | None = None
+        if started_at is not None:
+            seconds_since_start = max(0, int((current_time - started_at).total_seconds()))
         waiting_too_long = bool(
             last_book_at is None
             and started_at is not None
@@ -313,14 +319,36 @@ class OrderBookMarketStream:
             or waiting_too_long
             or (stale_book_age_seconds is not None and stale_book_age_seconds > self.stale_seconds)
         )
+        if not thread_alive:
+            status_reason = "websocket receiver thread is not running"
+        elif waiting_too_long:
+            status_reason = (
+                f"no executable order book depth received for {seconds_since_start}s "
+                f"after stream start; threshold={self.stale_seconds}s"
+            )
+        elif stale_book_age_seconds is not None and stale_book_age_seconds > self.stale_seconds:
+            status_reason = (
+                f"last executable order book depth age {stale_book_age_seconds}s "
+                f"exceeds {self.stale_seconds}s"
+            )
+        elif last_book_at is None:
+            status_reason = "waiting for executable order book depth"
+        else:
+            status_reason = f"executable order book depth fresh; age={stale_book_age_seconds}s"
+        if reconnect_count:
+            status_reason = f"{status_reason}; reconnects={reconnect_count}"
+        if last_error and stale:
+            status_reason = f"{status_reason}; last_error={last_error}"
         return {
             "thread_alive": thread_alive,
             "reconnect_count": reconnect_count,
             "last_message_at": _utc_iso(last_message_at) if last_message_at else None,
+            "last_message_age_seconds": last_message_age_seconds,
             "last_book_at": _utc_iso(last_book_at) if last_book_at else None,
             "stale_book_age_seconds": stale_book_age_seconds,
             "stale": stale,
             "last_error": last_error,
+            "status_reason": status_reason,
         }
 
     def _run_forever(self) -> None:

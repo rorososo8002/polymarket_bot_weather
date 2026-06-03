@@ -21,7 +21,7 @@ from .edge import (
 )
 from .exit_policy import assess_exit, build_entry_plan, conservative_settlement_value, side_true_probability
 from .polymarket_client import PolymarketClient
-from .portfolio import adaptive_event_cap_fraction, is_complementary_with_positions
+from .portfolio import adaptive_event_cap_fraction, is_complementary_with_positions, websocket_pricing_block_reason
 
 
 def utc_now_iso() -> str:
@@ -715,6 +715,34 @@ def maybe_close_positions(
        happened.
     """
     messages: list[str] = []
+    stream = getattr(client, "stream", None)
+    if stream is not None and hasattr(stream, "health_snapshot"):
+        health = stream.health_snapshot()
+        stream_block_reason = websocket_pricing_block_reason(health)
+        if stream_block_reason:
+            for pos in list(broker.state.positions):
+                market = _market_for_position(pos, market_by_id.get(pos.market_id))
+                market_type = str(pos.metadata.get("market_type", "temperature"))
+                mark = pos.last_mark_price if pos.last_mark_price is not None else pos.entry_price
+                pos.metadata["last_exit_assessment"] = stream_block_reason
+                pos.metadata["last_websocket_health"] = health
+                broker.log_trade(
+                    "HOLD_STREAM_UNHEALTHY",
+                    market,
+                    pos.side,
+                    pos.token_id,
+                    pos.shares,
+                    mark,
+                    0.0,
+                    stream_block_reason,
+                    market_type,
+                )
+                messages.append(
+                    f"HOLD_STREAM_UNHEALTHY {pos.side} shares={pos.shares:.2f} "
+                    f"mark={mark:.4f} reason={stream_block_reason}"
+                )
+            broker.save_state()
+            return messages
     now = datetime.now(timezone.utc)
     for pos in list(broker.state.positions):
         try:

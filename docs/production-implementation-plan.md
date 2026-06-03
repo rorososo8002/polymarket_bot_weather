@@ -30,6 +30,12 @@ verified settlement stations and reproducible paper accounting.
   which is NO, skip the market instead of trusting list order.
 - Treat `best_bid_ask` stream messages as indicative best-price references
   only. They must not create or move executable bid/ask depth.
+- Treat WebSocket freshness as executable-depth freshness. Only `book`
+  snapshots and `price_change` updates refresh the usable order-book clock;
+  indicative `best_bid_ask` messages do not. Stale or dead WebSocket health
+  blocks new entries and pauses held-position exit evaluation until executable
+  WebSocket depth resumes. A dead receiver thread may rebuild the WebSocket
+  stream, but the bot must not silently fall back to REST polling.
 - Persist `paper_state.json` through an atomic temp-file replace. Existing
   corrupt, unreadable, structurally invalid, or position-field invalid paper
   state fails closed instead of starting a new default account.

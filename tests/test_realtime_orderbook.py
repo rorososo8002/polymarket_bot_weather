@@ -208,3 +208,37 @@ def test_market_stream_does_not_treat_trade_only_event_as_orderbook_refresh(monk
 
     assert health["last_message_at"] == "2026-06-01T00:00:00+00:00"
     assert health["last_book_at"] is None
+
+
+def test_market_stream_does_not_treat_best_bid_ask_as_executable_book_refresh(monkeypatch):
+    now = [datetime(2026, 6, 1, 0, 0, tzinfo=timezone.utc)]
+
+    class AliveThread:
+        def is_alive(self):
+            return True
+
+    monkeypatch.setattr("weather_bot.realtime_orderbook._utc_now", lambda: now[0])
+    stream = OrderBookMarketStream(stale_seconds=60)
+    stream._thread = AliveThread()
+    stream._started_at = now[0]
+
+    stream.apply_message(
+        {
+            "event_type": "best_bid_ask",
+            "asset_id": "yes",
+            "best_bid": "0.41",
+            "best_ask": "0.44",
+        }
+    )
+    health = stream.health_snapshot()
+
+    assert health["last_message_at"] == "2026-06-01T00:00:00+00:00"
+    assert health["last_book_at"] is None
+    assert health["stale"] is False
+    assert "waiting for executable order book depth" in health["status_reason"]
+
+    now[0] += timedelta(seconds=61)
+    stale = stream.health_snapshot()
+
+    assert stale["stale"] is True
+    assert "no executable order book depth received" in stale["status_reason"]

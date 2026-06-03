@@ -26,6 +26,7 @@ from .portfolio import (
     PortfolioCandidate,
     available_entry_bankroll,
     select_event_portfolio,
+    websocket_pricing_block_reason,
 )
 from .probability import OpenMeteoEnsembleClient, estimate_weather_probability
 from .realtime_orderbook import OrderBookMarketStream
@@ -710,6 +711,10 @@ def _evaluate_realtime_update(
     market_types: dict[str, str],
     latest_edges: dict[tuple[str, str], EdgeResult],
 ) -> None:
+    websocket_health: dict[str, object] = {}
+    stream = getattr(client, "stream", None)
+    if stream is not None and hasattr(stream, "health_snapshot"):
+        websocket_health = stream.health_snapshot()
     touched_events = {
         _market_event_key(market_by_token[token_id])
         for token_id in updated_token_ids
@@ -750,6 +755,8 @@ def _evaluate_realtime_update(
                         "note": signal.note,
                         "nowcast": signal.nowcast,
                     },
+                    "entry_bankroll": entry_bankroll.__dict__,
+                    "websocket": websocket_health,
                     "per_side": {side: edge.__dict__ for side, edge in per_side.items()},
                 },
             )
@@ -767,11 +774,19 @@ def _stream_status_phase(
     city_count: int,
 ) -> tuple[str, str]:
     coverage = f"{token_count} tokens across {market_count} markets, {event_count} events, {city_count} cities"
+    block_reason = websocket_pricing_block_reason(websocket_health)
+    recovery = ""
+    if block_reason:
+        recovery = f": {block_reason}"
     if not websocket_health.get("thread_alive"):
-        return "stream_error", f"websocket thread stopped; {coverage}"
+        return "stream_error", f"websocket thread stopped{recovery}; {coverage}"
     if websocket_health.get("stale"):
-        return "stream_stale", f"websocket order book stale; {coverage}"
+        return "stream_stale", f"websocket order book stale{recovery}; {coverage}"
     return "streaming", f"websocket streaming {coverage}"
+
+
+def _stream_should_rebuild(websocket_health: dict[str, object], *, token_count: int) -> bool:
+    return token_count > 0 and not bool(websocket_health.get("thread_alive"))
 
 
 def run_realtime_forever(settings: Settings | None = None) -> None:
@@ -830,18 +845,21 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
                         latest_edges,
                     )
 
-        stream = OrderBookMarketStream(
-            settings.orderbook_stream_url,
-            on_update=on_update,
-            heartbeat_seconds=settings.orderbook_stream_heartbeat_seconds,
-            reconnect_seconds=settings.orderbook_stream_reconnect_seconds,
-            stale_seconds=settings.orderbook_stream_stale_seconds,
-        )
+        def build_stream() -> OrderBookMarketStream:
+            return OrderBookMarketStream(
+                settings.orderbook_stream_url,
+                on_update=on_update,
+                heartbeat_seconds=settings.orderbook_stream_heartbeat_seconds,
+                reconnect_seconds=settings.orderbook_stream_reconnect_seconds,
+                stale_seconds=settings.orderbook_stream_stale_seconds,
+            )
+
+        stream = build_stream()
         stream_holder["client"] = StreamBackedPolymarketClient(settings.gamma_base, settings.clob_base, stream)
         stream.start(market_by_token.keys())
 
-        def write_stream_status() -> None:
-            websocket_health = stream.health_snapshot()
+        def write_stream_status(websocket_health: dict[str, object] | None = None) -> None:
+            websocket_health = websocket_health or stream.health_snapshot()
             phase, message = _stream_status_phase(
                 websocket_health,
                 token_count=len(market_by_token),
@@ -873,6 +891,16 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
                 elapsed = (now - refresh_started_at).total_seconds()
                 if elapsed >= settings.forecast_refresh_interval_seconds:
                     break
+                websocket_health = stream.health_snapshot()
+                if _stream_should_rebuild(websocket_health, token_count=len(market_by_token)):
+                    write_stream_status(websocket_health)
+                    print(f"STREAM REBUILD {websocket_health.get('status_reason') or 'websocket thread stopped'}")
+                    with update_lock:
+                        stream.stop()
+                        stream = build_stream()
+                        stream_holder["client"] = StreamBackedPolymarketClient(settings.gamma_base, settings.clob_base, stream)
+                        stream.start(market_by_token.keys())
+                    status_updated_at = now
                 if (now - status_updated_at).total_seconds() >= settings.runner_health_status_interval_seconds:
                     write_stream_status()
                     status_updated_at = now

@@ -148,6 +148,35 @@ def test_stream_status_phase_surfaces_dead_and_stale_websocket():
     assert "stale" in stale_message
 
 
+def test_stream_status_phase_includes_operator_recovery_context():
+    phase, message = runner_module._stream_status_phase(
+        {
+            "thread_alive": True,
+            "stale": True,
+            "status_reason": "last executable order book depth age 61s exceeds 60s",
+            "reconnect_count": 2,
+        },
+        token_count=82,
+        market_count=41,
+        event_count=7,
+        city_count=4,
+    )
+
+    assert phase == "stream_stale"
+    assert "last executable order book depth age 61s exceeds 60s" in message
+    assert "new entries blocked" in message
+    assert "held-position exit evaluation paused" in message
+    assert "reconnects=2" in message
+
+
+def test_stream_rebuild_is_only_for_dead_websocket_threads():
+    assert hasattr(runner_module, "_stream_should_rebuild")
+
+    assert runner_module._stream_should_rebuild({"thread_alive": False}, token_count=2) is True
+    assert runner_module._stream_should_rebuild({"thread_alive": True, "stale": True}, token_count=2) is False
+    assert runner_module._stream_should_rebuild({"thread_alive": False}, token_count=0) is False
+
+
 def test_runner_groups_binary_submarkets_by_weather_event_and_reports_coverage():
     markets = [
         RawMarket(
