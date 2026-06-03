@@ -1,11 +1,69 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from math import isfinite
 import os
 from dotenv import load_dotenv
 
 _TRUE_ENV_VALUES = {"1", "true", "yes", "y", "on"}
 _FALSE_ENV_VALUES = {"0", "false", "no", "n", "off"}
+
+_POSITIVE_NUMBER_SETTINGS = (
+    "orderbook_stream_heartbeat_seconds",
+    "orderbook_stream_reconnect_seconds",
+    "orderbook_stream_stale_seconds",
+    "runner_health_status_interval_seconds",
+    "forecast_refresh_interval_seconds",
+    "forecast_cache_ttl_seconds",
+    "station_nowcast_cache_ttl_seconds",
+    "station_nowcast_freshness_seconds",
+    "bankroll_usd",
+    "min_order_usd",
+    "event_date_exposure_transition_usd",
+    "max_holding_hours",
+    "default_temperature_sigma_f",
+)
+
+_POSITIVE_INTEGER_SETTINGS = (
+    "discovery_max_pages",
+    "discovery_page_size",
+    "max_event_portfolio_legs",
+)
+
+_RATIO_SETTINGS = (
+    "min_net_edge",
+    "exit_net_edge",
+    "probability_stop_drop_threshold",
+    "min_profit_pct",
+    "take_profit_to_fair_ratio",
+    "overheat_margin",
+    "edge_fade_max_loss_pct",
+    "entry_fraction",
+    "fractional_kelly",
+    "max_single_market_fraction",
+    "max_total_exposure_fraction",
+    "max_city_exposure_fraction",
+    "max_event_date_exposure_fraction",
+    "large_bankroll_event_date_exposure_fraction",
+    "entry_min_expected_net_return_pct",
+    "model_error_margin",
+    "resolution_error_margin",
+    "settlement_runner_max_fraction",
+    "precip_min_net_edge",
+    "precip_entry_fraction",
+    "precip_min_confidence",
+    "precip_max_confidence",
+    "probability_shrink_gamma",
+)
+
+_NON_NEGATIVE_NUMBER_SETTINGS = (
+    "settlement_runner_min_ev_margin_usd",
+    "shadow_min_trade_usdc",
+)
+
+_RATE_SETTINGS = (
+    "weather_taker_fee_rate",
+)
 
 
 @dataclass(frozen=True)
@@ -113,19 +171,88 @@ class Settings:
     # Probability stop compares the current side probability with the entry-side
     # probability. YES uses p_true; NO uses 1 - p_true.
 
+    def __post_init__(self) -> None:
+        _validate_positive_numbers(self, _POSITIVE_NUMBER_SETTINGS)
+        _validate_positive_integers(self, _POSITIVE_INTEGER_SETTINGS)
+        _validate_ratios(self, _RATIO_SETTINGS)
+        _validate_non_negative_numbers(self, _NON_NEGATIVE_NUMBER_SETTINGS)
+        _validate_rates(self, _RATE_SETTINGS)
+
+
+def _setting_display_name(field_name: str) -> str:
+    return field_name.upper()
+
+
+def _finite_number(settings: Settings, field_name: str) -> float:
+    value = getattr(settings, field_name)
+    if isinstance(value, bool):
+        raise ValueError(f"{_setting_display_name(field_name)} must be a number; got {value!r}")
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{_setting_display_name(field_name)} must be a number; got {value!r}") from exc
+    if not isfinite(numeric):
+        raise ValueError(f"{_setting_display_name(field_name)} must be finite; got {value!r}")
+    return numeric
+
+
+def _validate_positive_numbers(settings: Settings, field_names: tuple[str, ...]) -> None:
+    for field_name in field_names:
+        value = _finite_number(settings, field_name)
+        if value <= 0:
+            raise ValueError(f"{_setting_display_name(field_name)} must be greater than 0; got {value!r}")
+
+
+def _validate_positive_integers(settings: Settings, field_names: tuple[str, ...]) -> None:
+    for field_name in field_names:
+        value = getattr(settings, field_name)
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError(f"{_setting_display_name(field_name)} must be a positive integer; got {value!r}")
+        if value <= 0:
+            raise ValueError(f"{_setting_display_name(field_name)} must be greater than 0; got {value!r}")
+
+
+def _validate_ratios(settings: Settings, field_names: tuple[str, ...]) -> None:
+    for field_name in field_names:
+        value = _finite_number(settings, field_name)
+        if value < 0 or value > 1:
+            raise ValueError(f"{_setting_display_name(field_name)} must be between 0 and 1; got {value!r}")
+
+
+def _validate_non_negative_numbers(settings: Settings, field_names: tuple[str, ...]) -> None:
+    for field_name in field_names:
+        value = _finite_number(settings, field_name)
+        if value < 0:
+            raise ValueError(f"{_setting_display_name(field_name)} must be at least 0; got {value!r}")
+
+
+def _validate_rates(settings: Settings, field_names: tuple[str, ...]) -> None:
+    for field_name in field_names:
+        value = _finite_number(settings, field_name)
+        if value < 0:
+            raise ValueError(f"{_setting_display_name(field_name)} must be at least 0; got {value!r}")
+        if value > 1:
+            raise ValueError(f"{_setting_display_name(field_name)} must be at most 1; got {value!r}")
+
 
 def _float_env(name: str, default: float) -> float:
     raw = os.getenv(name)
     if raw is None or raw.strip() == "":
         return default
-    return float(raw)
+    try:
+        return float(raw)
+    except ValueError as exc:
+        raise ValueError(f"Invalid numeric value for {name}. Expected a number; got {raw!r}") from exc
 
 
 def _int_env(name: str, default: int) -> int:
     raw = os.getenv(name)
     if raw is None or raw.strip() == "":
         return default
-    return int(raw)
+    try:
+        return int(raw)
+    except ValueError as exc:
+        raise ValueError(f"Invalid integer value for {name}. Expected an integer; got {raw!r}") from exc
 
 
 def _bool_env(name: str, default: bool) -> bool:

@@ -55,11 +55,17 @@ specialized reference docs.
 - `paper_state.json` is an account book. Saves use atomic temp-file replacement,
   and existing corrupt, structurally invalid, or position-field invalid paper
   state fails closed instead of resetting.
-- Public dashboard exposure requires a real `DASHBOARD_TOKEN`; empty,
-  placeholder, basic, default, change-me style, or other obvious example tokens
-  stop startup before binding to a public host.
+- Public dashboard exposure requires a real `DASHBOARD_TOKEN` with at least 32
+  characters; empty, short, placeholder, basic, default, change-me, secret,
+  token, password, abc, 123456, or other obvious example tokens stop startup
+  before binding to a public host.
 - Boolean environment settings accept only explicit true/false aliases. Unknown
   values fail startup instead of silently disabling safety switches.
+- Numeric Settings values for paper money, risk caps, fees, and runtime
+  freshness windows fail closed at startup when they are outside safe ranges.
+  This prevents negative orders, negative fees, impossible exposure fractions,
+  fee rates above 1, or zero timing windows from contaminating
+  paper-performance evidence.
 - WebSocket health is based on executable order-book depth, not indicative
   `best_bid_ask` reference quotes. Stale/dead WebSocket health blocks new
   entries, pauses held-position exit evaluation with explicit
@@ -297,12 +303,13 @@ uses `OPMR`.
 ### 2026-06-03: Fail Closed On Public Dashboard Without A Real Token
 
 Decision: When `DASHBOARD_HOST` is not `127.0.0.1` or `localhost`, the
-dashboard refuses to start unless `DASHBOARD_TOKEN` is non-empty and
-non-placeholder. Why: binding to `0.0.0.0` exposes the service to anyone who can
-reach the URL, including automated scanners. Consequence: copied example files,
-empty tokens, or basic/default/change-me tokens fail before the HTTP server
-binds; local development can still run without a token, and query-token values
-are redacted from dashboard logs.
+dashboard refuses to start unless `DASHBOARD_TOKEN` is at least 32 characters
+and not an obvious weak example value. Why: binding to `0.0.0.0` or `::`
+exposes the service to anyone who can reach the URL, including automated
+scanners. Consequence: copied example files, empty, short, placeholder,
+basic/default/change-me, secret, token, password, abc, or 123456 values fail
+before the HTTP server binds; local development can still run without a token,
+and query-token values are redacted from dashboard logs.
 
 ### 2026-06-03: Do Not Use Observed High Nowcast For Daily-Low Markets
 
@@ -360,6 +367,17 @@ Decision: Boolean environment variables accept only explicit true aliases
 silently disable a safety switch if every unknown value becomes `False`.
 Consequence: startup raises `ValueError` for unknown boolean values, so the
 operator must fix the setting before paper trading continues.
+
+### 2026-06-03: Reject Unsafe Numeric Settings At Startup
+
+Decision: `Settings` validates paper-money, risk-fraction, fee-rate, and
+runtime-cadence values as soon as settings are created. Why: a negative minimum
+order, negative fee rate, fee rate above 1, exposure cap above 1, zero
+bankroll, zero cache TTL, zero forecast refresh interval, or zero stale window
+makes the paper account measure a broken experiment instead of strategy
+performance. Consequence: invalid env values raise `ValueError` with the
+setting name and range rule before the live paper runner, dashboard payload, or
+paper broker can start from bad assumptions.
 
 ### 2026-06-03: Use Executable Depth Health For WebSocket Safety
 

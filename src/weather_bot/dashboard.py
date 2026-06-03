@@ -22,7 +22,13 @@ _DECISION_TOTALS_CACHE: dict[str, dict[str, Any]] = {}
 _TRADE_TOTALS_LOCK = threading.Lock()
 _TRADE_TOTALS_CACHE: dict[str, dict[str, Any]] = {}
 MAX_INITIAL_DECISION_TOTAL_SCAN_BYTES = 128 * 1024 * 1024
-LOCAL_DASHBOARD_HOSTS = {"127.0.0.1", "localhost"}
+MIN_PUBLIC_DASHBOARD_TOKEN_LENGTH = 32
+LOCAL_DASHBOARD_HOSTS = {"127.0.0.1", "localhost", "::1"}
+WEAK_DASHBOARD_TOKEN_VALUES = {
+    "abc",
+    "123456",
+    "token",
+}
 WEAK_DASHBOARD_TOKEN_MARKERS = (
     "placeholder",
     "basic",
@@ -41,21 +47,42 @@ def _is_public_dashboard_host(host: str) -> bool:
     return (host or "").strip().lower() not in LOCAL_DASHBOARD_HOSTS
 
 
+def _normalized_dashboard_token(token: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", (token or "").strip().lower())
+
+
+def _dashboard_token_security_errors(token: str) -> list[str]:
+    stripped = (token or "").strip()
+    normalized = _normalized_dashboard_token(stripped)
+    errors: list[str] = []
+    if not stripped:
+        errors.append("DASHBOARD_TOKEN is missing")
+    if len(stripped) < MIN_PUBLIC_DASHBOARD_TOKEN_LENGTH:
+        errors.append(
+            f"DASHBOARD_TOKEN must be at least {MIN_PUBLIC_DASHBOARD_TOKEN_LENGTH} characters"
+        )
+    if (
+        normalized in WEAK_DASHBOARD_TOKEN_VALUES
+        or any(marker in normalized for marker in WEAK_DASHBOARD_TOKEN_MARKERS)
+    ):
+        errors.append("DASHBOARD_TOKEN looks like a placeholder or example value")
+    return errors
+
+
 def _is_weak_dashboard_token(token: str) -> bool:
-    normalized = re.sub(r"[^a-z0-9]+", "", (token or "").strip().lower())
-    if not normalized:
-        return True
-    return any(marker in normalized for marker in WEAK_DASHBOARD_TOKEN_MARKERS)
+    return bool(_dashboard_token_security_errors(token))
 
 
 def _validate_dashboard_startup_security(host: str, token: str) -> None:
     if not _is_public_dashboard_host(host):
         return
-    if _is_weak_dashboard_token(token):
+    errors = _dashboard_token_security_errors(token)
+    if errors:
         raise ValueError(
-            "DASHBOARD_TOKEN must be set to a non-placeholder value when "
-            "DASHBOARD_HOST is public. Use DASHBOARD_HOST=127.0.0.1 for "
-            "local-only development."
+            f"DASHBOARD_TOKEN is too weak for public DASHBOARD_HOST={host}: "
+            + "; ".join(errors)
+            + ". Generate a long random token and keep it private, or use "
+            "DASHBOARD_HOST=127.0.0.1 for local-only development."
         )
 
 

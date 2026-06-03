@@ -39,11 +39,15 @@ verified settlement stations and reproducible paper accounting.
 - Persist `paper_state.json` through an atomic temp-file replace. Existing
   corrupt, unreadable, structurally invalid, or position-field invalid paper
   state fails closed instead of starting a new default account.
-- Public dashboard binding fails closed unless `DASHBOARD_TOKEN` is set to a
-  non-placeholder value. Local development on `127.0.0.1` or `localhost` may
-  still run without a token.
+- Public dashboard binding fails closed unless `DASHBOARD_TOKEN` is at least
+  32 characters and not an obvious weak example value. Local development on
+  `127.0.0.1` or `localhost` may still run without a token.
 - Boolean environment settings accept only explicit true/false aliases. Unknown
   values fail startup with `ValueError` instead of silently becoming `False`.
+- Numeric paper-money, risk, fee, and runtime-cadence settings are validated
+  when `Settings` is created. Money amounts and runtime intervals that must
+  represent a real positive budget/window must be greater than 0; risk
+  fractions and the weather taker fee rate must stay between 0 and 1.
 - Keep execution paper-only unless live trading is explicitly approved through
   `docs/live-trading-safety-plan.md`.
 
@@ -299,8 +303,9 @@ DASHBOARD_TOKEN=
 pagination. They do not reduce the registered 41-city station registry, the
 40-city trading-ready execution subset, or normal category discovery.
 
-For public dashboard hosts such as `0.0.0.0`, `DASHBOARD_TOKEN` must be a real
-long random value rather than empty, placeholder, basic, default, or change-me
+For public dashboard hosts such as `0.0.0.0` or `::`, `DASHBOARD_TOKEN` must be
+a real random value with at least 32 characters rather than empty, short,
+placeholder, basic, default, change-me, secret, token, password, abc, or 123456
 text. Query-string tokens are accepted for first-load compatibility but are
 redacted from logs, stored in browser local storage, and subsequent API polling
 uses the `X-Dashboard-Token` header.

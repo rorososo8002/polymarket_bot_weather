@@ -940,7 +940,7 @@ def test_run_cycle_reuses_one_ensemble_client_for_all_markets(monkeypatch, tmp_p
         trades_csv_path=str(tmp_path / "trades.csv"),
         decisions_csv_path=str(tmp_path / "decisions.csv"),
         raw_snapshots_path=str(tmp_path / "raw.jsonl"),
-        min_net_edge=999.0,
+        min_net_edge=1.0,
         require_date_hint_for_trade=False,
     )
     markets = [

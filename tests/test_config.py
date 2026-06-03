@@ -58,6 +58,87 @@ def test_default_city_date_portfolio_caps_shrink_after_one_thousand_dollars():
     assert Settings.min_order_usd == 10.0
 
 
+def test_default_settings_pass_numeric_range_validation():
+    settings = Settings()
+
+    assert settings.bankroll_usd == 100.0
+    assert settings.min_order_usd == 10.0
+    assert settings.max_total_exposure_fraction == 0.90
+
+
+@pytest.mark.parametrize(
+    ("override", "expected_name", "expected_reason"),
+    [
+        ({"min_order_usd": -1.0}, "MIN_ORDER_USD", "greater than 0"),
+        ({"weather_taker_fee_rate": -0.01}, "WEATHER_TAKER_FEE_RATE", "at least 0"),
+        ({"max_total_exposure_fraction": 2.0}, "MAX_TOTAL_EXPOSURE_FRACTION", "between 0 and 1"),
+    ],
+)
+def test_settings_rejects_invalid_numeric_safety_ranges(override, expected_name, expected_reason):
+    with pytest.raises(ValueError, match=expected_name) as exc_info:
+        Settings(**override)
+
+    assert expected_reason in str(exc_info.value)
+
+
+def test_settings_rejects_fee_rate_above_one():
+    with pytest.raises(ValueError, match="WEATHER_TAKER_FEE_RATE") as exc_info:
+        Settings(weather_taker_fee_rate=1.5)
+
+    assert "at most 1" in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    ("override", "expected_name"),
+    [
+        ({"bankroll_usd": 0.0}, "BANKROLL_USD"),
+        ({"forecast_refresh_interval_seconds": 0}, "FORECAST_REFRESH_INTERVAL_SECONDS"),
+        ({"forecast_cache_ttl_seconds": 0}, "FORECAST_CACHE_TTL_SECONDS"),
+        ({"orderbook_stream_stale_seconds": 0}, "ORDERBOOK_STREAM_STALE_SECONDS"),
+    ],
+)
+def test_settings_rejects_zero_for_positive_runtime_safety_values(override, expected_name):
+    with pytest.raises(ValueError, match=expected_name) as exc_info:
+        Settings(**override)
+
+    assert "greater than 0" in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    ("env_name", "raw_value", "expected_reason"),
+    [
+        ("MIN_ORDER_USD", "-1", "greater than 0"),
+        ("WEATHER_TAKER_FEE_RATE", "-0.01", "at least 0"),
+        ("MAX_TOTAL_EXPOSURE_FRACTION", "2.0", "between 0 and 1"),
+    ],
+)
+def test_load_settings_rejects_invalid_numeric_env_at_startup(monkeypatch, env_name, raw_value, expected_reason):
+    monkeypatch.setenv(env_name, raw_value)
+
+    with pytest.raises(ValueError, match=env_name) as exc_info:
+        load_settings()
+
+    assert expected_reason in str(exc_info.value)
+
+
+def test_load_settings_rejects_fee_rate_above_one(monkeypatch):
+    monkeypatch.setenv("WEATHER_TAKER_FEE_RATE", "1.5")
+
+    with pytest.raises(ValueError, match="WEATHER_TAKER_FEE_RATE") as exc_info:
+        load_settings()
+
+    assert "at most 1" in str(exc_info.value)
+
+
+def test_load_settings_rejects_non_numeric_env_with_setting_name(monkeypatch):
+    monkeypatch.setenv("MIN_ORDER_USD", "not-a-number")
+
+    with pytest.raises(ValueError, match="MIN_ORDER_USD") as exc_info:
+        load_settings()
+
+    assert "number" in str(exc_info.value)
+
+
 def test_load_settings_reads_dashboard_env(monkeypatch):
     monkeypatch.setenv("DASHBOARD_HOST", "0.0.0.0")
     monkeypatch.setenv("DASHBOARD_PORT", "9999")

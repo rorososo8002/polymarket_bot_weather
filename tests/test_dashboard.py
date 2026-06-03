@@ -94,16 +94,29 @@ def test_dashboard_refuses_public_host_with_empty_token(monkeypatch):
         dashboard_module.run_dashboard(Settings(dashboard_host="0.0.0.0", dashboard_token=""))
 
 
-@pytest.mark.parametrize("token", ["placeholder", "basic", "default", "change-me-long-random-token"])
-def test_dashboard_refuses_public_host_with_placeholder_token(monkeypatch, token):
+@pytest.mark.parametrize("token", ["abc", "123456", "short-dashboard-token"])
+def test_dashboard_refuses_public_host_with_short_token(monkeypatch, token):
     class FailingServer:
         def __init__(self, *_args, **_kwargs):
             raise AssertionError("public dashboard must refuse startup before binding")
 
     monkeypatch.setattr(dashboard_module, "ThreadingHTTPServer", FailingServer)
 
-    with pytest.raises(ValueError, match="DASHBOARD_TOKEN"):
+    with pytest.raises(ValueError, match="at least 32 characters"):
         dashboard_module.run_dashboard(Settings(dashboard_host="0.0.0.0", dashboard_token=token))
+
+
+@pytest.mark.parametrize("host", ["0.0.0.0", "::"])
+@pytest.mark.parametrize("token", ["placeholder", "changeme", "secret", "token", "password"])
+def test_dashboard_refuses_public_host_with_placeholder_token(monkeypatch, host, token):
+    class FailingServer:
+        def __init__(self, *_args, **_kwargs):
+            raise AssertionError("public dashboard must refuse startup before binding")
+
+    monkeypatch.setattr(dashboard_module, "ThreadingHTTPServer", FailingServer)
+
+    with pytest.raises(ValueError, match="placeholder"):
+        dashboard_module.run_dashboard(Settings(dashboard_host=host, dashboard_token=token))
 
 
 def test_dashboard_allows_localhost_without_token(monkeypatch):
@@ -130,7 +143,32 @@ def test_dashboard_allows_localhost_without_token(monkeypatch):
     assert created_servers[0].dashboard_token == ""
 
 
-def test_dashboard_allows_public_host_with_real_token(monkeypatch):
+def test_dashboard_allows_127_localhost_without_token(monkeypatch):
+    class Served(Exception):
+        pass
+
+    created_servers = []
+
+    class DummyServer:
+        def __init__(self, server_address, handler_cls):
+            self.server_address = server_address
+            self.handler_cls = handler_cls
+            created_servers.append(self)
+
+        def serve_forever(self):
+            raise Served
+
+    monkeypatch.setattr(dashboard_module, "ThreadingHTTPServer", DummyServer)
+
+    with pytest.raises(Served):
+        dashboard_module.run_dashboard(Settings(dashboard_host="127.0.0.1", dashboard_token=""))
+
+    assert created_servers[0].server_address == ("127.0.0.1", 8787)
+    assert created_servers[0].dashboard_token == ""
+
+
+@pytest.mark.parametrize("host", ["0.0.0.0", "::"])
+def test_dashboard_allows_public_host_with_real_token(monkeypatch, host):
     class Served(Exception):
         pass
 
@@ -149,11 +187,11 @@ def test_dashboard_allows_public_host_with_real_token(monkeypatch):
 
     with pytest.raises(Served):
         dashboard_module.run_dashboard(
-            Settings(dashboard_host="0.0.0.0", dashboard_token="real-random-dashboard-token-2026")
+            Settings(dashboard_host=host, dashboard_token="a8f4c2d9e1b7a6c5f0d3e9b1a2c4d6f8")
         )
 
-    assert created_servers[0].server_address == ("0.0.0.0", 8787)
-    assert created_servers[0].dashboard_token == "real-random-dashboard-token-2026"
+    assert created_servers[0].server_address == (host, 8787)
+    assert created_servers[0].dashboard_token == "a8f4c2d9e1b7a6c5f0d3e9b1a2c4d6f8"
 
 
 def test_dashboard_logs_redact_url_query_token(capsys):

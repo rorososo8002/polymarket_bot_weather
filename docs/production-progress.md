@@ -30,13 +30,18 @@
   `os.replace`, and existing corrupt, structurally invalid, or position-field
   invalid `paper_state.json` fails closed instead of starting from a fresh
   default account.
-- Dashboard startup fails closed on public hosts such as `0.0.0.0` unless
-  `DASHBOARD_TOKEN` is non-empty and non-placeholder. Browser API polling uses
-  the token header instead of a token query string, and server logs redact
-  token query values.
+- Dashboard startup fails closed on public hosts such as `0.0.0.0` or `::`
+  unless `DASHBOARD_TOKEN` is at least 32 characters and not an obvious weak
+  example value. Browser API polling uses the token header instead of a token
+  query string, and server logs redact token query values.
 - Boolean environment settings now accept only explicit true/false aliases.
   Unknown values raise `ValueError` at startup so safety switches such as
   `REQUIRE_DATE_HINT_FOR_TRADE` cannot be disabled by typos.
+- Numeric money, risk, fee, and runtime-cadence settings now fail closed at
+  `Settings` startup. Negative minimum orders, negative weather taker fees,
+  weather taker fees above 1, exposure fractions above 1, zero bankroll, zero
+  cache TTL, zero forecast refresh interval, and zero WebSocket stale windows
+  raise operator-readable `ValueError` messages before paper trading can start.
 - Entry candidate `size_shares` now means the actual fee-adjusted shares bought
   with the all-in `size_usd` budget, so portfolio scenarios and broker-opened
   paper positions use the same held quantity.
@@ -63,9 +68,8 @@
   health blocks new entries, held-position exit evaluation pauses with
   `HOLD_STREAM_UNHEALTHY`, and a dead receiver thread can rebuild a WebSocket
   stream without falling back to REST polling.
-- Local verification after the latest WebSocket stale/dead hardening: focused
-  realtime/portfolio/hardening/dashboard pytest and full `pytest -q`. Full
-  result: `248 passed`.
+- Local verification after numeric Settings range validation: focused
+  config/deployment pytest and full `pytest -q`. Full result: `273 passed`.
 
 ## In Progress
 
@@ -78,6 +82,9 @@
 - Boolean config parsing hardening is complete locally and remains paper-only.
 - WebSocket stale/dead order-book hardening is complete locally and remains
   paper-only.
+- Public-dashboard token-strength hardening is complete locally and remains
+  paper-only.
+- Numeric Settings range validation is complete locally and remains paper-only.
 - Phase 0-7 changes have not been automatically deployed to the Oracle VPS.
 - Before any deployment, explain the change, benefit, risk, verification method,
   public exposure implications, and rollback method, then get explicit user
@@ -102,8 +109,9 @@
    `docs/codex/known-good-commands.md`.
 7. Do not bypass `TRADING_READY_STATION_MAP`; `STATION_MAP` is the registry,
    while trading-ready means official rule evidence is stored and conflict-free.
-8. For any public dashboard exposure, set a real long random `DASHBOARD_TOKEN`.
-   Empty, placeholder, basic, default, or change-me style tokens now stop the
+8. For any public dashboard exposure, set a real random `DASHBOARD_TOKEN` with
+   at least 32 characters. Empty, short, placeholder, basic, default,
+   change-me, secret, token, password, abc, or 123456 style values stop the
    dashboard before it binds to the public host.
 9. Build or run a paper-only SKIP diagnosis report before treating repeated
    SKIPs as strategy failure. Use `docs/codex/skip-diagnostics.md` to classify
