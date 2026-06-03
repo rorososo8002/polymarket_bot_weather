@@ -12,6 +12,9 @@ Read this file only when issuing SSH or SCP commands from Windows PowerShell.
 - Treat nested quoting from Windows PowerShell into `ssh` as fragile by default.
 - Do not start with complex inline remote snippets such as `ssh ... "python3 -c '...'"`, especially when they contain quotes, parentheses, braces, semicolons, CSV headers, JSON, or shell substitutions.
 - Prefer simple remote commands first: `systemctl`, `cat`, `tail`, `head`, `stat`, `ls`, and `date` with minimal quoting.
+- Prefer serial SSH checks when they reuse the same Windows private key. Parallel
+  probes can produce intermittent `Identity file ... not accessible:
+  Permission denied` errors in managed execution environments.
 - For CSV, JSON, or log analysis, pull a bounded amount of output into a local PowerShell variable and parse locally. For example, use `tail -n 2000 remote.csv | ConvertFrom-Csv` instead of complex remote `python -c`.
 - For `journalctl` over SSH, avoid relative time arguments containing spaces. Use forms such as `--since=-30min`, `--since=-2h`, or an ISO timestamp without shell-ambiguous quoting.
 - Dashboard request logs may contain `DASHBOARD_TOKEN` in URLs. Aggregate counts or redact `token=...` before printing log lines.

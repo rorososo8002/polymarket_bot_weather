@@ -39,7 +39,10 @@ Use the private key only as an SSH identity file. Never open, print, copy, or
 commit its contents. Do not use the adjacent `.pub` file.
 
 ```powershell
-$key = (Get-ChildItem -LiteralPath 'C:\Users\wpdla\Documents' -Recurse -Filter 'ssh-key-2026-05-25.key' | Select-Object -First 1).FullName
+$key = 'C:\Users\wpdla\Documents\오라클ssh\ssh-key-2026-05-25.key'
+if (-not (Test-Path -LiteralPath $key)) {
+  $key = (Get-ChildItem -LiteralPath 'C:\Users\wpdla\Documents' -Recurse -Filter 'ssh-key-2026-05-25.key' -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
+}
 $oracle = 'ubuntu@140.245.69.242'
 Test-Path -LiteralPath $key
 ssh -i $key $oracle date
@@ -48,6 +51,7 @@ ssh -i $key $oracle date
 `Test-Path` checks whether the key file exists without reading its contents.
 The `date` command is a harmless first SSH request. If this fails, inspect that
 error before attempting longer remote commands.
+Run repeated SSH checks serially when they use this same Windows identity file.
 
 ## Oracle Interactive Session
 
@@ -55,7 +59,10 @@ Use an interactive session for multi-step remote work. This avoids fragile
 nested quoting between Windows PowerShell and the remote Linux shell.
 
 ```powershell
-$key = (Get-ChildItem -LiteralPath 'C:\Users\wpdla\Documents' -Recurse -Filter 'ssh-key-2026-05-25.key' | Select-Object -First 1).FullName
+$key = 'C:\Users\wpdla\Documents\오라클ssh\ssh-key-2026-05-25.key'
+if (-not (Test-Path -LiteralPath $key)) {
+  $key = (Get-ChildItem -LiteralPath 'C:\Users\wpdla\Documents' -Recurse -Filter 'ssh-key-2026-05-25.key' -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
+}
 $oracle = 'ubuntu@140.245.69.242'
 ssh -i $key $oracle
 ```
@@ -72,7 +79,10 @@ sudo -u polymarket .venv/bin/python -m pytest -q
 For a bounded recent log check from local PowerShell:
 
 ```powershell
-$key = (Get-ChildItem -LiteralPath 'C:\Users\wpdla\Documents' -Recurse -Filter 'ssh-key-2026-05-25.key' | Select-Object -First 1).FullName
+$key = 'C:\Users\wpdla\Documents\오라클ssh\ssh-key-2026-05-25.key'
+if (-not (Test-Path -LiteralPath $key)) {
+  $key = (Get-ChildItem -LiteralPath 'C:\Users\wpdla\Documents' -Recurse -Filter 'ssh-key-2026-05-25.key' -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
+}
 $oracle = 'ubuntu@140.245.69.242'
 ssh -i $key $oracle sudo journalctl -u polymarket-weather-bot --since=-30min --no-pager
 ```
@@ -85,7 +95,10 @@ spaces because nested shell quoting becomes fragile.
 Use this shape when a specific bounded file transfer is required:
 
 ```powershell
-$key = (Get-ChildItem -LiteralPath 'C:\Users\wpdla\Documents' -Recurse -Filter 'ssh-key-2026-05-25.key' | Select-Object -First 1).FullName
+$key = 'C:\Users\wpdla\Documents\오라클ssh\ssh-key-2026-05-25.key'
+if (-not (Test-Path -LiteralPath $key)) {
+  $key = (Get-ChildItem -LiteralPath 'C:\Users\wpdla\Documents' -Recurse -Filter 'ssh-key-2026-05-25.key' -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
+}
 $oracle = 'ubuntu@140.245.69.242'
 scp -i $key '.\path\to\file' "${oracle}:/tmp/"
 ```
