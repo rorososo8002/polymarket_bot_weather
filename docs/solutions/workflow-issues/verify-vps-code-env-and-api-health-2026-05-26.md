@@ -57,7 +57,8 @@ Healthy latest deployment indicators:
 station_count=41
 loaded_max=41
 ORDERBOOK_STREAM_ENABLED=true
-FORECAST_CACHE_TTL_SECONDS=1800
+FORECAST_CACHE_TTL_SECONDS=7200
+FORECAST_RATE_LIMIT_STATE_PATH=/opt/polymarket-weather-bot/data/forecast_rate_limit_state.json
 phase=streaming
 message=websocket streaming 82 tokens across 41 markets
 ```

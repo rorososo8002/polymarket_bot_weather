@@ -1,6 +1,7 @@
 ---
 title: Do not count weather cache entries as external API usage
 date: 2026-06-04
+last_updated: 2026-06-04
 category: workflow-issues
 module: forecast_observability
 problem_type: workflow_issue
@@ -42,6 +43,11 @@ That means it is not a call-count ledger. Counting cache entries is like
 counting the number of answer sheets left on the desk, not the number of times
 the teacher was asked a question.
 
+A second trap is assuming that an active service is running the latest local
+code. In this project the VPS source still requested precipitation and snowfall
+variables after the local temperature-only fix existed. That increased
+Open-Meteo equivalent-call cost and made the limit problem look mysterious.
+
 ## 3. How It Was Fixed
 
 The Open-Meteo ensemble client now writes a separate
@@ -75,6 +81,22 @@ Each station nowcast request row records:
 Both request logs are included in the VPS runtime logrotate rule so they rotate
 over 10MB into `data/archive/` and compress with zstd.
 
+The Open-Meteo client also persists daily-limit cooldowns in
+`forecast_rate_limit_state.json`. This file is the "do not call Open-Meteo
+again yet" memo. When a real HTTP request returns `429`, the bot records
+`blocked_until` as the next UTC day at 00:15. Later refresh cycles and fresh
+runner processes read that file before making a new forecast HTTP call.
+
+Important distinction:
+
+- `forecast_request_log.jsonl` records real Open-Meteo HTTP attempts.
+- `forecast_cache.json` stores the latest successful forecast answers.
+- `forecast_rate_limit_state.json` records a temporary phone-ban window after
+  Open-Meteo says the daily limit is exhausted.
+
+Cooldown skips do not add rows to `forecast_request_log.jsonl`, because no
+external request was made.
+
 ## 4. What To Check Next Time
 
 - Use `forecast_request_log.jsonl` for real HTTP attempt counts.
@@ -88,6 +110,12 @@ over 10MB into `data/archive/` and compress with zstd.
   exhaustion.
 - Remember that Open-Meteo may calculate official usage differently from raw
   HTTP attempt count for large requests.
+- Verify the running VPS source and env values before assuming a local API
+  budget fix is live.
+- Confirm Open-Meteo requests include only the temperature variables needed by
+  the paper strategy: `temperature_2m_max` and `temperature_2m_min`.
+- If `429` appears, check `forecast_rate_limit_state.json` and confirm later
+  refresh cycles skip new HTTP calls until `blocked_until`.
 
 ## 5. What This Project Must Be Especially Careful About
 

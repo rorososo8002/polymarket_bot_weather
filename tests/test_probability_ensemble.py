@@ -467,6 +467,52 @@ def test_ensemble_client_logs_rate_limit_network_attempt(monkeypatch, tmp_path):
     assert rows[0]["error"].startswith("Open-Meteo rate limited")
 
 
+def test_ensemble_client_persists_rate_limit_cooldown_across_clients(monkeypatch, tmp_path):
+    now = [datetime(2026, 6, 1, 12, 0, tzinfo=timezone.utc)]
+    calls = 0
+
+    class RateLimitedResponse:
+        status_code = 429
+        text = "Daily API request limit exceeded"
+
+        def raise_for_status(self):
+            err = requests.HTTPError("429 Client Error")
+            err.response = self
+            raise err
+
+    def fake_get(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return RateLimitedResponse()
+
+    request_log_path = tmp_path / "forecast_request_log.jsonl"
+    rate_limit_state_path = tmp_path / "forecast_rate_limit_state.json"
+    monkeypatch.setattr("weather_bot.probability._utc_now", lambda: now[0])
+    monkeypatch.setattr("weather_bot.probability.requests.get", fake_get)
+
+    first_client = OpenMeteoEnsembleClient(
+        request_log_path=request_log_path,
+        rate_limit_state_path=rate_limit_state_path,
+    )
+    with pytest.raises(requests.HTTPError):
+        first_client.forecast_daily_ensemble(1.0, 2.0, timezone="UTC", forecast_days=3)
+
+    second_client = OpenMeteoEnsembleClient(
+        request_log_path=request_log_path,
+        rate_limit_state_path=rate_limit_state_path,
+    )
+    with pytest.raises(RuntimeError, match="rate limited until"):
+        second_client.forecast_daily_ensemble(3.0, 4.0, timezone="UTC", forecast_days=3)
+
+    rows = [json.loads(line) for line in request_log_path.read_text(encoding="utf-8").splitlines()]
+    state = json.loads(rate_limit_state_path.read_text(encoding="utf-8"))
+    assert calls == 1
+    assert len(rows) == 1
+    assert rows[0]["status_code"] == 429
+    assert state["blocked_until"] == "2026-06-02T00:15:00+00:00"
+    assert second_client.health_snapshot()["rate_limit_blocked_until"] == "2026-06-02T00:15:00+00:00"
+
+
 def test_ensemble_client_can_read_cached_forecast_after_rate_limit(monkeypatch, tmp_path):
     class FakeResponse:
         def raise_for_status(self):

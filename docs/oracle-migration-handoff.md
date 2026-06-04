@@ -17,9 +17,9 @@ Date: 2026-05-28 Asia/Seoul
 
 There are uncommitted local changes that should be reviewed before committing:
 
-- Forecast cadence restored to 30 minutes:
-  - `FORECAST_REFRESH_INTERVAL_SECONDS=1800`
-  - `FORECAST_CACHE_TTL_SECONDS=1800`
+- Forecast cadence was later slowed to 2 hours for Open-Meteo API budget:
+  - `FORECAST_REFRESH_INTERVAL_SECONDS=7200`
+  - `FORECAST_CACHE_TTL_SECONDS=7200`
 - Dashboard CSV loading was patched to read only recent tail rows instead of loading full runtime CSV files into memory.
 - Runtime/log reading rule was added to `AGENTS.md`: use recent lines or targeted filters by default.
 - Some unused code was removed from probability/weather client modules.
@@ -42,15 +42,16 @@ Do not copy old pre-Oracle runtime files to Oracle. Start the Oracle paper run f
    - `ORDERBOOK_STREAM_ENABLED=true`
    - `ORDERBOOK_STREAM_STALE_SECONDS=60`
    - `RUNNER_HEALTH_STATUS_INTERVAL_SECONDS=5`
-   - `FORECAST_REFRESH_INTERVAL_SECONDS=1800`
-   - `FORECAST_CACHE_TTL_SECONDS=1800`
+   - `FORECAST_REFRESH_INTERVAL_SECONDS=7200`
+   - `FORECAST_CACHE_TTL_SECONDS=7200`
+   - `FORECAST_RATE_LIMIT_STATE_PATH=/opt/polymarket-weather-bot/data/forecast_rate_limit_state.json`
    - paper trading only
 5. Start services on Oracle:
    - `polymarket-weather-bot`
    - `polymarket-weather-dashboard`
 6. Verify before trusting the dashboard:
    - services are active
-   - dashboard status shows `scan_interval_seconds=1800`
+   - dashboard status shows `scan_interval_seconds=7200`
    - bot reaches `phase=streaming`
    - message shows token, binary-market, event, and city coverage, for example
      `websocket streaming 82 tokens across 41 markets, 7 events, 4 cities`

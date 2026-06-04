@@ -29,7 +29,8 @@ verified settlement stations and reproducible paper accounting.
   `date_hint` is not forecastable strategy evidence. The runner must log SKIP
   before calling Open-Meteo rather than letting `estimate_weather_probability`
   fall back to today's date.
-- Refresh Open-Meteo forecasts no more often than every 30 minutes by default.
+- Refresh Open-Meteo forecasts every 2 hours by default, unless an operator
+  deliberately overrides the cadence.
 - Use the Polymarket CLOB WebSocket market stream for order books by default.
 - Keep token IDs for open positions subscribed even when discovery moves to
   newer markets.
@@ -201,6 +202,10 @@ and `metadata` must be a JSON object when present.
   It checks that the market is temperature-shaped, the city is trading-ready,
   and required date evidence exists. Markets that fail this gate record SKIP
   diagnostics without spending forecast API calls.
+- `forecast_rate_limit_state.json` persists an Open-Meteo daily-limit cooldown
+  after HTTP 429. A fresh runner process must read it and skip new forecast
+  HTTP calls until the recorded UTC reset time, while still allowing fresh
+  cache hits.
 - `WEATHER_BIAS_JSON` is optional forecast calibration data. If it is empty,
   the bot uses conservative neutral defaults. If it is explicitly set, the file
   must be readable valid JSON shaped as station IDs to numeric variable bias
@@ -323,8 +328,9 @@ ORDERBOOK_STREAM_ENABLED=true
 ORDERBOOK_STREAM_URL=wss://ws-subscriptions-clob.polymarket.com/ws/market
 ORDERBOOK_STREAM_STALE_SECONDS=60
 RUNNER_HEALTH_STATUS_INTERVAL_SECONDS=5
-FORECAST_REFRESH_INTERVAL_SECONDS=1800
-FORECAST_CACHE_TTL_SECONDS=1800
+FORECAST_REFRESH_INTERVAL_SECONDS=7200
+FORECAST_CACHE_TTL_SECONDS=7200
+FORECAST_RATE_LIMIT_STATE_PATH=forecast_rate_limit_state.json
 WEATHER_BIAS_JSON=
 STATION_NOWCAST_ENABLED=true
 STATION_NOWCAST_CACHE_TTL_SECONDS=900

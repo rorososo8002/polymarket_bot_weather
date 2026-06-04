@@ -30,7 +30,7 @@ specialized reference docs.
   means use neutral defaults, but a missing, unreadable, invalid JSON,
   malformed, or non-numeric explicit file produces `forecast-unavailable` with
   zero confidence instead of silently removing calibration.
-- Forecasts refresh every 30 minutes by default. Order books use the Polymarket
+- Forecasts refresh every 2 hours by default. Order books use the Polymarket
   CLOB WebSocket stream, and open-position token IDs stay subscribed until the
   position closes or settles.
 - Discovery maps YES/NO token IDs only from explicit outcome labels. If
@@ -104,6 +104,10 @@ specialized reference docs.
   HTTP attempts are recorded in `forecast_request_log.jsonl` with cache-miss
   reason and safe city/station metadata; the log rotates at 10MB into
   `data/archive/` with zstd compression.
+- `forecast_rate_limit_state.json` is the Open-Meteo cooldown memo, not a
+  forecast. When a real HTTP request returns 429, the bot records a UTC
+  `blocked_until` time and later runner cycles skip new Open-Meteo calls until
+  that time. Cache hits can still be used because they do not spend API budget.
 - Station nowcast caches are not METAR/HKO call ledgers. Real AWC METAR and
   HKO max/min HTTP attempts are recorded in
   `station_nowcast_request_log.jsonl` with source, request time, status, and
@@ -139,9 +143,11 @@ verified station set.
 
 ### 2026-05-26: Forecast Cache Refresh Is 30 Minutes
 
-Decision: Forecast cache TTL and refresh interval default to 1800 seconds. Why:
-forecast data moves slower than order books. Consequence: WebSocket evaluations
-reuse cache until it expires.
+Decision: Forecast cache TTL and refresh interval default to 7200 seconds. Why:
+Open-Meteo forecast data moves slower than order books, and the free API budget
+can be exhausted by many ensemble city-date requests. Consequence: WebSocket
+evaluations keep streaming prices in real time, while forecast refreshes spend
+API budget more slowly.
 
 ### 2026-05-26: Order Books Use The CLOB WebSocket Stream
 
@@ -549,3 +555,13 @@ Consequence: discovery uses temperature category pages only, the parser marks
 non-temperature weather questions as unsupported, Open-Meteo requests only
 temperature daily variables, and the runner filters out-of-scope markets before
 probability estimation, WebSocket subscription, or paper trade logging.
+
+### 2026-06-04: Slow Open-Meteo Forecast Refresh And Persist Daily Limit Cooldown
+
+Decision: Refresh Open-Meteo forecasts every 2 hours by default and persist
+HTTP 429 daily-limit cooldowns in `forecast_rate_limit_state.json`. Why: the
+ensemble API can count one weather request as multiple equivalent calls, so a
+30-minute cadence across many trading-ready cities can drain the free daily
+budget. Consequence: realtime order books still stream, cached forecasts remain
+usable, but new forecast HTTP calls pause until the recorded UTC reset time
+after a daily-limit response.

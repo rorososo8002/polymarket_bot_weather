@@ -11,9 +11,10 @@ def test_supported_city_allowlist_is_not_used_as_discovery_event_cap():
     assert Settings.discovery_page_size == 100
 
 
-def test_default_forecast_cadence_is_thirty_minutes():
-    assert Settings.forecast_refresh_interval_seconds == 1800
-    assert Settings.forecast_cache_ttl_seconds == 1800
+def test_default_forecast_cadence_is_two_hours_to_preserve_api_budget():
+    assert Settings.forecast_refresh_interval_seconds == 7200
+    assert Settings.forecast_cache_ttl_seconds == 7200
+    assert Settings.forecast_rate_limit_state_path == ""
 
 
 def test_default_station_nowcast_is_pilot_cached_and_freshness_bounded():
@@ -175,12 +176,14 @@ def test_load_settings_reads_forecast_cache_controls(monkeypatch):
     monkeypatch.setenv("FORECAST_CACHE_PATH", "data/custom_forecast_cache.json")
     monkeypatch.setenv("FORECAST_CACHE_TTL_SECONDS", "600")
     monkeypatch.setenv("FORECAST_REQUEST_LOG_PATH", "data/custom_forecast_request_log.jsonl")
+    monkeypatch.setenv("FORECAST_RATE_LIMIT_STATE_PATH", "data/custom_forecast_rate_limit_state.json")
 
     settings = load_settings()
 
     assert settings.forecast_cache_path == "data/custom_forecast_cache.json"
     assert settings.forecast_cache_ttl_seconds == 600
     assert settings.forecast_request_log_path == "data/custom_forecast_request_log.jsonl"
+    assert settings.forecast_rate_limit_state_path == "data/custom_forecast_rate_limit_state.json"
 
 
 def test_load_settings_reads_station_nowcast_controls(monkeypatch):

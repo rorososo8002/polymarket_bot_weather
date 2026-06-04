@@ -87,7 +87,8 @@ trading-risk, server, or workflow work, read:
 - Trade only cities listed in `src/weather_bot/stations.py`.
 - Treat `STATION_MAP` as the single source of truth for supported cities and
   official weather-station mapping.
-- Refresh Open-Meteo forecasts no more often than every 30 minutes by default.
+- Refresh Open-Meteo forecasts every 2 hours by default. Do not make this
+  more frequent without an explicit API-budget reason.
 - Use the Polymarket CLOB WebSocket market stream for order books by default.
 - Do not silently replace realtime streaming with polling.
 - Keep token IDs for open positions subscribed even when discovery moves to

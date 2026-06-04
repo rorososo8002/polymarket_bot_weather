@@ -10,7 +10,7 @@
   settlement runners, and shadow public-signal research.
 - Current strategy guardrails are active: register only the 41 `STATION_MAP`
   cities, execute paper trading only for the 40 `TRADING_READY_STATION_MAP`
-  cities, refresh Open-Meteo forecasts every 30 minutes by default, use the
+  cities, refresh Open-Meteo forecasts every 2 hours by default, use the
   Polymarket CLOB WebSocket stream, keep held token IDs subscribed, fail closed
   on stale or unsupported data, and preserve paper-only execution.
 - The paper strategy is now temperature-only. Rain, snow, precipitation, wind,
@@ -148,6 +148,10 @@
   to infer calls from overwritten `forecast_cache.json` entries. Rows include
   cache-miss reason plus safe city/station metadata, and the request log rotates
   at 10MB into `data/archive/` with zstd compression.
+- Open-Meteo forecast-budget hardening is complete locally and remains
+  paper-only. Forecast refresh/cache defaults are 2 hours, and HTTP 429 daily
+  limit responses persist a `forecast_rate_limit_state.json` cooldown so later
+  runner cycles skip new forecast HTTP calls until the recorded UTC reset time.
 - Pre-forecast tradeability gating is complete locally and remains paper-only.
   When `REQUIRE_DATE_HINT_FOR_TRADE=true`, undated temperature markets now log a
   SKIP decision before Open-Meteo is called. Non-temperature, unsupported-city,

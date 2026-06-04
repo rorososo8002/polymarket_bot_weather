@@ -16,6 +16,7 @@ def test_local_env_example_exposes_settlement_runner_defaults():
     assert "SETTLEMENT_RUNNER_MAX_FRACTION=0.25" in text
     assert "SETTLEMENT_RUNNER_MIN_EV_MARGIN_USD=0.00" in text
     assert "FORECAST_REQUEST_LOG_PATH=runtime/forecast_request_log.jsonl" in text
+    assert "FORECAST_RATE_LIMIT_STATE_PATH=runtime/forecast_rate_limit_state.json" in text
     assert "STATION_NOWCAST_REQUEST_LOG_PATH=runtime/station_nowcast_request_log.jsonl" in text
 
 
@@ -40,6 +41,7 @@ def test_vps_env_example_keeps_runtime_state_under_data_dir():
     assert "PORTFOLIO_DECISIONS_JSONL_PATH=/opt/polymarket-weather-bot/data/paper_event_portfolios.jsonl" in text
     assert "RAW_SNAPSHOTS_PATH=/opt/polymarket-weather-bot/data/paper_raw_snapshots.jsonl" in text
     assert "FORECAST_REQUEST_LOG_PATH=/opt/polymarket-weather-bot/data/forecast_request_log.jsonl" in text
+    assert "FORECAST_RATE_LIMIT_STATE_PATH=/opt/polymarket-weather-bot/data/forecast_rate_limit_state.json" in text
     assert (
         "STATION_NOWCAST_REQUEST_LOG_PATH=/opt/polymarket-weather-bot/data/station_nowcast_request_log.jsonl"
         in text
@@ -50,6 +52,8 @@ def test_vps_env_example_keeps_runtime_state_under_data_dir():
     assert "PORTFOLIO_DECISIONS_JSONL_PATH=/opt/polymarket-weather-bot/data/paper_event_portfolios.jsonl" in text
     assert "ORDERBOOK_STREAM_STALE_SECONDS=60" in text
     assert "RUNNER_HEALTH_STATUS_INTERVAL_SECONDS=5" in text
+    assert "FORECAST_REFRESH_INTERVAL_SECONDS=7200" in text
+    assert "FORECAST_CACHE_TTL_SECONDS=7200" in text
     assert "DISCOVERY_MAX_PAGES=8" in text
     assert "DISCOVERY_PAGE_SIZE=100" in text
     assert "MAX_EVENTS" not in text
@@ -111,7 +115,7 @@ def test_dashboard_env_requires_token_and_data_paths():
     assert "refuses to start on public hosts" in text
     assert "long random token" in text
     assert "STATE_PATH=/opt/polymarket-weather-bot/data/paper_state.json" in text
-    assert "FORECAST_CACHE_TTL_SECONDS=1800" in text
+    assert "FORECAST_CACHE_TTL_SECONDS=7200" in text
     assert "ORDERBOOK_STREAM_STALE_SECONDS=60" in text
     assert "POLYMARKET_PRIVATE_KEY" not in text
 

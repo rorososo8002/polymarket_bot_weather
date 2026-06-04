@@ -76,7 +76,7 @@ class Settings:
     orderbook_stream_reconnect_seconds: int = 2
     orderbook_stream_stale_seconds: int = 60
     runner_health_status_interval_seconds: int = 5
-    forecast_refresh_interval_seconds: int = 1800
+    forecast_refresh_interval_seconds: int = 7200
     discovery_max_pages: int = 8
     discovery_page_size: int = 100
     state_path: str = "paper_state.json"
@@ -93,8 +93,9 @@ class Settings:
     shadow_min_trade_usdc: float = 100.0
     shadow_compare_window_seconds: int = 86400
     forecast_cache_path: str = ""
-    forecast_cache_ttl_seconds: int = 1800
+    forecast_cache_ttl_seconds: int = 7200
     forecast_request_log_path: str = ""
+    forecast_rate_limit_state_path: str = ""
     station_nowcast_enabled: bool = True
     station_nowcast_cache_ttl_seconds: int = 900
     station_nowcast_freshness_seconds: int = 5400
@@ -303,6 +304,10 @@ def load_settings() -> Settings:
         forecast_request_log_path=os.getenv(
             "FORECAST_REQUEST_LOG_PATH",
             Settings.forecast_request_log_path,
+        ),
+        forecast_rate_limit_state_path=os.getenv(
+            "FORECAST_RATE_LIMIT_STATE_PATH",
+            Settings.forecast_rate_limit_state_path,
         ),
         station_nowcast_enabled=_bool_env("STATION_NOWCAST_ENABLED", Settings.station_nowcast_enabled),
         station_nowcast_cache_ttl_seconds=_int_env(
