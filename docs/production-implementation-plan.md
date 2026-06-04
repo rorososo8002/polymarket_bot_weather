@@ -101,7 +101,9 @@ Resolved Brier scoring treats an `OPEN` row in `paper_trades.csv` as the
 canonical entry-time forecast evidence. New `OPEN` rows record `entry_p_true`,
 `entry_side_probability`, `entry_net_edge`, and `decision_ts`; older CSVs
 without those columns fall back to the latest entry decision for that market so
-legacy reports remain readable.
+legacy reports remain readable. `ADD` rows are same-side paper add-ons to an
+existing position; they are trade activity and accounting evidence, but they do
+not replace the original `OPEN` row as the first-entry Brier reference.
 `paper_raw_snapshots.jsonl` is high-volume diagnostic evidence, not a source
 ledger. Normal decision snapshots are disabled by default:
 `RAW_SNAPSHOTS_MODE=error` records only error diagnostics, while `debug` may be
@@ -150,8 +152,18 @@ Entry liquidity checks must follow actual order sizing. Probe executable ask
 depth with at least `MIN_ORDER_USD`, compute fee-aware edge and `size_usd`, then
 recheck executable ask depth for that final `size_usd`. If the final VWAP
 changes, recalculate edge, fee, shares, and expected return from the final
-price. If the final order size cannot be absorbed by confirmed ask depth, skip;
-do not record a paper fill from unavailable liquidity.
+price. If confirmed ask depth cannot absorb the full final `size_usd` but can
+absorb at least `MIN_ORDER_USD`, scale the paper entry down to the executable
+amount and log the partial-fill sizing. If confirmed ask depth is below
+`MIN_ORDER_USD`, skip; do not record a paper fill from unavailable liquidity.
+Same-market opposite-side entries remain blocked. Same-side add-ons are allowed
+only in paper mode when the current executable price is at least
+`ADD_TO_POSITION_DROP_PCT` below the existing average entry, the current side
+probability is still above the position's `probability_stop_threshold`, edge and
+expected return remain positive, and cash/city/date/event exposure caps leave at
+least `MIN_ORDER_USD`. Add-ons update the existing paper position's shares,
+cost, and average entry price and log an `ADD` action rather than creating a
+duplicate position.
 `best_bid_ask` may update displayed/reference best bid and ask prices, but
 `p_exec` must be computed only from confirmed order-book depth carried by
 `book` snapshots or `price_change` updates.

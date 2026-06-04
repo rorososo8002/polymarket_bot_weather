@@ -41,6 +41,7 @@ _RATIO_SETTINGS = (
     "take_profit_to_fair_ratio",
     "overheat_margin",
     "edge_fade_max_loss_pct",
+    "add_to_position_drop_pct",
     "entry_fraction",
     "fractional_kelly",
     "max_single_market_fraction",
@@ -124,6 +125,7 @@ class Settings:
     take_profit_to_fair_ratio: float = 0.70
     overheat_margin: float = 0.02
     edge_fade_max_loss_pct: float = 0.02
+    add_to_position_drop_pct: float = 0.10
     max_holding_hours: float = 96.0
 
     # Risk / sizing. A small paper account can put its full 10% city-date budget
@@ -373,6 +375,7 @@ def load_settings() -> Settings:
         take_profit_to_fair_ratio=_float_env("TAKE_PROFIT_TO_FAIR_RATIO", Settings.take_profit_to_fair_ratio),
         overheat_margin=_float_env("OVERHEAT_MARGIN", Settings.overheat_margin),
         edge_fade_max_loss_pct=_float_env("EDGE_FADE_MAX_LOSS_PCT", Settings.edge_fade_max_loss_pct),
+        add_to_position_drop_pct=_float_env("ADD_TO_POSITION_DROP_PCT", Settings.add_to_position_drop_pct),
         max_holding_hours=_float_env("MAX_HOLDING_HOURS", Settings.max_holding_hours),
         size_mode=os.getenv("SIZE_MODE", Settings.size_mode),
         entry_fraction=_float_env("ENTRY_FRACTION", Settings.entry_fraction),

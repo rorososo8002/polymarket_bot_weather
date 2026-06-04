@@ -172,6 +172,13 @@ def _side_edge_metrics(
     return entry_fee_per_share, edge, side_probability
 
 
+def _max_executable_buy_target_usd(book: OrderBook) -> float:
+    best_ask = book.best_ask
+    if best_ask is None or best_ask <= 0:
+        return 0.0
+    return best_ask * sum(level.size for level in book.asks if level.size > 0)
+
+
 def _side_result(
     side: str,
     book: OrderBook,
@@ -193,6 +200,7 @@ def _side_result(
     entry_fee_per_share = 0.0
     edge = -999.0
     size_usd = 0.0
+    partial_fill_reason = ""
     for _attempt in range(4):
         entry_fee_per_share, edge, side_probability = _side_edge_metrics(side, signal, p_exec, settings)
         p_eff = p_exec + entry_fee_per_share
@@ -209,14 +217,34 @@ def _side_result(
             break
         checked_p_exec, _checked_shares, checked_slip = executable_buy_price(book, size_usd)
         if checked_p_exec is None:
-            return EdgeResult(
-                "SKIP",
-                signal.p_true,
-                p_exec,
-                edge,
-                0.0,
-                0.0,
-                f"{side} liquidity filter: insufficient ask depth for final order ${size_usd:.2f} [{market_type}]",
+            requested_size_usd = size_usd
+            capped_size_usd = min(requested_size_usd, _max_executable_buy_target_usd(book))
+            if capped_size_usd + 1e-9 < settings.min_order_usd:
+                return EdgeResult(
+                    "SKIP",
+                    signal.p_true,
+                    p_exec,
+                    edge,
+                    0.0,
+                    0.0,
+                    f"{side} liquidity filter: insufficient ask depth for minimum order "
+                    f"${settings.min_order_usd:.2f}; available=${max(0.0, capped_size_usd):.2f} [{market_type}]",
+                )
+            checked_p_exec, _checked_shares, checked_slip = executable_buy_price(book, capped_size_usd)
+            if checked_p_exec is None:
+                return EdgeResult(
+                    "SKIP",
+                    signal.p_true,
+                    p_exec,
+                    edge,
+                    0.0,
+                    0.0,
+                    f"{side} liquidity filter: insufficient ask depth for capped order "
+                    f"${capped_size_usd:.2f} [{market_type}]",
+                )
+            size_usd = capped_size_usd
+            partial_fill_reason = (
+                f", partial_fill=${capped_size_usd:.2f}/${requested_size_usd:.2f}"
             )
         if abs(checked_p_exec - p_exec) <= 1e-12 and abs(checked_slip - slip) <= 1e-12:
             break
@@ -277,7 +305,7 @@ def _side_result(
         f"entry_fee=${return_estimate.entry_fee_usdc:.4f}, "
         f"exit_fee=${return_estimate.exit_fee_usdc:.4f}, "
         f"exit_market_cost=${return_estimate.exit_market_cost_usdc:.4f}, "
-        f"spread_audit={spread:.4f}, slip_audit={slip:.4f}{rejection} [{market_type}]"
+        f"spread_audit={spread:.4f}, slip_audit={slip:.4f}{partial_fill_reason}{rejection} [{market_type}]"
     )
     return EdgeResult(
         side=side if is_trade else "SKIP",
@@ -790,11 +818,16 @@ def _open_position_if_needed(
     market_type: str,
     entry_bankroll_usd: float | None = None,
     decision_ts: str = "",
+    add_to_existing_position_id: str | None = None,
 ) -> None:
     if result.side not in {"YES", "NO"}:
         return
     token_id = market.yes_token_id if result.side == "YES" else market.no_token_id
-    if broker.has_any_position(market.market_id) or not token_id:
+    allow_same_side_add = (
+        add_to_existing_position_id is not None
+        and broker.has_position(market.market_id, result.side)
+    )
+    if (broker.has_any_position(market.market_id) and not allow_same_side_add) or not token_id:
         return
     city = signal.parsed.city if signal.parsed is not None else ""
     date_hint = signal.parsed.date_hint if signal.parsed is not None else ""
@@ -807,6 +840,7 @@ def _open_position_if_needed(
         date_hint=date_hint or "",
         entry_bankroll_usd=entry_bankroll_usd,
         decision_ts=decision_ts,
+        allow_same_side_add=allow_same_side_add,
     )
 
 
@@ -826,6 +860,7 @@ def _apply_event_portfolio(
             candidate.market_type,
             entry_bankroll_usd=entry_bankroll.entry_bankroll,
             decision_ts=candidate.decision_ts,
+            add_to_existing_position_id=candidate.add_to_existing_position_id,
         )
     return decision
 

@@ -563,8 +563,9 @@ diagnostic earlier.
 
 ### 2026-06-03: Keep SKIP Diagnostics Out Of Recent Trades
 
-Decision: Dashboard `Recent Trades`, realized rows, and realized equity points
-use cached actual trade actions: `OPEN`, `CLOSE`, `SETTLED`, and
+Decision: Dashboard `Recent Trades` uses cached actual trade actions: `OPEN`,
+`ADD`, `CLOSE`, `SETTLED`, and `PARTIAL_CLOSE`; realized rows and realized
+equity points use only realized actions: `CLOSE`, `SETTLED`, and
 `PARTIAL_CLOSE`. SKIP actions remain ledger diagnostics but are not shown as
 executed trades. Why: repeated exposure-cap or data-quality SKIPs can dominate
 the tail of `paper_trades.csv` and hide older closes. Consequence: the
@@ -650,3 +651,18 @@ and expected return are recalculated from the final price. Why: using
 a real $10 paper order just because $100 of depth is unavailable. Consequence:
 small executable paper candidates survive, while final-order ask-depth
 shortfalls still fail closed as SKIP instead of recording unavailable fills.
+
+### 2026-06-05: Scale Paper Entries To Executable Depth And Gate Add-Ons
+
+Decision: If final entry sizing asks for more ask depth than exists, the paper
+runner may scale the entry down to the confirmed executable amount, but only
+when that amount still meets `MIN_ORDER_USD`. Same-market opposite-side entries
+remain blocked. Same-side add-ons are allowed only when the current executable
+price is at least `ADD_TO_POSITION_DROP_PCT` below the existing average entry,
+the current side probability remains above `probability_stop_threshold`, edge
+and expected return stay positive, and the normal cash and exposure caps leave
+at least `MIN_ORDER_USD`. Why: skipping every partially executable candidate is
+too conservative, but averaging down on a broken thesis compounds losses.
+Consequence: partial entries log their reduced sizing, add-ons update the
+existing `paper_state.json` position and write an `ADD` row to `paper_trades.csv`,
+and the dashboard treats `ADD` as paper trade activity but not realized PnL.

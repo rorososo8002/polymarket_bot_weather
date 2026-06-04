@@ -476,10 +476,14 @@ class PaperBroker:
         date_hint: str = "",
         entry_bankroll_usd: float | None = None,
         decision_ts: str = "",
+        allow_same_side_add: bool = False,
     ) -> PaperPosition | None:
         if result.side not in {"YES", "NO"} or result.p_exec is None or result.size_usd <= 0:
             return None
-        if self.has_any_position(market.market_id):
+        market_positions = [pos for pos in self.state.positions if pos.market_id == market.market_id]
+        add_position = next((pos for pos in market_positions if pos.side == result.side), None)
+        opposite_position = next((pos for pos in market_positions if pos.side != result.side), None)
+        if market_positions and (opposite_position is not None or not (allow_same_side_add and add_position is not None)):
             self.log_trade("SKIP_SAME_MARKET", market, result.side, token_id, 0, result.p_exec, 0, "same-market position already open")
             return None
         bankroll_before = self.current_bankroll_before_entry()
@@ -505,14 +509,14 @@ class PaperBroker:
         if city and date_hint:
             event_positions = self.event_date_positions(city, date_hint)
             event_leg_count = len(event_positions)
-            if event_leg_count >= self.settings.max_event_portfolio_legs:
+            if event_leg_count >= self.settings.max_event_portfolio_legs and add_position is None:
                 reason = (
                     f"SKIP_EVENT_DATE_LEG_CAP: {city}/{date_hint} legs={event_leg_count} "
                     f">= limit={self.settings.max_event_portfolio_legs}"
                 )
                 self.log_trade("SKIP_EVENT_DATE_LEG_CAP", market, result.side, token_id, 0, result.p_exec, 0, reason)
                 return None
-            if not is_complementary_with_positions(market.question, result.side, event_positions):
+            if add_position is None and not is_complementary_with_positions(market.question, result.side, event_positions):
                 reason = f"SKIP_EVENT_DATE_CONCENTRATION: {city}/{date_hint} new leg is not complementary"
                 self.log_trade("SKIP_EVENT_DATE_CONCENTRATION", market, result.side, token_id, 0, result.p_exec, 0, reason)
                 return None
@@ -547,6 +551,70 @@ class PaperBroker:
         entry_plan = build_entry_plan(adjusted_result, risk_bankroll, self.settings)
         opened_at = utc_now_iso()
         entry_side_probability = side_true_probability(result.side, result.p_true)
+        if add_position is not None:
+            old_shares = add_position.shares
+            old_price = add_position.entry_price
+            old_cost = add_position.cost_usd
+            new_shares = old_shares + shares
+            add_position.shares = new_shares
+            add_position.cost_usd = old_cost + spend
+            add_position.entry_price = (
+                ((old_price * old_shares) + (result.p_exec * shares)) / new_shares
+                if new_shares > 0
+                else result.p_exec
+            )
+            add_position.last_mark_price = result.p_exec
+            metadata = add_position.metadata
+            metadata["add_count"] = int(metadata.get("add_count", 0)) + 1
+            metadata["last_add_ts"] = opened_at
+            metadata["last_add_price"] = result.p_exec
+            metadata["last_add_size_usd"] = spend
+            metadata["last_add_shares"] = shares
+            metadata["last_add_edge"] = result.net_edge
+            metadata["last_add_p_true"] = result.p_true
+            metadata["last_add_side_probability"] = entry_side_probability
+            metadata["last_add_decision_ts"] = decision_ts
+            metadata["last_add_rationale"] = entry_plan.rationale
+            metadata["entry_fraction"] = add_position.cost_usd / risk_bankroll if risk_bankroll > 0 else 0.0
+            metadata["probability_stop_threshold"] = max(
+                float(metadata.get("probability_stop_threshold", 0.0)),
+                entry_plan.probability_stop_threshold,
+            )
+            metadata["model_fair_price"] = entry_plan.model_fair_price
+            metadata["target_exit_price"] = entry_plan.target_exit_price
+            metadata["market_heat_score"] = entry_plan.market_heat_score
+            metadata["entry_notional_usdc"] = round(
+                float(metadata.get("entry_notional_usdc", old_shares * old_price)) + shares * result.p_exec,
+                6,
+            )
+            metadata["entry_fee_usdc"] = round(float(metadata.get("entry_fee_usdc", 0.0)) + entry_fee_usdc, 5)
+            metadata["reason"] = result.reason
+            metadata["slug"] = market.slug
+            metadata["event_slug"] = market.event_slug
+            metadata["market_type"] = market_type
+            metadata["city"] = city
+            metadata["date_hint"] = date_hint
+            self.state.cash_usd -= spend
+            self.save_state()
+            add_reason = f"{entry_plan.rationale}; add_to_position={add_position.position_id}; entry_fee=${entry_fee_usdc:.5f}"
+            self.log_trade(
+                "ADD",
+                market,
+                result.side,
+                token_id,
+                shares,
+                result.p_exec,
+                -spend,
+                add_reason,
+                market_type,
+                entry_metadata={
+                    "entry_p_true": result.p_true,
+                    "entry_side_probability": entry_side_probability,
+                    "entry_net_edge": result.net_edge,
+                    "decision_ts": decision_ts,
+                },
+            )
+            return add_position
         pos = PaperPosition(
             position_id=str(uuid4()),
             market_id=market.market_id,

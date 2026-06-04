@@ -46,8 +46,9 @@
   latest entry decision only for legacy trade CSVs without the new columns.
 - Dashboard trade panels separate actual paper trade actions from high-volume
   SKIP diagnostics. `Recent Trades`, realized rows, and realized equity points
-  use cached `OPEN`/`CLOSE`/`SETTLED`/`PARTIAL_CLOSE` rows so late SKIP bursts
-  do not hide older closed trades.
+  use cached paper-action rows so late SKIP bursts do not hide older closed
+  trades. `ADD` add-on rows count as recent paper-trade activity, while realized
+  PnL remains limited to close/settlement actions.
 - Dashboard operator labels are Korean, the right rail uses tabs for
   `스캐너 정보` and `최근 체결`, realized PnL sorts by parsed close time newest
   first, and open-position Polymarket links target the event slug rather than
@@ -221,12 +222,17 @@
   half-step expansion. The change remains paper-only. Local verification:
   focused parser/probability/portfolio/hardening pytest passed with
   `144 passed`; full `pytest -q` passed with `358 passed`.
-- Actual-order liquidity evaluation is complete locally and remains paper-only.
-  The runner no longer requires max-single-market ask depth before computing a
-  smaller `size_usd`; it still fails closed if final `size_usd` cannot be
-  absorbed. Local verification: focused portfolio pytest passed with
-  `35 passed`, focused hardening pytest passed with `54 passed`, and full
-  `pytest -q` passed with `361 passed`.
+- Actual-order liquidity evaluation and conditional same-side add-ons are
+  complete locally and remain paper-only. The runner no longer requires
+  max-single-market ask depth before computing a smaller `size_usd`; if final
+  target depth is short but at least `MIN_ORDER_USD` is executable, it scales
+  down and logs `partial_fill`, while below-minimum depth still SKIPs. Same-side
+  add-ons require the configured price drop, live probability above the stop
+  threshold, positive edge/return, and normal exposure caps; they update the
+  existing position and log `ADD`. Local verification: focused
+  portfolio/config pytest passed with `85 passed`, focused
+  hardening/dashboard/analyze pytest passed with `96 passed`, and full
+  `pytest -q` passed with `366 passed`.
 - Other local hardening changes have not all been treated as one automatic
   deployment bundle; verify the specific commit and service state before
   assuming a future local change is live.

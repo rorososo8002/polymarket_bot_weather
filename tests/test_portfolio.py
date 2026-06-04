@@ -296,7 +296,7 @@ def test_evaluate_market_accepts_minimum_sized_order_without_requiring_max_depth
     assert per_side["YES"].side == "YES"
 
 
-def test_evaluate_market_skips_when_final_order_size_exceeds_ask_depth(tmp_path):
+def test_evaluate_market_scales_final_order_down_to_available_depth(tmp_path):
     cfg = settings(
         tmp_path,
         bankroll_usd=1000.0,
@@ -320,10 +320,41 @@ def test_evaluate_market_skips_when_final_order_size_exceeds_ask_depth(tmp_path)
 
     result, per_side = evaluate_market(raw_market, signal, client, cfg, 1000.0, "temperature")
 
+    assert result.side == "YES"
+    assert result.size_usd == pytest.approx(10.0)
+    assert result.size_shares == pytest.approx(25.0)
+    assert per_side["YES"].side == "YES"
+    assert "partial_fill=$10.00/$20.00" in per_side["YES"].reason
+
+
+def test_evaluate_market_still_skips_when_available_depth_is_below_minimum_order(tmp_path):
+    cfg = settings(
+        tmp_path,
+        bankroll_usd=1000.0,
+        min_net_edge=0.01,
+        min_order_usd=10.0,
+        entry_fraction=0.02,
+        max_single_market_fraction=0.10,
+        entry_min_expected_net_return_pct=0.01,
+        weather_taker_fee_rate=0.0,
+        model_error_margin=0.0,
+        resolution_error_margin=0.0,
+    )
+    raw_market = market("seoul-26", "26\u00b0C")
+    signal = WeatherSignal(0.80, 0.90, "test", "test", parse_weather_question(raw_market.question))
+    client = FakeClient(
+        {
+            "seoul-26-yes": orderbook_with_ask_depth("seoul-26-yes", 0.39, [(0.40, 12.0)]),
+            "seoul-26-no": orderbook("seoul-26-no", 0.59, 0.60),
+        }
+    )
+
+    result, per_side = evaluate_market(raw_market, signal, client, cfg, 1000.0, "temperature")
+
     assert result.side == "SKIP"
     assert per_side["YES"].side == "SKIP"
-    assert "insufficient ask depth for final order $20.00" in per_side["YES"].reason
     assert per_side["YES"].size_usd == 0.0
+    assert "insufficient ask depth" in per_side["YES"].reason
 
 
 def test_evaluate_market_reprices_edge_when_final_order_walks_the_book(tmp_path):
@@ -552,6 +583,118 @@ def test_event_portfolio_blocks_opposite_position_in_same_market(tmp_path):
 
     assert decision.selected == []
     assert any("same-market position already open" in item.reason for item in decision.rejected)
+
+
+def test_event_portfolio_selects_same_side_add_after_ten_percent_drawdown_when_thesis_alive(tmp_path):
+    broker = PaperBroker(settings(tmp_path, bankroll_usd=200.0, add_to_position_drop_pct=0.10))
+    broker.state = PaperState(
+        cash_usd=190.0,
+        positions=[
+            PaperPosition(
+                position_id="held",
+                market_id="seoul-26",
+                question=market("seoul-26", "26째C").question,
+                token_id="seoul-26-yes",
+                side="YES",
+                entry_price=0.50,
+                shares=20.0,
+                cost_usd=10.0,
+                opened_at="2026-06-01T00:00:00+00:00",
+                metadata={
+                    "city": "seoul",
+                    "date_hint": "may 25",
+                    "entry_p_true": 0.70,
+                    "entry_side_probability": 0.70,
+                    "probability_stop_threshold": 0.60,
+                },
+            )
+        ],
+    )
+    add_candidate = candidate(
+        "seoul-26",
+        "26째C",
+        side="YES",
+        size_usd=20.0,
+        p_true=0.72,
+        p_exec=0.44,
+        expected_net_profit_usd=2.0,
+    )
+
+    decision = select_event_portfolio(broker, [add_candidate], usable_snapshot(200.0))
+
+    assert [(leg.market.market_id, leg.result.side, leg.result.size_usd) for leg in decision.selected] == [
+        ("seoul-26", "YES", 10.0)
+    ]
+    assert decision.selected[0].add_to_existing_position_id == "held"
+    assert not any("same-market position already open" in item.reason for item in decision.rejected)
+
+
+def test_event_portfolio_blocks_same_side_add_before_ten_percent_discount(tmp_path):
+    broker = PaperBroker(settings(tmp_path, bankroll_usd=200.0, add_to_position_drop_pct=0.10))
+    broker.state = PaperState(
+        cash_usd=190.0,
+        positions=[
+            PaperPosition(
+                position_id="held",
+                market_id="seoul-26",
+                question=market("seoul-26", "26째C").question,
+                token_id="seoul-26-yes",
+                side="YES",
+                entry_price=0.50,
+                shares=20.0,
+                cost_usd=10.0,
+                opened_at="2026-06-01T00:00:00+00:00",
+                metadata={"city": "seoul", "date_hint": "may 25", "probability_stop_threshold": 0.60},
+            )
+        ],
+    )
+    shallow_discount = candidate(
+        "seoul-26",
+        "26째C",
+        side="YES",
+        p_true=0.72,
+        p_exec=0.46,
+        expected_net_profit_usd=2.0,
+    )
+
+    decision = select_event_portfolio(broker, [shallow_discount], usable_snapshot(200.0))
+
+    assert decision.selected == []
+    assert any("add-on price has not fallen" in item.reason for item in decision.rejected)
+
+
+def test_event_portfolio_blocks_same_side_add_when_probability_stop_is_broken(tmp_path):
+    broker = PaperBroker(settings(tmp_path, bankroll_usd=200.0, add_to_position_drop_pct=0.10))
+    broker.state = PaperState(
+        cash_usd=190.0,
+        positions=[
+            PaperPosition(
+                position_id="held",
+                market_id="seoul-26",
+                question=market("seoul-26", "26째C").question,
+                token_id="seoul-26-yes",
+                side="YES",
+                entry_price=0.50,
+                shares=20.0,
+                cost_usd=10.0,
+                opened_at="2026-06-01T00:00:00+00:00",
+                metadata={"city": "seoul", "date_hint": "may 25", "probability_stop_threshold": 0.60},
+            )
+        ],
+    )
+    thesis_broken = candidate(
+        "seoul-26",
+        "26째C",
+        side="YES",
+        p_true=0.58,
+        p_exec=0.44,
+        expected_net_profit_usd=2.0,
+    )
+
+    decision = select_event_portfolio(broker, [thesis_broken], usable_snapshot(200.0))
+
+    assert decision.selected == []
+    assert any("add-on blocked by probability stop" in item.reason for item in decision.rejected)
 
 
 def test_event_portfolio_splits_shared_budget_instead_of_multiplying_it(tmp_path):
@@ -873,6 +1016,65 @@ def test_runner_applies_selected_event_portfolio_and_writes_one_event_log(tmp_pa
     assert [leg.market.market_id for leg in decision.selected] == ["seoul-26", "seoul-27"]
     rows = (tmp_path / "portfolio.jsonl").read_text(encoding="utf-8").splitlines()
     assert len(rows) == 1
+
+
+def test_runner_applies_selected_add_to_existing_position(tmp_path):
+    cfg = settings(
+        tmp_path,
+        bankroll_usd=200.0,
+        add_to_position_drop_pct=0.10,
+        weather_taker_fee_rate=0.0,
+    )
+    broker = PaperBroker(cfg)
+    broker.state = PaperState(
+        cash_usd=190.0,
+        positions=[
+            PaperPosition(
+                position_id="held",
+                market_id="seoul-26",
+                question=market("seoul-26", "26째C").question,
+                token_id="seoul-26-yes",
+                side="YES",
+                entry_price=0.50,
+                shares=20.0,
+                cost_usd=10.0,
+                opened_at="2026-06-01T00:00:00+00:00",
+                metadata={
+                    "city": "seoul",
+                    "date_hint": "may 25",
+                    "entry_p_true": 0.70,
+                    "entry_side_probability": 0.70,
+                    "probability_stop_threshold": 0.60,
+                    "entry_notional_usdc": 10.0,
+                    "entry_fee_usdc": 0.0,
+                },
+            )
+        ],
+    )
+    add_candidate = candidate(
+        "seoul-26",
+        "26째C",
+        side="YES",
+        size_usd=20.0,
+        p_true=0.72,
+        p_exec=0.44,
+        expected_net_profit_usd=2.0,
+    )
+
+    decision = _apply_event_portfolio(broker, [add_candidate], usable_snapshot(200.0))
+
+    assert decision.selected[0].add_to_existing_position_id == "held"
+    assert len(broker.state.positions) == 1
+    position = broker.state.positions[0]
+    assert position.position_id == "held"
+    assert position.cost_usd == pytest.approx(20.0)
+    assert position.shares == pytest.approx(20.0 + (10.0 / 0.44))
+    assert position.entry_price == pytest.approx((0.50 * 20.0 + 0.44 * (10.0 / 0.44)) / position.shares)
+    assert position.metadata["add_count"] == 1
+    assert position.metadata["last_add_price"] == pytest.approx(0.44)
+    assert position.metadata["probability_stop_threshold"] == pytest.approx(0.62)
+    assert broker.state.cash_usd == pytest.approx(180.0)
+    assert ",ADD," in (tmp_path / "trades.csv").read_text(encoding="utf-8")
 
 
 def test_run_cycle_opens_city_date_candidates_as_one_logged_portfolio(monkeypatch, tmp_path):

@@ -59,6 +59,7 @@ def test_default_city_date_portfolio_caps_shrink_after_one_thousand_dollars():
     assert Settings.bankroll_usd == 100.0
     assert Settings.entry_fraction == 0.10
     assert Settings.max_single_market_fraction == 0.10
+    assert Settings.add_to_position_drop_pct == 0.10
     assert Settings.max_city_exposure_fraction == 0.20
     assert Settings.max_event_date_exposure_fraction == 0.10
     assert Settings.large_bankroll_event_date_exposure_fraction == 0.05
@@ -262,6 +263,7 @@ def test_load_settings_reads_discovery_pagination_safety_controls(monkeypatch):
 
 def test_load_settings_reads_city_date_portfolio_controls(monkeypatch):
     monkeypatch.setenv("PORTFOLIO_DECISIONS_JSONL_PATH", "data/custom-portfolios.jsonl")
+    monkeypatch.setenv("ADD_TO_POSITION_DROP_PCT", "0.15")
     monkeypatch.setenv("MAX_CITY_EXPOSURE_FRACTION", "0.11")
     monkeypatch.setenv("MAX_EVENT_DATE_EXPOSURE_FRACTION", "0.12")
     monkeypatch.setenv("LARGE_BANKROLL_EVENT_DATE_EXPOSURE_FRACTION", "0.04")
@@ -271,6 +273,7 @@ def test_load_settings_reads_city_date_portfolio_controls(monkeypatch):
     settings = load_settings()
 
     assert settings.portfolio_decisions_jsonl_path == "data/custom-portfolios.jsonl"
+    assert settings.add_to_position_drop_pct == 0.15
     assert settings.max_city_exposure_fraction == 0.11
     assert settings.max_event_date_exposure_fraction == 0.12
     assert settings.large_bankroll_event_date_exposure_fraction == 0.04

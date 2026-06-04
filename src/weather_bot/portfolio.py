@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 
 from .config import Settings
 from .edge import clamp_probability, executable_sell_price, polymarket_taker_fee_usdc
+from .exit_policy import side_true_probability
 from .models import EdgeResult, PaperPosition, RawMarket, WeatherSignal
 from .weather_client import (
     TemperatureBucketInterval,
@@ -37,6 +38,7 @@ class PortfolioCandidate:
     result: EdgeResult
     market_type: str
     decision_ts: str = ""
+    add_to_existing_position_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -93,6 +95,7 @@ class EventPortfolioDecision:
                     "size_shares": round(leg.result.size_shares, 6),
                     "p_exec": leg.result.p_exec,
                     "decision_ts": leg.decision_ts,
+                    "add_to_existing_position_id": leg.add_to_existing_position_id,
                     "expected_net_profit_usd": round(leg.result.expected_net_profit_usd, 6),
                 }
                 for leg in self.selected
@@ -214,6 +217,55 @@ def _event_positions(broker: PaperBroker, city: str, date_hint: str) -> list[Pap
             and str(pos.metadata.get("date_hint", "")).lower() == date_hint.lower()
         )
     ]
+
+
+def _market_positions(broker: PaperBroker, market_id: str) -> list[PaperPosition]:
+    return [pos for pos in broker.state.positions if pos.market_id == market_id]
+
+
+def _same_side_position(positions: list[PaperPosition], side: str) -> PaperPosition | None:
+    return next((pos for pos in positions if pos.side == side), None)
+
+
+def _position_stop_threshold(pos: PaperPosition, candidate: PortfolioCandidate, settings: Settings) -> float:
+    entry_p_true = float(pos.metadata.get("entry_p_true", candidate.result.p_true))
+    entry_side_probability = float(
+        pos.metadata.get("entry_side_probability", side_true_probability(pos.side, entry_p_true))
+    )
+    return float(
+        pos.metadata.get(
+            "probability_stop_threshold",
+            max(0.0, entry_side_probability - settings.probability_stop_drop_threshold),
+        )
+    )
+
+
+def _add_to_position_block_reason(
+    candidate: PortfolioCandidate,
+    pos: PaperPosition,
+    settings: Settings,
+) -> str | None:
+    result = candidate.result
+    if result.side != pos.side:
+        return "same-market position already open on opposite side"
+    if result.p_exec is None:
+        return "not an executable add-on candidate"
+
+    add_trigger_price = pos.entry_price * (1.0 - settings.add_to_position_drop_pct)
+    if result.p_exec > add_trigger_price + 1e-12:
+        return (
+            f"add-on price has not fallen {settings.add_to_position_drop_pct:.0%}: "
+            f"p_exec={result.p_exec:.4f} > trigger={add_trigger_price:.4f}"
+        )
+
+    current_side_probability = side_true_probability(result.side, result.p_true)
+    stop_threshold = _position_stop_threshold(pos, candidate, settings)
+    if current_side_probability <= stop_threshold:
+        return (
+            f"add-on blocked by probability stop: side_probability={current_side_probability:.3f} "
+            f"<= threshold={stop_threshold:.3f}"
+        )
+    return None
 
 
 def _temperature_interval(question: str) -> tuple[float, float] | None:
@@ -423,16 +475,26 @@ def select_event_portfolio(
         if not entry_bankroll.usable:
             rejected.append(RejectedPortfolioLeg(candidate.market.market_id, side, entry_bankroll.reason))
             continue
-        if broker.has_any_position(candidate.market.market_id):
-            rejected.append(RejectedPortfolioLeg(candidate.market.market_id, side, "same-market position already open"))
-            continue
         if result.expected_net_profit_usd <= 0:
             rejected.append(RejectedPortfolioLeg(candidate.market.market_id, side, "portfolio EV does not improve after costs"))
             continue
-        if len(held) >= settings.max_event_portfolio_legs:
+        market_positions = _market_positions(broker, candidate.market.market_id)
+        same_side_position = _same_side_position(market_positions, side)
+        is_add_to_existing = False
+        if market_positions:
+            if same_side_position is None:
+                rejected.append(RejectedPortfolioLeg(candidate.market.market_id, side, "same-market position already open on opposite side"))
+                continue
+            block_reason = _add_to_position_block_reason(candidate, same_side_position, settings)
+            if block_reason is not None:
+                rejected.append(RejectedPortfolioLeg(candidate.market.market_id, side, block_reason))
+                continue
+            candidate = replace(candidate, add_to_existing_position_id=same_side_position.position_id)
+            is_add_to_existing = True
+        if len(held) >= settings.max_event_portfolio_legs and not is_add_to_existing:
             rejected.append(RejectedPortfolioLeg(candidate.market.market_id, side, "event leg cap reached"))
             continue
-        if held and not _is_complementary(candidate, [], held):
+        if held and not is_add_to_existing and not _is_complementary(candidate, [], held):
             rejected.append(RejectedPortfolioLeg(candidate.market.market_id, side, "event legs are not complementary"))
             continue
         eligible.append(candidate)
@@ -449,8 +511,10 @@ def select_event_portfolio(
     )
     plans: list[_PortfolioPlan] = []
     remaining_slots = settings.max_event_portfolio_legs - len(held)
-    if entry_bankroll.usable and remaining_slots > 0:
+    if entry_bankroll.usable:
         for candidate in eligible:
+            if candidate.add_to_existing_position_id is None and remaining_slots <= 0:
+                continue
             for size_usd in _allocation_sizes(min(single_limit, candidate.result.size_usd), settings.min_order_usd):
                 plan = _build_plan(
                     (_resize_candidate(candidate, size_usd),),

@@ -9,6 +9,7 @@ symptoms:
   - "`_side_result()` could ask the order book for max-single-market depth before calculating the actual paper order size."
   - "A $10 executable candidate could be skipped because $100 of ask depth was unavailable."
   - "Final VWAP changes were not guaranteed to refresh edge, fees, shares, and expected return before entry."
+  - "A later strategy correction needed to scale oversized final entries down to confirmed executable depth instead of skipping every partial opportunity."
 root_cause: logic_error
 resolution_type: code_fix
 severity: high
@@ -59,7 +60,10 @@ The entry evaluator now separates a price probe from the final order check:
 3. Recheck executable ask depth for final `size_usd`.
 4. If final VWAP differs from the probe VWAP, recalculate edge, fees, shares,
    and expected return from the final price.
-5. If final `size_usd` cannot be absorbed, return SKIP with zero size.
+5. If final `size_usd` cannot be fully absorbed but confirmed depth still
+   supports at least `MIN_ORDER_USD`, scale the order down to the executable
+   amount and log the partial-fill sizing.
+6. If confirmed depth is below `MIN_ORDER_USD`, return SKIP with zero size.
 
 `p_exec` is the VWAP, the average price the bot expects after walking through
 the ask levels. `size_usd` is the all-in paper budget for this one entry. These
@@ -70,7 +74,10 @@ Focused regression tests cover:
 
 - a $1,000 bankroll with 10% max-single-market cap where a $10 order survives
   even though $100 depth is unavailable;
-- a final $20 order that still skips when only $10 depth exists;
+- a final $20 order that scales down to a $10 paper entry when only $10 depth
+  exists;
+- a final $20 order that still skips when available ask depth is below the
+  minimum order;
 - a final order that walks from a $0.40 best ask into $0.50 depth and therefore
   recalculates `p_exec` to $0.45 and edge to match.
 
@@ -80,7 +87,8 @@ Focused regression tests cover:
   ceiling, a probe, or the actual intended order.
 - Test the case where `MIN_ORDER_USD` is executable but the maximum cap is not.
 - Test the opposite case where the minimum probe is executable but the final
-  computed size is not.
+  computed size is not, and assert the bot either scales down to executable
+  minimum-or-larger depth or skips below the minimum order.
 - If a final VWAP changes after walking the book, assert the logged edge and
   expected-return fields use the final VWAP.
 - Keep SKIP results at `size_usd=0` and `size_shares=0` whenever final
@@ -99,7 +107,8 @@ probe small to estimate price
 size the actual order
 recheck final executable depth
 reprice if depth changes the VWAP
-skip if the final order cannot really fit
+scale down only to confirmed minimum-or-larger executable depth
+skip if even the minimum order cannot really fit
 ```
 
 That keeps the bot less over-conservative than the old max-depth check while

@@ -33,15 +33,15 @@ Read this file only for runtime logs, paper-trading data, dashboard readers, or 
 
 ## Trading Interpretation
 
-- `YES` and `NO` rows in `paper_decisions.csv` are candidate decisions. Actual entries are `OPEN` rows in `paper_trades.csv`.
+- `YES` and `NO` rows in `paper_decisions.csv` are candidate decisions. Actual first entries are `OPEN` rows in `paper_trades.csv`; same-side paper add-ons are `ADD` rows and update an existing open position rather than creating a duplicate position.
 - When entries appear missing, check existing open positions and exposure caps before assuming the entry path is broken.
-- Repeated valid signals for an already-held market should not create duplicate positions.
+- Repeated valid signals for an already-held market should not create duplicate positions. Same-side add-ons are allowed only through the explicit `ADD` path after the add-on price/probability/budget gates pass; opposite-side same-market entries remain blocked.
 
 ## Dashboard Readers
 
 - Preserve bounded reads and cached totals for multi-GB files. Never reintroduce full startup scans of `paper_decisions.csv` or raw snapshots.
 - Dashboard live views should not push high-volume SKIP or candidate rows every refresh.
-- `paper_trades.csv` may contain both executed paper actions and SKIP diagnostics. `Recent Trades`, realized rows, and realized equity points should show executed paper actions only: `OPEN`, `CLOSE`, `SETTLED`, and `PARTIAL_CLOSE`.
+- `paper_trades.csv` may contain both executed paper actions and SKIP diagnostics. `Recent Trades` should show executed paper actions only: `OPEN`, `ADD`, `CLOSE`, `SETTLED`, and `PARTIAL_CLOSE`. Realized rows and realized equity points should still use only realized actions: `CLOSE`, `SETTLED`, and `PARTIAL_CLOSE`.
 - Prefer operator-useful summaries, open positions, realized trades, bounded recent trades, cached totals, a moderate visible refresh interval, and a slower hidden-tab interval.
 
 ## Settlement Review

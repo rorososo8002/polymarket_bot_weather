@@ -21,7 +21,7 @@ _DECISION_TOTALS_LOCK = threading.Lock()
 _DECISION_TOTALS_CACHE: dict[str, dict[str, Any]] = {}
 _TRADE_TOTALS_LOCK = threading.Lock()
 _TRADE_TOTALS_CACHE: dict[str, dict[str, Any]] = {}
-TRADE_ACTIVITY_ACTIONS = {"OPEN", "CLOSE", "SETTLED", "PARTIAL_CLOSE"}
+TRADE_ACTIVITY_ACTIONS = {"OPEN", "ADD", "CLOSE", "SETTLED", "PARTIAL_CLOSE"}
 REALIZED_TRADE_ACTIONS = {"CLOSE", "SETTLED", "PARTIAL_CLOSE"}
 TRADE_CACHE_RECENT_LIMIT = 400
 MAX_INITIAL_DECISION_TOTAL_SCAN_BYTES = 128 * 1024 * 1024
@@ -717,6 +717,7 @@ const PHASE_KO = {
 };
 const ACTION_KO = {
   "OPEN": "진입",
+  "ADD": "추매",
   "CLOSE": "청산",
   "SETTLED": "정산",
   "PARTIAL_CLOSE": "부분 청산",
@@ -1277,7 +1278,7 @@ def _trim_recent_cache_rows(rows: list[Any], limit: int = TRADE_CACHE_RECENT_LIM
 
 def _count_trade_row(totals: dict[str, float], row: dict[str, str]) -> None:
     action = (row.get("action") or "").upper()
-    if action == "OPEN":
+    if action in {"OPEN", "ADD"}:
         totals["opens"] += 1
     elif action in REALIZED_TRADE_ACTIONS:
         totals["closes"] += 1
@@ -1296,7 +1297,7 @@ def _record_trade_cache_row(cache: dict[str, Any], row: dict[str, str]) -> None:
     if action in TRADE_ACTIVITY_ACTIONS:
         cache["recent_trades"].append(stored)
         _trim_recent_cache_rows(cache["recent_trades"])
-    if action == "OPEN" and market_id:
+    if action in {"OPEN", "ADD"} and market_id:
         cache["open_by_market"][market_id] = stored
     if action in REALIZED_TRADE_ACTIONS:
         cache["recent_realized_trades"].append(stored)
