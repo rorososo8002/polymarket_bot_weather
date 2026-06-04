@@ -224,6 +224,7 @@ def test_discovery_rejects_non_weather_questions_with_ambiguous_words_and_dates(
         "Will the Carolina Hurricanes win the 2026 NHL Stanley Cup?",
         "Zelenskyy out as Ukraine president by end of 2026?",
         "Will Mamdani freeze NYC rents before 2027?",
+        "Will NYC rents be over 10% on May 25?",
         "Will Waymo launch in Washington DC by June 30 2026?",
         "Will Waymo operate in 6 cities on June 30 2026?",
         "Will the Democrats win the New York governor race in 2026?",
@@ -252,6 +253,7 @@ def test_discovery_rejects_non_temperature_weather_questions():
         "Will it rain in NYC on Friday?",
         "Will Chicago get more than 0.5 inches of rain on May 25?",
         "Will Tokyo get any snow tomorrow?",
+        "Will NYC wind speed exceed 20 mph on May 25?",
     ]
 
     for question in non_temperature_questions:

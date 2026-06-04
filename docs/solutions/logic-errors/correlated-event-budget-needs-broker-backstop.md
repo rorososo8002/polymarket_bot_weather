@@ -2,9 +2,9 @@
 
 ## 1. What Went Wrong
 
-Phase 4 added event-level portfolio selection so the bot could choose multiple
-useful legs inside the same city+date weather event. That created a risk: if the
-selector is the only place enforcing the shared city+date budget, a later order
+Event-level portfolio selection lets the bot choose multiple useful legs inside
+the same city+date weather event. That created a risk: if the selector is the
+only place enforcing the shared city+date budget, a later order
 path could accidentally treat those legs as independent trades.
 
 The dangerous mistake is simple: two bets inside the same city and date are not

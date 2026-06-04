@@ -182,9 +182,9 @@ def test_snow_market_is_unsupported_and_does_not_fetch_forecast():
     )
 
     assert calls == 0
-    assert signal.source == "fallback"
+    assert signal.source == "unsupported-weather-market"
     assert signal.confidence == 0.0
-    assert "Unsupported" in signal.note
+    assert "Unsupported non-temperature weather market" in signal.note
 
 
 def test_ensemble_client_requests_temperature_daily_variables_only(monkeypatch, tmp_path):

@@ -8,7 +8,7 @@ component: development_workflow
 severity: medium
 applies_when:
   - "Starting the local or VPS paper bot after dependency or checkout changes"
-  - "A Python service reaches its outer phase but a background worker thread fails"
+  - "A Python service reaches its outer status but a background worker thread fails"
 tags: [service-start, dependencies, websocket-client, paper-trading, verification]
 ---
 
@@ -16,7 +16,7 @@ tags: [service-start, dependencies, websocket-client, paper-trading, verificatio
 
 ## Context
 
-The paper bot reached the `streaming` phase, but the WebSocket order-book thread crashed because the current Python environment did not have `websocket-client` installed. The dependency was already declared in `pyproject.toml`, but the editable install had not been refreshed in the runtime environment.
+The paper bot reached the `phase=streaming` status, but the WebSocket order-book thread crashed because the current Python environment did not have `websocket-client` installed. The dependency was already declared in `pyproject.toml`, but the editable install had not been refreshed in the runtime environment.
 
 ## Guidance
 

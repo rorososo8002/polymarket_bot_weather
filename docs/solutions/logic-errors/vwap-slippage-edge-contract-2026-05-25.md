@@ -9,9 +9,10 @@ pay after consuming the available order-book depth for the intended size.
 Because entry spread and entry slippage are already inside that VWAP, subtracting
 entry slippage again from expected return double-counts the same cost.
 
-Phase 2 also needed to remove the fixed `estimated_fee_per_share=0.02`. The
-Polymarket weather taker fee depends on price, so a fixed estimate can overstate
-or understate cost depending on the entry price.
+The executable net-return work also needed to remove the fixed
+`estimated_fee_per_share=0.02`. The Polymarket weather taker fee depends on
+price, so a fixed estimate can overstate or understate cost depending on the
+entry price.
 
 ## 2. Why It Mattered
 

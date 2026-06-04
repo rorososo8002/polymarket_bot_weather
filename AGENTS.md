@@ -46,7 +46,7 @@ trading-risk, server, or workflow work, read:
   set, so do not turn them into manuals, roadmaps, transcripts, or detailed
   research logs. Prefer a compact summary plus a link to a situation-specific
   doc.
-- Keep bot strategy, goals, phases, and risk direction in
+- Keep bot strategy, goals, work tracks, and risk direction in
   `docs/production-implementation-plan.md`. This file should describe the
   current strategy contract, not every implementation detail.
 - Keep `docs/production-progress.md` short and current with these sections:
@@ -75,9 +75,13 @@ trading-risk, server, or workflow work, read:
   live-trading safety project.
 - For live-trading planning or implementation, read
   `docs/live-trading-safety-plan.md`. Keep live execution separate from the
-  paper-strategy upgrade phases.
+  paper-strategy upgrade work.
 - Do not connect real wallets, send real orders, or enable live trading without
   explicit live-trading approval and risk explanation.
+- Execute the paper strategy only on temperature markets. Rain, snow,
+  precipitation, wind, humidity, and every other non-temperature weather market
+  is unsupported and must not reach forecast probability calculation,
+  order-book subscription, or paper trade logging.
 - Trading code must fail closed. Missing, stale, suspicious, unsupported, or
   invalid data means skip, not guess.
 - Trade only cities listed in `src/weather_bot/stations.py`.
@@ -159,5 +163,4 @@ Read only when needed:
   `docs/codex/ssh-powershell.md`
 - Runtime/log work: `docs/codex/runtime-data.md`
 - Strategy/risk work: `docs/codex/strategy-research.md`
-- Strategy roadmap: `docs/strategy-upgrade-roadmap.md`
 - Live-trading planning or implementation: `docs/live-trading-safety-plan.md`

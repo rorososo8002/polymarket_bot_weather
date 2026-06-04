@@ -1,12 +1,12 @@
 # Whale And External-Signal Shadow Research
 
-Updated: 2026-06-02 Asia/Seoul
+Updated: 2026-06-04 Asia/Seoul
 
 ## Purpose
 
-Phase 7 studies whether public trader behavior can improve paper returns. This
-is research only. It does not connect a wallet, place orders, copy trades, or
-change the live paper runner.
+Shadow research studies whether public trader behavior can improve paper
+returns. This is research only. It does not connect a wallet, place orders,
+copy trades, or change the live paper runner.
 
 `shadow signal` means an outside signal stored beside our bot's paper decisions.
 Think of it like a second scoreboard: it lets us ask, "Did a public trader act
@@ -165,7 +165,8 @@ Even then, the next step is paper-only experimentation.
 
 ## Current Conclusion
 
-Phase 7 adds the shadow research structure and report generator. It does not yet
-prove that whale or external signals improve returns, because the bounded sample
-needs resolved outcomes before performance can be judged. Keep this as an
-experiment queue until enough settled public signals exist.
+The current shadow-research implementation adds the research structure and
+report generator. It does not yet prove that whale or external signals improve
+returns, because the bounded sample needs resolved outcomes before performance
+can be judged. Keep this as an experiment queue until enough settled public
+signals exist.

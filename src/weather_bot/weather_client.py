@@ -6,6 +6,18 @@ from .models import ParsedWeatherQuestion
 from .stations import CITY_COORDS
 
 WEEKDAY_NAMES = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+NON_TEMPERATURE_WEATHER_RE = re.compile(
+    r"\b(?:"
+    r"rain|rains|raining|rainfall|precip|precipitation|"
+    r"snow|snows|snowing|snowfall|sleet|hail|"
+    r"wind|winds|windy|humidity|humid"
+    r")\b",
+    re.IGNORECASE,
+)
+TEMPERATURE_CONTEXT_RE = re.compile(
+    r"\b(?:temperature|temperatures|temp|highest|lowest|maximum|minimum|max|min|fahrenheit|celsius)\b",
+    re.IGNORECASE,
+)
 
 
 def c_to_f(c: float) -> float:
@@ -22,7 +34,7 @@ def _extract_temp_threshold(q: str) -> tuple[float | None, str, str | None, str]
         r"(?:\bbelow\b|\bunder\b|\bless\s+than\b|\bat\s+most\b|\blower\s+than\b|"
         r"<=|\blow(?:er)?\b|\bor\s+lower\b|\bor\s+less\b|\uc774\ud558|\ubbf8\ub9cc)"
     )
-    degree = r"(?:\s*(?:\u00b0|\u00ba|\u02da|\uc9f8)\s*)?"
+    degree = r"\s*(?:\u00b0|\u00ba|\u02da|\uc9f8)?\s*"
     unit_pattern = r"(?P<unit>f|c|fahrenheit|celsius|degrees?|degree|\u2103|\u2109|\ub3c4)"
 
     unit_match = re.search(
@@ -52,13 +64,21 @@ def _extract_temp_threshold(q: str) -> tuple[float | None, str, str | None, str]
         if not comparison_match:
             return None, "UNKNOWN", None, "threshold"
         threshold_raw = float(comparison_match.group("value"))
-        unit_text = ""
+        unit_text = "unknown"
         operator = "<=" if re.search(low_words, comparison_match.group("op"), re.IGNORECASE) else ">="
         bucket = "threshold"
 
     if unit_text in {"c", "celsius", "\u2103", "\ub3c4"}:
         return c_to_f(threshold_raw), "C", operator, bucket
+    if unit_text == "unknown":
+        return threshold_raw, "UNKNOWN", operator, bucket
     return threshold_raw, "F", operator, bucket
+
+
+def _has_temperature_context(q: str, threshold_unit: str) -> bool:
+    if threshold_unit in {"F", "C"}:
+        return True
+    return TEMPERATURE_CONTEXT_RE.search(q) is not None
 
 
 def parse_weather_question(question: str) -> ParsedWeatherQuestion:
@@ -77,8 +97,23 @@ def parse_weather_question(question: str) -> ParsedWeatherQuestion:
     operator = None
     temperature_metric = "max"
     temperature_bucket = "threshold"
-    threshold_f, threshold_unit, operator, temperature_bucket = _extract_temp_threshold(q)
-    if threshold_f is not None:
+    is_non_temperature_weather = NON_TEMPERATURE_WEATHER_RE.search(q) is not None
+    if not is_non_temperature_weather:
+        parsed_threshold_f, parsed_threshold_unit, parsed_operator, parsed_bucket = _extract_temp_threshold(q)
+        if (
+            parsed_threshold_f is not None
+            and parsed_operator is not None
+            and _has_temperature_context(q, parsed_threshold_unit)
+        ):
+            threshold_f = parsed_threshold_f
+            threshold_unit = parsed_threshold_unit
+            operator = parsed_operator
+            temperature_bucket = parsed_bucket
+        elif parsed_threshold_f is not None and parsed_operator is not None:
+            variable = "unsupported"
+    else:
+        variable = "unsupported"
+    if variable == "temperature" and threshold_f is not None:
         threshold_original = round((threshold_f - 32.0) * 5.0 / 9.0, 6) if threshold_unit == "C" else threshold_f
     if re.search(r"\b(lowest|minimum|min(?:imum)?|overnight\s+low|low\s+temperature)\b", q):
         temperature_metric = "min"
@@ -102,7 +137,11 @@ def parse_weather_question(question: str) -> ParsedWeatherQuestion:
         confidence += 0.35
     else:
         notes.append("city not parsed")
-    if variable == "temperature" and threshold_f is not None and operator is not None:
+    if is_non_temperature_weather:
+        notes.append("non-temperature weather market unsupported by temperature-only strategy")
+    elif variable == "unsupported":
+        notes.append("temperature condition not parsed")
+    elif variable == "temperature" and threshold_f is not None and operator is not None:
         confidence += 0.45
     else:
         notes.append("event condition not fully parsed")

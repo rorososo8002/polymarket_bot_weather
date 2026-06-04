@@ -16,7 +16,7 @@ tags: [windows, python, pytest, path, verification]
 
 ## Context
 
-A Phase 0 focused-test command appeared to exit successfully but printed no
+A baseline focused-test command appeared to exit successfully but printed no
 pytest summary. On Windows, `Get-Command python` showed that a workspace-adjacent
 executable named `python` was shadowing the installed Python interpreter.
 

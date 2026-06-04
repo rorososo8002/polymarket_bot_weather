@@ -13,7 +13,7 @@ repeating, or before deciding that the strategy itself is weak.
 That can be good. For example, skipping a market with stale data prevents fake
 paper performance from looking safer than it really is. But repeated SKIPs are
 also evidence. They tell us what is blocking the bot from reaching the next
-strategy phase.
+strategy improvement.
 
 ## Main SKIP Categories
 

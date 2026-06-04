@@ -37,6 +37,7 @@ decision-stage count, not as the number of newly opened trades.
 
 ## 5. Project-Specific Caution
 
-Phase 2 and later filters can produce many valid strategy signals that do not
-become positions. This is expected when paper risk controls are working. Report
-the difference between "signal", "order intent", and "opened position" clearly.
+Expected-net-return and later filters can produce many valid strategy signals
+that do not become positions. This is expected when paper risk controls are
+working. Report the difference between "signal", "order intent", and "opened
+position" clearly.

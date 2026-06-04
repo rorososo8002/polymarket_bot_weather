@@ -918,6 +918,14 @@ def estimate_weather_probability(
     """
     settings = settings or Settings()
     parsed = parse_weather_question(question)
+    if parsed.variable != "temperature":
+        return WeatherSignal(
+            0.5,
+            0.0,
+            "unsupported-weather-market",
+            "Unsupported non-temperature weather market under the temperature-only paper strategy.",
+            parsed,
+        )
     if parsed.city is None or parsed.latitude is None or parsed.longitude is None:
         return WeatherSignal(0.5, 0.0, "fallback", f"Could not parse city. {parsed.note}", parsed)
 

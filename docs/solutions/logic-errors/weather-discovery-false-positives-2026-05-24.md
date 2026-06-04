@@ -1,6 +1,7 @@
 ---
 title: Weather discovery must reject substring false positives
 date: 2026-05-24
+last_updated: 2026-06-04
 category: docs/solutions/logic-errors
 module: weather market discovery
 problem_type: logic_error
@@ -45,8 +46,10 @@ markets, Waymo launch markets, and city sports futures.
 
 Use supported weather shapes instead of broad weather keywords:
 
-- Require a parsed supported weather question: known city plus temperature
-  threshold/comparison, rain, or snow.
+- Require a parsed supported weather question: known city plus a temperature
+  threshold/comparison. Rain, snow, precipitation, wind, humidity, and other
+  non-temperature weather questions are now outside the paper strategy and must
+  remain unsupported.
 - Use whole-word comparison patterns so `over` does not match `governor` and
   `hit` does not match unrelated text.
 - Preserve supported Korean/Celsius forms and `or lower` style comparisons.

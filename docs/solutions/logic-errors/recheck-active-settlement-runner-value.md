@@ -19,7 +19,7 @@ tags: [polymarket, settlement-runner, exit-policy, paper-trading, tranche-logs]
 
 ## Problem
 
-Phase 6 added a useful rule: when a cheap favorable YES or NO position reaches a profit target, sell enough to recover principal and keep a bounded runner for settlement if settlement value is still better than selling now.
+The settlement-runner work added a useful rule: when a cheap favorable YES or NO position reaches a profit target, sell enough to recover principal and keep a bounded runner for settlement if settlement value is still better than selling now.
 
 The easy mistake is to think `settlement_runner_active=True` means "never touch this again until settlement." That is too strong. It should mean "do not keep taking ordinary profit from this runner," not "ignore fresh evidence that settlement is now worse than selling."
 
@@ -72,7 +72,7 @@ In plain words: if the runner can sell around `0.80` today but the conservative 
 
 `settlement_runner_active` is a state flag, not a risk exemption.
 
-It prevents repeated profit-taking from gradually shaving a runner to dust. But the original Phase 6 contract still depends on a comparison:
+It prevents repeated profit-taking from gradually shaving a runner to dust. But the original settlement-runner contract still depends on a comparison:
 
 ```text
 hold-to-settlement expected value >= sell-now value after fee

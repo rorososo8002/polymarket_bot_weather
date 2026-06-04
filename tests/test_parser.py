@@ -64,17 +64,40 @@ def test_rain_question_is_not_a_supported_temperature_market():
     parsed = parse_weather_question("Will it rain in Chicago on Friday?")
 
     assert parsed.city == "chicago"
-    assert parsed.variable == "temperature"
+    assert parsed.variable == "unsupported"
     assert parsed.threshold_f is None
     assert parsed.operator is None
-    assert "event condition not fully parsed" in parsed.note
+    assert "non-temperature weather market" in parsed.note
 
 
 def test_snow_question_is_not_a_supported_temperature_market():
     parsed = parse_weather_question("Will Tokyo get any snow tomorrow?")
 
     assert parsed.city == "tokyo"
-    assert parsed.variable == "temperature"
+    assert parsed.variable == "unsupported"
     assert parsed.threshold_f is None
     assert parsed.operator is None
     assert parsed.date_hint == "tomorrow"
+    assert "non-temperature weather market" in parsed.note
+
+
+def test_wind_question_with_numeric_threshold_is_not_temperature():
+    parsed = parse_weather_question("Will NYC wind speed exceed 20 mph on May 25?")
+
+    assert parsed.city == "nyc"
+    assert parsed.variable == "unsupported"
+    assert parsed.threshold_f is None
+    assert parsed.operator is None
+    assert parsed.date_hint == "may 25"
+    assert "non-temperature weather market" in parsed.note
+
+
+def test_non_weather_numeric_comparison_is_not_temperature():
+    parsed = parse_weather_question("Will NYC rents be over 10% on May 25?")
+
+    assert parsed.city == "nyc"
+    assert parsed.variable == "unsupported"
+    assert parsed.threshold_f is None
+    assert parsed.operator is None
+    assert parsed.date_hint == "may 25"
+    assert "temperature condition not parsed" in parsed.note

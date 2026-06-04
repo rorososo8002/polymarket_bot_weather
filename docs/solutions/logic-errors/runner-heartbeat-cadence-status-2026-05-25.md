@@ -27,7 +27,7 @@ The live paper bot looked stopped from the dashboard because the only visible ti
 
 ## What Didn't Work
 - Checking only `systemd` active/enabled status was insufficient. A live process can still be blocked inside discovery, evaluation, network retries, or sleep.
-- Relying on `paper_decisions.csv` alone missed in-progress phases before the next decision row was written.
+- Relying on `paper_decisions.csv` alone missed in-progress work before the next decision row was written.
 
 ## Solution
 Add a runner heartbeat file next to `paper_state.json` and have the dashboard treat it as bot activity:
@@ -38,7 +38,7 @@ write_runner_status(settings, "evaluating", message=f"evaluating {idx}/{len(mark
 write_runner_status(settings, "streaming", message="websocket streaming ...", cycle_started_at=cycle_started_at)
 ```
 
-The dashboard reads `paper_runner_status.json` and reports `phase`, progress, `last_event_at`, and `next_scan_in_seconds` so a long discovery phase is visible as `DISCOVERING` rather than looking dead.
+The dashboard reads `paper_runner_status.json` and reports `phase`, progress, `last_event_at`, and `next_scan_in_seconds` so a long discovery step is visible as `DISCOVERING` rather than looking dead.
 
 Also keep long-running loops on wall-clock cadence. In the current realtime runner, market discovery and forecast signals refresh every `forecast_refresh_interval_seconds`; order-book updates arrive through WebSocket events between refreshes:
 
@@ -56,7 +56,7 @@ The heartbeat separates process liveness from strategy progress. The dashboard n
 
 ## Prevention
 - Treat `systemd active` as only a process-level signal; verify domain progress with heartbeat or output data timestamps.
-- Any background job with long blocking phases should write phase/progress status before and during the phase.
+- Any background job with long blocking steps should write `phase`/progress status before and during the step.
 - Add regression tests for dashboard heartbeat precedence and wall-clock cadence calculations.
 
 ## Related Issues
