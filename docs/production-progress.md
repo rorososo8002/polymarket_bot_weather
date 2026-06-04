@@ -210,6 +210,13 @@
   decision/portfolio rows keep compact summaries. Local verification: focused
   runtime-log pytest passed with `86 passed`; full `pytest -q` passed with
   `341 passed`.
+- Temperature range buckets such as `86-87F`, `62-63F`, and `22-23C` are now
+  parsed as distinct range buckets instead of exact single-temperature buckets.
+  Probability estimation and city-date portfolio interval checks use the exact
+  displayed inclusive endpoints, such as `86.0 <= T <= 87.0`, without
+  half-step expansion. The change remains paper-only. Local verification:
+  focused parser/probability/portfolio/hardening pytest passed with
+  `144 passed`; full `pytest -q` passed with `358 passed`.
 - Other local hardening changes have not all been treated as one automatic
   deployment bundle; verify the specific commit and service state before
   assuming a future local change is live.

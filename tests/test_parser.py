@@ -1,4 +1,4 @@
-from weather_bot.weather_client import parse_weather_question
+from weather_bot.weather_client import parse_weather_question, rounded_temperature_bucket_interval_f
 
 
 def test_parse_temperature_market_fahrenheit():
@@ -44,6 +44,53 @@ def test_parse_exact_temperature_bucket():
     assert parsed.temperature_bucket == "exact"
     assert parsed.threshold_original == 26
     assert round(parsed.threshold_f, 1) == 78.8
+
+
+def test_parse_fahrenheit_range_temperature_bucket():
+    parsed = parse_weather_question("Will the highest temperature in Atlanta be 86-87F on May 25?")
+
+    assert parsed.city == "atlanta"
+    assert parsed.variable == "temperature"
+    assert parsed.operator == "=="
+    assert parsed.temperature_bucket == "range"
+    assert parsed.threshold_unit == "F"
+    assert parsed.threshold_f != 87
+    assert parsed.temperature_range_lower_f == 86
+    assert parsed.temperature_range_upper_f == 87
+    assert parsed.temperature_range_lower_original == 86
+    assert parsed.temperature_range_upper_original == 87
+    assert parsed.temperature_range_inclusive is True
+
+
+def test_range_bucket_interval_preserves_exact_inclusive_settlement_endpoints():
+    parsed = parse_weather_question("Will the highest temperature in Atlanta be 86-87F on May 25?")
+
+    assert parsed.temperature_range_lower_original == 86
+    assert parsed.temperature_range_upper_original == 87
+    assert parsed.temperature_range_lower_f == 86
+    assert parsed.temperature_range_upper_f == 87
+    assert rounded_temperature_bucket_interval_f(parsed) == (86.0, 87.0)
+
+
+def test_exact_temperature_bucket_still_uses_legacy_half_step_interval():
+    parsed = parse_weather_question("Will the highest temperature in Atlanta be 87F on May 25?")
+
+    assert parsed.temperature_bucket == "exact"
+    assert rounded_temperature_bucket_interval_f(parsed) == (86.5, 87.5)
+
+
+def test_parse_celsius_range_temperature_bucket():
+    parsed = parse_weather_question("Will the highest temperature in London be 22-23C on May 25?")
+
+    assert parsed.city == "london"
+    assert parsed.operator == "=="
+    assert parsed.threshold_unit == "C"
+    assert parsed.temperature_bucket == "range"
+    assert parsed.temperature_range_lower_original == 22
+    assert parsed.temperature_range_upper_original == 23
+    assert parsed.temperature_range_lower_f == 22 * 9 / 5 + 32
+    assert parsed.temperature_range_upper_f == 23 * 9 / 5 + 32
+    assert parsed.temperature_range_inclusive is True
 
 
 def test_parse_lower_tail_temperature_bucket():

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import re
 
 from .models import ParsedWeatherQuestion
@@ -20,11 +21,53 @@ TEMPERATURE_CONTEXT_RE = re.compile(
 )
 
 
+@dataclass(frozen=True)
+class _TemperatureThreshold:
+    threshold_f: float | None
+    threshold_unit: str
+    operator: str | None
+    bucket: str
+    range_lower_f: float | None = None
+    range_upper_f: float | None = None
+    range_lower_original: float | None = None
+    range_upper_original: float | None = None
+    range_inclusive: bool = False
+
+
+@dataclass(frozen=True)
+class TemperatureBucketInterval:
+    lower_f: float
+    upper_f: float
+    lower_inclusive: bool
+    upper_inclusive: bool
+
+    def as_tuple(self) -> tuple[float, float]:
+        return self.lower_f, self.upper_f
+
+    def contains_f(self, value_f: float) -> bool:
+        lower_ok = value_f >= self.lower_f if self.lower_inclusive else value_f > self.lower_f
+        upper_ok = value_f <= self.upper_f if self.upper_inclusive else value_f < self.upper_f
+        return lower_ok and upper_ok
+
+
 def c_to_f(c: float) -> float:
     return c * 9.0 / 5.0 + 32.0
 
 
-def _extract_temp_threshold(q: str) -> tuple[float | None, str, str | None, str]:
+def _unit_label(unit_text: str) -> str:
+    unit_text = unit_text.lower()
+    if unit_text in {"c", "celsius", "\u2103", "\ub3c4"}:
+        return "C"
+    if unit_text == "unknown":
+        return "UNKNOWN"
+    return "F"
+
+
+def _to_f(value: float, unit_label: str) -> float:
+    return c_to_f(value) if unit_label == "C" else value
+
+
+def _extract_temp_threshold(q: str) -> _TemperatureThreshold:
     """Return threshold in Fahrenheit, original unit, operator, and bucket shape."""
     high_words = (
         r"(?:\babove\b|\bover\b|\bat\s+least\b|\bexceed(?:s)?\b|\breach(?:es)?\b|"
@@ -36,6 +79,45 @@ def _extract_temp_threshold(q: str) -> tuple[float | None, str, str | None, str]
     )
     degree = r"\s*(?:\u00b0|\u00ba|\u02da|\uc9f8)?\s*"
     unit_pattern = r"(?P<unit>f|c|fahrenheit|celsius|degrees?|degree|\u2103|\u2109|\ub3c4)"
+
+    range_unit_pattern = r"f|c|fahrenheit|celsius|degrees?|degree|\u2103|\u2109|\ub3c4"
+    range_match = None
+    for match in re.finditer(
+        rf"(?P<lower>\d{{1,3}}(?:\.\d+)?){degree}(?P<lower_unit>{range_unit_pattern})?"
+        rf"\s*(?:-|–|—|\bto\b)\s*"
+        rf"(?P<upper>\d{{1,3}}(?:\.\d+)?){degree}(?P<upper_unit>{range_unit_pattern})?\b",
+        q,
+        re.IGNORECASE,
+    ):
+        if match.group("lower_unit") or match.group("upper_unit"):
+            range_match = match
+            break
+    if range_match:
+        lower_raw = float(range_match.group("lower"))
+        upper_raw = float(range_match.group("upper"))
+        if lower_raw >= upper_raw:
+            return _TemperatureThreshold(None, "UNKNOWN", None, "threshold")
+        lower_unit = range_match.group("lower_unit")
+        upper_unit = range_match.group("upper_unit")
+        lower_unit_label = _unit_label(lower_unit) if lower_unit else None
+        upper_unit_label = _unit_label(upper_unit) if upper_unit else None
+        if lower_unit_label and upper_unit_label and lower_unit_label != upper_unit_label:
+            return _TemperatureThreshold(None, "UNKNOWN", None, "threshold")
+        unit_text = (upper_unit or lower_unit or "").lower()
+        unit_label = _unit_label(unit_text)
+        lower_f = _to_f(lower_raw, unit_label)
+        upper_f = _to_f(upper_raw, unit_label)
+        return _TemperatureThreshold(
+            threshold_f=lower_f,
+            threshold_unit=unit_label,
+            operator="==",
+            bucket="range",
+            range_lower_f=lower_f,
+            range_upper_f=upper_f,
+            range_lower_original=lower_raw,
+            range_upper_original=upper_raw,
+            range_inclusive=True,
+        )
 
     unit_match = re.search(
         rf"(?P<value>\d{{1,3}}(?:\.\d+)?){degree}{unit_pattern}\b",
@@ -62,23 +144,77 @@ def _extract_temp_threshold(q: str) -> tuple[float | None, str, str | None, str]
             re.IGNORECASE,
         )
         if not comparison_match:
-            return None, "UNKNOWN", None, "threshold"
+            return _TemperatureThreshold(None, "UNKNOWN", None, "threshold")
         threshold_raw = float(comparison_match.group("value"))
         unit_text = "unknown"
         operator = "<=" if re.search(low_words, comparison_match.group("op"), re.IGNORECASE) else ">="
         bucket = "threshold"
 
-    if unit_text in {"c", "celsius", "\u2103", "\ub3c4"}:
-        return c_to_f(threshold_raw), "C", operator, bucket
-    if unit_text == "unknown":
-        return threshold_raw, "UNKNOWN", operator, bucket
-    return threshold_raw, "F", operator, bucket
+    unit_label = _unit_label(unit_text)
+    return _TemperatureThreshold(_to_f(threshold_raw, unit_label), unit_label, operator, bucket)
 
 
 def _has_temperature_context(q: str, threshold_unit: str) -> bool:
     if threshold_unit in {"F", "C"}:
         return True
     return TEMPERATURE_CONTEXT_RE.search(q) is not None
+
+
+def _temperature_rounding_half_step_f(parsed: ParsedWeatherQuestion) -> float:
+    return 0.9 if parsed.threshold_unit == "C" else 0.5
+
+
+def temperature_bucket_interval_bounds_f(parsed: ParsedWeatherQuestion) -> TemperatureBucketInterval | None:
+    """Return comparison bounds for a parsed temperature bucket.
+
+    Range buckets preserve their displayed endpoints exactly. Exact and tail
+    buckets keep the existing half-step rounded-cell behavior until that bucket
+    shape is handled as a separate strategy decision.
+    """
+    if parsed.variable != "temperature" or parsed.threshold_f is None:
+        return None
+
+    half_step = _temperature_rounding_half_step_f(parsed)
+    if parsed.temperature_bucket == "exact":
+        return TemperatureBucketInterval(
+            parsed.threshold_f - half_step,
+            parsed.threshold_f + half_step,
+            True,
+            False,
+        )
+    if parsed.temperature_bucket == "range":
+        if parsed.temperature_range_lower_f is None or parsed.temperature_range_upper_f is None:
+            return None
+        return TemperatureBucketInterval(
+            parsed.temperature_range_lower_f,
+            parsed.temperature_range_upper_f,
+            True,
+            True,
+        )
+    if parsed.temperature_bucket == "lower_tail":
+        return TemperatureBucketInterval(
+            float("-inf"),
+            parsed.threshold_f + half_step,
+            False,
+            False,
+        )
+    if parsed.temperature_bucket == "upper_tail":
+        return TemperatureBucketInterval(
+            parsed.threshold_f - half_step,
+            float("inf"),
+            True,
+            False,
+        )
+    if parsed.operator == "<=":
+        return TemperatureBucketInterval(float("-inf"), parsed.threshold_f, False, True)
+    if parsed.operator == ">=":
+        return TemperatureBucketInterval(parsed.threshold_f, float("inf"), True, False)
+    return None
+
+
+def rounded_temperature_bucket_interval_f(parsed: ParsedWeatherQuestion) -> tuple[float, float] | None:
+    bounds = temperature_bucket_interval_bounds_f(parsed)
+    return bounds.as_tuple() if bounds is not None else None
 
 
 def parse_weather_question(question: str) -> ParsedWeatherQuestion:
@@ -97,24 +233,37 @@ def parse_weather_question(question: str) -> ParsedWeatherQuestion:
     operator = None
     temperature_metric = "max"
     temperature_bucket = "threshold"
+    temperature_range_lower_f = None
+    temperature_range_upper_f = None
+    temperature_range_lower_original = None
+    temperature_range_upper_original = None
+    temperature_range_inclusive = False
     is_non_temperature_weather = NON_TEMPERATURE_WEATHER_RE.search(q) is not None
     if not is_non_temperature_weather:
-        parsed_threshold_f, parsed_threshold_unit, parsed_operator, parsed_bucket = _extract_temp_threshold(q)
+        parsed_threshold = _extract_temp_threshold(q)
         if (
-            parsed_threshold_f is not None
-            and parsed_operator is not None
-            and _has_temperature_context(q, parsed_threshold_unit)
+            parsed_threshold.threshold_f is not None
+            and parsed_threshold.operator is not None
+            and _has_temperature_context(q, parsed_threshold.threshold_unit)
         ):
-            threshold_f = parsed_threshold_f
-            threshold_unit = parsed_threshold_unit
-            operator = parsed_operator
-            temperature_bucket = parsed_bucket
-        elif parsed_threshold_f is not None and parsed_operator is not None:
+            threshold_f = parsed_threshold.threshold_f
+            threshold_unit = parsed_threshold.threshold_unit
+            operator = parsed_threshold.operator
+            temperature_bucket = parsed_threshold.bucket
+            temperature_range_lower_f = parsed_threshold.range_lower_f
+            temperature_range_upper_f = parsed_threshold.range_upper_f
+            temperature_range_lower_original = parsed_threshold.range_lower_original
+            temperature_range_upper_original = parsed_threshold.range_upper_original
+            temperature_range_inclusive = parsed_threshold.range_inclusive
+        elif parsed_threshold.threshold_f is not None and parsed_threshold.operator is not None:
             variable = "unsupported"
     else:
         variable = "unsupported"
     if variable == "temperature" and threshold_f is not None:
-        threshold_original = round((threshold_f - 32.0) * 5.0 / 9.0, 6) if threshold_unit == "C" else threshold_f
+        if temperature_bucket == "range":
+            threshold_original = temperature_range_lower_original
+        else:
+            threshold_original = round((threshold_f - 32.0) * 5.0 / 9.0, 6) if threshold_unit == "C" else threshold_f
     if re.search(r"\b(lowest|minimum|min(?:imum)?|overnight\s+low|low\s+temperature)\b", q):
         temperature_metric = "min"
 
@@ -164,4 +313,9 @@ def parse_weather_question(question: str) -> ParsedWeatherQuestion:
         note="; ".join(notes),
         temperature_metric=temperature_metric,  # type: ignore[arg-type]
         temperature_bucket=temperature_bucket,  # type: ignore[arg-type]
+        temperature_range_lower_f=temperature_range_lower_f,
+        temperature_range_upper_f=temperature_range_upper_f,
+        temperature_range_lower_original=temperature_range_lower_original,
+        temperature_range_upper_original=temperature_range_upper_original,
+        temperature_range_inclusive=temperature_range_inclusive,
     )

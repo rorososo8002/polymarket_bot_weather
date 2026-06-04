@@ -18,7 +18,7 @@ from .config import Settings
 from .models import ParsedWeatherQuestion, WeatherSignal
 from .nowcast import StationNowcastObservation
 from .stations import STATION_MAP, TRADING_READY_STATION_MAP, StationMeta
-from .weather_client import parse_weather_question
+from .weather_client import parse_weather_question, temperature_bucket_interval_bounds_f
 
 
 # ---------------------------------------------------------------------------
@@ -202,21 +202,27 @@ def _temperature_bucket_probability(
         raise ValueError("Temperature bucket is missing a parsed threshold.")
 
     threshold_f = parsed.threshold_f
-    bucket_width_f = 1.8 if parsed.threshold_unit == "C" else 1.0
-    half_width_f = bucket_width_f / 2.0
 
-    if parsed.temperature_bucket == "exact":
-        lower_f = threshold_f - half_width_f
-        upper_f = threshold_f + half_width_f
-        votes = [lower_f <= value < upper_f for value in member_values_f]
+    if parsed.temperature_bucket in {"exact", "range"}:
+        bounds = temperature_bucket_interval_bounds_f(parsed)
+        if bounds is None:
+            raise ValueError("Temperature bucket is missing a parsed interval.")
+        lower_f, upper_f = bounds.as_tuple()
+        votes = [bounds.contains_f(value) for value in member_values_f]
         cdf_p = normal_cdf((upper_f - mean_f) / sigma_f) - normal_cdf((lower_f - mean_f) / sigma_f)
     elif parsed.temperature_bucket == "lower_tail":
-        upper_f = threshold_f + half_width_f
-        votes = [value < upper_f for value in member_values_f]
+        bounds = temperature_bucket_interval_bounds_f(parsed)
+        if bounds is None:
+            raise ValueError("Lower-tail temperature bucket is missing a parsed interval.")
+        _lower_f, upper_f = bounds.as_tuple()
+        votes = [bounds.contains_f(value) for value in member_values_f]
         cdf_p = normal_cdf((upper_f - mean_f) / sigma_f)
     elif parsed.temperature_bucket == "upper_tail":
-        lower_f = threshold_f - half_width_f
-        votes = [value >= lower_f for value in member_values_f]
+        bounds = temperature_bucket_interval_bounds_f(parsed)
+        if bounds is None:
+            raise ValueError("Upper-tail temperature bucket is missing a parsed interval.")
+        lower_f, _upper_f = bounds.as_tuple()
+        votes = [bounds.contains_f(value) for value in member_values_f]
         cdf_p = 1.0 - normal_cdf((lower_f - mean_f) / sigma_f)
     elif parsed.operator == ">=":
         votes = [value >= threshold_f for value in member_values_f]
@@ -823,6 +829,19 @@ def _station_for(parsed: ParsedWeatherQuestion) -> StationMeta | None:
 def _format_threshold(parsed: ParsedWeatherQuestion) -> str:
     if parsed.threshold_f is None:
         return "unknown"
+    if parsed.temperature_bucket == "range":
+        if parsed.temperature_range_lower_f is None or parsed.temperature_range_upper_f is None:
+            return "unknown-range"
+        if (
+            parsed.threshold_unit == "C"
+            and parsed.temperature_range_lower_original is not None
+            and parsed.temperature_range_upper_original is not None
+        ):
+            return (
+                f"{parsed.temperature_range_lower_original:.1f}-{parsed.temperature_range_upper_original:.1f}C/"
+                f"{parsed.temperature_range_lower_f:.1f}-{parsed.temperature_range_upper_f:.1f}F"
+            )
+        return f"{parsed.temperature_range_lower_f:.1f}-{parsed.temperature_range_upper_f:.1f}F"
     if parsed.threshold_unit == "C" and parsed.threshold_original is not None:
         return f"{parsed.threshold_original:.1f}C/{parsed.threshold_f:.1f}F"
     return f"{parsed.threshold_f:.1f}F"
@@ -841,22 +860,38 @@ def _nowcast_threshold_adjustment(
         return forecast_probability, "no-threshold"
 
     threshold_f = parsed.threshold_f
-    half_width_f = (1.8 if parsed.threshold_unit == "C" else 1.0) / 2.0
-
     if parsed.temperature_bucket == "exact":
-        upper_f = threshold_f + half_width_f
+        bounds = temperature_bucket_interval_bounds_f(parsed)
+        if bounds is None:
+            return forecast_probability, "no-threshold"
+        _lower_f, upper_f = bounds.as_tuple()
         if observed_high_f >= upper_f:
             return 0.0, "observed-high-above-exact-bucket"
         return forecast_probability, "observed-high-not-decisive"
 
+    if parsed.temperature_bucket == "range":
+        bounds = temperature_bucket_interval_bounds_f(parsed)
+        if bounds is None:
+            return forecast_probability, "no-threshold"
+        _lower_f, upper_f = bounds.as_tuple()
+        if observed_high_f > upper_f:
+            return 0.0, "observed-high-above-range-bucket"
+        return forecast_probability, "observed-high-not-decisive"
+
     if parsed.temperature_bucket == "lower_tail":
-        upper_f = threshold_f + half_width_f
+        bounds = temperature_bucket_interval_bounds_f(parsed)
+        if bounds is None:
+            return forecast_probability, "no-threshold"
+        _lower_f, upper_f = bounds.as_tuple()
         if observed_high_f >= upper_f:
             return 0.0, "observed-high-above-lower-tail"
         return forecast_probability, "observed-high-not-decisive"
 
     if parsed.temperature_bucket == "upper_tail":
-        lower_f = threshold_f - half_width_f
+        bounds = temperature_bucket_interval_bounds_f(parsed)
+        if bounds is None:
+            return forecast_probability, "no-threshold"
+        lower_f, _upper_f = bounds.as_tuple()
         if observed_high_f >= lower_f:
             return 1.0, "observed-high-reached-upper-tail"
         return forecast_probability, "observed-high-not-decisive"
@@ -877,22 +912,38 @@ def _nowcast_low_threshold_adjustment(
         return forecast_probability, "no-threshold"
 
     threshold_f = parsed.threshold_f
-    half_width_f = (1.8 if parsed.threshold_unit == "C" else 1.0) / 2.0
-
     if parsed.temperature_bucket == "exact":
-        lower_f = threshold_f - half_width_f
+        bounds = temperature_bucket_interval_bounds_f(parsed)
+        if bounds is None:
+            return forecast_probability, "no-threshold"
+        lower_f, _upper_f = bounds.as_tuple()
         if observed_low_f < lower_f:
             return 0.0, "observed-low-below-exact-bucket"
         return forecast_probability, "observed-low-not-decisive"
 
+    if parsed.temperature_bucket == "range":
+        bounds = temperature_bucket_interval_bounds_f(parsed)
+        if bounds is None:
+            return forecast_probability, "no-threshold"
+        lower_f, _upper_f = bounds.as_tuple()
+        if observed_low_f < lower_f:
+            return 0.0, "observed-low-below-range-bucket"
+        return forecast_probability, "observed-low-not-decisive"
+
     if parsed.temperature_bucket == "lower_tail":
-        upper_f = threshold_f + half_width_f
+        bounds = temperature_bucket_interval_bounds_f(parsed)
+        if bounds is None:
+            return forecast_probability, "no-threshold"
+        _lower_f, upper_f = bounds.as_tuple()
         if observed_low_f <= upper_f:
             return 1.0, "observed-low-reached-lower-tail"
         return forecast_probability, "observed-low-not-decisive"
 
     if parsed.temperature_bucket == "upper_tail":
-        lower_f = threshold_f - half_width_f
+        bounds = temperature_bucket_interval_bounds_f(parsed)
+        if bounds is None:
+            return forecast_probability, "no-threshold"
+        lower_f, _upper_f = bounds.as_tuple()
         if observed_low_f < lower_f:
             return 0.0, "observed-low-below-upper-tail"
         return forecast_probability, "observed-low-not-decisive"

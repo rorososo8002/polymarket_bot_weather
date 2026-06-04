@@ -200,8 +200,11 @@ object when present.
   `TRADING_READY_STATION_MAP` subset after the temperature-only filter. The
   parser treats rain, snow, precipitation, wind, humidity, and other
   non-temperature weather questions as unsupported.
-- Temperature bucket probabilities use shared non-overlapping boundaries so one
-  event's buckets sum to 100%.
+- Temperature range buckets such as `86-87F` or `22-23C` preserve their
+  displayed inclusive endpoints exactly: `86-87F` means
+  `86.0 <= temperature_f <= 87.0`. Do not apply exact-bucket half-step
+  expansion to range markets. Existing exact buckets such as `87F` still use
+  the legacy rounded-cell behavior pending a separate settlement-rule review.
 - Same-day nowcast may adjust probability only when the provider is explicitly
   mapped to the same settlement station. Current trading-ready sources: AWC
   METAR for 39 ICAO stations and HKO max/min CSV for Hong Kong. Karachi/OPMR

@@ -292,6 +292,12 @@ def test_discovery_keeps_exact_temperature_bucket():
     )
 
 
+def test_discovery_keeps_range_temperature_bucket():
+    assert PolymarketClient._is_weather_market(
+        {"question": "Will the highest temperature in Atlanta be 86-87F on May 25?"}
+    )
+
+
 def test_discovery_rejects_weather_markets_outside_verified_station_set():
     assert not PolymarketClient._is_weather_market(
         {"question": "Will the highest temperature in Austin be 34\u00b0C or higher on May 25?"}

@@ -57,6 +57,10 @@ specialized reference docs.
 - City-date weather buckets share one correlated-risk budget. At most two
   complementary legs are selected per event, with a `$10` minimum leg and
   conservative city, event, and total exposure caps.
+- Temperature range markets are not exact single-temperature buckets. A market
+  such as `86-87F` means `86.0 <= temperature_f <= 87.0`, so parser,
+  probability, and portfolio interval logic must preserve the displayed
+  inclusive lower and upper endpoints without half-step expansion.
 - Profit exits may recover principal and keep a bounded settlement runner only
   when conservative settlement value beats fee-adjusted sell-now value. Active
   runners are rechecked; they are not risk exemptions.
@@ -623,3 +627,12 @@ disk, while `paper_state.json`, `paper_trades.csv`, and `paper_decisions.csv`
 must remain evidence. Consequence: new decision and portfolio rows are compact
 summaries, raw diagnostics are opt-in or error-only, and disk pressure blocks
 only raw snapshot writes rather than deleting or truncating paper ledgers.
+
+### 2026-06-05: Preserve Temperature Range Bucket Endpoints
+
+Decision: Parse temperature markets such as `86-87F`, `62-63F`, and `22-23C`
+as `range` buckets with stored inclusive lower and upper endpoints. Why:
+treating `86-87F` as exact `87F`, or widening it to a half-step interval,
+changes the YES condition used by `p_true`. Consequence: probability applies
+the exact displayed inequality such as `86.0 <= temperature_f <= 87.0`, and
+portfolio scenarios use the same range without expanding or shrinking it.

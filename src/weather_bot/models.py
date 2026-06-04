@@ -80,7 +80,12 @@ class ParsedWeatherQuestion:
     confidence: float = 0.0
     note: str = ""
     temperature_metric: Literal["max", "min"] = "max"
-    temperature_bucket: Literal["threshold", "exact", "lower_tail", "upper_tail"] = "threshold"
+    temperature_bucket: Literal["threshold", "exact", "range", "lower_tail", "upper_tail"] = "threshold"
+    temperature_range_lower_f: float | None = None
+    temperature_range_upper_f: float | None = None
+    temperature_range_lower_original: float | None = None
+    temperature_range_upper_original: float | None = None
+    temperature_range_inclusive: bool = False
 
 
 @dataclass(frozen=True)

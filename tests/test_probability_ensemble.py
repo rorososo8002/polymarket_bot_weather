@@ -11,6 +11,7 @@ from weather_bot.probability import (
     WeatherBiasLoadError,
     _extract_member_values,
     _station_for,
+    _temperature_bucket_probability,
     _today_for_timezone,
     blend_empirical_and_cdf,
     dynamic_sigma_f,
@@ -20,7 +21,7 @@ from weather_bot.probability import (
 from weather_bot.live_paper_runner import evaluate_market
 from weather_bot.models import RawMarket
 from weather_bot.nowcast import StationNowcastObservation
-from weather_bot.weather_client import parse_weather_question
+from weather_bot.weather_client import c_to_f, parse_weather_question
 
 
 def test_extract_member_values_accepts_suffixed_keys_and_bias():
@@ -704,6 +705,105 @@ def test_multi_bucket_temperature_probabilities_share_one_consistent_distributio
 
     assert all(signal.source == "open-meteo-ensemble-station" for signal in signals)
     assert sum(signal.p_true for signal in signals) == pytest.approx(1.0)
+
+
+def test_range_temperature_bucket_uses_exact_inclusive_fahrenheit_bounds():
+    parsed = parse_weather_question("Will the highest temperature in Atlanta be 86-87F today?")
+    member_values_f = [85.999, 86.0, 86.5, 87.0, 87.001]
+
+    _probability, empirical_p = _temperature_bucket_probability(
+        parsed,
+        member_values_f,
+        mean_f=sum(member_values_f) / len(member_values_f),
+        sigma_f=1.25,
+    )
+
+    assert empirical_p == pytest.approx(3 / 5)
+
+
+@pytest.mark.parametrize(
+    ("temperature_f", "expected_vote"),
+    [
+        (85.999, 0.0),
+        (86.0, 1.0),
+        (86.2, 1.0),
+        (86.5, 1.0),
+        (86.999, 1.0),
+        (87.0, 1.0),
+        (87.001, 0.0),
+    ],
+)
+def test_range_temperature_bucket_applies_general_fahrenheit_inequality(temperature_f, expected_vote):
+    parsed = parse_weather_question("Will the highest temperature in Atlanta be 86-87F today?")
+
+    _probability, empirical_p = _temperature_bucket_probability(
+        parsed,
+        [temperature_f],
+        mean_f=temperature_f,
+        sigma_f=1.25,
+    )
+
+    assert empirical_p == expected_vote
+
+
+def test_range_temperature_bucket_uses_exact_converted_celsius_bounds_without_rounding():
+    parsed = parse_weather_question("Will the highest temperature in London be 22-23C today?")
+    member_values_f = [c_to_f(value_c) for value_c in [21.999, 22.0, 22.5, 23.0, 23.001]]
+
+    _probability, empirical_p = _temperature_bucket_probability(
+        parsed,
+        member_values_f,
+        mean_f=sum(member_values_f) / len(member_values_f),
+        sigma_f=1.25,
+    )
+
+    assert parsed.threshold_unit == "C"
+    assert parsed.temperature_range_lower_original == 22.0
+    assert parsed.temperature_range_upper_original == 23.0
+    assert parsed.temperature_range_lower_f == c_to_f(22.0)
+    assert parsed.temperature_range_upper_f == c_to_f(23.0)
+    assert empirical_p == pytest.approx(3 / 5)
+
+
+def test_range_temperature_bucket_probability_differs_from_exact_bucket():
+    target = _today_for_timezone("America/New_York")
+    member_values_f = [85.999, 86.0, 86.5, 87.0, 87.001]
+
+    class FakeEnsembleClient:
+        models = "fake"
+
+        def forecast_daily_ensemble(self, *_args, **_kwargs):
+            daily = {"time": [target.isoformat()], "temperature_2m_max": [member_values_f[0]]}
+            daily.update(
+                {
+                    f"temperature_2m_max_member{idx:02d}": [value]
+                    for idx, value in enumerate(member_values_f[1:], start=1)
+                }
+            )
+            return {"daily": daily}
+
+    range_signal = estimate_weather_probability(
+        "Will the highest temperature in Atlanta be 86-87F today?",
+        settings=Settings(),
+        ensemble_client=FakeEnsembleClient(),
+    )
+    exact_signal = estimate_weather_probability(
+        "Will the highest temperature in Atlanta be 87F today?",
+        settings=Settings(),
+        ensemble_client=FakeEnsembleClient(),
+    )
+
+    assert range_signal.source == "open-meteo-ensemble-station"
+    assert range_signal.parsed is not None
+    assert range_signal.parsed.temperature_bucket == "range"
+    assert range_signal.parsed.temperature_range_lower_f == 86
+    assert range_signal.parsed.temperature_range_upper_f == 87
+    assert range_signal.parsed.temperature_range_inclusive is True
+    assert "bucket=range" in range_signal.note
+    assert exact_signal.parsed is not None
+    assert exact_signal.parsed.temperature_bucket == "exact"
+    assert range_signal.p_true > exact_signal.p_true
+    assert range_signal.p_true != exact_signal.p_true
 
 
 def test_temperature_nowcast_can_confirm_threshold_crossing_without_city_fallback():

@@ -9,7 +9,12 @@ from typing import TYPE_CHECKING, Any
 from .config import Settings
 from .edge import clamp_probability, executable_sell_price, polymarket_taker_fee_usdc
 from .models import EdgeResult, PaperPosition, RawMarket, WeatherSignal
-from .weather_client import parse_weather_question
+from .weather_client import (
+    TemperatureBucketInterval,
+    parse_weather_question,
+    rounded_temperature_bucket_interval_f,
+    temperature_bucket_interval_bounds_f,
+)
 
 if TYPE_CHECKING:
     from .paper import PaperBroker
@@ -213,20 +218,12 @@ def _event_positions(broker: PaperBroker, city: str, date_hint: str) -> list[Pap
 
 def _temperature_interval(question: str) -> tuple[float, float] | None:
     parsed = parse_weather_question(question)
-    if parsed.variable != "temperature" or parsed.threshold_f is None:
-        return None
-    half_step = 0.9 if parsed.threshold_unit == "C" else 0.5
-    if parsed.temperature_bucket == "exact":
-        return parsed.threshold_f - half_step, parsed.threshold_f + half_step
-    if parsed.temperature_bucket == "lower_tail":
-        return -inf, parsed.threshold_f + half_step
-    if parsed.temperature_bucket == "upper_tail":
-        return parsed.threshold_f - half_step, inf
-    if parsed.operator == "<=":
-        return -inf, parsed.threshold_f
-    if parsed.operator == ">=":
-        return parsed.threshold_f, inf
-    return None
+    return rounded_temperature_bucket_interval_f(parsed)
+
+
+def _temperature_interval_bounds(question: str) -> TemperatureBucketInterval | None:
+    parsed = parse_weather_question(question)
+    return temperature_bucket_interval_bounds_f(parsed)
 
 
 def _intervals_do_not_overlap(left: tuple[float, float], right: tuple[float, float]) -> bool:
@@ -234,18 +231,31 @@ def _intervals_do_not_overlap(left: tuple[float, float], right: tuple[float, flo
     return left[1] <= right[0] + epsilon or right[1] <= left[0] + epsilon
 
 
+def _bucket_intervals_do_not_overlap(left: TemperatureBucketInterval, right: TemperatureBucketInterval) -> bool:
+    epsilon = 1e-9
+    if left.upper_f < right.lower_f - epsilon:
+        return True
+    if right.upper_f < left.lower_f - epsilon:
+        return True
+    if abs(left.upper_f - right.lower_f) <= epsilon:
+        return not (left.upper_inclusive and right.lower_inclusive)
+    if abs(right.upper_f - left.lower_f) <= epsilon:
+        return not (right.upper_inclusive and left.lower_inclusive)
+    return False
+
+
 def _is_complementary(candidate: PortfolioCandidate, selected: list[PortfolioCandidate], held: list[PaperPosition]) -> bool:
     if candidate.market_type != "temperature":
         return False
-    candidate_interval = _temperature_interval(candidate.market.question)
+    candidate_interval = _temperature_interval_bounds(candidate.market.question)
     if candidate_interval is None:
         return False
 
     for leg in selected:
         if leg.market_type != "temperature":
             return False
-        leg_interval = _temperature_interval(leg.market.question)
-        if leg_interval is None or not _intervals_do_not_overlap(candidate_interval, leg_interval):
+        leg_interval = _temperature_interval_bounds(leg.market.question)
+        if leg_interval is None or not _bucket_intervals_do_not_overlap(candidate_interval, leg_interval):
             return False
     return is_complementary_with_positions(candidate.market.question, candidate.result.side, held)
 
@@ -253,12 +263,12 @@ def _is_complementary(candidate: PortfolioCandidate, selected: list[PortfolioCan
 def is_complementary_with_positions(question: str, side: str, held: list[PaperPosition]) -> bool:
     if not held:
         return True
-    candidate_interval = _temperature_interval(question)
+    candidate_interval = _temperature_interval_bounds(question)
     if candidate_interval is None:
         return False
     for pos in held:
-        held_interval = _temperature_interval(pos.question)
-        if held_interval is None or not _intervals_do_not_overlap(candidate_interval, held_interval):
+        held_interval = _temperature_interval_bounds(pos.question)
+        if held_interval is None or not _bucket_intervals_do_not_overlap(candidate_interval, held_interval):
             return False
     return True
 

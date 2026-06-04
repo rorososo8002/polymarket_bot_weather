@@ -12,6 +12,7 @@ from weather_bot.paper import PaperBroker
 from weather_bot.portfolio import (
     EntryBankrollSnapshot,
     PortfolioCandidate,
+    _temperature_interval,
     adaptive_event_cap_fraction,
     available_entry_bankroll,
     select_event_portfolio,
@@ -389,6 +390,45 @@ def test_event_portfolio_allows_yes_no_combination_from_different_buckets(tmp_pa
         ("seoul-27", "NO"),
     ]
     assert decision.selected_exposure_usd == 20.0
+
+
+def test_range_temperature_interval_uses_displayed_bounds_without_half_step():
+    range_interval = _temperature_interval("Will the highest temperature in Atlanta be 86-87F on May 25?")
+    exact_interval = _temperature_interval("Will the highest temperature in Atlanta be 87F on May 25?")
+
+    assert range_interval == pytest.approx((86.0, 87.0))
+    assert exact_interval == pytest.approx((86.5, 87.5))
+
+
+def test_event_portfolio_keeps_displayed_range_ladder_separate_from_held_position(tmp_path):
+    broker = PaperBroker(settings(tmp_path, bankroll_usd=200.0))
+    broker.state.positions = [
+        PaperPosition(
+            position_id="held-range",
+            market_id="seoul-86-87",
+            question=market("seoul-86-87", "86-87F").question,
+            token_id="seoul-86-87-yes",
+            side="YES",
+            entry_price=0.40,
+            shares=25.0,
+            cost_usd=10.0,
+            opened_at="2026-06-01T00:00:00+00:00",
+            metadata={"city": "seoul", "date_hint": "may 25"},
+        )
+    ]
+    next_displayed_bucket = candidate(
+        "seoul-88-89",
+        "88-89F",
+        side="YES",
+        size_usd=20.0,
+        p_true=0.70,
+        p_exec=0.30,
+        expected_net_profit_usd=4.0,
+    )
+
+    decision = select_event_portfolio(broker, [next_displayed_bucket], usable_snapshot(200.0))
+
+    assert [(leg.market.market_id, leg.result.side) for leg in decision.selected] == [("seoul-88-89", "YES")]
 
 
 def test_event_portfolio_blocks_opposite_position_in_same_market(tmp_path):
