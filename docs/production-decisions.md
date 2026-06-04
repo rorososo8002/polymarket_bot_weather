@@ -19,7 +19,8 @@ specialized reference docs.
 - Execution is temperature-only. Rain, snow, precipitation, wind, humidity, and
   other non-temperature weather markets are outside the paper strategy and are
   excluded before forecast probability calculation, order-book subscription, or
-  paper trade logging.
+  paper trade logging. Example environment files must not expose removed
+  non-temperature market toggles.
 - Forecast rows must match the target market date exactly. Nearby forecast
   dates are not substitutes and produce `forecast-unavailable`.
 - `pre_forecast_tradeability_gate` must reject markets before Open-Meteo when

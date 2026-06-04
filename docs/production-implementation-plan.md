@@ -11,7 +11,8 @@ verified settlement stations and reproducible paper accounting.
 - Execute the paper strategy only on temperature markets. Rain, snow,
   precipitation, wind, humidity, and other non-temperature weather markets are
   outside the current experiment and are excluded before forecast probability
-  calculation, order-book subscription, or paper trade logging.
+  calculation, order-book subscription, or paper trade logging. The current
+  paper runtime has no operator environment switch for re-enabling them.
 - Treat `STATION_MAP` as the single source of truth for registered
   settlement-station metadata, not as proof that a city may be traded.
 - Treat `TRADING_READY_STATION_MAP` as the paper-trading execution universe. A

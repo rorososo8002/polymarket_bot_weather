@@ -9,6 +9,20 @@ except ModuleNotFoundError:
 ROOT = Path(__file__).resolve().parents[1]
 
 
+PRECIPITATION_ENV_SETTINGS = (
+    "ENABLE_PRECIPITATION_MARKETS",
+    "PRECIP_MIN_NET_EDGE",
+    "PRECIP_ENTRY_FRACTION",
+    "PRECIP_MIN_CONFIDENCE",
+    "PRECIP_MAX_CONFIDENCE",
+)
+
+
+def _assert_precipitation_settings_absent(text: str) -> None:
+    for setting in PRECIPITATION_ENV_SETTINGS:
+        assert setting not in text
+
+
 def test_local_env_example_exposes_settlement_runner_defaults():
     text = (ROOT / ".env.example").read_text(encoding="utf-8")
 
@@ -18,6 +32,12 @@ def test_local_env_example_exposes_settlement_runner_defaults():
     assert "FORECAST_REQUEST_LOG_PATH=runtime/forecast_request_log.jsonl" in text
     assert "FORECAST_RATE_LIMIT_STATE_PATH=runtime/forecast_rate_limit_state.json" in text
     assert "STATION_NOWCAST_REQUEST_LOG_PATH=runtime/station_nowcast_request_log.jsonl" in text
+
+
+def test_local_env_example_does_not_expose_removed_precipitation_settings():
+    text = (ROOT / ".env.example").read_text(encoding="utf-8")
+
+    _assert_precipitation_settings_absent(text)
 
 
 def test_systemd_service_runs_live_paper_bot_from_venv():
@@ -75,6 +95,14 @@ def test_vps_env_example_keeps_runtime_state_under_data_dir():
     assert "MIN_ORDER_USD=10.00" in text
     assert "ESTIMATED_FEE_PER_SHARE" not in text
     assert "POLYMARKET_PRIVATE_KEY" not in text
+
+
+def test_vps_env_example_does_not_expose_removed_precipitation_settings():
+    env_example = ROOT / "deploy" / "systemd" / "live-paper.env.example"
+
+    text = env_example.read_text(encoding="utf-8")
+
+    _assert_precipitation_settings_absent(text)
 
 
 def test_runtime_logrotate_rotates_raw_snapshots_and_request_logs_only():

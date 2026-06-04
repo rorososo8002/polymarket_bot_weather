@@ -16,6 +16,8 @@ Read this file only for strategy changes, probability modeling, trading behavior
 - Trade only cities listed in `src/weather_bot/stations.py`.
 - Treat `STATION_MAP` as the single source of truth for Polymarket weather settlement stations.
 - Unknown markets and unknown stations are skips, not guesses or city-centroid fallbacks.
+- The current paper strategy is temperature-only. There is no environment
+  switch that re-enables non-temperature weather markets.
 - Refresh forecast data through the Open-Meteo cache every 2 hours by default.
 - Apply the forecast TTL to memory and disk cache entries alike. A reachable
   dashboard is not proof of fresh forecast data; inspect the last successful

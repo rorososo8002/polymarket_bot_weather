@@ -17,8 +17,9 @@
   humidity, and other non-temperature weather markets are marked unsupported by
   the parser and excluded before forecast probability calculation, order-book
   subscription, or paper trade logging. Open-Meteo requests use only
-  temperature daily variables and the realtime stream subscribes only
-  temperature discovery tokens.
+  temperature daily variables, the realtime stream subscribes only
+  temperature discovery tokens, and example environment files no longer expose
+  removed non-temperature market toggles.
 - Station evidence is now gated separately from station registration: 40 cities
   have stored official Polymarket rule evidence and are trading-ready; Karachi
   is excluded because its found rule source conflicts with the current station

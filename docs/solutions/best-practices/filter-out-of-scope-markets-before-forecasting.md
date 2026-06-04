@@ -48,6 +48,9 @@ probability estimation:
   city support, and required `date_hint` evidence before Open-Meteo fetching.
   A market that fails the gate records a SKIP diagnostic instead of spending a
   forecast request.
+- Example environment files no longer expose removed precipitation toggles.
+  A setting that runtime code does not read is an operator trap, not a useful
+  switch.
 
 ## What to check next time to prevent the same mistake
 When removing or disabling a market type, check the earliest boundary first:
@@ -58,9 +61,12 @@ When removing or disabling a market type, check the earliest boundary first:
 - Can the runner still subscribe its tokens or log late SKIPs for it?
 - Can a missing `date_hint` or missing rule-evidence city still reach
   `estimate_weather_probability()` and therefore Open-Meteo?
+- Do copied operator env examples still mention removed market-type switches
+  such as `ENABLE_PRECIPITATION_MARKETS` or `PRECIP_*`?
 
 Add tests that fail if the removed market type reaches the probability
-estimator or if an untradeable market makes an Open-Meteo HTTP request.
+estimator, if an untradeable market makes an Open-Meteo HTTP request, or if a
+removed market-type switch remains in an example env file.
 
 ## What this project must be especially careful about
 This project measures a paper-trading strategy. The ledgers are the experiment,

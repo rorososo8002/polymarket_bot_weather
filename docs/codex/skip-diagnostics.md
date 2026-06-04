@@ -105,6 +105,7 @@ forecast-unavailable
 confidence too low
 date_hint=None
 unsupported station
+unsupported market type
 ```
 
 Meaning: the bot does not have trusted weather or market interpretation for
@@ -114,7 +115,7 @@ Check next:
 
 - Does the Open-Meteo response contain the exact target date?
 - Is the parsed city in `TRADING_READY_STATION_MAP`?
-- Does the question shape match supported weather-market parsing?
+- Does the question shape match supported temperature-market parsing?
 - Is same-station nowcast missing, stale, or malformed?
 
 Likely fixes:
