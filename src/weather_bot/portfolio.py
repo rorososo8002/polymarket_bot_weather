@@ -30,6 +30,7 @@ class PortfolioCandidate:
     signal: WeatherSignal
     result: EdgeResult
     market_type: str
+    decision_ts: str = ""
 
 
 @dataclass(frozen=True)
@@ -81,6 +82,7 @@ class EventPortfolioDecision:
                     "size_usd": round(leg.result.size_usd, 6),
                     "size_shares": round(leg.result.size_shares, 6),
                     "p_exec": leg.result.p_exec,
+                    "decision_ts": leg.decision_ts,
                     "expected_net_profit_usd": round(leg.result.expected_net_profit_usd, 6),
                 }
                 for leg in self.selected

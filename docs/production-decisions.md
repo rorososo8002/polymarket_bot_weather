@@ -100,6 +100,11 @@ specialized reference docs.
   source ledgers. Reports may scan full history when that is the promised
   meaning, but they must stream rows and keep only aggregates or bounded
   lookups in memory instead of materializing whole CSV files.
+- Resolved Brier scoring uses `paper_trades.csv` `OPEN` entry metadata first:
+  `entry_p_true` is the YES probability at actual paper entry time. Legacy
+  trade CSVs without those columns fall back to the latest entry decision so
+  old reports do not break, but new scoreable entries must carry the entry
+  probability in the execution ledger.
 - `paper_raw_snapshots.jsonl` is diagnostic evidence and may be archived and
   compressed separately from source ledgers. On the Oracle VPS it rotates at
   1GB into `data/archive/` with zstd compression. Do not apply the same cleanup
@@ -500,6 +505,16 @@ signals rather than whole CSV row lists. Why: these files are the paper
 strategy's evidence ledger and naturally grow during long VPS operation.
 Consequence: default report semantics stay full-history, but memory use scales
 with the number of tracked markets/signals instead of the total row count.
+
+### 2026-06-04: Score Brier From OPEN Entry Probability
+
+Decision: Resolved Brier scoring prefers `entry_p_true` from the actual `OPEN`
+row in `paper_trades.csv`; `entry_side_probability`, `entry_net_edge`, and
+`decision_ts` are also recorded as structured entry metadata. Why: a later
+decision for the same market can update `p_true`, but Brier score must grade
+the probability the bot acted on at entry time. Consequence: new paper results
+avoid hindsight scoring drift, while legacy CSVs without the new columns still
+fall back to the previous latest-decision behavior.
 
 ### 2026-06-04: Record Real Station Nowcast HTTP Attempts
 

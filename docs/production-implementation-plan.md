@@ -92,6 +92,11 @@ Paper-report readers treat `paper_decisions.csv` and `paper_trades.csv` as
 source ledgers. Full-history analysis may scan every row to preserve its
 meaning, but it must stream rows and keep only aggregates, market-level lookup
 state, or bounded research samples in memory.
+Resolved Brier scoring treats an `OPEN` row in `paper_trades.csv` as the
+canonical entry-time forecast evidence. New `OPEN` rows record `entry_p_true`,
+`entry_side_probability`, `entry_net_edge`, and `decision_ts`; older CSVs
+without those columns fall back to the latest entry decision for that market so
+legacy reports remain readable.
 
 ## Code Map
 

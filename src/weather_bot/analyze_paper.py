@@ -42,6 +42,18 @@ def _float(value: str | None, default: float = 0.0) -> float:
         return default
 
 
+def _probability(value: str | None) -> float | None:
+    try:
+        if value in (None, ""):
+            return None
+        parsed = float(value)
+    except ValueError:
+        return None
+    if 0.0 <= parsed <= 1.0:
+        return parsed
+    return None
+
+
 def _skip_label(reason: str) -> str:
     return (reason.split(":", 1)[0] or "unknown").strip()
 
@@ -59,6 +71,24 @@ def _edge_bucket(edge: float) -> str:
 def _resolved_winner(reason: str) -> str | None:
     match = re.search(r"resolved winner=(YES|NO)", reason, re.IGNORECASE)
     return match.group(1).upper() if match else None
+
+
+def _entry_p_yes_from_open_trade(trade: dict[str, str]) -> float | None:
+    p_true = _probability(trade.get("entry_p_true"))
+    if p_true is not None:
+        return p_true
+    p_true = _probability(trade.get("p_true"))
+    if p_true is not None:
+        return p_true
+    side_probability = _probability(trade.get("entry_side_probability"))
+    side = (trade.get("side") or "").upper()
+    if side_probability is None:
+        return None
+    if side == "YES":
+        return side_probability
+    if side == "NO":
+        return 1.0 - side_probability
+    return None
 
 
 def _summarize_decisions(decisions_path: Path) -> _DecisionSummary:
@@ -84,12 +114,22 @@ def _summarize_decisions(decisions_path: Path) -> _DecisionSummary:
 
 def _summarize_trades(trades_path: Path, latest_entry_p_yes_by_market: dict[str, float]) -> _TradeSummary:
     summary = _TradeSummary()
+    open_entry_p_yes_by_market: dict[str, float] = {}
     for trade in _iter_csv_rows(trades_path):
         summary.trades_count += 1
+        market_id = trade.get("market_id", "")
+        action = (trade.get("action") or "").upper()
+        if action == "OPEN" and market_id:
+            entry_p_yes = _entry_p_yes_from_open_trade(trade)
+            if entry_p_yes is not None:
+                open_entry_p_yes_by_market[market_id] = entry_p_yes
+            continue
         winner = _resolved_winner(trade.get("reason", ""))
         if winner is None:
             continue
-        p_yes = latest_entry_p_yes_by_market.get(trade.get("market_id", ""))
+        p_yes = open_entry_p_yes_by_market.get(market_id)
+        if p_yes is None:
+            p_yes = latest_entry_p_yes_by_market.get(market_id)
         if p_yes is None:
             continue
         outcome_yes = 1.0 if winner == "YES" else 0.0

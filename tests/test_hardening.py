@@ -1170,6 +1170,34 @@ def test_paper_round_trip_cash_and_pnl_include_taker_fees(tmp_path):
     assert pnl == pytest.approx(net_proceeds - cost)
 
 
+def test_open_trade_logs_entry_probability_metadata(tmp_path):
+    settings = Settings(
+        bankroll_usd=100.0,
+        state_path=str(tmp_path / "state.json"),
+        trades_csv_path=str(tmp_path / "trades.csv"),
+        decisions_csv_path=str(tmp_path / "decisions.csv"),
+        raw_snapshots_path=str(tmp_path / "raw.jsonl"),
+        min_order_usd=1.0,
+        weather_taker_fee_rate=0.0,
+    )
+    broker = PaperBroker(settings)
+
+    broker.open_position(
+        temp_market(),
+        "no",
+        EdgeResult("NO", 0.25, 0.70, 0.12, 10.0, 14.0, "entry"),
+        decision_ts="2026-01-01T00:00:00+00:00",
+    )
+
+    rows = list(csv.DictReader((tmp_path / "trades.csv").open(encoding="utf-8")))
+
+    assert rows[0]["action"] == "OPEN"
+    assert rows[0]["entry_p_true"] == "0.250000"
+    assert rows[0]["entry_side_probability"] == "0.750000"
+    assert rows[0]["entry_net_edge"] == "0.120000"
+    assert rows[0]["decision_ts"] == "2026-01-01T00:00:00+00:00"
+
+
 def test_resolved_market_settles_to_binary_payout():
     settings = Settings()
     broker = PaperBroker(settings)

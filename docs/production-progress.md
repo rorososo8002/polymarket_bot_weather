@@ -40,6 +40,9 @@
   `paper_decisions.csv` and `paper_trades.csv` rows instead of materializing
   whole CSV files. The default report meaning remains full-history; only the
   memory posture changed.
+- Paper analysis Brier scoring now prefers structured `OPEN` entry
+  probabilities from `paper_trades.csv` (`entry_p_true`) and falls back to the
+  latest entry decision only for legacy trade CSVs without the new columns.
 - Dashboard trade panels separate actual paper trade actions from high-volume
   SKIP diagnostics. `Recent Trades`, realized rows, and realized equity points
   use cached `OPEN`/`CLOSE`/`SETTLED`/`PARTIAL_CLOSE` rows so late SKIP bursts
@@ -141,6 +144,9 @@
   remains paper-only.
 - Analysis/shadow-report CSV streaming is complete locally and remains
   paper-only.
+- OPEN-entry Brier provenance hardening is complete locally and remains
+  paper-only. Local verification: focused analyze/hardening/dashboard/shadow
+  pytest passed with `101 passed`; full `pytest -q` passed with `328 passed`.
 - Dashboard trade-history filtering, closed-market `outcomePrices` settlement
   fallback, and realtime pre-stream settlement are complete locally and remain
   paper-only.

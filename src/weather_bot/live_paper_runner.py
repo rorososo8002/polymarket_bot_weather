@@ -418,13 +418,14 @@ def _event_portfolio_candidates(
     result: EdgeResult,
     per_side: dict[str, EdgeResult],
     market_type: str,
+    decision_ts: str = "",
 ) -> list[PortfolioCandidate]:
     executable = [
-        PortfolioCandidate(market, signal, edge_result, market_type)
+        PortfolioCandidate(market, signal, edge_result, market_type, decision_ts)
         for edge_result in per_side.values()
         if edge_result.side in {"YES", "NO"}
     ]
-    return executable or [PortfolioCandidate(market, signal, result, market_type)]
+    return executable or [PortfolioCandidate(market, signal, result, market_type, decision_ts)]
 
 
 def _is_temperature_market(market: RawMarket) -> bool:
@@ -641,8 +642,8 @@ def run_cycle(settings: Settings | None = None) -> list[MarketDecision]:
                 for side, edge_result in per_side.items():
                     latest_edges[(market.market_id, side)] = edge_result
                 decisions.append(MarketDecision(market=market, signal=signal, result=result))
-                candidates.extend(_event_portfolio_candidates(market, signal, result, per_side, market_type))
-                broker.log_decision(market, result, signal.note, market_type)
+                decision_ts = broker.log_decision(market, result, signal.note, market_type)
+                candidates.extend(_event_portfolio_candidates(market, signal, result, per_side, market_type, decision_ts))
                 broker.log_raw_snapshot(
                     "decision",
                     market,
@@ -748,6 +749,7 @@ def _open_position_if_needed(
     result: EdgeResult,
     market_type: str,
     entry_bankroll_usd: float | None = None,
+    decision_ts: str = "",
 ) -> None:
     if result.side not in {"YES", "NO"}:
         return
@@ -764,6 +766,7 @@ def _open_position_if_needed(
         city=city or "",
         date_hint=date_hint or "",
         entry_bankroll_usd=entry_bankroll_usd,
+        decision_ts=decision_ts,
     )
 
 
@@ -782,6 +785,7 @@ def _apply_event_portfolio(
             candidate.result,
             candidate.market_type,
             entry_bankroll_usd=entry_bankroll.entry_bankroll,
+            decision_ts=candidate.decision_ts,
         )
     return decision
 
@@ -826,8 +830,8 @@ def _evaluate_realtime_update(
             )
             for side, edge_result in per_side.items():
                 latest_edges[(market.market_id, side)] = edge_result
-            candidates.extend(_event_portfolio_candidates(market, signal, result, per_side, market_type))
-            broker.log_decision(market, result, signal.note, market_type)
+            decision_ts = broker.log_decision(market, result, signal.note, market_type)
+            candidates.extend(_event_portfolio_candidates(market, signal, result, per_side, market_type, decision_ts))
             broker.log_raw_snapshot(
                 "realtime_decision",
                 market,

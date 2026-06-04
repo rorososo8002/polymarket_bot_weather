@@ -47,6 +47,25 @@ class SettlementRunnerDecision:
 
 PROFIT_RUNNER_TRIGGERS = {"take_profit", "overheated_take_profit"}
 
+TRADE_CSV_FIELDNAMES = [
+    "ts",
+    "action",
+    "market_id",
+    "slug",
+    "question",
+    "market_type",
+    "side",
+    "token_id",
+    "shares",
+    "price",
+    "cash_delta_or_pnl",
+    "reason",
+    "entry_p_true",
+    "entry_side_probability",
+    "entry_net_edge",
+    "decision_ts",
+]
+
 
 class PaperStateLoadError(RuntimeError):
     """Raised when paper accounting state is unsafe to trade from."""
@@ -92,6 +111,58 @@ def _required_nonempty_string(raw: dict[str, Any], field: str, index: int) -> st
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"positions[{index}].{field} must be a non-empty string")
     return value
+
+
+def _format_optional_csv_float(value: Any) -> str:
+    if value in (None, ""):
+        return ""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return ""
+    if not isfinite(number):
+        return ""
+    return f"{number:.6f}"
+
+
+def _csv_header(path: Path) -> list[str]:
+    try:
+        with path.open("r", newline="", encoding="utf-8") as f:
+            header = f.readline().rstrip("\r\n")
+    except OSError:
+        return []
+    if not header:
+        return []
+    try:
+        return next(csv.reader([header]), [])
+    except csv.Error:
+        return []
+
+
+def _ensure_csv_columns(path: Path, required_fieldnames: list[str]) -> list[str]:
+    if not path.exists() or path.stat().st_size == 0:
+        return list(required_fieldnames)
+    existing_fieldnames = _csv_header(path)
+    if not existing_fieldnames:
+        return list(required_fieldnames)
+    missing = [field for field in required_fieldnames if field not in existing_fieldnames]
+    if not missing:
+        return existing_fieldnames
+
+    upgraded_fieldnames = [*existing_fieldnames, *missing]
+    tmp_path = path.with_name(f"{path.name}.{uuid4().hex}.tmp")
+    try:
+        with path.open("r", newline="", encoding="utf-8") as source, tmp_path.open("w", newline="", encoding="utf-8") as target:
+            reader = csv.DictReader(source)
+            writer = csv.DictWriter(target, fieldnames=upgraded_fieldnames, extrasaction="ignore")
+            writer.writeheader()
+            for row in reader:
+                writer.writerow(row)
+        os.replace(tmp_path, path)
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink()
+    return upgraded_fieldnames
 
 
 def _position_from_state(raw: dict[str, Any], index: int) -> PaperPosition:
@@ -294,6 +365,7 @@ class PaperBroker:
         city: str = "",
         date_hint: str = "",
         entry_bankroll_usd: float | None = None,
+        decision_ts: str = "",
     ) -> PaperPosition | None:
         if result.side not in {"YES", "NO"} or result.p_exec is None or result.size_usd <= 0:
             return None
@@ -363,6 +435,8 @@ class PaperBroker:
             expected_profit,
         )
         entry_plan = build_entry_plan(adjusted_result, risk_bankroll, self.settings)
+        opened_at = utc_now_iso()
+        entry_side_probability = side_true_probability(result.side, result.p_true)
         pos = PaperPosition(
             position_id=str(uuid4()),
             market_id=market.market_id,
@@ -372,12 +446,14 @@ class PaperBroker:
             entry_price=result.p_exec,
             shares=shares,
             cost_usd=spend,
-            opened_at=utc_now_iso(),
+            opened_at=opened_at,
             last_mark_price=result.p_exec,
             metadata={
                 "entry_edge": result.net_edge,
                 "entry_p_true": result.p_true,
-                "entry_side_probability": side_true_probability(result.side, result.p_true),
+                "entry_side_probability": entry_side_probability,
+                "decision_ts": decision_ts,
+                "entry_ts": opened_at,
                 "bankroll_before": entry_plan.bankroll_before,
                 "entry_bankroll_usd": risk_bankroll,
                 "entry_fraction": entry_plan.entry_fraction,
@@ -400,7 +476,23 @@ class PaperBroker:
         self.state.positions.append(pos)
         self.save_state()
         open_reason = f"{entry_plan.rationale}; entry_fee=${entry_fee_usdc:.5f}"
-        self.log_trade("OPEN", market, result.side, token_id, shares, result.p_exec, -spend, open_reason, market_type)
+        self.log_trade(
+            "OPEN",
+            market,
+            result.side,
+            token_id,
+            shares,
+            result.p_exec,
+            -spend,
+            open_reason,
+            market_type,
+            entry_metadata={
+                "entry_p_true": result.p_true,
+                "entry_side_probability": entry_side_probability,
+                "entry_net_edge": result.net_edge,
+                "decision_ts": decision_ts,
+            },
+        )
         return pos
 
     def close_position(self, pos: PaperPosition, market: RawMarket | None, exit_price: float, reason: str) -> float:
@@ -476,8 +568,9 @@ class PaperBroker:
         self.save_state()
         return pnl
 
-    def log_decision(self, market: RawMarket, result: EdgeResult, note: str, market_type: str = "temperature") -> None:
+    def log_decision(self, market: RawMarket, result: EdgeResult, note: str, market_type: str = "temperature") -> str:
         exists = self.decisions_csv_path.exists()
+        ts = utc_now_iso()
         with self.decisions_csv_path.open("a", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(
                 f,
@@ -500,7 +593,7 @@ class PaperBroker:
                 target_exit = f"{plan.target_exit_price:.6f}"
                 heat_score = f"{plan.market_heat_score:.6f}"
             writer.writerow({
-                "ts": utc_now_iso(),
+                "ts": ts,
                 "market_id": market.market_id,
                 "slug": market.slug or "",
                 "question": market.question,
@@ -519,6 +612,7 @@ class PaperBroker:
                 "reason": result.reason,
                 "note": note,
             })
+        return ts
 
     def log_trade(
         self,
@@ -531,12 +625,16 @@ class PaperBroker:
         cash_delta_or_pnl: float,
         reason: str,
         market_type: str = "",
+        entry_metadata: dict[str, Any] | None = None,
     ) -> None:
-        exists = self.trades_csv_path.exists()
+        exists = self.trades_csv_path.exists() and self.trades_csv_path.stat().st_size > 0
+        fieldnames = _ensure_csv_columns(self.trades_csv_path, TRADE_CSV_FIELDNAMES)
+        entry_metadata = entry_metadata or {}
         with self.trades_csv_path.open("a", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(
                 f,
-                fieldnames=["ts", "action", "market_id", "slug", "question", "market_type", "side", "token_id", "shares", "price", "cash_delta_or_pnl", "reason"],
+                fieldnames=fieldnames,
+                extrasaction="ignore",
             )
             if not exists:
                 writer.writeheader()
@@ -553,6 +651,10 @@ class PaperBroker:
                 "price": f"{price:.6f}",
                 "cash_delta_or_pnl": f"{cash_delta_or_pnl:.6f}",
                 "reason": reason,
+                "entry_p_true": _format_optional_csv_float(entry_metadata.get("entry_p_true")),
+                "entry_side_probability": _format_optional_csv_float(entry_metadata.get("entry_side_probability")),
+                "entry_net_edge": _format_optional_csv_float(entry_metadata.get("entry_net_edge")),
+                "decision_ts": str(entry_metadata.get("decision_ts") or ""),
             })
 
     def log_raw_snapshot(self, event: str, market: RawMarket, payload: dict[str, Any]) -> None:
