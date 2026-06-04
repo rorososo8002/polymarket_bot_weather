@@ -248,6 +248,29 @@ def test_discovery_keeps_supported_weather_question_shapes():
         assert PolymarketClient._is_weather_market({"question": question})
 
 
+def test_rest_clob_orderbook_levels_ignore_non_finite_and_invalid_numbers():
+    rows = [
+        {"price": "bad", "size": "10"},
+        {"price": "nan", "size": "10"},
+        {"price": "inf", "size": "10"},
+        {"price": "-inf", "size": "10"},
+        {"price": "-0.10", "size": "10"},
+        {"price": "0", "size": "10"},
+        {"price": "1", "size": "10"},
+        {"price": "0.49", "size": "bad"},
+        {"price": "0.48", "size": "nan"},
+        {"price": "0.47", "size": "inf"},
+        {"price": "0.46", "size": "-inf"},
+        {"price": "0.45", "size": "-1"},
+        {"price": "0.44", "size": "0"},
+        {"price": "0.43", "size": "12"},
+    ]
+
+    levels = PolymarketClient._parse_levels(rows)
+
+    assert [(level.price, level.size) for level in levels] == [(0.43, 12.0)]
+
+
 def test_discovery_rejects_non_temperature_weather_questions():
     non_temperature_questions = [
         "Will it rain in NYC on Friday?",

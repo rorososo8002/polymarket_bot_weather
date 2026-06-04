@@ -32,10 +32,10 @@
 - `OrderBook.best_bid` and `OrderBook.best_ask` now return only executable
   positive-size depth from `bids`/`asks`; indicative `best_bid_ask` prices stay
   available only as reference fields for display or diagnostics.
-- Realtime order-book parsing now ignores malformed, non-finite, out-of-range,
-  or negative `price`/`size` values inside `book` and `price_change` messages.
-  Malformed whole-message shapes fail closed without replacing the current
-  executable book.
+- Realtime WebSocket and REST CLOB order-book parsing now share defensive
+  numeric guards. Malformed, non-finite, out-of-range, zero-size, or negative
+  executable `price`/`size` levels are ignored; malformed whole WebSocket
+  snapshot shapes fail closed without replacing the current executable book.
 - Paper analysis and shadow research reports now stream
   `paper_decisions.csv` and `paper_trades.csv` rows instead of materializing
   whole CSV files. The default report meaning remains full-history; only the
@@ -125,6 +125,8 @@
 - WebSocket stale/dead order-book hardening is complete locally and remains
   paper-only.
 - WebSocket malformed order-book level hardening is complete locally and
+  remains paper-only.
+- REST CLOB malformed order-book level hardening is complete locally and
   remains paper-only.
 - Executable-only `OrderBook.best_bid/best_ask` hardening is complete locally
   and remains paper-only.

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import math
 import threading
 import time
 from collections.abc import Callable, Iterable
@@ -9,6 +8,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from .models import OrderBook, OrderLevel
+from .orderbook_validation import finite_float, valid_level_size, valid_orderbook_price
 
 MARKET_STREAM_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 
@@ -47,30 +47,6 @@ def market_subscription_message(asset_ids: Iterable[str]) -> dict[str, Any]:
     }
 
 
-def _finite_float(value: Any) -> float | None:
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return None
-    if not math.isfinite(number):
-        return None
-    return number
-
-
-def _valid_orderbook_price(value: Any) -> float | None:
-    price = _finite_float(value)
-    if price is None or not 0.0 < price < 1.0:
-        return None
-    return price
-
-
-def _valid_level_size(value: Any, *, allow_zero: bool) -> float | None:
-    size = _finite_float(value)
-    if size is None or size < 0.0 or (size == 0.0 and not allow_zero):
-        return None
-    return size
-
-
 def _levels(raw_levels: Any, *, reverse: bool) -> list[OrderLevel] | None:
     if not isinstance(raw_levels, list):
         return None
@@ -78,8 +54,8 @@ def _levels(raw_levels: Any, *, reverse: bool) -> list[OrderLevel] | None:
     for level in raw_levels:
         if not isinstance(level, dict):
             continue
-        price = _valid_orderbook_price(level.get("price"))
-        size = _valid_level_size(level.get("size"), allow_zero=False)
+        price = valid_orderbook_price(level.get("price"))
+        size = valid_level_size(level.get("size"), allow_zero=False)
         if price is None or size is None:
             continue
         levels.append(OrderLevel(price, size))
@@ -167,8 +143,8 @@ class OrderBookStreamCache:
                 side = str(change.get("side") or "").upper()
                 if side not in {"BUY", "SELL"}:
                     continue
-                price = _valid_orderbook_price(change.get("price"))
-                size = _valid_level_size(change.get("size"), allow_zero=True)
+                price = valid_orderbook_price(change.get("price"))
+                size = valid_level_size(change.get("size"), allow_zero=True)
                 if price is None or size is None:
                     continue
                 current = self._books.get(token_id) or OrderBook(token_id, [], [], market=str(message.get("market") or "") or None)
@@ -199,8 +175,8 @@ class OrderBookStreamCache:
         token_id = str(message.get("asset_id") or "")
         if not token_id:
             return set()
-        bid = _valid_orderbook_price(message.get("best_bid"))
-        ask = _valid_orderbook_price(message.get("best_ask"))
+        bid = valid_orderbook_price(message.get("best_bid"))
+        ask = valid_orderbook_price(message.get("best_ask"))
         if bid is None and ask is None:
             return set()
         with self._lock:
@@ -226,7 +202,7 @@ class OrderBookStreamCache:
         token_id = str(message.get("asset_id") or "")
         if not token_id:
             return set()
-        last_trade_price = _valid_orderbook_price(message.get("price"))
+        last_trade_price = valid_orderbook_price(message.get("price"))
         if last_trade_price is None:
             return set()
         with self._lock:
@@ -252,7 +228,7 @@ class OrderBookStreamCache:
         token_id = str(message.get("asset_id") or "")
         if not token_id:
             return set()
-        tick_size = _finite_float(message.get("new_tick_size"))
+        tick_size = finite_float(message.get("new_tick_size"))
         if tick_size is None or tick_size <= 0.0:
             return set()
         with self._lock:

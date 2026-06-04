@@ -9,6 +9,7 @@ import requests
 from tenacity import RetryError, retry, stop_after_attempt, wait_exponential
 
 from .models import OrderBook, OrderLevel, RawMarket
+from .orderbook_validation import valid_level_size, valid_orderbook_price
 from .stations import TRADING_READY_STATION_MAP
 from .weather_client import parse_weather_question
 
@@ -282,16 +283,18 @@ class PolymarketClient:
         )
 
     @staticmethod
-    def _parse_levels(rows: list[dict[str, Any]]) -> list[OrderLevel]:
+    def _parse_levels(rows: Any) -> list[OrderLevel]:
+        if not isinstance(rows, list):
+            return []
         levels: list[OrderLevel] = []
         for row in rows:
-            try:
-                price = float(row.get("price"))
-                size = float(row.get("size"))
-            except (TypeError, ValueError):
+            if not isinstance(row, dict):
                 continue
-            if 0 < price < 1 and size > 0:
-                levels.append(OrderLevel(price=price, size=size))
+            price = valid_orderbook_price(row.get("price"))
+            size = valid_level_size(row.get("size"), allow_zero=False)
+            if price is None or size is None:
+                continue
+            levels.append(OrderLevel(price=price, size=size))
         return levels
 
     @staticmethod

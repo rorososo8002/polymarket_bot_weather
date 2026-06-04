@@ -40,9 +40,11 @@ specialized reference docs.
   `book` snapshots or `price_change` updates, not assumed sizes.
   `OrderBook.best_bid` and `OrderBook.best_ask` mean executable positive-size
   depth only; reference/indicative fields are for display and diagnostics.
-- Executable order-book levels are used only after defensive numeric parsing.
-  Non-numeric, non-finite, negative, or out-of-range prices/sizes are discarded;
-  malformed snapshot shapes do not replace the current executable book.
+- Executable order-book levels are used only after shared defensive numeric
+  parsing in both REST CLOB and WebSocket paths. Non-numeric, non-finite,
+  zero-size, negative, or out-of-range executable prices/sizes are discarded;
+  malformed WebSocket snapshot shapes do not replace the current executable
+  book.
 - Entry decisions are fee-aware. `p_exec` is executable VWAP; `size_usd` is the
   all-in paper-entry budget; `size_shares` is the fee-adjusted actual held
   quantity; paper cash, liquidation bankroll, and dashboard PnL use after-fee
@@ -466,6 +468,16 @@ order book is the paper bot's executable price calculator, and guessed price or
 size contaminates entry, exit, and liquidity evidence. Consequence: valid levels
 continue updating normally, while broken external stream rows cannot crash the
 cache or create guessed paper trades.
+
+### 2026-06-04: Share REST And WebSocket Order-Book Numeric Guards
+
+Decision: REST CLOB book parsing in `polymarket_client.py` and WebSocket book
+parsing in `realtime_orderbook.py` both use the shared
+`orderbook_validation.py` numeric guards. Why: REST fallback/order-book reads
+are the same executable price evidence as streamed depth, so `size=inf`,
+`NaN`, zero, negative, or malformed values must not create fake liquidity.
+Consequence: valid levels remain usable, while suspicious REST or WebSocket
+levels are ignored before VWAP, liquidity checks, paper entries, or exits.
 
 ### 2026-06-03: Fail Closed On Explicit Weather Bias Files
 

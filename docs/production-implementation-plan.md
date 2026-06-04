@@ -45,10 +45,10 @@ verified settlement stations and reproducible paper accounting.
   blocks new entries and pauses held-position exit evaluation until executable
   WebSocket depth resumes. A dead receiver thread may rebuild the WebSocket
   stream, but the bot must not silently fall back to REST polling.
-- Parse `book` snapshots and `price_change` level updates defensively. A level
-  with non-numeric, non-finite, negative, or out-of-range price/size is ignored,
-  and malformed whole-message shapes fail closed instead of replacing the
-  executable order book.
+- Parse CLOB order-book levels defensively in both WebSocket and REST paths. A
+  level with non-numeric, non-finite, zero-size, negative, or out-of-range
+  price/size is ignored, and malformed whole WebSocket snapshot shapes fail
+  closed instead of replacing the executable order book.
 - Persist `paper_state.json` through an atomic temp-file replace. Existing
   corrupt, unreadable, structurally invalid, or position-field invalid paper
   state fails closed instead of starting a new default account.
@@ -137,8 +137,10 @@ they read only positive-size `bids` and `asks`. Display or diagnostic code that
 wants the indicative stream quote must use the explicit reference/indicative
 fields instead.
 Those executable levels must have finite prices in the valid Polymarket token
-range and finite non-negative sizes. Bad levels are discarded; a malformed
-snapshot shape does not overwrite the previous executable book.
+range and finite positive sizes. WebSocket `price_change` may accept size zero
+only as an explicit remove-level update. Bad REST and WebSocket levels are
+discarded; a malformed WebSocket snapshot shape does not overwrite the previous
+executable book.
 `WEATHER_TAKER_FEE_RATE=0.05` follows the Polymarket formula:
 
 ```text
