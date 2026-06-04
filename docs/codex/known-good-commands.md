@@ -105,6 +105,40 @@ scp -i $key '.\path\to\file' "${oracle}:/tmp/"
 
 Do not copy private keys, secrets, or large runtime files casually.
 
+## Oracle Remote Script Shape
+
+Use this shape for complex VPS changes that contain quotes, parentheses,
+braces, semicolons, JSON, `sed`, `python -c`, or multi-step shell logic.
+
+Do not keep retrying long inline commands such as
+`ssh ... "set -e; sed ...; if ...; then ..."`. Windows PowerShell, `ssh`, and
+the remote Linux shell each parse quotes differently, so those commands are
+fragile. Write the remote logic into a small local `.sh` file, copy it to
+`/tmp`, and run only `bash /tmp/name.sh` through SSH.
+
+Example local script path:
+
+```text
+.deploy_tmp/update_forecast_env_1800.sh
+```
+
+Copy and run it:
+
+```powershell
+$key = 'C:\Users\wpdla\Documents\오라클ssh\ssh-key-2026-05-25.key'
+if (-not (Test-Path -LiteralPath $key)) {
+  $key = (Get-ChildItem -LiteralPath 'C:\Users\wpdla\Documents' -Recurse -Filter 'ssh-key-2026-05-25.key' -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
+}
+$oracle = 'ubuntu@140.245.69.242'
+scp -i $key .deploy_tmp\update_forecast_env_1800.sh "${oracle}:/tmp/update_forecast_env_1800.sh"
+ssh -i $key $oracle bash /tmp/update_forecast_env_1800.sh
+```
+
+The script should be narrow and auditable: one job, explicit paths, no private
+key contents, no dashboard token printing, and no unrelated runtime-file
+deletion. Delete local `.deploy_tmp` artifacts after the operation so they do
+not become accidental commit noise.
+
 ## Dashboard Reachability
 
 The canonical dashboard host is the Oracle VPS:

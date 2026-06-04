@@ -105,6 +105,10 @@ trading-risk, server, or workflow work, read:
 - Never print, open, copy, or commit the key contents.
 - Before VPS work, start with `docs/codex/known-good-commands.md`, then read
   `docs/codex/vps-dashboard.md` and `docs/codex/ssh-powershell.md` as needed.
+- For complex VPS changes from Windows PowerShell, do not fight nested SSH
+  quoting. Use the remote-script pattern in `docs/codex/known-good-commands.md`:
+  create a small local `.sh`, `scp` it to `/tmp`, then run `ssh ... bash
+  /tmp/script.sh`.
 
 ## Token Safety
 

@@ -11,6 +11,13 @@ Read this file only when issuing SSH or SCP commands from Windows PowerShell.
   commit the private key contents.
 - Treat nested quoting from Windows PowerShell into `ssh` as fragile by default.
 - Do not start with complex inline remote snippets such as `ssh ... "python3 -c '...'"`, especially when they contain quotes, parentheses, braces, semicolons, CSV headers, JSON, or shell substitutions.
+- For complex remote changes, write a small local `.sh` file, copy it with
+  `scp -i`, and run `ssh -i $key $oracle bash /tmp/script.sh`. This turns the
+  remote command into one plain file path instead of a three-shell quoting
+  problem.
+- If a long inline SSH command fails because of quoting, do not try another
+  quote variant. Switch immediately to the temporary-script pattern in
+  `docs/codex/known-good-commands.md`.
 - Prefer simple remote commands first: `systemctl`, `cat`, `tail`, `head`, `stat`, `ls`, and `date` with minimal quoting.
 - Prefer serial SSH checks when they reuse the same Windows private key. Parallel
   probes can produce intermittent `Identity file ... not accessible:
