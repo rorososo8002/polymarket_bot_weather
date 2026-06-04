@@ -156,9 +156,17 @@
   `76 passed`; full `pytest -q` passed with `300 passed`.
 - Station nowcast request logging is implemented so METAR/HKO usage reviews
   count real observation HTTP attempts from `station_nowcast_request_log.jsonl`.
-  Rows include city, settlement-station code, source, request time, status, and
-  cache-miss reason. Cache hits do not write rows, and the VPS log rotates at
-  10MB into `data/archive/` with zstd compression.
+  Rows include source, request time, status, and cache-miss reason. HKO rows
+  carry the city/station directly; AWC bulk rows use `station_id=METAR_BULK`,
+  `request_mode=awc_metar_bulk_cache`, and `requested_station_ids`. Cache hits
+  do not write rows, and the VPS log rotates at 10MB into `data/archive/` with
+  zstd compression.
+- AWC METAR nowcast now uses an `awc_metar_bulk_cache` prefetch: one AWC METAR
+  JSON request asks for the enabled ICAO station set, then each city parses its
+  own station rows from that shared response. HKO still uses its single official
+  max/min CSV request. AWC request-log rows use `request_mode=awc_metar_bulk_cache`
+  plus `requested_station_ids` so usage reviews count one real HTTP attempt
+  rather than one row per station.
 - Other local hardening changes have not all been treated as one automatic
   deployment bundle; verify the specific commit and service state before
   assuming a future local change is live.
@@ -222,3 +230,5 @@
   Polymarket rule source that points to `OPKC`.
 - Repeated SKIPs are research signals, not the end of the investigation. Use
   `docs/codex/skip-diagnostics.md` before changing thresholds or strategy.
+- Keep the AWC METAR nowcast path bulk-prefetched. Do not reintroduce
+  per-station AWC HTTP requests during one refresh.

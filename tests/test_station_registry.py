@@ -80,3 +80,14 @@ def test_icao_stations_use_awc_metar_except_known_unavailable_station():
         else:
             assert row["nowcast_source_type"] == "metar"
             assert row["nowcast_provider_status"] == "provider_enabled"
+
+
+def test_trading_ready_nowcast_sources_are_metar_bulk_plus_single_hko_csv():
+    trading_ready_sources = [
+        station.nowcast_source_type
+        for station in TRADING_READY_STATION_MAP.values()
+    ]
+
+    assert trading_ready_sources.count("metar") == 39
+    assert trading_ready_sources.count("hko_maxmin_since_midnight") == 1
+    assert "metar_unavailable" not in trading_ready_sources

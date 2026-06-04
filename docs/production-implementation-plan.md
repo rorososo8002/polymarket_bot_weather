@@ -179,13 +179,20 @@ and `metadata` must be a JSON object when present.
   METAR for 39 ICAO stations and HKO max/min CSV for Hong Kong. Karachi/OPMR
   remains registered metadata only and is excluded from paper trading until its
   `OPMR`/`OPKC` rule-evidence conflict is resolved.
+- AWC METAR nowcast uses bulk prefetch for the enabled ICAO set. One AWC JSON
+  response is shared across METAR stations in the same cache refresh, and each
+  city filters its own station-date rows from that response. This preserves
+  high/low derivation from one response without sending one HTTP request per
+  station. HKO remains a single official max/min CSV request.
 - Temperature nowcast derives observed high-so-far and observed low-so-far from
   one station-date response when the source provides enough observations. Use
   observed high only for daily-high markets and observed low only for daily-low
   markets; do not cross-apply one metric to the other.
 - Real AWC METAR and HKO max/min HTTP attempts are counted in
   `station_nowcast_request_log.jsonl`. Cache hits do not write rows, so the log
-  measures external observation usage rather than in-memory reuse.
+  measures external observation usage rather than in-memory reuse. AWC rows use
+  `request_mode=awc_metar_bulk_cache` and `requested_station_ids`; HKO rows stay
+  station-specific.
 - Missing, stale, malformed, future-date, unmapped, or unsupported nowcast data
   is not guessed. It remains forecast-only or fail-closed depending on context.
 - Missing exact target-date forecasts are not guessed. Nearby forecast dates

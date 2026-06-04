@@ -96,6 +96,13 @@ class StationNowcastObservation:
         }
 
 
+@dataclass(frozen=True)
+class _MetarBulkCacheEntry:
+    cached_at: datetime
+    payload: Any | None
+    unavailable_reason: str = ""
+
+
 def _default_nowcast_sources() -> dict[str, StationNowcastSource]:
     sources: dict[str, StationNowcastSource] = {}
     for station in STATION_MAP.values():
@@ -244,6 +251,7 @@ class AviationWeatherMetarNowcastProvider:
         self._request_log_error = ""
         self.sources = sources or PILOT_NOWCAST_SOURCES
         self._cache: dict[tuple[str, str], tuple[datetime, StationNowcastObservation]] = {}
+        self._awc_metar_bulk_cache: _MetarBulkCacheEntry | None = None
 
     @classmethod
     def from_settings(cls, settings: Any) -> "AviationWeatherMetarNowcastProvider":
@@ -331,60 +339,129 @@ class AviationWeatherMetarNowcastProvider:
         *,
         cache_miss_reason: str,
     ) -> StationNowcastObservation:
+        bulk_entry = self._fetch_awc_metar_bulk_cache(
+            station,
+            target_date,
+            now,
+            source,
+            cache_miss_reason=cache_miss_reason,
+        )
+        if bulk_entry.unavailable_reason:
+            return self._unavailable(station, bulk_entry.unavailable_reason, source)
+
+        return self._parse_payload(bulk_entry.payload, station, target_date, now, source)
+
+    def _fetch_awc_metar_bulk_cache(
+        self,
+        station: StationMeta,
+        target_date: date,
+        now: datetime,
+        source: StationNowcastSource,
+        *,
+        cache_miss_reason: str,
+    ) -> _MetarBulkCacheEntry:
+        cached = self._fresh_awc_metar_bulk_cache(now)
+        if cached is not None:
+            return cached
+
+        station_ids = self._awc_metar_bulk_station_ids()
         response: Any | None = None
         try:
             response = self.http_get(
                 source.source_url,
                 params={
-                    "ids": station.station_id,
+                    "ids": ",".join(station_ids),
                     "format": "json",
-                    "hoursBeforeNow": _hours_since_local_midnight(station.timezone, now),
+                    "hoursBeforeNow": self._awc_metar_bulk_hours_before_now(now, fallback_station=station),
                 },
                 timeout=self.timeout,
                 headers={"User-Agent": "polymarket-weather-bot/nowcast"},
             )
             if getattr(response, "status_code", 200) == 204:
+                entry = _MetarBulkCacheEntry(
+                    cached_at=now,
+                    payload=None,
+                    unavailable_reason="no-observations-returned",
+                )
+                self._awc_metar_bulk_cache = entry
                 self._append_request_log(
-                    self._request_log_row(
+                    self._request_log_bulk_row(
                         requested_at=now,
-                        station=station,
+                        trigger_station=station,
                         target_date=target_date,
                         source=source,
+                        station_ids=station_ids,
                         cache_miss_reason=cache_miss_reason,
                         status="no_observations",
                         status_code=204,
                     )
                 )
-                return self._unavailable(station, "no-observations-returned", source)
+                return entry
             response.raise_for_status()
-            observation = self._parse_payload(response.json(), station, target_date, now, source)
+            payload = response.json()
+            entry = _MetarBulkCacheEntry(cached_at=now, payload=payload)
+            self._awc_metar_bulk_cache = entry
             self._append_request_log(
-                self._request_log_row(
+                self._request_log_bulk_row(
                     requested_at=now,
-                    station=station,
+                    trigger_station=station,
                     target_date=target_date,
                     source=source,
+                    station_ids=station_ids,
                     cache_miss_reason=cache_miss_reason,
                     status="success",
                     status_code=getattr(response, "status_code", None),
-                    unavailable_reason=observation.unavailable_reason,
                 )
             )
-            return observation
+            return entry
         except Exception as exc:  # noqa: BLE001
+            entry = _MetarBulkCacheEntry(
+                cached_at=now,
+                payload=None,
+                unavailable_reason=f"nowcast-fetch-error:{type(exc).__name__}",
+            )
+            self._awc_metar_bulk_cache = entry
             self._append_request_log(
-                self._request_log_row(
+                self._request_log_bulk_row(
                     requested_at=now,
-                    station=station,
+                    trigger_station=station,
                     target_date=target_date,
                     source=source,
+                    station_ids=station_ids,
                     cache_miss_reason=cache_miss_reason,
                     status="error",
                     status_code=getattr(response, "status_code", None),
                     error=type(exc).__name__,
                 )
             )
-            return self._unavailable(station, f"nowcast-fetch-error:{type(exc).__name__}", source)
+            return entry
+
+    def _fresh_awc_metar_bulk_cache(self, now: datetime) -> _MetarBulkCacheEntry | None:
+        cached = self._awc_metar_bulk_cache
+        if cached is None or self.cache_ttl_seconds <= 0:
+            return None
+        if (now - cached.cached_at).total_seconds() <= self.cache_ttl_seconds:
+            return cached
+        return None
+
+    def _awc_metar_bulk_station_ids(self) -> list[str]:
+        station_ids = {
+            source.station_id.upper()
+            for source in self.sources.values()
+            if source.source == "aviationweather-metar"
+        }
+        return sorted(station_ids)
+
+    def _awc_metar_bulk_hours_before_now(self, now: datetime, *, fallback_station: StationMeta) -> int:
+        station_ids = set(self._awc_metar_bulk_station_ids())
+        hours = [
+            _hours_since_local_midnight(station.timezone, now)
+            for station in STATION_MAP.values()
+            if station.station_id.upper() in station_ids
+        ]
+        if not hours:
+            return _hours_since_local_midnight(fallback_station.timezone, now)
+        return max(hours)
 
     def _fetch_hko_maxmin(
         self,
@@ -484,6 +561,42 @@ class AviationWeatherMetarNowcastProvider:
             "status_code": status_code,
             "target_date": target_date.isoformat(),
             "timezone": station.timezone,
+            "unavailable_reason": unavailable_reason,
+        }
+
+    def _request_log_bulk_row(
+        self,
+        *,
+        requested_at: datetime,
+        trigger_station: StationMeta,
+        target_date: date,
+        source: StationNowcastSource,
+        station_ids: list[str],
+        cache_miss_reason: str,
+        status: str,
+        status_code: int | None = None,
+        error: str = "",
+        unavailable_reason: str = "",
+    ) -> dict[str, Any]:
+        return {
+            "cache_miss_reason": cache_miss_reason,
+            "city": "bulk-metar",
+            "error": error,
+            "request_mode": "awc_metar_bulk_cache",
+            "requested_at": _iso_or_empty(requested_at),
+            "requested_station_count": len(station_ids),
+            "requested_station_ids": station_ids,
+            "source": source.source,
+            "source_url": source.source_url,
+            "station_id": "METAR_BULK",
+            "station_name": "Aviation Weather Center METAR bulk prefetch",
+            "status": status,
+            "status_code": status_code,
+            "target_date": target_date.isoformat(),
+            "timezone": "bulk",
+            "trigger_city": trigger_station.city,
+            "trigger_station_id": trigger_station.station_id,
+            "trigger_timezone": trigger_station.timezone,
             "unavailable_reason": unavailable_reason,
         }
 

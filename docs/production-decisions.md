@@ -106,10 +106,12 @@ specialized reference docs.
   `data/archive/` with zstd compression.
 - Station nowcast caches are not METAR/HKO call ledgers. Real AWC METAR and
   HKO max/min HTTP attempts are recorded in
-  `station_nowcast_request_log.jsonl` with city, settlement-station code,
-  source, request time, status, and cache-miss reason. Cache hits do not write
-  rows, and the VPS log rotates at 10MB into `data/archive/` with zstd
-  compression.
+  `station_nowcast_request_log.jsonl` with source, request time, status, and
+  cache-miss reason. HKO rows carry city/station details directly. AWC rows use
+  `request_mode=awc_metar_bulk_cache`, `station_id=METAR_BULK`, and
+  `requested_station_ids` because one real HTTP request covers many ICAO
+  stations. Cache hits do not write rows, and the VPS log rotates at 10MB into
+  `data/archive/` with zstd compression.
 - Dashboard trade-history panels treat SKIP rows as diagnostics, not executed
   trades. Recent trades, realized rows, and realized equity points use cached
   actual trade actions so SKIP bursts cannot hide older closes.
@@ -476,6 +478,18 @@ if observation API attempts are counted separately from cached reuse.
 Consequence: operators can compare external observation request volume against
 cache settings without treating `StationNowcastObservation` reuse as new API
 usage.
+
+### 2026-06-04: Prefetch AWC METAR Stations In Bulk
+
+Decision: AWC METAR nowcast uses `awc_metar_bulk_cache`: one AWC JSON request
+asks for the enabled ICAO station IDs, and each station parses its own
+station-date rows from that shared response. HKO remains a separate single CSV
+fetch because it already returns the needed max/min table in one file. Why:
+calling AWC once per METAR station at refresh start can create a burst of
+avoidable requests, while one shared response still preserves same-station
+observed high/low derivation. Consequence: AWC request logs count one bulk HTTP
+attempt with `station_id=METAR_BULK` and `requested_station_ids`, not one row
+per station.
 
 ### 2026-06-04: Gate Untradable Markets Before Forecast Requests
 
