@@ -16,11 +16,16 @@ specialized reference docs.
   registered in `STATION_MAP` but excluded because the official rule evidence
   points to `OPKC` while the registry uses `OPMR`. Unknown, stale, malformed,
   unsupported, or suspicious data means skip.
-- Execution is temperature-only. Rain, snow, precipitation, and other
-  non-temperature markets are outside the paper strategy and are excluded
-  before forecast probability calculation.
+- Execution is temperature-only. Rain, snow, precipitation, wind, humidity, and
+  other non-temperature weather markets are outside the paper strategy and are
+  excluded before forecast probability calculation, order-book subscription, or
+  paper trade logging.
 - Forecast rows must match the target market date exactly. Nearby forecast
   dates are not substitutes and produce `forecast-unavailable`.
+- `pre_forecast_tradeability_gate` must reject markets before Open-Meteo when
+  they are not temperature-shaped, not trading-ready, or missing required
+  `date_hint` evidence. SKIP diagnostics are recorded, but forecast API budget
+  is not spent on markets that cannot trade.
 - Explicit `WEATHER_BIAS_JSON` files are part of the forecast evidence. Empty
   means use neutral defaults, but a missing, unreadable, invalid JSON,
   malformed, or non-numeric explicit file produces `forecast-unavailable` with
@@ -472,6 +477,18 @@ Consequence: operators can compare external observation request volume against
 cache settings without treating `StationNowcastObservation` reuse as new API
 usage.
 
+### 2026-06-04: Gate Untradable Markets Before Forecast Requests
+
+Decision: Run `pre_forecast_tradeability_gate` before calling Open-Meteo from
+the paper runner. When `REQUIRE_DATE_HINT_FOR_TRADE=true`, a temperature market
+with no parsed `date_hint` logs SKIP before forecast fetching. The same gate
+also blocks non-temperature, unsupported-city, and non-trading-ready markets
+before forecast calls. Why: `forecast_request_log.jsonl` measures real external
+forecast attempts, so markets that cannot trade should not spend API budget.
+Consequence: `evaluate_market()` still keeps its date-hint fail-closed guard,
+but the runner now avoids the upstream forecast request and records the SKIP
+diagnostic earlier.
+
 ### 2026-06-03: Keep SKIP Diagnostics Out Of Recent Trades
 
 Decision: Dashboard `Recent Trades`, realized rows, and realized equity points
@@ -510,11 +527,11 @@ normalization.
 
 ### 2026-06-04: Keep Paper Execution Temperature-Only
 
-Decision: Remove rain, snow, precipitation, and other non-temperature markets
-from the paper strategy path. Why: those markets have too little useful
-liquidity for the current profitability experiment, and scoring them wastes
-forecast calls and adds SKIP noise. Consequence: discovery uses temperature
-category pages only, the parser treats non-temperature weather questions as
-unsupported, Open-Meteo requests only temperature daily variables, and the
-runner filters out-of-scope markets before probability estimation or WebSocket
-subscription.
+Decision: Remove rain, snow, precipitation, wind, humidity, and other
+non-temperature weather markets from the paper strategy path. Why: those
+markets have too little useful liquidity for the current profitability
+experiment, and scoring them wastes forecast calls and adds SKIP noise.
+Consequence: discovery uses temperature category pages only, the parser marks
+non-temperature weather questions as unsupported, Open-Meteo requests only
+temperature daily variables, and the runner filters out-of-scope markets before
+probability estimation, WebSocket subscription, or paper trade logging.

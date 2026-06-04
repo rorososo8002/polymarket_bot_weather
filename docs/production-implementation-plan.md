@@ -9,8 +9,9 @@ verified settlement stations and reproducible paper accounting.
 
 - Register only the 41 cities in `src/weather_bot/stations.py`.
 - Execute the paper strategy only on temperature markets. Rain, snow,
-  precipitation, and other non-temperature markets are outside the current
-  experiment and are excluded before forecast probability calculation.
+  precipitation, wind, humidity, and other non-temperature weather markets are
+  outside the current experiment and are excluded before forecast probability
+  calculation, order-book subscription, or paper trade logging.
 - Treat `STATION_MAP` as the single source of truth for registered
   settlement-station metadata, not as proof that a city may be traded.
 - Treat `TRADING_READY_STATION_MAP` as the paper-trading execution universe. A
@@ -24,6 +25,10 @@ verified settlement stations and reproducible paper accounting.
 - Forecast dates must match the target market date exactly. If the target date
   is absent from the Open-Meteo daily forecast, skip as unavailable; do not use
   a nearest-date substitute.
+- When `REQUIRE_DATE_HINT_FOR_TRADE=true`, a market with no parsed
+  `date_hint` is not forecastable strategy evidence. The runner must log SKIP
+  before calling Open-Meteo rather than letting `estimate_weather_probability`
+  fall back to today's date.
 - Refresh Open-Meteo forecasts no more often than every 30 minutes by default.
 - Use the Polymarket CLOB WebSocket market stream for order books by default.
 - Keep token IDs for open positions subscribed even when discovery moves to
@@ -164,7 +169,9 @@ and `metadata` must be a JSON object when present.
 - Discovery expands every supported temperature binary market inside every
   trading-ready weather-category event it finds. The 41-city station registry
   is not an event-count cutoff, and the executable universe is the 40-city
-  `TRADING_READY_STATION_MAP` subset after the temperature-only filter.
+  `TRADING_READY_STATION_MAP` subset after the temperature-only filter. The
+  parser treats rain, snow, precipitation, wind, humidity, and other
+  non-temperature weather questions as unsupported.
 - Temperature bucket probabilities use shared non-overlapping boundaries so one
   event's buckets sum to 100%.
 - Same-day nowcast may adjust probability only when the provider is explicitly
@@ -183,6 +190,10 @@ and `metadata` must be a JSON object when present.
   is not guessed. It remains forecast-only or fail-closed depending on context.
 - Missing exact target-date forecasts are not guessed. Nearby forecast dates
   are not strategy data for the target city-date market.
+- `pre_forecast_tradeability_gate` runs before Open-Meteo forecast fetching.
+  It checks that the market is temperature-shaped, the city is trading-ready,
+  and required date evidence exists. Markets that fail this gate record SKIP
+  diagnostics without spending forecast API calls.
 - `WEATHER_BIAS_JSON` is optional forecast calibration data. If it is empty,
   the bot uses conservative neutral defaults. If it is explicitly set, the file
   must be readable valid JSON shaped as station IDs to numeric variable bias
@@ -282,10 +293,10 @@ investigation only; it must not feed live orders or automatic threshold changes.
 
 ## Shadow Research Contract
 
-Phase 7 studies public external signals without copy trading. It may read
-bounded public Polymarket Data API rows and manually classified public notes,
-but it does not connect wallets, sign orders, submit orders, alter positions, or
-feed signals into `live_paper_runner.py`.
+Shadow research studies public external signals without copy trading. It may
+read bounded public Polymarket Data API rows and manually classified public
+notes, but it does not connect wallets, sign orders, submit orders, alter
+positions, or feed signals into `live_paper_runner.py`.
 
 Promotion requires:
 
@@ -359,5 +370,4 @@ local, VPS, SSH, and dashboard commands live in
 - Station audit: `docs/station-registry-audit.md`
 - Shadow research detail: `docs/shadow-signal-research.md`
 - Live trading safety: `docs/live-trading-safety-plan.md`
-- Strategy roadmap: `docs/strategy-upgrade-roadmap.md`
 - Durable mistakes and prevention rules: `docs/solutions/`

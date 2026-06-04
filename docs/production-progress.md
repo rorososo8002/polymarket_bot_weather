@@ -4,19 +4,21 @@
 
 - This is a live-data paper-trading service. It does not send real wallet
   orders, connect private keys, or enable live trading.
-- Phases 0-7 are implemented and locally verified: baseline hardening,
-  forecast/WebSocket health, fee-aware entry filtering, exact weather-event
-  discovery, city-date portfolio selection, same-station nowcast, settlement
-  runners, and shadow public-signal research.
+- Completed strategy hardening is implemented and locally verified: baseline
+  hardening, forecast/WebSocket health, fee-aware entry filtering, exact
+  weather-event discovery, city-date portfolio selection, same-station nowcast,
+  settlement runners, and shadow public-signal research.
 - Current strategy guardrails are active: register only the 41 `STATION_MAP`
   cities, execute paper trading only for the 40 `TRADING_READY_STATION_MAP`
   cities, refresh Open-Meteo forecasts every 30 minutes by default, use the
   Polymarket CLOB WebSocket stream, keep held token IDs subscribed, fail closed
   on stale or unsupported data, and preserve paper-only execution.
-- The paper strategy is now temperature-only. Rain, snow, precipitation, and
-  other non-temperature markets are excluded before forecast probability
-  calculation, so Open-Meteo requests use only temperature daily variables and
-  the realtime stream subscribes only temperature discovery tokens.
+- The paper strategy is now temperature-only. Rain, snow, precipitation, wind,
+  humidity, and other non-temperature weather markets are marked unsupported by
+  the parser and excluded before forecast probability calculation, order-book
+  subscription, or paper trade logging. Open-Meteo requests use only
+  temperature daily variables and the realtime stream subscribes only
+  temperature discovery tokens.
 - Station evidence is now gated separately from station registration: 40 cities
   have stored official Polymarket rule evidence and are trading-ready; Karachi
   is excluded because its found rule source conflicts with the current station
@@ -76,11 +78,11 @@
   `entry_bankroll <= 0` or the calculated order is below `MIN_ORDER_USD`; the
   decision logs an operator-readable SKIP instead of raising a zero-share
   exception.
-- Phase 6 settlement runners recover principal first, then keep a bounded 25%
-  runner only when conservative settlement value beats fee-adjusted sell-now
-  value. Runner logs distinguish actual held shares from target runner shares.
-- Phase 7 shadow research is separate from execution. Public trade rows are
-  locally size-checked, deduplicated by full row identity, bounded by
+- Settlement runners recover principal first, then keep a bounded 25% runner
+  only when conservative settlement value beats fee-adjusted sell-now value.
+  Runner logs distinguish actual held shares from target runner shares.
+- Shadow research is separate from execution. Public trade rows are locally
+  size-checked, deduplicated by full row identity, bounded by
   `SHADOW_MAX_ROWS`, and compared to bot entries only on paired resolved
   samples.
 - Forecast target dates now require exact `daily.time` matches. If the target
@@ -107,7 +109,7 @@
 
 ## In Progress
 
-- Phase 0-7 local work is complete with review hardening and fee-adjusted
+- Completed local strategy hardening includes review fixes and fee-adjusted
   paper-share consistency.
 - Entry-bankroll fail-closed hardening is complete locally and remains
   paper-only.
@@ -133,8 +135,9 @@
   focused tests passed with `67 passed`; remote full tests passed with
   `289 passed`.
 - Temperature-only market filtering is complete locally and remains paper-only:
-  disabled/out-of-scope market types are removed before probability estimation
-  rather than being scored and skipped later in the runner.
+  disabled/out-of-scope market types are marked unsupported by the parser and
+  removed before probability estimation rather than being scored and skipped
+  later in the runner.
 - Oracle VPS runtime cleanup on 2026-06-03 UTC archived the 18GB
   `paper_raw_snapshots.jsonl` diagnostic ledger to
   `data/archive/paper_raw_snapshots.20260603T115820Z.jsonl.zst` at 136MB,
@@ -145,21 +148,27 @@
   to infer calls from overwritten `forecast_cache.json` entries. Rows include
   cache-miss reason plus safe city/station metadata, and the request log rotates
   at 10MB into `data/archive/` with zstd compression.
+- Pre-forecast tradeability gating is complete locally and remains paper-only.
+  When `REQUIRE_DATE_HINT_FOR_TRADE=true`, undated temperature markets now log a
+  SKIP decision before Open-Meteo is called. Non-temperature, unsupported-city,
+  and non-trading-ready markets are also rejected before forecast fetching.
+  Local verification: focused runner/probability/hardening pytest passed with
+  `76 passed`; full `pytest -q` passed with `300 passed`.
 - Station nowcast request logging is implemented so METAR/HKO usage reviews
   count real observation HTTP attempts from `station_nowcast_request_log.jsonl`.
   Rows include city, settlement-station code, source, request time, status, and
   cache-miss reason. Cache hits do not write rows, and the VPS log rotates at
   10MB into `data/archive/` with zstd compression.
-- Other Phase 0-7 changes have not all been treated as one automatic deployment
-  bundle; verify the specific commit and service state before assuming a future
-  local change is live.
+- Other local hardening changes have not all been treated as one automatic
+  deployment bundle; verify the specific commit and service state before
+  assuming a future local change is live.
 - Before any deployment, explain the change, benefit, risk, verification method,
   public exposure implications, and rollback method, then get explicit user
   approval.
 
 ## Next Work
 
-1. Do not feed Phase 7 research into strategy execution until enough resolved
+1. Do not feed shadow research into strategy execution until enough resolved
    paired public signals accumulate.
 2. When comparing paper results, record the boundary between pre-fix gross-fee
    accounting and post-fix fee-adjusted accounting. Existing runtime files were
@@ -170,29 +179,27 @@
    five-percentage-point edge over matched bot entries.
 4. Automatic copy trading, wallet connection, live orders, and private data
    collection remain prohibited.
-5. Read `docs/strategy-upgrade-roadmap.md` only for roadmap or next-phase
-   strategy planning. It is not part of the default fresh-chat handoff.
-6. Before local pytest or VPS/SSH work, use the command shapes in
+5. Before local pytest or VPS/SSH work, use the command shapes in
    `docs/codex/known-good-commands.md`.
-7. Do not bypass `TRADING_READY_STATION_MAP`; `STATION_MAP` is the registry,
+6. Do not bypass `TRADING_READY_STATION_MAP`; `STATION_MAP` is the registry,
    while trading-ready means official rule evidence is stored and conflict-free.
-8. For any public dashboard exposure, set a real random `DASHBOARD_TOKEN` with
+7. For any public dashboard exposure, set a real random `DASHBOARD_TOKEN` with
    at least 32 characters. Empty, short, placeholder, basic, default,
    change-me, secret, token, password, abc, or 123456 style values stop the
    dashboard before it binds to the public host.
-9. Build or run a paper-only SKIP diagnosis report before treating repeated
+8. Build or run a paper-only SKIP diagnosis report before treating repeated
    SKIPs as strategy failure. Use `docs/codex/skip-diagnostics.md` to classify
    whether the blocker is account safety, minimum order, market liquidity,
    weather/parsing data, or strategy threshold.
-10. If full-history reports become too slow on very large ledgers, add an
+9. If full-history reports become too slow on very large ledgers, add an
     explicit operator option such as `--since` or `--max-rows`; do not silently
     change the default full-history report semantics.
-11. After any future dashboard change, deploy it immediately to the Oracle VPS,
+10. After any future dashboard change, deploy it immediately to the Oracle VPS,
     restart the affected service, and verify both the server-rendered HTML and
     `/api/status` with the dashboard token. For settlement changes, also restart
     the paper bot and verify that older closed positions with exact binary
     `outcomePrices` settle on the next paper cycle.
-12. `paper_raw_snapshots.jsonl`, `forecast_request_log.jsonl`, and
+11. `paper_raw_snapshots.jsonl`, `forecast_request_log.jsonl`, and
     `station_nowcast_request_log.jsonl` have automatic rotation. Do not rotate
     or truncate `paper_decisions.csv` until reports/dashboard readers have an
     explicit archive-aware path or bounded operator option.
@@ -204,7 +211,7 @@
 - First read `AGENTS.md`, this file,
   `docs/production-implementation-plan.md`, and
   `docs/production-decisions.md`.
-- Do not rebuild completed Phase 6 or Phase 7 work. Preserve the
+- Do not rebuild completed settlement-runner or shadow-research work. Preserve the
   principal-recovery/settlement runner path in `src/weather_bot/paper.py`, exit
   trigger separation in `src/weather_bot/exit_policy.py`, and shadow research
   isolation in `src/weather_bot/shadow_signals.py`.

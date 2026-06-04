@@ -32,6 +32,7 @@ from .probability import OpenMeteoEnsembleClient, estimate_weather_probability
 from .realtime_orderbook import OrderBookMarketStream
 from .risk import fractional_kelly_binary
 from .runner_status import utc_now_iso, write_runner_status
+from .stations import TRADING_READY_STATION_MAP
 from .weather_client import parse_weather_question
 
 
@@ -266,6 +267,65 @@ def _entry_bankroll_skip_reason(bankroll_before_entry: float, reason: str | None
     return f"{ENTRY_BANKROLL_FAIL_CLOSED_REASON}; entry_bankroll=${bankroll_before_entry:.2f}{detail}"
 
 
+def pre_forecast_tradeability_gate(
+    market: RawMarket,
+    settings: Settings,
+    market_type: str = "temperature",
+) -> tuple[WeatherSignal, EdgeResult] | None:
+    """Return a SKIP decision when a market should not reach forecast fetching."""
+    parsed = parse_weather_question(market.question)
+
+    def skip(source: str, note: str, reason: str) -> tuple[WeatherSignal, EdgeResult]:
+        signal = WeatherSignal(
+            p_true=0.5,
+            confidence=0.0,
+            source=source,
+            note=note,
+            parsed=parsed,
+        )
+        result = EdgeResult(
+            side="SKIP",
+            p_true=signal.p_true,
+            p_exec=None,
+            net_edge=-999.0,
+            size_usd=0.0,
+            size_shares=0.0,
+            reason=reason,
+        )
+        return signal, result
+
+    if parsed.variable != "temperature" or parsed.threshold_f is None or parsed.operator is None:
+        note = "Unsupported weather market skipped before forecast request. " + parsed.note
+        return skip(
+            "unsupported-weather-market",
+            note,
+            f"unsupported-weather-market: refusing non-temperature or weakly parsed market before forecast [{market_type}]",
+        )
+
+    if parsed.city is None:
+        return skip(
+            "fallback",
+            f"Could not parse city before forecast request. {parsed.note}",
+            f"city not parsed: refusing market before forecast [{market_type}]",
+        )
+
+    if parsed.city.lower() not in TRADING_READY_STATION_MAP:
+        return skip(
+            "unsupported-station",
+            f"{parsed.city} is not in the trading-ready Polymarket settlement-station allowlist with stored rule evidence.",
+            f"unsupported-station: refusing market before forecast [{market_type}]",
+        )
+
+    if settings.require_date_hint_for_trade and parsed.date_hint is None:
+        return skip(
+            "pre-forecast-skip",
+            f"date_hint=None: Open-Meteo forecast skipped before request. {parsed.note}",
+            f"date_hint=None: refusing undated market before forecast [{market_type}]",
+        )
+
+    return None
+
+
 def evaluate_market(
     market: RawMarket,
     signal: WeatherSignal,
@@ -413,6 +473,12 @@ def refresh_open_position_edges(
         market = market_by_id.get(pos.market_id) or _market_from_position(pos)
         if not _is_temperature_market(market):
             continue
+        gated = pre_forecast_tradeability_gate(market, settings)
+        if gated is not None:
+            _signal, result = gated
+            latest_edges[key] = result
+            market_by_id.setdefault(pos.market_id, market)
+            continue
         signal = _call_probability_estimator(
             probability_estimator,
             pos.question,
@@ -550,23 +616,28 @@ def run_cycle(settings: Settings | None = None) -> list[MarketDecision]:
         for market in event_markets:
             markets_done += 1
             try:
-                signal = _call_probability_estimator(
-                    estimate_weather_probability,
-                    market.question,
-                    settings=settings,
-                    ensemble_client=ensemble_client,
-                    observation_provider=observation_provider,
-                )
                 market_type = "temperature"
-                result, per_side = evaluate_market(
-                    market,
-                    signal,
-                    client,
-                    settings,
-                    entry_bankroll.entry_bankroll,
-                    market_type,
-                    entry_bankroll.reason,
-                )
+                gated = pre_forecast_tradeability_gate(market, settings, market_type)
+                if gated is not None:
+                    signal, result = gated
+                    per_side: dict[str, EdgeResult] = {}
+                else:
+                    signal = _call_probability_estimator(
+                        estimate_weather_probability,
+                        market.question,
+                        settings=settings,
+                        ensemble_client=ensemble_client,
+                        observation_provider=observation_provider,
+                    )
+                    result, per_side = evaluate_market(
+                        market,
+                        signal,
+                        client,
+                        settings,
+                        entry_bankroll.entry_bankroll,
+                        market_type,
+                        entry_bankroll.reason,
+                    )
                 for side, edge_result in per_side.items():
                     latest_edges[(market.market_id, side)] = edge_result
                 decisions.append(MarketDecision(market=market, signal=signal, result=result))
@@ -823,7 +894,36 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
         market_by_id = _stream_market_registry(discovery_client, broker, markets)
         for msg in _settle_resolved_positions_before_streaming(broker, market_by_id):
             print(msg)
-        stream_markets = _temperature_markets_only(list(market_by_id.values()))
+        open_market_ids = {pos.market_id for pos in broker.state.positions}
+        stream_candidates = _temperature_markets_only(list(market_by_id.values()))
+        stream_markets: list[RawMarket] = []
+        precomputed_signals: dict[str, WeatherSignal] = {}
+        for market in stream_candidates:
+            market_type = "temperature"
+            gated = pre_forecast_tradeability_gate(market, settings, market_type)
+            if gated is not None:
+                signal, result = gated
+                precomputed_signals[market.market_id] = signal
+                broker.log_decision(market, result, signal.note, market_type)
+                broker.log_raw_snapshot(
+                    "pre_forecast_skip",
+                    market,
+                    {
+                        "market_raw": market.raw,
+                        "signal": {
+                            "p_true": signal.p_true,
+                            "confidence": signal.confidence,
+                            "source": signal.source,
+                            "note": signal.note,
+                            "nowcast": signal.nowcast,
+                        },
+                        "per_side": {},
+                    },
+                )
+                if market.market_id in open_market_ids:
+                    stream_markets.append(market)
+                continue
+            stream_markets.append(market)
         coverage = _discovery_coverage(stream_markets)
         market_by_token = {
             token_id: market
@@ -833,13 +933,15 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
         signals_by_market: dict[str, WeatherSignal] = {}
         market_types: dict[str, str] = {}
         for market in stream_markets:
-            signal = _call_probability_estimator(
-                estimate_weather_probability,
-                market.question,
-                settings=settings,
-                ensemble_client=ensemble_client,
-                observation_provider=observation_provider,
-            )
+            signal = precomputed_signals.get(market.market_id)
+            if signal is None:
+                signal = _call_probability_estimator(
+                    estimate_weather_probability,
+                    market.question,
+                    settings=settings,
+                    ensemble_client=ensemble_client,
+                    observation_provider=observation_provider,
+                )
             signals_by_market[market.market_id] = signal
             market_types[market.market_id] = "temperature"
 

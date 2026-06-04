@@ -46,3 +46,48 @@ def test_run_cycle_filters_non_temperature_before_probability_estimator(monkeypa
 
     assert probability_calls == [temperature_question]
     assert [decision.market.market_id for decision in decisions] == ["temperature"]
+
+
+def test_run_cycle_skips_undated_temperature_market_before_forecast_request(monkeypatch, tmp_path):
+    question_without_date = "Will NYC reach 90 F?"
+    markets = [
+        RawMarket("undated-temperature", question_without_date, "undated-temperature", True, False, "yes", "no"),
+    ]
+    settings = Settings(
+        state_path=str(tmp_path / "state.json"),
+        trades_csv_path=str(tmp_path / "trades.csv"),
+        decisions_csv_path=str(tmp_path / "decisions.csv"),
+        raw_snapshots_path=str(tmp_path / "raw.jsonl"),
+        portfolio_decisions_jsonl_path=str(tmp_path / "portfolio.jsonl"),
+        require_date_hint_for_trade=True,
+    )
+    forecast_request_count = 0
+
+    class CycleClient:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def discover_weather_markets(self, max_pages: int, page_size: int):
+            return markets
+
+        def get_order_book(self, token_id: str) -> OrderBook:
+            raise AssertionError("undated markets must skip before order-book fetch")
+
+        def get_market(self, market_id: str) -> RawMarket:
+            return markets[0]
+
+    def forbidden_forecast_request(*_args, **_kwargs):
+        nonlocal forecast_request_count
+        forecast_request_count += 1
+        raise AssertionError("undated markets must skip before Open-Meteo request")
+
+    monkeypatch.setattr("weather_bot.live_paper_runner.PolymarketClient", CycleClient)
+    monkeypatch.setattr("weather_bot.probability.requests.get", forbidden_forecast_request)
+
+    decisions = run_cycle(settings)
+
+    assert forecast_request_count == 0
+    assert len(decisions) == 1
+    assert decisions[0].market.market_id == "undated-temperature"
+    assert decisions[0].result.side == "SKIP"
+    assert "date_hint=None" in decisions[0].result.reason
