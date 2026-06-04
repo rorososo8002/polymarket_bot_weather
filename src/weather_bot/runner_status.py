@@ -34,6 +34,19 @@ def write_runner_status(settings: Settings, phase: str, **fields: Any) -> None:
         "phase": phase,
     }
     payload.update({key: value for key, value in fields.items() if value is not None})
+    _write_runner_status_payload(settings, payload)
+
+
+def update_runner_status_fields(settings: Settings, **fields: Any) -> None:
+    payload = read_runner_status(settings)
+    if "phase" not in payload:
+        payload["phase"] = "unknown"
+    payload.update({key: value for key, value in fields.items() if value is not None})
+    payload["updated_at"] = utc_now_iso()
+    _write_runner_status_payload(settings, payload)
+
+
+def _write_runner_status_payload(settings: Settings, payload: dict[str, Any]) -> None:
     path = runner_status_path(settings)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = path.with_name(path.name + ".tmp")

@@ -944,13 +944,15 @@ function render(payload) {
   setText("r-websocket-error", "최근 오류 " + (websocketHealth.last_error || "--"));
   const eventPortfolio = (payload.scanner || {}).latest_event_portfolio || {};
   const selectedLegs = eventPortfolio.selected_legs || [];
-  const rejectedLegs = eventPortfolio.rejected_legs || [];
+  const rejectedLegs = eventPortfolio.rejected_legs_sample || eventPortfolio.rejected_legs || [];
+  const rejectedReasonCounts = eventPortfolio.rejected_reason_counts || {};
   const scenarios = eventPortfolio.scenario_pnl_usd || {};
-  const worstScenario = Object.values(scenarios).length ? Math.min(...Object.values(scenarios).map(Number)) : null;
+  const worstScenario = eventPortfolio.worst_scenario_pnl_usd != null ? Number(eventPortfolio.worst_scenario_pnl_usd) : (Object.values(scenarios).length ? Math.min(...Object.values(scenarios).map(Number)) : null);
+  const rejectedSummary = Object.keys(rejectedReasonCounts).length ? Object.entries(rejectedReasonCounts).map(([reason, count]) => reason + " x" + count).join(" | ") : "";
   setText("r-portfolio-event", eventPortfolio.event_key || "--");
   setText("r-portfolio-budget", "최근 기준 자금 " + money(eventPortfolio.entry_bankroll_usd || 0) + " · 한도 " + money(eventPortfolio.event_cap_usd || 0) + " · 예상 순이익 " + money(eventPortfolio.expected_net_profit_usd || 0) + " · 예상 로그 성장 " + pct(eventPortfolio.expected_log_growth || 0));
   setText("r-portfolio-selected", "선택된 다리 " + (selectedLegs.length ? selectedLegs.map(item => (item.market_id || "?") + " " + sideKo(item.side || "") + " " + money(item.size_usd || 0)).join(" | ") : "--"));
-  setText("r-portfolio-rejected", "거절된 다리 " + (rejectedLegs.length ? rejectedLegs.map(item => (item.market_id || "?") + ": " + (item.reason || "")).join(" | ") : "--"));
+  setText("r-portfolio-rejected", "거절된 다리 " + (rejectedSummary || (rejectedLegs.length ? rejectedLegs.map(item => (item.market_id || "?") + ": " + (item.reason || "")).join(" | ") : "--")));
   setText("r-portfolio-scenario", "최악 시나리오 " + (worstScenario == null ? "--" : money(worstScenario)));
   setText("open-count", payload.positions.length);
   setText("trade-count", payload.recent_trades.length);

@@ -164,6 +164,13 @@
   `data/archive/paper_raw_snapshots.20260603T115820Z.jsonl.zst` at 136MB,
   created a fresh active raw snapshot file, installed raw-snapshot logrotate,
   and reduced root disk use from 84% to 48%.
+- Oracle VPS emergency disk cleanup on 2026-06-04 UTC reduced root disk use
+  from 100% to 50%. Cleanup cleared oversized `/var/log/syslog*`, removed
+  rebuildable pytest caches and old tiny `/opt` deploy backups, archived the
+  active 18.7GB `paper_raw_snapshots.jsonl` to
+  `data/archive/paper_raw_snapshots.20260604T115423Z.jsonl.zst` at 144MB, and
+  recreated a fresh writable raw snapshot file. `paper_decisions.csv` was
+  preserved because it is the strategy evidence ledger.
 - Forecast request logging is implemented so future Open-Meteo usage reviews
   count real HTTP attempts from `forecast_request_log.jsonl` instead of trying
   to infer calls from overwritten `forecast_cache.json` entries. Rows include
@@ -196,6 +203,13 @@
   max/min CSV request. AWC request-log rows use `request_mode=awc_metar_bulk_cache`
   plus `requested_station_ids` so usage reviews count one real HTTP attempt
   rather than one row per station.
+- Runtime log storage hardening is complete locally and remains paper-only.
+  Normal raw decision snapshots are disabled by default, raw error/debug
+  diagnostics rotate over 100MB into compressed archives with 7-day retention,
+  disk pressure suspends raw writes with a runner-status warning, and new
+  decision/portfolio rows keep compact summaries. Local verification: focused
+  runtime-log pytest passed with `86 passed`; full `pytest -q` passed with
+  `341 passed`.
 - Other local hardening changes have not all been treated as one automatic
   deployment bundle; verify the specific commit and service state before
   assuming a future local change is live.
@@ -237,9 +251,15 @@
     the paper bot and verify that older closed positions with exact binary
     `outcomePrices` settle on the next paper cycle.
 11. `paper_raw_snapshots.jsonl`, `forecast_request_log.jsonl`, and
-    `station_nowcast_request_log.jsonl` have automatic rotation. Do not rotate
-    or truncate `paper_decisions.csv` until reports/dashboard readers have an
-    explicit archive-aware path or bounded operator option.
+    `station_nowcast_request_log.jsonl` have automatic rotation. Raw snapshots
+    default to error-only storage and may suspend with
+    `raw_snapshot_storage.status=suspended` when disk pressure is dangerous.
+    Do not rotate or truncate `paper_decisions.csv` until reports/dashboard
+    readers have an explicit archive-aware path or bounded operator option.
+12. The VPS still has a large active `paper_decisions.csv` ledger, around 16GB
+    at the 2026-06-04 cleanup. Treat it as evidence, not disposable cache. If
+    it needs cleanup, first build archive-aware readers or a bounded explicit
+    operator path.
 
 ## For The Next AI
 

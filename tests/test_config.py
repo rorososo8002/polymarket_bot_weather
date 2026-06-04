@@ -24,6 +24,14 @@ def test_default_station_nowcast_is_pilot_cached_and_freshness_bounded():
     assert Settings.station_nowcast_request_log_path == ""
 
 
+def test_default_raw_snapshot_mode_saves_only_error_diagnostics():
+    assert Settings.raw_snapshots_mode == "error"
+    assert Settings.raw_snapshots_max_bytes == 100 * 1024 * 1024
+    assert Settings.raw_snapshots_retention_days == 7
+    assert Settings.raw_snapshots_min_free_bytes == 1024 * 1024 * 1024
+    assert Settings.raw_snapshots_max_disk_usage_pct == 0.90
+
+
 def test_default_entry_net_return_filter_uses_official_weather_fee_rate():
     assert Settings.entry_min_expected_net_return_pct == 0.06
     assert Settings.weather_taker_fee_rate == 0.05
@@ -268,6 +276,29 @@ def test_load_settings_reads_city_date_portfolio_controls(monkeypatch):
     assert settings.large_bankroll_event_date_exposure_fraction == 0.04
     assert settings.event_date_exposure_transition_usd == 1200.0
     assert settings.max_event_portfolio_legs == 3
+
+
+def test_load_settings_reads_raw_snapshot_storage_mode(monkeypatch):
+    monkeypatch.setenv("RAW_SNAPSHOTS_MODE", "debug")
+    monkeypatch.setenv("RAW_SNAPSHOTS_MAX_BYTES", "12345")
+    monkeypatch.setenv("RAW_SNAPSHOTS_RETENTION_DAYS", "9")
+    monkeypatch.setenv("RAW_SNAPSHOTS_MIN_FREE_BYTES", "54321")
+    monkeypatch.setenv("RAW_SNAPSHOTS_MAX_DISK_USAGE_PCT", "0.75")
+
+    settings = load_settings()
+
+    assert settings.raw_snapshots_mode == "debug"
+    assert settings.raw_snapshots_max_bytes == 12345
+    assert settings.raw_snapshots_retention_days == 9
+    assert settings.raw_snapshots_min_free_bytes == 54321
+    assert settings.raw_snapshots_max_disk_usage_pct == 0.75
+
+
+def test_load_settings_rejects_unknown_raw_snapshot_storage_mode(monkeypatch):
+    monkeypatch.setenv("RAW_SNAPSHOTS_MODE", "always")
+
+    with pytest.raises(ValueError, match="RAW_SNAPSHOTS_MODE"):
+        load_settings()
 
 
 def test_load_settings_reads_shadow_signal_research_controls(monkeypatch):

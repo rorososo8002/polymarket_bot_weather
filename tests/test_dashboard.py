@@ -46,8 +46,11 @@ def test_dashboard_payload_exposes_latest_event_portfolio_explanation(tmp_path):
                     {"market_id": "seoul-26", "side": "YES", "size_usd": 5.0},
                     {"market_id": "seoul-27", "side": "YES", "size_usd": 5.0},
                 ],
-                "rejected_legs": [{"market_id": "seoul-28", "side": "NO", "reason": "same-direction concentration"}],
-                "scenario_pnl_usd": {"none_selected_legs_win": -10.0},
+                "rejected_legs_sample": [
+                    {"market_id": "seoul-28", "side": "NO", "reason": "same-direction concentration"}
+                ],
+                "rejected_reason_counts": {"same-direction concentration": 1},
+                "worst_scenario_pnl_usd": -10.0,
             }
         )
         + "\n",
@@ -67,7 +70,9 @@ def test_dashboard_payload_exposes_latest_event_portfolio_explanation(tmp_path):
     assert latest["entry_bankroll_usd"] == 100.0
     assert latest["event_cap_fraction"] == 0.10
     assert [leg["market_id"] for leg in latest["selected_legs"]] == ["seoul-26", "seoul-27"]
-    assert latest["rejected_legs"][0]["market_id"] == "seoul-28"
+    assert latest["rejected_legs_sample"][0]["market_id"] == "seoul-28"
+    assert latest["rejected_reason_counts"] == {"same-direction concentration": 1}
+    assert latest["worst_scenario_pnl_usd"] == -10.0
 
 
 def test_dashboard_html_explains_adaptive_event_portfolio_budget():

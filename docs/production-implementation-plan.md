@@ -93,11 +93,22 @@ Paper-report readers treat `paper_decisions.csv` and `paper_trades.csv` as
 source ledgers. Full-history analysis may scan every row to preserve its
 meaning, but it must stream rows and keep only aggregates, market-level lookup
 state, or bounded research samples in memory.
+New `paper_decisions.csv` rows keep the strategy evidence fields but compact
+verbose question, reason, and note text. `paper_event_portfolios.jsonl` records
+selected legs, rejection counts/samples, and worst scenario PnL rather than
+full candidate or scenario maps.
 Resolved Brier scoring treats an `OPEN` row in `paper_trades.csv` as the
 canonical entry-time forecast evidence. New `OPEN` rows record `entry_p_true`,
 `entry_side_probability`, `entry_net_edge`, and `decision_ts`; older CSVs
 without those columns fall back to the latest entry decision for that market so
 legacy reports remain readable.
+`paper_raw_snapshots.jsonl` is high-volume diagnostic evidence, not a source
+ledger. Normal decision snapshots are disabled by default:
+`RAW_SNAPSHOTS_MODE=error` records only error diagnostics, while `debug` may be
+used for a bounded investigation. Active raw snapshots rotate in-process over
+100MB into compressed `data/archive/` files, old raw archives are retained for
+7 days by default, and dangerous disk pressure suspends raw writes while adding
+a `raw_snapshot_storage` warning to `paper_runner_status.json`.
 
 ## Code Map
 
@@ -352,6 +363,11 @@ STATION_NOWCAST_ENABLED=true
 STATION_NOWCAST_CACHE_TTL_SECONDS=900
 STATION_NOWCAST_FRESHNESS_SECONDS=5400
 STATION_NOWCAST_REQUEST_LOG_PATH=station_nowcast_request_log.jsonl
+RAW_SNAPSHOTS_MODE=error
+RAW_SNAPSHOTS_MAX_BYTES=104857600
+RAW_SNAPSHOTS_RETENTION_DAYS=7
+RAW_SNAPSHOTS_MIN_FREE_BYTES=1073741824
+RAW_SNAPSHOTS_MAX_DISK_USAGE_PCT=0.90
 DISCOVERY_MAX_PAGES=8
 DISCOVERY_PAGE_SIZE=100
 WEATHER_TAKER_FEE_RATE=0.05

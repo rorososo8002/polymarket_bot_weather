@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-import json
 import csv
+import gzip
+import json
+import os
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -14,6 +16,7 @@ from weather_bot.models import EdgeResult, OrderBook, OrderLevel, PaperPosition,
 from weather_bot.paper import PaperBroker, maybe_close_positions, maybe_settle_resolved_positions
 from weather_bot.polymarket_client import PolymarketClient
 from weather_bot.probability import _target_date_from_hint
+from weather_bot.runner_status import runner_status_path, write_runner_status
 from weather_bot.weather_client import parse_weather_question
 
 
@@ -1310,7 +1313,7 @@ def test_closed_market_does_not_settle_from_ambiguous_outcome_prices():
     assert broker.state.positions == [position]
 
 
-def test_raw_snapshot_log_is_jsonl(tmp_path):
+def test_raw_snapshot_log_skips_normal_decisions_by_default(tmp_path):
     settings = Settings(
         state_path=str(tmp_path / "state.json"),
         trades_csv_path=str(tmp_path / "trades.csv"),
@@ -1320,10 +1323,159 @@ def test_raw_snapshot_log_is_jsonl(tmp_path):
     broker = PaperBroker(settings)
     market = temp_market()
 
-    broker.log_raw_snapshot("entry", market, {"orderbook": {"bids": [["0.49", "10"]]}})
+    broker.log_raw_snapshot("decision", market, {"orderbook": {"bids": [["0.49", "10"]]}})
+
+    assert not (tmp_path / "snapshots.jsonl").exists()
+
+
+def test_raw_snapshot_log_saves_error_events_by_default(tmp_path):
+    settings = Settings(
+        state_path=str(tmp_path / "state.json"),
+        trades_csv_path=str(tmp_path / "trades.csv"),
+        decisions_csv_path=str(tmp_path / "decisions.csv"),
+        raw_snapshots_path=str(tmp_path / "snapshots.jsonl"),
+    )
+    broker = PaperBroker(settings)
+    market = temp_market()
+
+    broker.log_raw_snapshot("error", market, {"error": "order book decode failed"})
 
     rows = (tmp_path / "snapshots.jsonl").read_text(encoding="utf-8").splitlines()
     payload = json.loads(rows[0])
-    assert payload["event"] == "entry"
+    assert payload["event"] == "error"
+    assert payload["market_id"] == "m1"
+    assert payload["payload"]["error"] == "order book decode failed"
+
+
+def test_raw_snapshot_log_debug_mode_is_jsonl(tmp_path):
+    settings = Settings(
+        state_path=str(tmp_path / "state.json"),
+        trades_csv_path=str(tmp_path / "trades.csv"),
+        decisions_csv_path=str(tmp_path / "decisions.csv"),
+        raw_snapshots_path=str(tmp_path / "snapshots.jsonl"),
+        raw_snapshots_mode="debug",
+    )
+    broker = PaperBroker(settings)
+    market = temp_market()
+
+    broker.log_raw_snapshot("decision", market, {"orderbook": {"bids": [["0.49", "10"]]}})
+
+    rows = (tmp_path / "snapshots.jsonl").read_text(encoding="utf-8").splitlines()
+    payload = json.loads(rows[0])
+    assert payload["event"] == "decision"
     assert payload["market_id"] == "m1"
     assert payload["payload"]["orderbook"]["bids"] == [["0.49", "10"]]
+
+
+def test_raw_snapshot_log_rotates_oversized_active_file_to_compressed_archive(tmp_path):
+    snapshots_path = tmp_path / "snapshots.jsonl"
+    snapshots_path.write_text('{"old": true}\n' * 100, encoding="utf-8")
+    settings = Settings(
+        state_path=str(tmp_path / "state.json"),
+        trades_csv_path=str(tmp_path / "trades.csv"),
+        decisions_csv_path=str(tmp_path / "decisions.csv"),
+        raw_snapshots_path=str(snapshots_path),
+        raw_snapshots_mode="debug",
+        raw_snapshots_max_bytes=1000,
+    )
+    broker = PaperBroker(settings)
+    market = temp_market()
+
+    broker.log_raw_snapshot("decision", market, {"summary": "new"})
+
+    archives = list((tmp_path / "archive").glob("snapshots.*.jsonl.gz"))
+    assert len(archives) == 1
+    with gzip.open(archives[0], "rt", encoding="utf-8") as f:
+        assert '{"old": true}' in f.read()
+    active_rows = snapshots_path.read_text(encoding="utf-8").splitlines()
+    assert len(active_rows) == 1
+    assert json.loads(active_rows[0])["payload"]["summary"] == "new"
+
+
+def test_raw_snapshot_log_removes_archives_older_than_retention_days(tmp_path):
+    archive_dir = tmp_path / "archive"
+    archive_dir.mkdir()
+    old_archive = archive_dir / "snapshots.20000101T000000Z.jsonl.gz"
+    fresh_archive = archive_dir / "snapshots.29990101T000000Z.jsonl.gz"
+    old_archive.write_bytes(b"old")
+    fresh_archive.write_bytes(b"fresh")
+    old_mtime = (datetime.now(timezone.utc) - timedelta(days=3)).timestamp()
+    os.utime(old_archive, (old_mtime, old_mtime))
+    settings = Settings(
+        state_path=str(tmp_path / "state.json"),
+        trades_csv_path=str(tmp_path / "trades.csv"),
+        decisions_csv_path=str(tmp_path / "decisions.csv"),
+        raw_snapshots_path=str(tmp_path / "snapshots.jsonl"),
+        raw_snapshots_mode="debug",
+        raw_snapshots_retention_days=1,
+    )
+    broker = PaperBroker(settings)
+
+    broker.log_raw_snapshot("decision", temp_market(), {"summary": "new"})
+
+    assert not old_archive.exists()
+    assert fresh_archive.exists()
+
+
+def test_decision_log_compacts_verbose_text_fields(tmp_path):
+    settings = Settings(
+        state_path=str(tmp_path / "state.json"),
+        trades_csv_path=str(tmp_path / "trades.csv"),
+        decisions_csv_path=str(tmp_path / "decisions.csv"),
+        raw_snapshots_path=str(tmp_path / "snapshots.jsonl"),
+    )
+    broker = PaperBroker(settings)
+    market = RawMarket(
+        market_id="m1",
+        question="Will " + ("NYC reach 90F on May 25? " * 120),
+        slug="nyc-90f-may-25",
+        active=True,
+        closed=False,
+    )
+    result = EdgeResult(
+        side="SKIP",
+        p_true=0.5,
+        p_exec=None,
+        net_edge=-999.0,
+        size_usd=0.0,
+        size_shares=0.0,
+        reason="reason " + ("verbose rejection detail " * 120),
+    )
+
+    broker.log_decision(market, result, "note " + ("verbose forecast detail " * 120))
+
+    with (tmp_path / "decisions.csv").open(newline="", encoding="utf-8") as f:
+        row = next(csv.DictReader(f))
+    assert len(row["question"]) <= 240
+    assert len(row["reason"]) <= 500
+    assert len(row["note"]) <= 500
+    assert row["question"].endswith("[truncated]")
+    assert row["reason"].endswith("[truncated]")
+    assert row["note"].endswith("[truncated]")
+
+
+def test_raw_snapshot_log_suspends_and_warns_when_disk_usage_is_dangerous(monkeypatch, tmp_path):
+    settings = Settings(
+        state_path=str(tmp_path / "state.json"),
+        trades_csv_path=str(tmp_path / "trades.csv"),
+        decisions_csv_path=str(tmp_path / "decisions.csv"),
+        raw_snapshots_path=str(tmp_path / "snapshots.jsonl"),
+        raw_snapshots_mode="debug",
+        raw_snapshots_min_free_bytes=10,
+        raw_snapshots_max_disk_usage_pct=0.90,
+    )
+    write_runner_status(settings, "evaluating", message="still evaluating")
+    monkeypatch.setattr(
+        "weather_bot.paper.shutil.disk_usage",
+        lambda _path: type("Usage", (), {"total": 100, "used": 95, "free": 5})(),
+    )
+    broker = PaperBroker(settings)
+
+    broker.log_raw_snapshot("decision", temp_market(), {"summary": "new"})
+
+    assert not (tmp_path / "snapshots.jsonl").exists()
+    payload = json.loads(runner_status_path(settings).read_text(encoding="utf-8"))
+    assert payload["phase"] == "evaluating"
+    assert payload["message"] == "still evaluating"
+    assert payload["raw_snapshot_storage"]["status"] == "suspended"
+    assert "disk usage" in payload["raw_snapshot_storage"]["reason"]

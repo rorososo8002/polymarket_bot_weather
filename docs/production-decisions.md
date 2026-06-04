@@ -106,10 +106,13 @@ specialized reference docs.
   trade CSVs without those columns fall back to the latest entry decision so
   old reports do not break, but new scoreable entries must carry the entry
   probability in the execution ledger.
-- `paper_raw_snapshots.jsonl` is diagnostic evidence and may be archived and
-  compressed separately from source ledgers. On the Oracle VPS it rotates at
-  1GB into `data/archive/` with zstd compression. Do not apply the same cleanup
-  rule to `paper_state.json`, `paper_trades.csv`, or `paper_decisions.csv`.
+- `paper_raw_snapshots.jsonl` is diagnostic evidence, not a source ledger.
+  Normal raw decision snapshots are off by default; `RAW_SNAPSHOTS_MODE=error`
+  saves only error evidence, and `debug` is for bounded investigations. Raw
+  snapshots rotate over 100MB into compressed `data/archive/` files, keep 7
+  days by default, and suspend raw writes with a `paper_runner_status.json`
+  warning when disk pressure is dangerous. Do not apply this cleanup rule to
+  `paper_state.json`, `paper_trades.csv`, or `paper_decisions.csv`.
 - `forecast_cache.json` is not the Open-Meteo call ledger. It caches the latest
   successful forecast per key and can overwrite older evidence. Real Open-Meteo
   HTTP attempts are recorded in `forecast_request_log.jsonl` with cache-miss
@@ -607,3 +610,16 @@ ensemble API can count one weather request as multiple equivalent calls, so a
 budget. Consequence: realtime order books still stream, cached forecasts remain
 usable, but new forecast HTTP calls pause until the recorded UTC reset time
 after a daily-limit response.
+
+### 2026-06-04: Keep Runtime Raw Diagnostics Bounded By Default
+
+Decision: Disable normal raw decision snapshots by default, keep only error
+raw diagnostics unless `RAW_SNAPSHOTS_MODE=debug` is deliberately enabled, and
+rotate active raw snapshot files over 100MB into compressed archives with
+7-day retention. If disk usage is dangerous, suspend raw snapshot writes and
+record `raw_snapshot_storage` in `paper_runner_status.json`.
+Why: raw diagnostics can grow faster than source ledgers and fill the VPS
+disk, while `paper_state.json`, `paper_trades.csv`, and `paper_decisions.csv`
+must remain evidence. Consequence: new decision and portfolio rows are compact
+summaries, raw diagnostics are opt-in or error-only, and disk pressure blocks
+only raw snapshot writes rather than deleting or truncating paper ledgers.

@@ -28,6 +28,9 @@ _POSITIVE_INTEGER_SETTINGS = (
     "discovery_max_pages",
     "discovery_page_size",
     "max_event_portfolio_legs",
+    "raw_snapshots_max_bytes",
+    "raw_snapshots_retention_days",
+    "raw_snapshots_min_free_bytes",
 )
 
 _RATIO_SETTINGS = (
@@ -50,6 +53,7 @@ _RATIO_SETTINGS = (
     "resolution_error_margin",
     "settlement_runner_max_fraction",
     "probability_shrink_gamma",
+    "raw_snapshots_max_disk_usage_pct",
 )
 
 _NON_NEGATIVE_NUMBER_SETTINGS = (
@@ -60,6 +64,8 @@ _NON_NEGATIVE_NUMBER_SETTINGS = (
 _RATE_SETTINGS = (
     "weather_taker_fee_rate",
 )
+
+_RAW_SNAPSHOT_MODES = ("off", "error", "debug")
 
 
 @dataclass(frozen=True)
@@ -84,6 +90,11 @@ class Settings:
     decisions_csv_path: str = "paper_decisions.csv"
     portfolio_decisions_jsonl_path: str = "paper_event_portfolios.jsonl"
     raw_snapshots_path: str = "paper_raw_snapshots.jsonl"
+    raw_snapshots_mode: str = "error"
+    raw_snapshots_max_bytes: int = 100 * 1024 * 1024
+    raw_snapshots_retention_days: int = 7
+    raw_snapshots_min_free_bytes: int = 1024 * 1024 * 1024
+    raw_snapshots_max_disk_usage_pct: float = 0.90
     shadow_signals_jsonl_path: str = "shadow_external_signals.jsonl"
     shadow_public_notes_jsonl_path: str = "shadow_public_notes.jsonl"
     shadow_report_path: str = "shadow_signal_report.md"
@@ -168,6 +179,7 @@ class Settings:
         _validate_ratios(self, _RATIO_SETTINGS)
         _validate_non_negative_numbers(self, _NON_NEGATIVE_NUMBER_SETTINGS)
         _validate_rates(self, _RATE_SETTINGS)
+        _validate_choice(self, "raw_snapshots_mode", _RAW_SNAPSHOT_MODES)
 
 
 def _setting_display_name(field_name: str) -> str:
@@ -226,6 +238,18 @@ def _validate_rates(settings: Settings, field_names: tuple[str, ...]) -> None:
             raise ValueError(f"{_setting_display_name(field_name)} must be at most 1; got {value!r}")
 
 
+def _validate_choice(settings: Settings, field_name: str, allowed_values: tuple[str, ...]) -> None:
+    value = getattr(settings, field_name)
+    if not isinstance(value, str):
+        raise ValueError(f"{_setting_display_name(field_name)} must be one of {allowed_values}; got {value!r}")
+    normalized = value.strip().lower()
+    if normalized not in allowed_values:
+        allowed = ", ".join(allowed_values)
+        raise ValueError(f"{_setting_display_name(field_name)} must be one of: {allowed}; got {value!r}")
+    if normalized != value:
+        object.__setattr__(settings, field_name, normalized)
+
+
 def _float_env(name: str, default: float) -> float:
     raw = os.getenv(name)
     if raw is None or raw.strip() == "":
@@ -282,6 +306,20 @@ def load_settings() -> Settings:
             Settings.portfolio_decisions_jsonl_path,
         ),
         raw_snapshots_path=os.getenv("RAW_SNAPSHOTS_PATH", Settings.raw_snapshots_path),
+        raw_snapshots_mode=os.getenv("RAW_SNAPSHOTS_MODE", Settings.raw_snapshots_mode),
+        raw_snapshots_max_bytes=_int_env("RAW_SNAPSHOTS_MAX_BYTES", Settings.raw_snapshots_max_bytes),
+        raw_snapshots_retention_days=_int_env(
+            "RAW_SNAPSHOTS_RETENTION_DAYS",
+            Settings.raw_snapshots_retention_days,
+        ),
+        raw_snapshots_min_free_bytes=_int_env(
+            "RAW_SNAPSHOTS_MIN_FREE_BYTES",
+            Settings.raw_snapshots_min_free_bytes,
+        ),
+        raw_snapshots_max_disk_usage_pct=_float_env(
+            "RAW_SNAPSHOTS_MAX_DISK_USAGE_PCT",
+            Settings.raw_snapshots_max_disk_usage_pct,
+        ),
         shadow_signals_jsonl_path=os.getenv("SHADOW_SIGNALS_JSONL_PATH", Settings.shadow_signals_jsonl_path),
         shadow_public_notes_jsonl_path=os.getenv(
             "SHADOW_PUBLIC_NOTES_JSONL_PATH",

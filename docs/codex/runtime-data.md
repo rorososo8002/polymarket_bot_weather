@@ -12,10 +12,13 @@ Read this file only for runtime logs, paper-trading data, dashboard readers, or 
 - For older data, filter by time range, market, city, event type, or decision reason.
 - Prefer counts, summaries, tails, targeted searches, and small samples over opening complete files.
 - `paper_raw_snapshots.jsonl` is detailed diagnostic evidence, not the paper
-  account book. It may be rotated and compressed when it grows large. The
-  Oracle VPS uses `/etc/logrotate.d/polymarket-weather-bot-runtime`, matching
-  `deploy/logrotate/polymarket-weather-bot-runtime`, to move raw snapshots over
-  1GB into `data/archive/` and compress them with zstd.
+  account book. Normal raw decision snapshots are off by default:
+  `RAW_SNAPSHOTS_MODE=error` saves only error evidence, while `debug` is for a
+  bounded investigation. The bot rotates active raw snapshots over 100MB into
+  compressed `data/archive/` files, keeps recent raw archives for 7 days by
+  default, and suspends raw writes with a `paper_runner_status.json` warning
+  when disk pressure is dangerous. The Oracle VPS logrotate rule is a matching
+  safety net and must not include paper state, trade, or decision ledgers.
 - `forecast_cache.json` is a forecast result cache, not an API request ledger.
   It overwrites entries by location/model cache key, so it cannot reconstruct
   total Open-Meteo calls after the fact.
@@ -49,6 +52,10 @@ Read this file only for runtime logs, paper-trading data, dashboard readers, or 
 ## Analysis And Reports
 
 - `paper_decisions.csv` and `paper_trades.csv` are paper-performance source ledgers, not disposable cache files. Do not truncate, rewrite, or delete them to make reports faster.
+- New `paper_decisions.csv` rows compact verbose question, reason, and note
+  text so the strategy evidence ledger does not become a raw-data warehouse.
+  New `paper_event_portfolios.jsonl` rows keep selected legs, rejection
+  counts/samples, and worst scenario PnL rather than full candidate maps.
 - Full-history reports may still scan every row when their meaning depends on all rows, but they should stream rows and keep only aggregate counters, market-level lookups, or bounded result sets in memory.
 - `analyze_paper.py` keeps the existing full-history report meaning by streaming decision and trade rows instead of materializing whole CSV files.
 - `shadow_signals.py` keeps shadow research separate from execution and streams bot decision/trade CSV rows while comparing only the bounded signal set loaded from `shadow_external_signals.jsonl`.

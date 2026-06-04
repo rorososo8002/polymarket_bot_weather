@@ -488,10 +488,36 @@ def test_event_portfolio_log_reconstructs_budget_legs_rejections_and_scenarios(t
     assert row["entry_bankroll_usd"] == 200.0
     assert row["event_cap_usd"] == 20.0
     assert [leg["market_id"] for leg in row["selected_legs"]] == ["seoul-26", "seoul-27"]
-    assert row["rejected_legs"][0]["market_id"] == "seoul-28"
-    assert sum(row["scenario_probabilities"].values()) == 1.0
+    assert row["rejected_legs_sample"][0]["market_id"] == "seoul-28"
+    assert row["rejected_count"] == 1
     assert row["expected_log_growth"] > 0.0
-    assert row["scenario_pnl_usd"]["other"] > 0.0
+    assert row["worst_scenario_pnl_usd"] <= row["expected_net_profit_usd"]
+
+
+def test_event_portfolio_log_payload_is_compact_summary(tmp_path):
+    broker = PaperBroker(settings(tmp_path, bankroll_usd=200.0))
+    decision = select_event_portfolio(
+        broker,
+        [
+            candidate("seoul-26", "26째C", side="NO", size_usd=20.0, p_true=0.10, p_exec=0.70, expected_net_profit_usd=3.0),
+            candidate("seoul-27", "27째C", side="NO", size_usd=20.0, p_true=0.10, p_exec=0.70, expected_net_profit_usd=3.0),
+            candidate("seoul-28", "28째C", side="YES", size_usd=20.0, p_true=0.01, p_exec=0.90, expected_net_profit_usd=0.10),
+        ],
+        usable_snapshot(200.0),
+    )
+
+    broker.log_event_portfolio_decision(decision.to_log_payload())
+
+    row = json.loads((tmp_path / "portfolio.jsonl").read_text(encoding="utf-8").splitlines()[0])
+    assert row["selected_count"] == 2
+    assert row["rejected_count"] == 1
+    assert "question" not in row["selected_legs"][0]
+    assert "scenario_pnl_usd" not in row
+    assert row["worst_scenario_pnl_usd"] == pytest.approx(min(decision.scenario_pnl_usd.values()))
+    assert row["rejected_reason_counts"] == {"not selected by event portfolio optimizer": 1}
+    assert row["rejected_legs_sample"] == [
+        {"market_id": "seoul-28", "side": "YES", "reason": "not selected by event portfolio optimizer"}
+    ]
 
 
 def test_broker_small_account_allows_two_legs_inside_shared_ten_percent_cap(tmp_path):

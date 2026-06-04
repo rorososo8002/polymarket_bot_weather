@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass, replace
 from itertools import combinations
 from math import ceil, floor, inf, isinf, log
@@ -58,6 +59,9 @@ class EventPortfolioDecision:
     scenario_pnl_usd: dict[str, float]
 
     def to_log_payload(self) -> dict[str, Any]:
+        rejected_reason_counts = Counter(leg.reason for leg in self.rejected)
+        rejected_sample_limit = 10
+        worst_scenario_pnl_usd = min(self.scenario_pnl_usd.values()) if self.scenario_pnl_usd else 0.0
         return {
             "event_key": self.event_key,
             "city": self.city,
@@ -74,10 +78,11 @@ class EventPortfolioDecision:
             "total_event_exposure_usd": round(self.existing_event_exposure_usd + self.selected_exposure_usd, 6),
             "expected_net_profit_usd": round(self.expected_net_profit_usd, 6),
             "expected_log_growth": round(self.expected_log_growth, 9),
+            "selected_count": len(self.selected),
+            "rejected_count": len(self.rejected),
             "selected_legs": [
                 {
                     "market_id": leg.market.market_id,
-                    "question": leg.market.question,
                     "side": leg.result.side,
                     "size_usd": round(leg.result.size_usd, 6),
                     "size_shares": round(leg.result.size_shares, 6),
@@ -87,12 +92,12 @@ class EventPortfolioDecision:
                 }
                 for leg in self.selected
             ],
-            "rejected_legs": [
+            "rejected_legs_sample": [
                 {"market_id": leg.market_id, "side": leg.side, "reason": leg.reason}
-                for leg in self.rejected
+                for leg in self.rejected[:rejected_sample_limit]
             ],
-            "scenario_probabilities": self.scenario_probabilities,
-            "scenario_pnl_usd": self.scenario_pnl_usd,
+            "rejected_reason_counts": dict(sorted(rejected_reason_counts.items())),
+            "worst_scenario_pnl_usd": round(worst_scenario_pnl_usd, 6),
         }
 
 

@@ -1,7 +1,8 @@
 /opt/polymarket-weather-bot/data/paper_raw_snapshots.jsonl {
     su polymarket polymarket
-    size 1G
+    size 100M
     rotate 14
+    maxage 7
     missingok
     notifempty
     create 0644 polymarket polymarket

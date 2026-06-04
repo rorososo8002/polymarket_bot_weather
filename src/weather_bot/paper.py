@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import csv
+import gzip
 import json
 import os
+import shutil
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from math import isfinite
@@ -22,6 +24,7 @@ from .edge import (
 from .exit_policy import assess_exit, build_entry_plan, conservative_settlement_value, side_true_probability
 from .polymarket_client import PolymarketClient
 from .portfolio import adaptive_event_cap_fraction, is_complementary_with_positions, websocket_pricing_block_reason
+from .runner_status import update_runner_status_fields
 
 
 def utc_now_iso() -> str:
@@ -65,6 +68,11 @@ TRADE_CSV_FIELDNAMES = [
     "entry_net_edge",
     "decision_ts",
 ]
+
+DECISION_QUESTION_MAX_CHARS = 240
+DECISION_REASON_MAX_CHARS = 500
+DECISION_NOTE_MAX_CHARS = 500
+TEXT_TRUNCATION_SUFFIX = "...[truncated]"
 
 
 class PaperStateLoadError(RuntimeError):
@@ -123,6 +131,107 @@ def _format_optional_csv_float(value: Any) -> str:
     if not isfinite(number):
         return ""
     return f"{number:.6f}"
+
+
+def _compact_text(value: Any, max_chars: int) -> str:
+    text = " ".join(str(value or "").split())
+    if len(text) <= max_chars:
+        return text
+    keep = max(0, max_chars - len(TEXT_TRUNCATION_SUFFIX))
+    return text[:keep].rstrip() + TEXT_TRUNCATION_SUFFIX
+
+
+def _raw_snapshot_event_is_error(event: str, payload: dict[str, Any]) -> bool:
+    event_text = event.strip().lower()
+    if any(marker in event_text for marker in ("error", "exception", "failed", "failure")):
+        return True
+    for key in ("status", "level", "severity"):
+        value = str(payload.get(key) or "").strip().lower()
+        if value in {"error", "failed", "failure", "exception"}:
+            return True
+    return False
+
+
+def _should_write_raw_snapshot(mode: str, event: str, payload: dict[str, Any]) -> bool:
+    if mode == "debug":
+        return True
+    if mode == "error":
+        return _raw_snapshot_event_is_error(event, payload)
+    return False
+
+
+def _raw_snapshot_archive_dir(path: Path) -> Path:
+    return path.parent / "archive"
+
+
+def _raw_snapshot_archive_name(path: Path) -> str:
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return f"{path.stem}.{ts}{path.suffix}.gz"
+
+
+def _archive_raw_snapshot(path: Path) -> None:
+    if not path.exists() or path.stat().st_size <= 0:
+        return
+    archive_dir = _raw_snapshot_archive_dir(path)
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    archive_path = archive_dir / _raw_snapshot_archive_name(path)
+    if archive_path.exists():
+        archive_path = archive_path.with_name(f"{archive_path.stem}.{uuid4().hex}{archive_path.suffix}")
+    tmp_path = archive_path.with_name(f"{archive_path.name}.{uuid4().hex}.tmp")
+    try:
+        with path.open("rb") as source, gzip.open(tmp_path, "wb") as target:
+            shutil.copyfileobj(source, target)
+        os.replace(tmp_path, archive_path)
+        path.write_text("", encoding="utf-8")
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink()
+
+
+def _rotate_raw_snapshot_if_needed(path: Path, max_bytes: int) -> None:
+    if max_bytes <= 0:
+        return
+    try:
+        if path.exists() and path.stat().st_size > max_bytes:
+            _archive_raw_snapshot(path)
+    except OSError:
+        return
+
+
+def _prune_raw_snapshot_archives(path: Path, retention_days: int) -> None:
+    if retention_days <= 0:
+        return
+    archive_dir = _raw_snapshot_archive_dir(path)
+    if not archive_dir.exists():
+        return
+    cutoff = datetime.now(timezone.utc).timestamp() - (retention_days * 86400)
+    pattern = f"{path.stem}.*{path.suffix}.gz"
+    for archive_path in archive_dir.glob(pattern):
+        try:
+            if archive_path.stat().st_mtime < cutoff:
+                archive_path.unlink()
+        except OSError:
+            continue
+
+
+def _raw_snapshot_disk_pressure_reason(settings: Settings, path: Path) -> str | None:
+    try:
+        usage = shutil.disk_usage(path.parent)
+    except OSError as exc:
+        return f"cannot inspect raw snapshot disk usage at {path.parent}: {type(exc).__name__}"
+    used_pct = usage.used / usage.total if usage.total > 0 else 1.0
+    reasons: list[str] = []
+    if usage.free < settings.raw_snapshots_min_free_bytes:
+        reasons.append(
+            f"free bytes {usage.free} below minimum {settings.raw_snapshots_min_free_bytes}"
+        )
+    if used_pct >= settings.raw_snapshots_max_disk_usage_pct:
+        reasons.append(
+            f"disk usage {used_pct:.1%} at or above limit {settings.raw_snapshots_max_disk_usage_pct:.1%}"
+        )
+    if not reasons:
+        return None
+    return "; ".join(reasons)
 
 
 def _csv_header(path: Path) -> list[str]:
@@ -212,6 +321,7 @@ class PaperBroker:
         self.decisions_csv_path = Path(settings.decisions_csv_path)
         self.portfolio_decisions_jsonl_path = Path(settings.portfolio_decisions_jsonl_path)
         self.raw_snapshots_path = Path(settings.raw_snapshots_path)
+        self._raw_snapshot_storage_suspended = False
         self.state = self.load_state()
 
     def load_state(self) -> PaperState:
@@ -596,7 +706,7 @@ class PaperBroker:
                 "ts": ts,
                 "market_id": market.market_id,
                 "slug": market.slug or "",
-                "question": market.question,
+                "question": _compact_text(market.question, DECISION_QUESTION_MAX_CHARS),
                 "market_type": market_type,
                 "side": result.side,
                 "p_true": f"{result.p_true:.6f}",
@@ -609,8 +719,8 @@ class PaperBroker:
                 "model_fair_price": model_fair,
                 "target_exit_price": target_exit,
                 "market_heat_score": heat_score,
-                "reason": result.reason,
-                "note": note,
+                "reason": _compact_text(result.reason, DECISION_REASON_MAX_CHARS),
+                "note": _compact_text(note, DECISION_NOTE_MAX_CHARS),
             })
         return ts
 
@@ -658,6 +768,26 @@ class PaperBroker:
             })
 
     def log_raw_snapshot(self, event: str, market: RawMarket, payload: dict[str, Any]) -> None:
+        if not _should_write_raw_snapshot(self.settings.raw_snapshots_mode, event, payload):
+            return
+        if self._raw_snapshot_storage_suspended:
+            return
+        self.raw_snapshots_path.parent.mkdir(parents=True, exist_ok=True)
+        disk_pressure_reason = _raw_snapshot_disk_pressure_reason(self.settings, self.raw_snapshots_path)
+        if disk_pressure_reason:
+            self._raw_snapshot_storage_suspended = True
+            update_runner_status_fields(
+                self.settings,
+                raw_snapshot_storage={
+                    "status": "suspended",
+                    "reason": disk_pressure_reason,
+                    "path": str(self.raw_snapshots_path),
+                    "updated_at": utc_now_iso(),
+                },
+            )
+            return
+        _prune_raw_snapshot_archives(self.raw_snapshots_path, self.settings.raw_snapshots_retention_days)
+        _rotate_raw_snapshot_if_needed(self.raw_snapshots_path, self.settings.raw_snapshots_max_bytes)
         row = {
             "ts": utc_now_iso(),
             "event": event,
@@ -668,6 +798,7 @@ class PaperBroker:
         }
         with self.raw_snapshots_path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
+        _rotate_raw_snapshot_if_needed(self.raw_snapshots_path, self.settings.raw_snapshots_max_bytes)
 
     def log_event_portfolio_decision(self, payload: dict[str, Any]) -> None:
         row = {"ts": utc_now_iso(), **payload}

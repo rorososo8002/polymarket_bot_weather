@@ -113,8 +113,9 @@ def test_runtime_logrotate_rotates_raw_snapshots_and_request_logs_only():
     assert "/opt/polymarket-weather-bot/data/paper_raw_snapshots.jsonl" in text
     assert "/opt/polymarket-weather-bot/data/forecast_request_log.jsonl" in text
     assert "/opt/polymarket-weather-bot/data/station_nowcast_request_log.jsonl" in text
-    assert "size 1G" in text
+    assert "size 100M" in text
     assert "size 10M" in text
+    assert "maxage 7" in text
     assert "compresscmd /usr/bin/zstd" in text
     assert "/opt/polymarket-weather-bot/data/paper_state.json" not in text
     assert "/opt/polymarket-weather-bot/data/paper_trades.csv" not in text
