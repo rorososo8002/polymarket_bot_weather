@@ -793,6 +793,31 @@ def maybe_close_positions(
             book = client.get_order_book(pos.token_id)
             best_bid = book.best_bid
             if best_bid is None:
+                market = _market_for_position(pos, market_by_id.get(pos.market_id))
+                market_type = str(pos.metadata.get("market_type", "temperature"))
+                mark = pos.last_mark_price if pos.last_mark_price is not None else pos.entry_price
+                no_liq = pos.metadata.get("no_liquidity_cycles", 0) + 1
+                pos.metadata["no_liquidity_cycles"] = no_liq
+                pos.metadata["absorbable_shares"] = 0.0
+                pos.metadata["can_fully_close"] = False
+                pos.metadata["last_exit_assessment"] = "no executable bid depth; indicative best_bid_ask ignored"
+                if book.indicative_best_bid is not None:
+                    pos.metadata["indicative_best_bid"] = round(book.indicative_best_bid, 6)
+                broker.log_trade(
+                    "HOLD_NO_LIQUIDITY",
+                    market,
+                    pos.side,
+                    pos.token_id,
+                    pos.shares,
+                    mark,
+                    0.0,
+                    "no executable bid depth; indicative best_bid_ask ignored",
+                    market_type,
+                )
+                messages.append(
+                    f"HOLD_NO_LIQUIDITY {pos.side} shares={pos.shares:.2f} "
+                    f"mark={mark:.4f} cycles={no_liq} reason=no executable bid depth; indicative best_bid_ask ignored"
+                )
                 continue
 
             # Step 1: measure executable absorbable size.

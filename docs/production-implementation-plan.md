@@ -132,6 +132,10 @@ slippage. Do not subtract entry spread or entry slippage a second time.
 `best_bid_ask` may update displayed/reference best bid and ask prices, but
 `p_exec` must be computed only from confirmed order-book depth carried by
 `book` snapshots or `price_change` updates.
+`OrderBook.best_bid` and `OrderBook.best_ask` are executable-depth helpers:
+they read only positive-size `bids` and `asks`. Display or diagnostic code that
+wants the indicative stream quote must use the explicit reference/indicative
+fields instead.
 Those executable levels must have finite prices in the valid Polymarket token
 range and finite non-negative sizes. Bad levels are discarded; a malformed
 snapshot shape does not overwrite the previous executable book.

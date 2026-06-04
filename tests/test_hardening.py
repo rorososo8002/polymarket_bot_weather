@@ -500,6 +500,71 @@ def test_entry_net_return_filter_allows_high_price_settlement_candidate():
     assert "expected_net_return=" in result.reason
 
 
+def test_indicative_best_ask_does_not_hide_abnormal_yes_no_depth_sum():
+    settings = Settings(
+        min_net_edge=0.01,
+        min_order_usd=1.0,
+        weather_taker_fee_rate=0.0,
+        model_error_margin=0.0,
+        resolution_error_margin=0.0,
+        require_date_hint_for_trade=True,
+    )
+    client = FakePolymarketClient(
+        books={
+            "yes": OrderBook(
+                "yes",
+                bids=[OrderLevel(0.80, 1000.0)],
+                asks=[OrderLevel(0.82, 1000.0)],
+                indicative_best_bid=0.48,
+                indicative_best_ask=0.49,
+            ),
+            "no": OrderBook(
+                "no",
+                bids=[OrderLevel(0.80, 1000.0)],
+                asks=[OrderLevel(0.82, 1000.0)],
+                indicative_best_bid=0.49,
+                indicative_best_ask=0.50,
+            ),
+        }
+    )
+
+    result, per_side = evaluate_market(temp_market(), temp_signal(p_true=0.95), client, settings, 1000.0, "temperature")
+
+    assert result.side == "SKIP"
+    assert per_side["YES"].reason == result.reason
+    assert per_side["NO"].reason == result.reason
+    assert "YES+NO ask sum abnormal 1.640" in result.reason
+
+
+def test_indicative_best_bid_does_not_rescue_wide_executable_spread():
+    settings = Settings(
+        min_net_edge=0.01,
+        min_order_usd=1.0,
+        weather_taker_fee_rate=0.0,
+        model_error_margin=0.0,
+        resolution_error_margin=0.0,
+        require_date_hint_for_trade=True,
+    )
+    client = FakePolymarketClient(
+        books={
+            "yes": OrderBook(
+                "yes",
+                bids=[OrderLevel(0.10, 1000.0)],
+                asks=[OrderLevel(0.50, 1000.0)],
+                indicative_best_bid=0.49,
+                indicative_best_ask=0.50,
+            ),
+            "no": book("no", bid=0.49, ask=0.50, bid_size=1000.0, ask_size=1000.0),
+        }
+    )
+
+    result, per_side = evaluate_market(temp_market(), temp_signal(p_true=0.80), client, settings, 1000.0, "temperature")
+
+    assert result.side == "SKIP"
+    assert per_side["YES"].side == "SKIP"
+    assert "YES liquidity filter: spread too wide 0.40 > 0.20" in per_side["YES"].reason
+
+
 def test_unavailable_forecast_signals_do_not_trade():
     settings = Settings(
         min_net_edge=0.01,
@@ -528,6 +593,56 @@ def test_unavailable_forecast_signals_do_not_trade():
     assert result.side == "SKIP"
     assert per_side == {}
     assert "confidence too low" in result.reason
+
+
+def test_indicative_best_bid_only_does_not_mark_or_close_position(tmp_path):
+    settings = Settings(
+        state_path=str(tmp_path / "state.json"),
+        trades_csv_path=str(tmp_path / "trades.csv"),
+        decisions_csv_path=str(tmp_path / "decisions.csv"),
+        raw_snapshots_path=str(tmp_path / "raw.jsonl"),
+        probability_stop_drop_threshold=0.10,
+    )
+    broker = PaperBroker(settings)
+    broker.state.positions = [
+        PaperPosition(
+            position_id="p1",
+            market_id="m1",
+            question="Will NYC reach 90 F on May 25?",
+            token_id="yes",
+            side="YES",
+            entry_price=0.50,
+            shares=10.0,
+            cost_usd=5.0,
+            opened_at=datetime.now(timezone.utc).isoformat(),
+            last_mark_price=0.50,
+            last_unrealized_pnl=-5.0,
+            metadata={"entry_p_true": 0.80, "probability_stop_threshold": 0.70},
+        )
+    ]
+    client = FakePolymarketClient(
+        books={
+            "yes": OrderBook(
+                "yes",
+                bids=[],
+                asks=[],
+                indicative_best_bid=0.90,
+                indicative_best_ask=0.91,
+            )
+        }
+    )
+    latest_edges = {("m1", "YES"): EdgeResult("YES", 0.20, 0.50, -0.50, 0.0, 0.0, "probability stop")}
+
+    messages = maybe_close_positions(broker, client, {"m1": temp_market()}, latest_edges)
+
+    assert len(broker.state.positions) == 1
+    position = broker.state.positions[0]
+    assert position.last_mark_price == 0.50
+    assert position.last_unrealized_pnl == -5.0
+    assert any("HOLD_NO_LIQUIDITY" in message for message in messages)
+    rows = list(csv.DictReader((tmp_path / "trades.csv").open(encoding="utf-8")))
+    assert rows[0]["action"] == "HOLD_NO_LIQUIDITY"
+    assert float(rows[0]["price"]) == 0.50
 
 
 def test_probability_stop_closes_immediately(tmp_path):

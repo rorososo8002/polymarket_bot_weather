@@ -38,6 +38,8 @@ specialized reference docs.
   the market is skipped rather than guessed from list order.
 - `best_bid_ask` is indicative price data only. Executable depth comes from
   `book` snapshots or `price_change` updates, not assumed sizes.
+  `OrderBook.best_bid` and `OrderBook.best_ask` mean executable positive-size
+  depth only; reference/indicative fields are for display and diagnostics.
 - Executable order-book levels are used only after defensive numeric parsing.
   Non-numeric, non-finite, negative, or out-of-range prices/sizes are discarded;
   malformed snapshot shapes do not replace the current executable book.
@@ -324,6 +326,16 @@ prices only; they do not add, move, or resize bid/ask levels. Why: those
 messages do not prove how many shares are actually available at the quoted
 price. Consequence: executable VWAP, liquidity filters, exits, and paper fills
 use only depth confirmed by `book` snapshots or `price_change` updates.
+
+### 2026-06-04: Make OrderBook Best Prices Executable-Only
+
+Decision: `OrderBook.best_bid` and `OrderBook.best_ask` return only positive-size
+levels from `bids` and `asks`; indicative stream quotes stay in
+`indicative_best_bid`, `indicative_best_ask`, or reference helpers. Why: shared
+best-price properties were still able to feed `best_bid_ask` reference quotes
+into liquidity filters, `YES+NO` ask checks, spread audits, and position marks.
+Consequence: quote-only books fail closed for entries and exits, while display
+code can still show the indicative quote explicitly.
 
 ### 2026-06-03: Use Fee-Adjusted Shares As The Canonical Entry Quantity
 

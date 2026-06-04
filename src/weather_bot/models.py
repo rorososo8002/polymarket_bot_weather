@@ -45,15 +45,25 @@ class OrderBook:
 
     @property
     def best_bid(self) -> float | None:
-        if self.indicative_best_bid is not None:
-            return self.indicative_best_bid
-        return self.bids[0].price if self.bids else None
+        for level in self.bids:
+            if level.size > 0:
+                return level.price
+        return None
 
     @property
     def best_ask(self) -> float | None:
-        if self.indicative_best_ask is not None:
-            return self.indicative_best_ask
-        return self.asks[0].price if self.asks else None
+        for level in self.asks:
+            if level.size > 0:
+                return level.price
+        return None
+
+    @property
+    def reference_best_bid(self) -> float | None:
+        return self.indicative_best_bid if self.indicative_best_bid is not None else self.best_bid
+
+    @property
+    def reference_best_ask(self) -> float | None:
+        return self.indicative_best_ask if self.indicative_best_ask is not None else self.best_ask
 
 
 @dataclass(frozen=True)

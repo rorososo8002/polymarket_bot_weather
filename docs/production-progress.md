@@ -29,6 +29,9 @@
 - Realtime order-book cache treats `best_bid_ask` as indicative best-price
   reference only. Executable bid/ask depth comes only from `book` snapshots or
   `price_change` level updates.
+- `OrderBook.best_bid` and `OrderBook.best_ask` now return only executable
+  positive-size depth from `bids`/`asks`; indicative `best_bid_ask` prices stay
+  available only as reference fields for display or diagnostics.
 - Realtime order-book parsing now ignores malformed, non-finite, out-of-range,
   or negative `price`/`size` values inside `book` and `price_change` messages.
   Malformed whole-message shapes fail closed without replacing the current
@@ -106,6 +109,9 @@
 - Local verification after malformed order-book level hardening: focused
   realtime order-book/runner/edge pytest and full `pytest -q`. Full result:
   `276 passed`.
+- Local verification after executable-only `OrderBook.best_bid/best_ask`
+  hardening: focused realtime order-book/runner/hardening pytest passed with
+  `69 passed`; full `pytest -q` passed with `307 passed`.
 
 ## In Progress
 
@@ -120,6 +126,8 @@
   paper-only.
 - WebSocket malformed order-book level hardening is complete locally and
   remains paper-only.
+- Executable-only `OrderBook.best_bid/best_ask` hardening is complete locally
+  and remains paper-only.
 - Public-dashboard token-strength hardening is complete locally and remains
   paper-only.
 - Numeric Settings range validation is complete locally and remains paper-only.
