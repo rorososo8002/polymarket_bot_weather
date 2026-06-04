@@ -52,13 +52,38 @@ class PaperStateLoadError(RuntimeError):
     """Raised when paper accounting state is unsafe to trade from."""
 
 
-def _required_number(raw: dict[str, Any], field: str, index: int) -> float:
-    value = raw.get(field)
+_MISSING = object()
+
+
+def _finite_number(value: Any, label: str) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ValueError(f"positions[{index}].{field} must be a number")
-    value = float(value)
-    if not isfinite(value):
-        raise ValueError(f"positions[{index}].{field} must be finite")
+        raise ValueError(f"{label} must be a number")
+    number = float(value)
+    if not isfinite(number):
+        raise ValueError(f"{label} must be finite")
+    return number
+
+
+def _state_number(raw: dict[str, Any], field: str, *, default: Any = _MISSING) -> float:
+    if field in raw:
+        value = raw[field]
+    elif default is not _MISSING:
+        value = default
+    else:
+        raise KeyError(field)
+    return _finite_number(value, field)
+
+
+def _required_number(raw: dict[str, Any], field: str, index: int) -> float:
+    return _finite_number(raw.get(field), f"positions[{index}].{field}")
+
+
+def _stats_count(raw: dict[str, Any], field: str, market_type: str) -> int:
+    value = raw.get(field, 0)
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"stats[{market_type}].{field} must be a non-negative integer")
+    if value < 0:
+        raise ValueError(f"stats[{market_type}].{field} must be non-negative")
     return value
 
 
@@ -136,10 +161,10 @@ class PaperBroker:
                 f"Invalid paper state at {self.state_path}: root must be a JSON object; refusing to start paper trading"
             )
         try:
-            cash_usd = float(raw["cash_usd"])
-            realized_pnl_usd = float(raw.get("realized_pnl_usd", 0.0))
-            if not isfinite(cash_usd) or not isfinite(realized_pnl_usd):
-                raise ValueError("cash and realized PnL must be finite")
+            cash_usd = _state_number(raw, "cash_usd")
+            if cash_usd < 0:
+                raise ValueError("cash_usd must be non-negative")
+            realized_pnl_usd = _state_number(raw, "realized_pnl_usd", default=0.0)
 
             raw_positions = raw.get("positions", [])
             if not isinstance(raw_positions, list):
@@ -158,10 +183,11 @@ class PaperBroker:
             for mt, st in raw_stats.items():
                 if not isinstance(st, dict):
                     raise ValueError("each stats entry must be a JSON object")
-                stats[str(mt)] = {
-                    "wins": int(st.get("wins", 0)),
-                    "losses": int(st.get("losses", 0)),
-                    "pnl": float(st.get("pnl", 0.0)),
+                market_type = str(mt)
+                stats[market_type] = {
+                    "wins": _stats_count(st, "wins", market_type),
+                    "losses": _stats_count(st, "losses", market_type),
+                    "pnl": _finite_number(st.get("pnl", 0.0), f"stats[{market_type}].pnl"),
                 }
         except (KeyError, TypeError, ValueError) as exc:
             raise PaperStateLoadError(

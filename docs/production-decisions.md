@@ -77,8 +77,9 @@ specialized reference docs.
 - Repeated SKIPs are research signals. Diagnose and classify them before
   changing strategy thresholds, risk caps, or data-source assumptions.
 - `paper_state.json` is an account book. Saves use atomic temp-file replacement,
-  and existing corrupt, structurally invalid, or position-field invalid paper
-  state fails closed instead of resetting.
+  and existing corrupt, structurally invalid, account-number invalid,
+  stats-field invalid, or position-field invalid paper state fails closed
+  instead of resetting.
 - Public dashboard exposure requires a real `DASHBOARD_TOKEN` with at least 32
   characters; empty, short, placeholder, basic, default, change-me, secret,
   token, password, abc, 123456, or other obvious example tokens stop startup
@@ -351,11 +352,12 @@ share the same all-in-budget quantity formula.
 
 Decision: Save `paper_state.json` by writing a complete temp file and replacing
 the live file with `os.replace`; reject corrupt, unreadable, structurally
-invalid, or position-field invalid existing state with `PaperStateLoadError`.
-Why: cash and open positions are the paper strategy's ledger, not a rebuildable
-cache. Consequence: missing state can initialize on first run, but an existing
-bad state stops paper trading until an operator investigates or restores a good
-file.
+invalid, account-number invalid, stats-field invalid, or position-field invalid
+existing state with `PaperStateLoadError`.
+Why: cash, realized PnL, stats, and open positions are the paper strategy's
+ledger, not a rebuildable cache. Consequence: missing state can initialize on
+first run, but an existing bad state stops paper trading until an operator
+investigates or restores a good file.
 
 ### 2026-06-03: Require Rule Evidence Before Station Trading
 

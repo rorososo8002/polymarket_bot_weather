@@ -105,6 +105,54 @@ def test_valid_paper_state_with_position_still_loads(tmp_path):
     assert position.entry_price == pytest.approx(0.42)
     assert position.cost_usd == pytest.approx(5.25)
     assert position.metadata == {"city": "NYC", "date_hint": "jun 3"}
+    assert broker.state.stats == {"temperature": {"wins": 1, "losses": 0, "pnl": 1.25}}
+
+
+@pytest.mark.parametrize(
+    ("field", "bad_value"),
+    [
+        ("cash_usd", -0.01),
+        ("cash_usd", "90.0"),
+        ("cash_usd", True),
+        ("realized_pnl_usd", float("nan")),
+        ("realized_pnl_usd", "1.25"),
+        ("realized_pnl_usd", False),
+    ],
+)
+def test_invalid_account_numbers_fail_closed_instead_of_loading_book(tmp_path, field, bad_value):
+    settings = settings_for(tmp_path)
+    state = valid_position_state()
+    state[field] = bad_value
+    write_state(Path(settings.state_path), state)
+
+    with pytest.raises(PaperStateLoadError, match="refusing to start"):
+        PaperBroker(settings)
+
+
+@pytest.mark.parametrize(
+    ("field", "bad_value"),
+    [
+        ("wins", -1),
+        ("wins", 1.5),
+        ("wins", "1"),
+        ("wins", True),
+        ("losses", -1),
+        ("losses", 0.25),
+        ("losses", "0"),
+        ("losses", False),
+        ("pnl", float("nan")),
+        ("pnl", "1.25"),
+        ("pnl", True),
+    ],
+)
+def test_invalid_stats_values_fail_closed_instead_of_loading_book(tmp_path, field, bad_value):
+    settings = settings_for(tmp_path)
+    state = valid_position_state()
+    state["stats"]["temperature"][field] = bad_value
+    write_state(Path(settings.state_path), state)
+
+    with pytest.raises(PaperStateLoadError, match="refusing to start"):
+        PaperBroker(settings)
 
 
 @pytest.mark.parametrize(

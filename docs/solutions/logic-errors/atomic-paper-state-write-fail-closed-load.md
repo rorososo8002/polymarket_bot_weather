@@ -1,7 +1,7 @@
 ---
 title: Atomic Paper State Writes And Fail-Closed Loads
 date: 2026-06-03
-last_updated: 2026-06-03
+last_updated: 2026-06-04
 category: logic-errors
 module: weather_bot.paper
 problem_type: logic_error
@@ -9,6 +9,7 @@ component: service_object
 symptoms:
   - "`PaperBroker.save_state()` wrote directly to `paper_state.json`."
   - "A partially written or structurally invalid paper state could leave the bot without a trustworthy cash and position ledger."
+  - "`cash_usd` could load when negative, and `stats` values could be coerced from strings, booleans, fractional counts, or NaN."
   - "A position with an invalid side, non-finite shares, out-of-range entry price, negative cost, empty IDs, or non-object metadata could still load."
 root_cause: missing_validation
 resolution_type: code_fix
@@ -67,6 +68,16 @@ finite positive number, `side` must be `YES` or `NO`, `cost_usd` must be
 non-negative, `market_id` and `token_id` must identify the held market and
 token, and `metadata` must be a JSON object when present.
 
+The loader now validates top-level account numbers and market-type stats with
+the same fail-closed posture. `cash_usd` is the paper account's spendable cash,
+so it must be a real finite number and cannot be negative. `realized_pnl_usd`
+is the already-settled profit/loss total, so it may be positive or negative but
+must still be a real finite number. Stats are the scorecard used for win rate
+and cumulative PnL summaries: `wins` and `losses` must be non-negative integer
+counts, while stats `pnl` must be a real finite number. String numbers,
+booleans, fractional win/loss counts, and `NaN` are rejected instead of being
+coerced into a believable-looking ledger.
+
 ## 4. What To Check Next Time To Prevent The Same Mistake
 
 - For any ledger-like runtime file, test that the first write target is a temp
@@ -77,6 +88,9 @@ token, and `metadata` must be a JSON object when present.
   instead of quietly starting from default cash.
 - Add field-level position fixtures for bad sides, string or NaN shares,
   out-of-range entry prices, negative costs, empty IDs, and non-object metadata.
+- Add account-level fixtures for negative cash, non-numeric cash, non-finite
+  realized PnL, non-integer stats counts, negative stats counts, and non-finite
+  stats PnL.
 - Preserve the corrupt file for investigation; do not overwrite it during
   startup failure handling.
 - Keep normal first-run behavior separate from corrupt-file behavior: missing

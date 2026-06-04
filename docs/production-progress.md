@@ -62,6 +62,10 @@
   `os.replace`, and existing corrupt, structurally invalid, or position-field
   invalid `paper_state.json` fails closed instead of starting from a fresh
   default account.
+- Existing `paper_state.json` account numbers and stats now fail closed when
+  unsafe: `cash_usd` must be finite and non-negative, `realized_pnl_usd` must be
+  finite, stats win/loss counts must be non-negative integers, and stats PnL
+  must be finite.
 - Dashboard startup fails closed on public hosts such as `0.0.0.0` or `::`
   unless `DASHBOARD_TOKEN` is at least 32 characters and not an obvious weak
   example value. Browser API polling uses the token header instead of a token
@@ -162,6 +166,10 @@
   paper-only. Forecast refresh/cache defaults are 2 hours, and HTTP 429 daily
   limit responses persist a `forecast_rate_limit_state.json` cooldown so later
   runner cycles skip new forecast HTTP calls until the recorded UTC reset time.
+- Paper-state account-number and stats-field validation is complete locally and
+  remains paper-only. Existing bad `paper_state.json` files raise
+  `PaperStateLoadError` instead of resetting or loading polluted cash/PnL
+  evidence.
 - Pre-forecast tradeability gating is complete locally and remains paper-only.
   When `REQUIRE_DATE_HINT_FOR_TRADE=true`, undated temperature markets now log a
   SKIP decision before Open-Meteo is called. Non-temperature, unsupported-city,

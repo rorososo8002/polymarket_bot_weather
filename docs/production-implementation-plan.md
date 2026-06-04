@@ -162,12 +162,16 @@ below-minimum entry sizes.
 `paper_state.json` is the paper account book, not a disposable cache. State
 saves write a complete temporary file first and then replace the live file with
 `os.replace`. If an existing state file is corrupt JSON, unreadable, has an
-invalid account structure, or contains an invalid position field, `PaperBroker`
-refuses to start so the bot cannot trade from guessed cash or hidden positions.
-Position `side` must be `YES` or `NO`; `shares` must be finite and positive;
-the persisted average entry price field `entry_price` must be between 0 and 1;
-`cost_usd` must be non-negative; `market_id` and `token_id` must be non-empty;
-and `metadata` must be a JSON object when present.
+invalid account structure, invalid account number, invalid stats field, or
+invalid position field, `PaperBroker` refuses to start so the bot cannot trade
+from guessed cash, hidden positions, or polluted performance statistics.
+`cash_usd` must be a finite number and cannot be negative; `realized_pnl_usd`
+must be a finite number; stats `wins` and `losses` must be non-negative integer
+counts; and stats `pnl` must be finite. Position `side` must be `YES` or `NO`;
+`shares` must be finite and positive; the persisted average entry price field
+`entry_price` must be between 0 and 1; `cost_usd` must be non-negative;
+`market_id` and `token_id` must be non-empty; and `metadata` must be a JSON
+object when present.
 
 ## Weather And Discovery Contract
 
