@@ -113,6 +113,14 @@ def orderbook(token_id: str, bid: float, ask: float) -> OrderBook:
     )
 
 
+def orderbook_with_ask_depth(token_id: str, bid: float, ask_levels: list[tuple[float, float]]) -> OrderBook:
+    return OrderBook(
+        token_id=token_id,
+        bids=[OrderLevel(bid, 1000.0)],
+        asks=[OrderLevel(price, size) for price, size in ask_levels],
+    )
+
+
 def test_adaptive_city_date_cap_drops_from_ten_to_five_percent_at_one_thousand(tmp_path):
     cfg = settings(tmp_path)
 
@@ -256,6 +264,97 @@ def test_evaluate_market_skips_when_calculated_order_is_below_minimum(tmp_path):
     assert result.size_shares == 0.0
     assert "minimum order" in result.reason
     assert per_side["YES"].size_usd == 0.0
+
+
+def test_evaluate_market_accepts_minimum_sized_order_without_requiring_max_depth(tmp_path):
+    cfg = settings(
+        tmp_path,
+        bankroll_usd=1000.0,
+        min_net_edge=0.01,
+        min_order_usd=10.0,
+        entry_fraction=0.01,
+        max_single_market_fraction=0.10,
+        entry_min_expected_net_return_pct=0.01,
+        weather_taker_fee_rate=0.0,
+        model_error_margin=0.0,
+        resolution_error_margin=0.0,
+    )
+    raw_market = market("seoul-26", "26\u00b0C")
+    signal = WeatherSignal(0.80, 0.90, "test", "test", parse_weather_question(raw_market.question))
+    client = FakeClient(
+        {
+            "seoul-26-yes": orderbook_with_ask_depth("seoul-26-yes", 0.39, [(0.40, 25.0)]),
+            "seoul-26-no": orderbook("seoul-26-no", 0.59, 0.60),
+        }
+    )
+
+    result, per_side = evaluate_market(raw_market, signal, client, cfg, 1000.0, "temperature")
+
+    assert result.side == "YES"
+    assert result.size_usd == pytest.approx(10.0)
+    assert result.size_shares == pytest.approx(25.0)
+    assert per_side["YES"].side == "YES"
+
+
+def test_evaluate_market_skips_when_final_order_size_exceeds_ask_depth(tmp_path):
+    cfg = settings(
+        tmp_path,
+        bankroll_usd=1000.0,
+        min_net_edge=0.01,
+        min_order_usd=10.0,
+        entry_fraction=0.02,
+        max_single_market_fraction=0.10,
+        entry_min_expected_net_return_pct=0.01,
+        weather_taker_fee_rate=0.0,
+        model_error_margin=0.0,
+        resolution_error_margin=0.0,
+    )
+    raw_market = market("seoul-26", "26\u00b0C")
+    signal = WeatherSignal(0.80, 0.90, "test", "test", parse_weather_question(raw_market.question))
+    client = FakeClient(
+        {
+            "seoul-26-yes": orderbook_with_ask_depth("seoul-26-yes", 0.39, [(0.40, 25.0)]),
+            "seoul-26-no": orderbook("seoul-26-no", 0.59, 0.60),
+        }
+    )
+
+    result, per_side = evaluate_market(raw_market, signal, client, cfg, 1000.0, "temperature")
+
+    assert result.side == "SKIP"
+    assert per_side["YES"].side == "SKIP"
+    assert "insufficient ask depth for final order $20.00" in per_side["YES"].reason
+    assert per_side["YES"].size_usd == 0.0
+
+
+def test_evaluate_market_reprices_edge_when_final_order_walks_the_book(tmp_path):
+    cfg = settings(
+        tmp_path,
+        bankroll_usd=1000.0,
+        min_net_edge=0.01,
+        min_order_usd=10.0,
+        entry_fraction=0.02,
+        max_single_market_fraction=0.10,
+        entry_min_expected_net_return_pct=0.01,
+        weather_taker_fee_rate=0.0,
+        model_error_margin=0.0,
+        resolution_error_margin=0.0,
+    )
+    raw_market = market("seoul-26", "26\u00b0C")
+    signal = WeatherSignal(0.80, 0.90, "test", "test", parse_weather_question(raw_market.question))
+    client = FakeClient(
+        {
+            "seoul-26-yes": orderbook_with_ask_depth("seoul-26-yes", 0.39, [(0.40, 25.0), (0.50, 25.0)]),
+            "seoul-26-no": orderbook("seoul-26-no", 0.59, 0.60),
+        }
+    )
+
+    result, per_side = evaluate_market(raw_market, signal, client, cfg, 1000.0, "temperature")
+
+    assert result.side == "YES"
+    assert result.size_usd == pytest.approx(20.0)
+    assert result.p_exec == pytest.approx(0.45)
+    assert result.net_edge == pytest.approx(0.35)
+    assert per_side["YES"].reason.startswith("YES edge=0.3500, p_exec_vwap=0.4500")
 
 
 def test_event_portfolio_selects_one_profitable_leg(tmp_path):

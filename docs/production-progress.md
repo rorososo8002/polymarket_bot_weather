@@ -85,6 +85,10 @@
 - Entry candidate `size_shares` now means the actual fee-adjusted shares bought
   with the all-in `size_usd` budget, so portfolio scenarios and broker-opened
   paper positions use the same held quantity.
+- Entry liquidity sizing now probes executable ask depth with the minimum paper
+  order first, computes the actual fee-aware `size_usd`, then rechecks final
+  ask depth and reprices edge/expected return from the final VWAP before
+  allowing a candidate.
 - New-entry evaluation fails closed before expected-return math when
   `entry_bankroll <= 0` or the calculated order is below `MIN_ORDER_USD`; the
   decision logs an operator-readable SKIP instead of raising a zero-share
@@ -217,6 +221,12 @@
   half-step expansion. The change remains paper-only. Local verification:
   focused parser/probability/portfolio/hardening pytest passed with
   `144 passed`; full `pytest -q` passed with `358 passed`.
+- Actual-order liquidity evaluation is complete locally and remains paper-only.
+  The runner no longer requires max-single-market ask depth before computing a
+  smaller `size_usd`; it still fails closed if final `size_usd` cannot be
+  absorbed. Local verification: focused portfolio pytest passed with
+  `35 passed`, focused hardening pytest passed with `54 passed`, and full
+  `pytest -q` passed with `361 passed`.
 - Other local hardening changes have not all been treated as one automatic
   deployment bundle; verify the specific commit and service state before
   assuming a future local change is live.

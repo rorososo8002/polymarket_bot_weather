@@ -144,25 +144,12 @@ def _yes_no_sum_reason(books: dict[str, OrderBook], market_type: str) -> str | N
     return None
 
 
-def _side_result(
+def _side_edge_metrics(
     side: str,
-    book: OrderBook,
     signal: WeatherSignal,
+    p_exec: float,
     settings: Settings,
-    bankroll_before_entry: float,
-    min_edge: float,
-    entry_fraction_override: float | None,
-    market_type: str,
-) -> EdgeResult:
-    liquidity_reason = _side_liquidity_reason(side, book, market_type)
-    if liquidity_reason:
-        return EdgeResult("SKIP", signal.p_true, None, -999.0, 0.0, 0.0, liquidity_reason)
-
-    target_usd = max(settings.min_order_usd, bankroll_before_entry * settings.max_single_market_fraction)
-    p_exec, _shares, slip = executable_buy_price(book, target_usd)
-    if p_exec is None:
-        return EdgeResult("SKIP", signal.p_true, None, -999.0, 0.0, 0.0, f"{side} liquidity filter: insufficient ask depth [{market_type}]")
-
+) -> tuple[float, float, float]:
     entry_fee_per_share = polymarket_taker_fee_per_share(p_exec, settings.weather_taker_fee_rate)
     if side == "YES":
         edge = yes_net_edge(
@@ -182,17 +169,70 @@ def _side_result(
             settings.resolution_error_margin,
         )
         side_probability = 1.0 - signal.p_true
+    return entry_fee_per_share, edge, side_probability
 
-    p_eff = p_exec + entry_fee_per_share
-    size_usd = position_size_usd(
-        side_probability,
-        p_eff,
-        settings,
-        bankroll_before_entry,
-        entry_fraction_override,
-        net_edge=edge,
-        min_edge=min_edge,
-    )
+
+def _side_result(
+    side: str,
+    book: OrderBook,
+    signal: WeatherSignal,
+    settings: Settings,
+    bankroll_before_entry: float,
+    min_edge: float,
+    entry_fraction_override: float | None,
+    market_type: str,
+) -> EdgeResult:
+    liquidity_reason = _side_liquidity_reason(side, book, market_type)
+    if liquidity_reason:
+        return EdgeResult("SKIP", signal.p_true, None, -999.0, 0.0, 0.0, liquidity_reason)
+
+    p_exec, _shares, slip = executable_buy_price(book, settings.min_order_usd)
+    if p_exec is None:
+        return EdgeResult("SKIP", signal.p_true, None, -999.0, 0.0, 0.0, f"{side} liquidity filter: insufficient ask depth [{market_type}]")
+
+    entry_fee_per_share = 0.0
+    edge = -999.0
+    size_usd = 0.0
+    for _attempt in range(4):
+        entry_fee_per_share, edge, side_probability = _side_edge_metrics(side, signal, p_exec, settings)
+        p_eff = p_exec + entry_fee_per_share
+        size_usd = position_size_usd(
+            side_probability,
+            p_eff,
+            settings,
+            bankroll_before_entry,
+            entry_fraction_override,
+            net_edge=edge,
+            min_edge=min_edge,
+        )
+        if size_usd < settings.min_order_usd:
+            break
+        checked_p_exec, _checked_shares, checked_slip = executable_buy_price(book, size_usd)
+        if checked_p_exec is None:
+            return EdgeResult(
+                "SKIP",
+                signal.p_true,
+                p_exec,
+                edge,
+                0.0,
+                0.0,
+                f"{side} liquidity filter: insufficient ask depth for final order ${size_usd:.2f} [{market_type}]",
+            )
+        if abs(checked_p_exec - p_exec) <= 1e-12 and abs(checked_slip - slip) <= 1e-12:
+            break
+        p_exec = checked_p_exec
+        slip = checked_slip
+    else:
+        return EdgeResult(
+            "SKIP",
+            signal.p_true,
+            p_exec,
+            edge,
+            0.0,
+            0.0,
+            f"{side} liquidity filter: execution price did not stabilize [{market_type}]",
+        )
+
     if size_usd < settings.min_order_usd:
         reason = (
             f"{side} calculated order ${size_usd:.2f} below minimum order "

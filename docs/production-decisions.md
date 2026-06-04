@@ -49,7 +49,10 @@ specialized reference docs.
 - Entry decisions are fee-aware. `p_exec` is executable VWAP; `size_usd` is the
   all-in paper-entry budget; `size_shares` is the fee-adjusted actual held
   quantity; paper cash, liquidation bankroll, and dashboard PnL use after-fee
-  accounting.
+  accounting. Entry ask-depth checks must be based on the actual computed
+  `size_usd`, not the maximum single-market cap. The evaluator may probe the
+  minimum order first to estimate price, but it must recheck final depth and
+  recalculate edge, fees, shares, and expected return when final VWAP changes.
 - New-entry evaluation blocks before expected-return math when
   `entry_bankroll <= 0` or the calculated order is below the `$10` minimum, so
   fail-closed account uncertainty is logged as SKIP instead of a zero-share
@@ -636,3 +639,14 @@ treating `86-87F` as exact `87F`, or widening it to a half-step interval,
 changes the YES condition used by `p_true`. Consequence: probability applies
 the exact displayed inequality such as `86.0 <= temperature_f <= 87.0`, and
 portfolio scenarios use the same range without expanding or shrinking it.
+
+### 2026-06-05: Check Final Entry Liquidity After Sizing
+
+Decision: `_side_result()` probes ask depth with `MIN_ORDER_USD`, calculates
+fee-aware edge and the actual `size_usd`, then rechecks ask depth for final
+`size_usd`. If the final VWAP differs from the probe price, edge, fees, shares,
+and expected return are recalculated from the final price. Why: using
+`bankroll * MAX_SINGLE_MARKET_FRACTION` as the first liquidity target can reject
+a real $10 paper order just because $100 of depth is unavailable. Consequence:
+small executable paper candidates survive, while final-order ask-depth
+shortfalls still fail closed as SKIP instead of recording unavailable fills.

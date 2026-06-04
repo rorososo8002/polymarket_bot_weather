@@ -146,6 +146,12 @@ expected_net_return >= ENTRY_MIN_EXPECTED_NET_RETURN_PCT
 
 `p_exec` is the executable ask-side VWAP and already includes entry spread and
 slippage. Do not subtract entry spread or entry slippage a second time.
+Entry liquidity checks must follow actual order sizing. Probe executable ask
+depth with at least `MIN_ORDER_USD`, compute fee-aware edge and `size_usd`, then
+recheck executable ask depth for that final `size_usd`. If the final VWAP
+changes, recalculate edge, fee, shares, and expected return from the final
+price. If the final order size cannot be absorbed by confirmed ask depth, skip;
+do not record a paper fill from unavailable liquidity.
 `best_bid_ask` may update displayed/reference best bid and ask prices, but
 `p_exec` must be computed only from confirmed order-book depth carried by
 `book` snapshots or `price_change` updates.
