@@ -233,6 +233,13 @@
   portfolio/config pytest passed with `85 passed`, focused
   hardening/dashboard/analyze pytest passed with `96 passed`, and full
   `pytest -q` passed with `366 passed`.
+- Portfolio scenario-probability coherence hardening is complete locally and
+  remains paper-only. Event probability tables normalize only when parsed
+  temperature intervals are non-overlapping and exhaustive; incomplete sums
+  below one keep `other`, while overlapping intervals or sums above one without
+  full coverage fail closed with readable rejection reasons. Local
+  verification: focused `tests/test_portfolio.py` passed with `45 passed`; full
+  `pytest -q` passed with `371 passed`.
 - Other local hardening changes have not all been treated as one automatic
   deployment bundle; verify the specific commit and service state before
   assuming a future local change is live.

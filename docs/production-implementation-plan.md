@@ -305,6 +305,12 @@ For one city-date event, the selector compares one-leg and at-most-two-leg
 `YES+YES`, `YES+NO`, and `NO+NO` combinations across non-overlapping buckets.
 Same-market `YES+NO`, overlapping threshold positions, and third legs are
 blocked. Event decisions are logged to `paper_event_portfolios.jsonl`.
+`scenario_probabilities` is the event outcome table used for portfolio
+scoring. It may be normalized only when parsed temperature intervals form a
+non-overlapping exhaustive ladder across all outcomes. Incomplete interval sets
+keep an `other` scenario when the probability sum is below one; overlapping
+intervals or sums above one without exhaustive coverage fail closed with a
+readable rejection reason.
 
 ## Exit Policy Contract
 

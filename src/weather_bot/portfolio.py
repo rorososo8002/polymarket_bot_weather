@@ -117,6 +117,15 @@ class _PortfolioPlan:
     scenario_pnl_usd: dict[str, float]
 
 
+@dataclass(frozen=True)
+class _ScenarioProbabilityAssessment:
+    probabilities: dict[str, float]
+    fail_closed_reason: str | None = None
+
+
+_SCENARIO_PROBABILITY_EPSILON = 1e-9
+
+
 def adaptive_event_cap_fraction(entry_bankroll: float, settings: Settings) -> float:
     if entry_bankroll >= settings.event_date_exposure_transition_usd:
         return settings.large_bankroll_event_date_exposure_fraction
@@ -336,38 +345,87 @@ def _intervals_cover_all_outcomes(intervals: list[tuple[float, float]]) -> bool:
     return all(abs(left[1] - right[0]) <= 1e-9 for left, right in zip(ordered, ordered[1:]))
 
 
-def _scenario_probabilities(candidates: list[PortfolioCandidate]) -> dict[str, float]:
+def _bucket_intervals_overlap(intervals: list[TemperatureBucketInterval]) -> bool:
+    ordered = sorted(intervals, key=lambda interval: (interval.lower_f, interval.upper_f))
+    return any(
+        not _bucket_intervals_do_not_overlap(left, right)
+        for left, right in zip(ordered, ordered[1:])
+    )
+
+
+def _bucket_intervals_cover_all_outcomes(intervals: list[TemperatureBucketInterval]) -> bool:
+    if not intervals:
+        return False
+    ordered = sorted(intervals, key=lambda interval: (interval.lower_f, interval.upper_f))
+    first = ordered[0]
+    last = ordered[-1]
+    if not (isinf(first.lower_f) and first.lower_f < 0):
+        return False
+    if not (isinf(last.upper_f) and last.upper_f > 0):
+        return False
+
+    for left, right in zip(ordered, ordered[1:]):
+        if not _bucket_intervals_do_not_overlap(left, right):
+            return False
+        if abs(left.upper_f - right.lower_f) > _SCENARIO_PROBABILITY_EPSILON:
+            return False
+        if not (left.upper_inclusive or right.lower_inclusive):
+            return False
+    return True
+
+
+def _scenario_probabilities(candidates: list[PortfolioCandidate]) -> _ScenarioProbabilityAssessment:
     unique: dict[str, PortfolioCandidate] = {}
     for candidate in candidates:
         unique.setdefault(candidate.market.market_id, candidate)
     if not unique:
-        return {"other": 1.0}
+        return _ScenarioProbabilityAssessment({"other": 1.0})
 
     bucket_probabilities = {
         market_id: clamp_probability(candidate.signal.p_true)
         for market_id, candidate in unique.items()
     }
     total = sum(bucket_probabilities.values())
-    intervals = [
-        interval
-        for candidate in unique.values()
-        if (interval := _temperature_interval(candidate.market.question)) is not None
-    ]
-    exhaustive = len(intervals) == len(unique) and _intervals_cover_all_outcomes(intervals)
-    if total <= 0:
-        return {"other": 1.0}
-    if exhaustive or total >= 1.0:
-        return {
-            market_id: round(probability / total, 12)
-            for market_id, probability in bucket_probabilities.items()
-        }
-
-    probabilities = {
+    rounded_probabilities = {
         market_id: round(probability, 12)
         for market_id, probability in bucket_probabilities.items()
     }
-    probabilities["other"] = round(1.0 - total, 12)
-    return probabilities
+    bucket_intervals = [
+        interval
+        for candidate in unique.values()
+        if (interval := _temperature_interval_bounds(candidate.market.question)) is not None
+    ]
+    if _bucket_intervals_overlap(bucket_intervals):
+        return _ScenarioProbabilityAssessment(
+            rounded_probabilities,
+            "scenario probabilities overlap",
+        )
+
+    if total <= 0:
+        return _ScenarioProbabilityAssessment({"other": 1.0})
+
+    exhaustive = (
+        len(bucket_intervals) == len(unique)
+        and _bucket_intervals_cover_all_outcomes(bucket_intervals)
+    )
+    if exhaustive:
+        return _ScenarioProbabilityAssessment(
+            {
+                market_id: round(probability / total, 12)
+                for market_id, probability in bucket_probabilities.items()
+            }
+        )
+
+    if total > 1.0 + _SCENARIO_PROBABILITY_EPSILON:
+        return _ScenarioProbabilityAssessment(
+            rounded_probabilities,
+            "scenario probabilities exceed one without exhaustive intervals",
+        )
+
+    probabilities = dict(rounded_probabilities)
+    if total < 1.0 - _SCENARIO_PROBABILITY_EPSILON:
+        probabilities["other"] = round(1.0 - total, 12)
+    return _ScenarioProbabilityAssessment(probabilities)
 
 
 def _leg_wins(side: str, market_id: str, outcome: str) -> bool:
@@ -464,7 +522,33 @@ def select_event_portfolio(
     existing_event_exposure = broker.event_date_exposure(city, date_hint) if city and date_hint else 0.0
     held = _event_positions(broker, city, date_hint)
     rejected: list[RejectedPortfolioLeg] = []
-    probabilities = _scenario_probabilities(candidates)
+    probability_assessment = _scenario_probabilities(candidates)
+    probabilities = probability_assessment.probabilities
+    if probability_assessment.fail_closed_reason is not None:
+        for candidate in candidates:
+            rejected.append(
+                RejectedPortfolioLeg(
+                    candidate.market.market_id,
+                    candidate.result.side,
+                    probability_assessment.fail_closed_reason,
+                )
+            )
+        return EventPortfolioDecision(
+            event_key=_event_key(first, city, date_hint) if first is not None else "unknown-event",
+            city=city,
+            date_hint=date_hint,
+            entry_bankroll=entry_bankroll,
+            event_cap_fraction=event_cap_fraction,
+            event_cap_usd=event_cap_usd,
+            existing_event_exposure_usd=existing_event_exposure,
+            selected=[],
+            rejected=rejected,
+            selected_exposure_usd=0.0,
+            expected_net_profit_usd=0.0,
+            expected_log_growth=0.0,
+            scenario_probabilities=probabilities,
+            scenario_pnl_usd=_scenario_pnl(tuple(), held, probabilities, settings),
+        )
     eligible: list[PortfolioCandidate] = []
     for candidate in candidates:
         result = candidate.result

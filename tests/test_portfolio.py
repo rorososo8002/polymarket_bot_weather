@@ -751,6 +751,99 @@ def test_event_portfolio_normalizes_exhaustive_bucket_probabilities_to_one(tmp_p
     }
 
 
+def test_event_portfolio_keeps_other_when_non_exhaustive_probabilities_are_below_one(tmp_path):
+    broker = PaperBroker(settings(tmp_path))
+
+    decision = select_event_portfolio(
+        broker,
+        [
+            candidate("seoul-26", "26\u00b0C", p_true=0.30, p_exec=0.20, expected_net_profit_usd=2.0),
+            candidate("seoul-28", "28\u00b0C", p_true=0.20, p_exec=0.20, expected_net_profit_usd=2.0),
+        ],
+        usable_snapshot(),
+    )
+
+    assert decision.scenario_probabilities == {
+        "seoul-26": 0.30,
+        "seoul-28": 0.20,
+        "other": 0.50,
+    }
+
+
+def test_event_portfolio_fails_closed_when_non_exhaustive_probabilities_exceed_one(tmp_path):
+    broker = PaperBroker(settings(tmp_path))
+
+    decision = select_event_portfolio(
+        broker,
+        [
+            candidate("seoul-26", "26\u00b0C", p_true=0.70, p_exec=0.20, expected_net_profit_usd=2.0),
+            candidate("seoul-28", "28\u00b0C", p_true=0.60, p_exec=0.20, expected_net_profit_usd=2.0),
+        ],
+        usable_snapshot(),
+    )
+
+    assert decision.selected == []
+    assert any(
+        "scenario probabilities exceed one without exhaustive intervals" in item.reason
+        for item in decision.rejected
+    )
+
+
+def test_event_portfolio_fails_closed_when_temperature_intervals_overlap(tmp_path):
+    broker = PaperBroker(settings(tmp_path))
+
+    decision = select_event_portfolio(
+        broker,
+        [
+            candidate("seoul-low", "26\u00b0C or below", p_true=0.35, p_exec=0.20, expected_net_profit_usd=2.0),
+            candidate("seoul-26", "26\u00b0C", p_true=0.40, p_exec=0.20, expected_net_profit_usd=2.0),
+        ],
+        usable_snapshot(),
+    )
+
+    assert decision.selected == []
+    assert any("scenario probabilities overlap" in item.reason for item in decision.rejected)
+
+
+def test_event_portfolio_fails_closed_when_range_intervals_overlap_at_boundary(tmp_path):
+    broker = PaperBroker(settings(tmp_path))
+
+    decision = select_event_portfolio(
+        broker,
+        [
+            candidate("seoul-86-87", "86-87F", p_true=0.25, p_exec=0.20, expected_net_profit_usd=2.0),
+            candidate("seoul-87-88", "87-88F", p_true=0.25, p_exec=0.20, expected_net_profit_usd=2.0),
+        ],
+        usable_snapshot(),
+    )
+
+    assert decision.selected == []
+    assert any("scenario probabilities overlap" in item.reason for item in decision.rejected)
+
+
+def test_event_portfolio_tolerates_tiny_probability_sum_dust_without_fail_closed(tmp_path):
+    broker = PaperBroker(settings(tmp_path, bankroll_usd=300.0))
+
+    decision = select_event_portfolio(
+        broker,
+        [
+            candidate("seoul-26", "26\u00b0C", p_true=0.10, p_exec=0.20, expected_net_profit_usd=2.0),
+            candidate("seoul-28", "28\u00b0C", p_true=0.20, p_exec=0.20, expected_net_profit_usd=2.0),
+            candidate(
+                "seoul-30",
+                "30\u00b0C",
+                p_true=0.7000000000000002,
+                p_exec=0.20,
+                expected_net_profit_usd=2.0,
+            ),
+        ],
+        usable_snapshot(300.0),
+    )
+
+    assert decision.selected
+    assert not any("scenario probabilities" in item.reason for item in decision.rejected)
+
+
 def test_event_portfolio_log_reconstructs_budget_legs_rejections_and_scenarios(tmp_path):
     broker = PaperBroker(settings(tmp_path, bankroll_usd=200.0))
     decision = select_event_portfolio(
@@ -1110,7 +1203,7 @@ def test_run_cycle_opens_city_date_candidates_as_one_logged_portfolio(monkeypatc
 
     def estimate(question, **_kwargs):
         parsed = parse_weather_question(question)
-        return WeatherSignal(0.80, 0.90, "test", "test", parsed)
+        return WeatherSignal(0.49, 0.90, "test", "test", parsed)
 
     monkeypatch.setattr("weather_bot.live_paper_runner.PolymarketClient", CycleClient)
     monkeypatch.setattr("weather_bot.live_paper_runner.estimate_weather_probability", estimate)
@@ -1270,11 +1363,11 @@ def test_realtime_update_reselects_the_whole_city_date_event(monkeypatch, tmp_pa
         "seoul-27-no": orderbook("seoul-27-no", 0.59, 0.60),
     }
     client = FakeClient(books)
-    signal = WeatherSignal(0.80, 0.90, "test", "test", parse_weather_question(markets[0].question))
+    signal = WeatherSignal(0.49, 0.90, "test", "test", parse_weather_question(markets[0].question))
     signals = {
         markets[0].market_id: signal,
         markets[1].market_id: WeatherSignal(
-            0.80,
+            0.49,
             0.90,
             "test",
             "test",

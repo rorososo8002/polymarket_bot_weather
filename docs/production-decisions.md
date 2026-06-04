@@ -60,6 +60,10 @@ specialized reference docs.
 - City-date weather buckets share one correlated-risk budget. At most two
   complementary legs are selected per event, with a `$10` minimum leg and
   conservative city, event, and total exposure caps.
+- Event portfolio `scenario_probabilities` are normalized only when the
+  temperature intervals are non-overlapping and exhaustive. Incomplete sets
+  below one keep `other`; overlapping intervals or sums above one without full
+  coverage fail closed and leave an operator-readable rejection reason.
 - Temperature range markets are not exact single-temperature buckets. A market
   such as `86-87F` means `86.0 <= temperature_f <= 87.0`, so parser,
   probability, and portfolio interval logic must preserve the displayed
