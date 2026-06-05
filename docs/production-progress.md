@@ -64,6 +64,11 @@
 - The realtime WebSocket runner now applies resolved settlement before starting
   a stream cycle and removes newly settled old markets from the stream token
   set, matching the batch `run_cycle()` settlement behavior.
+- The realtime WebSocket runner now records refresh-cycle exceptions in
+  `paper_runner_status.json` with `phase=error`, a concrete message, and the
+  failed phase before backing off and retrying. Local verification: focused
+  `tests/test_realtime_runner.py` passed with `12 passed`; full `pytest -q`
+  passed with `379 passed`.
 - Paper accounting is fee-aware end to end: `size_usd` is the all-in entry
   budget, closes add after-fee proceeds, and dashboard/liquidation values use
   after-exit-fee marks.

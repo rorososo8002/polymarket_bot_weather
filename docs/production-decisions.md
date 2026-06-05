@@ -34,6 +34,12 @@ specialized reference docs.
 - Forecasts refresh every 2 hours by default. Order books use the Polymarket
   CLOB WebSocket stream, and open-position token IDs stay subscribed until the
   position closes or settles.
+- The realtime bot records refresh-cycle failures in `paper_runner_status.json`
+  instead of relying only on `systemd Restart=always`. Why: a restarted process
+  without an operator-readable error can make the dashboard look stale rather
+  than failed. Consequence: market discovery, forecast preparation, WebSocket
+  startup, and status-update exceptions write `phase=error`, `failed_phase`,
+  and a concrete message before a short retry backoff.
 - Discovery maps YES/NO token IDs only from explicit outcome labels. If
   `tokens` or `outcomes` cannot prove the YES and NO side for `clobTokenIds`,
   the market is skipped rather than guessed from list order.

@@ -953,158 +953,211 @@ def _stream_should_rebuild(websocket_health: dict[str, object], *, token_count: 
     return token_count > 0 and not bool(websocket_health.get("thread_alive"))
 
 
+def _realtime_error_backoff_seconds(settings: Settings) -> float:
+    return min(max(float(settings.runner_health_status_interval_seconds), 5.0), 60.0)
+
+
 def run_realtime_forever(settings: Settings | None = None) -> None:
     settings = settings or load_settings()
     while True:
         refresh_started_at = datetime.now(timezone.utc)
         cycle_started_at = utc_now_iso()
-        discovery_client = PolymarketClient(settings.gamma_base, settings.clob_base)
-        ensemble_client = OpenMeteoEnsembleClient.from_settings(settings)
-        observation_provider = AviationWeatherMetarNowcastProvider.from_settings(settings)
-        broker = PaperBroker(settings)
-        write_runner_status(settings, "discovering", message="discovering markets for websocket stream", cycle_started_at=cycle_started_at)
-        discovered_markets = discovery_client.discover_weather_markets(
-            max_pages=settings.discovery_max_pages,
-            page_size=settings.discovery_page_size,
-        )
-        discovered_markets = _temperature_markets_only(discovered_markets)
-        event_groups = _group_weather_markets_by_event(discovered_markets)
-        markets = [market for group in event_groups for market in group]
-        market_by_id = _stream_market_registry(discovery_client, broker, markets)
-        for msg in _settle_resolved_positions_before_streaming(broker, market_by_id):
-            print(msg)
-        open_market_ids = {pos.market_id for pos in broker.state.positions}
-        stream_candidates = _temperature_markets_only(list(market_by_id.values()))
-        stream_markets: list[RawMarket] = []
-        precomputed_signals: dict[str, WeatherSignal] = {}
-        for market in stream_candidates:
-            market_type = "temperature"
-            gated = pre_forecast_tradeability_gate(market, settings, market_type)
-            if gated is not None:
-                signal, result = gated
-                precomputed_signals[market.market_id] = signal
-                broker.log_decision(market, result, signal.note, market_type)
-                broker.log_raw_snapshot(
-                    "pre_forecast_skip",
-                    market,
-                    {
-                        "market_raw": market.raw,
-                        "signal": {
-                            "p_true": signal.p_true,
-                            "confidence": signal.confidence,
-                            "source": signal.source,
-                            "note": signal.note,
-                            "nowcast": signal.nowcast,
-                        },
-                        "per_side": {},
-                    },
-                )
-                if market.market_id in open_market_ids:
-                    stream_markets.append(market)
-                continue
-            stream_markets.append(market)
-        coverage = _discovery_coverage(stream_markets)
-        market_by_token = {
-            token_id: market
-            for market in stream_markets
-            for token_id in _market_token_ids(market)
-        }
-        signals_by_market: dict[str, WeatherSignal] = {}
-        market_types: dict[str, str] = {}
-        for market in stream_markets:
-            signal = precomputed_signals.get(market.market_id)
-            if signal is None:
-                signal = _call_probability_estimator(
-                    estimate_weather_probability,
-                    market.question,
-                    settings=settings,
-                    ensemble_client=ensemble_client,
-                    observation_provider=observation_provider,
-                )
-            signals_by_market[market.market_id] = signal
-            market_types[market.market_id] = "temperature"
-
-        latest_edges: dict[tuple[str, str], EdgeResult] = {}
-        update_lock = threading.RLock()
-        stream_holder: dict[str, StreamBackedPolymarketClient] = {}
-
-        def on_update(updated_token_ids: set[str]) -> None:
-            with update_lock:
-                stream_client = stream_holder.get("client")
-                if stream_client is not None:
-                    _evaluate_realtime_update(
-                        updated_token_ids,
-                        stream_client,
-                        broker,
-                        settings,
-                        market_by_token,
-                        signals_by_market,
-                        market_types,
-                        latest_edges,
-                    )
-
-        def build_stream() -> OrderBookMarketStream:
-            return OrderBookMarketStream(
-                settings.orderbook_stream_url,
-                on_update=on_update,
-                heartbeat_seconds=settings.orderbook_stream_heartbeat_seconds,
-                reconnect_seconds=settings.orderbook_stream_reconnect_seconds,
-                stale_seconds=settings.orderbook_stream_stale_seconds,
-            )
-
-        stream = build_stream()
-        stream_holder["client"] = StreamBackedPolymarketClient(settings.gamma_base, settings.clob_base, stream)
-        stream.start(market_by_token.keys())
-
-        def write_stream_status(websocket_health: dict[str, object] | None = None) -> None:
-            websocket_health = websocket_health or stream.health_snapshot()
-            phase, message = _stream_status_phase(
-                websocket_health,
-                token_count=len(market_by_token),
-                market_count=len(stream_markets),
-                event_count=coverage["events"],
-                city_count=coverage["cities"],
-            )
+        failed_phase = "initializing"
+        broker: PaperBroker | None = None
+        ensemble_client: OpenMeteoEnsembleClient | None = None
+        stream: OrderBookMarketStream | None = None
+        try:
+            discovery_client = PolymarketClient(settings.gamma_base, settings.clob_base)
+            ensemble_client = OpenMeteoEnsembleClient.from_settings(settings)
+            observation_provider = AviationWeatherMetarNowcastProvider.from_settings(settings)
+            broker = PaperBroker(settings)
+            failed_phase = "market_discovery"
             write_runner_status(
                 settings,
-                phase,
-                message=message,
+                "discovering",
+                message="discovering markets for websocket stream",
                 cycle_started_at=cycle_started_at,
-                markets_done=0,
-                markets_total=len(stream_markets),
-                events_total=coverage["events"],
-                cities_total=coverage["cities"],
-                cash_usd=round(broker.state.cash_usd, 2),
-                exposure_usd=round(broker.total_exposure(), 2),
-                open_positions=len(broker.state.positions),
-                forecast=ensemble_client.health_snapshot(),
-                websocket=websocket_health,
             )
+            discovered_markets = discovery_client.discover_weather_markets(
+                max_pages=settings.discovery_max_pages,
+                page_size=settings.discovery_page_size,
+            )
+            failed_phase = "market_preparation"
+            discovered_markets = _temperature_markets_only(discovered_markets)
+            event_groups = _group_weather_markets_by_event(discovered_markets)
+            markets = [market for group in event_groups for market in group]
+            market_by_id = _stream_market_registry(discovery_client, broker, markets)
+            for msg in _settle_resolved_positions_before_streaming(broker, market_by_id):
+                print(msg)
+            open_market_ids = {pos.market_id for pos in broker.state.positions}
+            stream_candidates = _temperature_markets_only(list(market_by_id.values()))
+            stream_markets: list[RawMarket] = []
+            precomputed_signals: dict[str, WeatherSignal] = {}
+            for market in stream_candidates:
+                market_type = "temperature"
+                gated = pre_forecast_tradeability_gate(market, settings, market_type)
+                if gated is not None:
+                    signal, result = gated
+                    precomputed_signals[market.market_id] = signal
+                    broker.log_decision(market, result, signal.note, market_type)
+                    broker.log_raw_snapshot(
+                        "pre_forecast_skip",
+                        market,
+                        {
+                            "market_raw": market.raw,
+                            "signal": {
+                                "p_true": signal.p_true,
+                                "confidence": signal.confidence,
+                                "source": signal.source,
+                                "note": signal.note,
+                                "nowcast": signal.nowcast,
+                            },
+                            "per_side": {},
+                        },
+                    )
+                    if market.market_id in open_market_ids:
+                        stream_markets.append(market)
+                    continue
+                stream_markets.append(market)
+            coverage = _discovery_coverage(stream_markets)
+            market_by_token = {
+                token_id: market
+                for market in stream_markets
+                for token_id in _market_token_ids(market)
+            }
+            signals_by_market: dict[str, WeatherSignal] = {}
+            market_types: dict[str, str] = {}
+            failed_phase = "forecast_preparation"
+            for market in stream_markets:
+                signal = precomputed_signals.get(market.market_id)
+                if signal is None:
+                    signal = _call_probability_estimator(
+                        estimate_weather_probability,
+                        market.question,
+                        settings=settings,
+                        ensemble_client=ensemble_client,
+                        observation_provider=observation_provider,
+                    )
+                signals_by_market[market.market_id] = signal
+                market_types[market.market_id] = "temperature"
 
-        write_stream_status()
-        status_updated_at = datetime.now(timezone.utc)
-        try:
-            while True:
-                now = datetime.now(timezone.utc)
-                elapsed = (now - refresh_started_at).total_seconds()
-                if elapsed >= settings.forecast_refresh_interval_seconds:
-                    break
-                websocket_health = stream.health_snapshot()
-                if _stream_should_rebuild(websocket_health, token_count=len(market_by_token)):
-                    write_stream_status(websocket_health)
-                    print(f"STREAM REBUILD {websocket_health.get('status_reason') or 'websocket thread stopped'}")
-                    with update_lock:
-                        stream.stop()
-                        stream = build_stream()
-                        stream_holder["client"] = StreamBackedPolymarketClient(settings.gamma_base, settings.clob_base, stream)
-                        stream.start(market_by_token.keys())
-                    status_updated_at = now
-                if (now - status_updated_at).total_seconds() >= settings.runner_health_status_interval_seconds:
-                    write_stream_status()
-                    status_updated_at = now
-                time.sleep(1)
-        finally:
-            stream.stop()
+            latest_edges: dict[tuple[str, str], EdgeResult] = {}
+            update_lock = threading.RLock()
+            stream_holder: dict[str, StreamBackedPolymarketClient] = {}
+
+            def on_update(updated_token_ids: set[str]) -> None:
+                with update_lock:
+                    stream_client = stream_holder.get("client")
+                    if stream_client is not None:
+                        _evaluate_realtime_update(
+                            updated_token_ids,
+                            stream_client,
+                            broker,
+                            settings,
+                            market_by_token,
+                            signals_by_market,
+                            market_types,
+                            latest_edges,
+                        )
+
+            def build_stream() -> OrderBookMarketStream:
+                return OrderBookMarketStream(
+                    settings.orderbook_stream_url,
+                    on_update=on_update,
+                    heartbeat_seconds=settings.orderbook_stream_heartbeat_seconds,
+                    reconnect_seconds=settings.orderbook_stream_reconnect_seconds,
+                    stale_seconds=settings.orderbook_stream_stale_seconds,
+                )
+
+            failed_phase = "websocket_start"
+            stream = build_stream()
+            stream_holder["client"] = StreamBackedPolymarketClient(settings.gamma_base, settings.clob_base, stream)
+            stream.start(market_by_token.keys())
+
+            def write_stream_status(websocket_health: dict[str, object] | None = None) -> None:
+                websocket_health = websocket_health or stream.health_snapshot()
+                phase, message = _stream_status_phase(
+                    websocket_health,
+                    token_count=len(market_by_token),
+                    market_count=len(stream_markets),
+                    event_count=coverage["events"],
+                    city_count=coverage["cities"],
+                )
+                write_runner_status(
+                    settings,
+                    phase,
+                    message=message,
+                    cycle_started_at=cycle_started_at,
+                    markets_done=0,
+                    markets_total=len(stream_markets),
+                    events_total=coverage["events"],
+                    cities_total=coverage["cities"],
+                    cash_usd=round(broker.state.cash_usd, 2),
+                    exposure_usd=round(broker.total_exposure(), 2),
+                    open_positions=len(broker.state.positions),
+                    forecast=ensemble_client.health_snapshot(),
+                    websocket=websocket_health,
+                )
+
+            failed_phase = "runner_status_update"
+            write_stream_status()
+            status_updated_at = datetime.now(timezone.utc)
+            try:
+                failed_phase = "websocket_monitoring"
+                while True:
+                    now = datetime.now(timezone.utc)
+                    elapsed = (now - refresh_started_at).total_seconds()
+                    if elapsed >= settings.forecast_refresh_interval_seconds:
+                        break
+                    websocket_health = stream.health_snapshot()
+                    if _stream_should_rebuild(websocket_health, token_count=len(market_by_token)):
+                        failed_phase = "runner_status_update"
+                        write_stream_status(websocket_health)
+                        print(f"STREAM REBUILD {websocket_health.get('status_reason') or 'websocket thread stopped'}")
+                        failed_phase = "websocket_rebuild"
+                        with update_lock:
+                            stream.stop()
+                            stream = build_stream()
+                            stream_holder["client"] = StreamBackedPolymarketClient(settings.gamma_base, settings.clob_base, stream)
+                            stream.start(market_by_token.keys())
+                        status_updated_at = now
+                    if (now - status_updated_at).total_seconds() >= settings.runner_health_status_interval_seconds:
+                        failed_phase = "runner_status_update"
+                        write_stream_status()
+                        status_updated_at = now
+                    failed_phase = "websocket_monitoring"
+                    time.sleep(1)
+            finally:
+                try:
+                    stream.stop()
+                except Exception:  # noqa: BLE001
+                    failed_phase = "websocket_stop"
+                    raise
+                stream = None
+        except Exception as exc:  # noqa: BLE001
+            if stream is not None:
+                try:
+                    stream.stop()
+                except Exception as stop_exc:  # noqa: BLE001
+                    print(f"STREAM STOP ERROR after realtime failure: {stop_exc}")
+                stream = None
+            message = f"realtime refresh cycle failed during {failed_phase}: {exc}"
+            write_runner_status(
+                settings,
+                "error",
+                message=message,
+                failed_phase=failed_phase,
+                error_type=exc.__class__.__name__,
+                cycle_started_at=cycle_started_at,
+                cash_usd=round(broker.state.cash_usd, 2) if broker is not None else None,
+                exposure_usd=round(broker.total_exposure(), 2) if broker is not None else None,
+                open_positions=len(broker.state.positions) if broker is not None else None,
+                forecast=ensemble_client.health_snapshot() if ensemble_client is not None else None,
+            )
+            print(f"REALTIME ERROR: {message}")
+            backoff_seconds = _realtime_error_backoff_seconds(settings)
+            print(f"Retrying realtime refresh cycle in {backoff_seconds:.0f}s.")
+            time.sleep(backoff_seconds)
 
 
 def run_forever(settings: Settings | None = None) -> None:

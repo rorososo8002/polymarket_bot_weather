@@ -46,6 +46,41 @@ def test_run_forever_rejects_disabling_realtime_orderbook_stream():
         run_forever(Settings(orderbook_stream_enabled=False))
 
 
+def test_realtime_forever_records_discovery_error_before_backoff(tmp_path, monkeypatch):
+    class FailingClient:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def discover_weather_markets(self, *, max_pages, page_size):
+            raise RuntimeError("gamma outage")
+
+    sleep_calls: list[float] = []
+
+    def stop_after_error_status(seconds):
+        sleep_calls.append(seconds)
+        raise RuntimeError("stop after error backoff")
+
+    monkeypatch.setattr(runner_module, "PolymarketClient", FailingClient)
+    monkeypatch.setattr(runner_module.time, "sleep", stop_after_error_status)
+
+    settings = Settings(
+        state_path=str(tmp_path / "state.json"),
+        trades_csv_path=str(tmp_path / "trades.csv"),
+        decisions_csv_path=str(tmp_path / "decisions.csv"),
+        raw_snapshots_path=str(tmp_path / "raw.jsonl"),
+        portfolio_decisions_jsonl_path=str(tmp_path / "portfolio.jsonl"),
+    )
+
+    with pytest.raises(RuntimeError, match="stop after error backoff"):
+        runner_module.run_realtime_forever(settings)
+
+    status = json.loads((tmp_path / "paper_runner_status.json").read_text(encoding="utf-8"))
+    assert status["phase"] == "error"
+    assert status["failed_phase"] == "market_discovery"
+    assert "gamma outage" in status["message"]
+    assert sleep_calls
+
+
 def test_stream_registry_includes_open_positions_missing_from_discovery():
     discovered = RawMarket(
         market_id="current",
@@ -193,8 +228,16 @@ def test_realtime_forever_settles_resolved_open_positions_before_streaming(tmp_p
             assert list(token_ids) == []
             raise RuntimeError("stop after settlement")
 
+        def stop(self):
+            return None
+
     monkeypatch.setattr(runner_module, "PolymarketClient", FakeClient)
     monkeypatch.setattr(runner_module, "OrderBookMarketStream", StopStream)
+
+    def stop_after_error_backoff(_seconds):
+        raise RuntimeError("stop after error backoff")
+
+    monkeypatch.setattr(runner_module.time, "sleep", stop_after_error_backoff)
 
     settings = Settings(
         state_path=str(state_path),
@@ -204,9 +247,13 @@ def test_realtime_forever_settles_resolved_open_positions_before_streaming(tmp_p
         portfolio_decisions_jsonl_path=str(portfolio_path),
     )
 
-    with pytest.raises(RuntimeError, match="stop after settlement"):
+    with pytest.raises(RuntimeError, match="stop after error backoff"):
         runner_module.run_realtime_forever(settings)
 
+    status = json.loads((tmp_path / "paper_runner_status.json").read_text(encoding="utf-8"))
+    assert status["phase"] == "error"
+    assert status["failed_phase"] == "websocket_start"
+    assert "stop after settlement" in status["message"]
     state = json.loads(state_path.read_text(encoding="utf-8"))
     assert state["positions"] == []
     assert state["cash_usd"] == 960.0
@@ -260,6 +307,11 @@ def test_realtime_forever_filters_non_temperature_before_probability_estimator(t
     monkeypatch.setattr(runner_module, "OrderBookMarketStream", StopStream)
     monkeypatch.setattr(runner_module, "estimate_weather_probability", estimate)
 
+    def stop_after_error_backoff(_seconds):
+        raise RuntimeError("stop after error backoff")
+
+    monkeypatch.setattr(runner_module.time, "sleep", stop_after_error_backoff)
+
     settings = Settings(
         state_path=str(tmp_path / "state.json"),
         trades_csv_path=str(tmp_path / "trades.csv"),
@@ -268,9 +320,13 @@ def test_realtime_forever_filters_non_temperature_before_probability_estimator(t
         portfolio_decisions_jsonl_path=str(tmp_path / "portfolio.jsonl"),
     )
 
-    with pytest.raises(RuntimeError, match="stop after stream setup"):
+    with pytest.raises(RuntimeError, match="stop after error backoff"):
         runner_module.run_realtime_forever(settings)
 
+    status = json.loads((tmp_path / "paper_runner_status.json").read_text(encoding="utf-8"))
+    assert status["phase"] == "error"
+    assert status["failed_phase"] == "websocket_start"
+    assert "stop after stream setup" in status["message"]
     assert probability_calls == [temperature_question]
     assert set(stream_tokens) == {"temp-yes", "temp-no"}
 
