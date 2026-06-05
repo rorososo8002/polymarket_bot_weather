@@ -148,6 +148,9 @@ trading-risk, server, or workflow work, read:
   or durable prevention rule, run `ce-compound`.
 - Save durable lessons under `docs/solutions/` and reuse existing lessons when
   working in documented areas.
+- `docs/solutions/` is a searchable knowledge store organized by category with
+  YAML frontmatter such as `module`, `tags`, and `problem_type`; consult
+  relevant entries when implementing or debugging in documented areas.
 - Write lessons so a development beginner can follow them in this order:
   1. What the problem was
   2. Why it was a problem

@@ -103,6 +103,9 @@ specialized reference docs.
   This prevents negative orders, negative fees, impossible exposure fractions,
   fee rates above 1, or zero timing windows from contaminating
   paper-performance evidence.
+- `SIZE_MODE` accepts only `fixed_fraction` and `kelly` at `Settings` startup.
+  Values are case-normalized, and typos such as `kellyy` raise `ValueError`
+  before the runner can fall back to the wrong paper sizing path.
 - WebSocket health is based on executable order-book depth, not indicative
   `best_bid_ask` reference quotes. Stale/dead WebSocket health blocks new
   entries, pauses held-position exit evaluation with explicit
@@ -670,3 +673,13 @@ too conservative, but averaging down on a broken thesis compounds losses.
 Consequence: partial entries log their reduced sizing, add-ons update the
 existing `paper_state.json` position and write an `ADD` row to `paper_trades.csv`,
 and the dashboard treats `ADD` as paper trade activity but not realized PnL.
+
+### 2026-06-05: Reject Unknown Paper Sizing Modes At Startup
+
+Decision: `SIZE_MODE` must be either `fixed_fraction` or `kelly`, with
+case-normalized values stored in `Settings`.
+Why: The setting controls paper order size. A typo such as `kellyy` can make
+the runner use the fixed-fraction branch while the operator believes Kelly
+sizing is active.
+Consequence: Invalid values raise `ValueError` during settings creation, before
+paper trading starts and before risk evidence is contaminated.

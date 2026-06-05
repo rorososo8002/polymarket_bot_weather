@@ -67,6 +67,7 @@ _RATE_SETTINGS = (
 )
 
 _RAW_SNAPSHOT_MODES = ("off", "error", "debug")
+_SIZE_MODES = ("fixed_fraction", "kelly")
 
 
 @dataclass(frozen=True)
@@ -181,6 +182,7 @@ class Settings:
         _validate_ratios(self, _RATIO_SETTINGS)
         _validate_non_negative_numbers(self, _NON_NEGATIVE_NUMBER_SETTINGS)
         _validate_rates(self, _RATE_SETTINGS)
+        _validate_choice(self, "size_mode", _SIZE_MODES)
         _validate_choice(self, "raw_snapshots_mode", _RAW_SNAPSHOT_MODES)
 
 

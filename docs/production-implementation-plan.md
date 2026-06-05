@@ -62,6 +62,8 @@ verified settlement stations and reproducible paper accounting.
   when `Settings` is created. Money amounts and runtime intervals that must
   represent a real positive budget/window must be greater than 0; risk
   fractions and the weather taker fee rate must stay between 0 and 1.
+- `SIZE_MODE` is the paper order-size method switch and accepts only
+  `fixed_fraction` or `kelly`; startup normalizes case and rejects typos.
 - Keep execution paper-only unless live trading is explicitly approved through
   `docs/live-trading-safety-plan.md`.
 
@@ -398,6 +400,7 @@ RAW_SNAPSHOTS_MAX_DISK_USAGE_PCT=0.90
 DISCOVERY_MAX_PAGES=8
 DISCOVERY_PAGE_SIZE=100
 WEATHER_TAKER_FEE_RATE=0.05
+SIZE_MODE=fixed_fraction
 ENTRY_MIN_EXPECTED_NET_RETURN_PCT=0.06
 SETTLEMENT_RUNNER_ENABLED=true
 SETTLEMENT_RUNNER_MAX_FRACTION=0.25

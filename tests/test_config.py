@@ -304,6 +304,24 @@ def test_load_settings_rejects_unknown_raw_snapshot_storage_mode(monkeypatch):
         load_settings()
 
 
+def test_load_settings_normalizes_size_mode_choice(monkeypatch):
+    monkeypatch.setenv("SIZE_MODE", "KeLlY")
+
+    settings = load_settings()
+
+    assert settings.size_mode == "kelly"
+
+
+def test_load_settings_rejects_unknown_size_mode(monkeypatch):
+    monkeypatch.setenv("SIZE_MODE", "kellyy")
+
+    with pytest.raises(ValueError, match="SIZE_MODE") as exc_info:
+        load_settings()
+
+    assert "fixed_fraction" in str(exc_info.value)
+    assert "kelly" in str(exc_info.value)
+
+
 def test_load_settings_reads_shadow_signal_research_controls(monkeypatch):
     monkeypatch.setenv("POLYMARKET_DATA_BASE", "https://example.test")
     monkeypatch.setenv("SHADOW_SIGNALS_JSONL_PATH", "data/shadow.jsonl")

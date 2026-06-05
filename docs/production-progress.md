@@ -83,6 +83,10 @@
   weather taker fees above 1, exposure fractions above 1, zero bankroll, zero
   cache TTL, zero forecast refresh interval, and zero WebSocket stale windows
   raise operator-readable `ValueError` messages before paper trading can start.
+- `SIZE_MODE` now fails closed at `Settings` startup. Only `fixed_fraction`
+  and `kelly` are accepted, values are normalized to lowercase, and typos such
+  as `kellyy` stop startup instead of silently falling back to fixed-fraction
+  paper sizing.
 - Entry candidate `size_shares` now means the actual fee-adjusted shares bought
   with the all-in `size_usd` budget, so portfolio scenarios and broker-opened
   paper positions use the same held quantity.
@@ -125,6 +129,9 @@
 - Local verification after executable-only `OrderBook.best_bid/best_ask`
   hardening: focused realtime order-book/runner/hardening pytest passed with
   `69 passed`; full `pytest -q` passed with `307 passed`.
+- Local verification after `SIZE_MODE` startup validation: focused
+  `tests/test_config.py -k size_mode` passed with `2 passed`; full
+  `pytest -q` passed with `373 passed`.
 
 ## In Progress
 
@@ -146,6 +153,7 @@
 - Public-dashboard token-strength hardening is complete locally and remains
   paper-only.
 - Numeric Settings range validation is complete locally and remains paper-only.
+- `SIZE_MODE` choice validation is complete locally and remains paper-only.
 - Explicit forecast-bias file fail-closed hardening is complete locally and
   remains paper-only.
 - Analysis/shadow-report CSV streaming is complete locally and remains
