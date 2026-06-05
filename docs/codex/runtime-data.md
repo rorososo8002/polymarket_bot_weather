@@ -30,6 +30,9 @@ Read this file only for runtime logs, paper-trading data, dashboard readers, or 
   `paper_decisions.csv` as a cleanup shortcut. `paper_state.json` is the current
   paper account book, `paper_trades.csv` is the execution ledger, and
   `paper_decisions.csv` is the strategy evidence ledger.
+- Do not recreate a fresh `paper_state.json` just because the file is missing
+  while `paper_trades.csv` already has executed actions. That means the account
+  book may have been lost, not that the paper account is new.
 - `paper_state.json.journal` is a paper-accounting transaction marker. It
   means `paper_state.json` and `paper_trades.csv` may have been interrupted
   mid-update. Do not delete it just to restart the bot; inspect the state and
@@ -43,6 +46,10 @@ Read this file only for runtime logs, paper-trading data, dashboard readers, or 
   that must update both `paper_state.json` and `paper_trades.csv`. If either
   write fails, the bot leaves `paper_state.json.journal` and fails closed
   instead of making more paper trades from uncertain accounting.
+- On startup, each open position in `paper_state.json` must have a matching
+  `OPEN` row in `paper_trades.csv` with the same market, side, and token. If
+  that proof is missing, treat it as a ledger mismatch and follow fail-closed
+  recovery instead of deleting, truncating, or rewriting either ledger.
 - When entries appear missing, check existing open positions and exposure caps before assuming the entry path is broken.
 - Repeated valid signals for an already-held market should not create duplicate positions. Same-side add-ons are allowed only through the explicit `ADD` path after the add-on price/probability/budget gates pass; opposite-side same-market entries remain blocked.
 
@@ -65,9 +72,11 @@ Read this file only for runtime logs, paper-trading data, dashboard readers, or 
   New trade files use the current full header, but legacy headers should remain
   as evidence and report code must use backward-compatible fallbacks.
 - If `paper_state.json` contains open positions but `paper_trades.csv` is
-  missing or empty, treat that as an obvious evidence mismatch. Start from
-  fail-closed recovery, not from a fresh account and not from a rewritten
-  trade ledger.
+  missing, empty, or lacks the matching `OPEN` rows, treat that as an obvious
+  evidence mismatch. If `paper_state.json` is missing but `paper_trades.csv`
+  already has executed accounting rows, treat that as a lost account book.
+  Start from fail-closed recovery, not from a fresh account and not from a
+  rewritten trade ledger.
 - New `paper_decisions.csv` rows compact verbose question, reason, and note
   text so the strategy evidence ledger does not become a raw-data warehouse.
   New `paper_event_portfolios.jsonl` rows keep selected legs, rejection

@@ -70,6 +70,9 @@ TRADE_CSV_FIELDNAMES = [
     "decision_ts",
 ]
 
+ACCOUNTING_TRADE_ACTIONS = {"OPEN", "ADD", "CLOSE", "PARTIAL_CLOSE", "SETTLED"}
+OPEN_POSITION_TRADE_ACTION = "OPEN"
+
 DECISION_CSV_FIELDNAMES = [
     "ts",
     "market_id",
@@ -285,6 +288,26 @@ def _ensure_csv_columns(path: Path, required_fieldnames: list[str]) -> list[str]
     return existing_fieldnames
 
 
+def _trade_action(value: Any) -> str:
+    return str(value or "").strip().upper()
+
+
+def _trade_position_key(row: dict[str, Any]) -> tuple[str, str, str]:
+    return (
+        str(row.get("market_id") or "").strip(),
+        str(row.get("side") or "").strip().upper(),
+        str(row.get("token_id") or "").strip(),
+    )
+
+
+def _state_position_key(pos: PaperPosition) -> tuple[str, str, str]:
+    return (
+        str(pos.market_id).strip(),
+        str(pos.side).strip().upper(),
+        str(pos.token_id).strip(),
+    )
+
+
 def _position_from_state(raw: dict[str, Any], index: int) -> PaperPosition:
     item = dict(raw)
 
@@ -336,6 +359,7 @@ class PaperBroker:
         self._raw_snapshot_storage_suspended = False
         self._accounting_halted_reason = ""
         self._fail_if_unresolved_accounting_journal()
+        self._fail_if_missing_state_has_executed_trades()
         self.state = self.load_state()
         self._validate_trade_state_consistency()
 
@@ -348,8 +372,44 @@ class PaperBroker:
             "refusing to start paper trading until an operator reconciles the ledgers"
         )
 
+    def _trade_ledger_contains_accounting_action(self) -> bool:
+        try:
+            if not self.trades_csv_path.exists() or self.trades_csv_path.stat().st_size <= 0:
+                return False
+        except OSError as exc:
+            raise PaperStateLoadError(
+                f"cannot inspect paper_trades.csv at {self.trades_csv_path}; refusing to start paper trading"
+            ) from exc
+        header = _csv_header(self.trades_csv_path)
+        if "action" not in header:
+            raise PaperStateLoadError(
+                f"paper_state.json is missing but paper_trades.csv at {self.trades_csv_path} "
+                "is non-empty and missing the action column; refusing to start paper trading"
+            )
+        try:
+            with self.trades_csv_path.open("r", newline="", encoding="utf-8") as f:
+                for row in csv.DictReader(f):
+                    if _trade_action(row.get("action")) in ACCOUNTING_TRADE_ACTIONS:
+                        return True
+        except (OSError, csv.Error) as exc:
+            raise PaperStateLoadError(
+                f"cannot read paper_trades.csv at {self.trades_csv_path}; refusing to start paper trading"
+            ) from exc
+        return False
+
+    def _fail_if_missing_state_has_executed_trades(self) -> None:
+        if self.state_path.exists():
+            return
+        if not self._trade_ledger_contains_accounting_action():
+            return
+        raise PaperStateLoadError(
+            f"paper_state.json is missing at {self.state_path}, but paper_trades.csv at "
+            f"{self.trades_csv_path} contains executed paper accounting actions; "
+            "refusing to start a fresh account over an existing execution ledger"
+        )
+
     def _validate_trade_state_consistency(self) -> None:
-        """Catch obvious startup mismatches without scanning huge trade ledgers."""
+        """Catch obvious startup mismatches by streaming only the trade ledger rows."""
         if not self.state.positions:
             return
         try:
@@ -369,6 +429,32 @@ class PaperBroker:
             raise PaperStateLoadError(
                 f"paper_state.json has open positions but paper_trades.csv is missing required columns "
                 f"{missing}; refusing to start paper trading"
+            )
+        expected_open_positions = {_state_position_key(pos) for pos in self.state.positions}
+        found_open_positions: set[tuple[str, str, str]] = set()
+        try:
+            with self.trades_csv_path.open("r", newline="", encoding="utf-8") as f:
+                for row in csv.DictReader(f):
+                    if _trade_action(row.get("action")) != OPEN_POSITION_TRADE_ACTION:
+                        continue
+                    key = _trade_position_key(row)
+                    if key in expected_open_positions:
+                        found_open_positions.add(key)
+                        if found_open_positions == expected_open_positions:
+                            return
+        except (OSError, csv.Error) as exc:
+            raise PaperStateLoadError(
+                f"cannot read paper_trades.csv at {self.trades_csv_path}; refusing to start paper trading"
+            ) from exc
+        missing_open_positions = sorted(expected_open_positions.difference(found_open_positions))
+        if missing_open_positions:
+            sample = ", ".join(
+                f"market_id={market_id} side={side} token_id={token_id}"
+                for market_id, side, token_id in missing_open_positions[:3]
+            )
+            raise PaperStateLoadError(
+                "paper_state.json has open positions with no matching OPEN trade in paper_trades.csv "
+                f"({sample}); refusing to start paper trading"
             )
 
     def _ensure_accounting_open(self) -> None:

@@ -1,6 +1,7 @@
 ---
 title: Paper State And Trade Ledger Updates Need A Transaction Journal
 date: 2026-06-06
+last_updated: 2026-06-06
 category: logic-errors
 module: weather_bot.paper
 problem_type: logic_error
@@ -9,6 +10,8 @@ symptoms:
   - "`paper_state.json` could be saved while the matching `paper_trades.csv` row failed to append."
   - "`PARTIAL_CLOSE` could append a trade row before the account state save failed."
   - "Startup could load open positions even when the trade ledger was missing or an interrupted update needed operator review."
+  - "Startup could treat a missing `paper_state.json` as a fresh account even when executed trade rows already existed."
+  - "Startup could load an open position whose matching `OPEN` row was absent from `paper_trades.csv`."
 root_cause: missing_workflow_step
 resolution_type: code_fix
 severity: high
@@ -67,10 +70,14 @@ in-memory `PaperState` back to the snapshot from before the attempted action.
 If the state save succeeded but trade logging failed, the journal remains
 because the disk state may already have changed.
 
-Startup also catches one obvious mismatch without scanning huge ledgers: if
-`paper_state.json` has open positions but `paper_trades.csv` is missing, empty,
-or missing core columns such as `action`, `market_id`, `side`, or `token_id`,
-the broker refuses to start.
+Startup also catches obvious state/trade evidence drift. If
+`paper_state.json` is missing but `paper_trades.csv` already contains executed
+accounting actions, the broker refuses to start a fresh account over that
+execution ledger. If `paper_state.json` has open positions, startup checks that
+`paper_trades.csv` exists, has core columns such as `action`, `market_id`,
+`side`, and `token_id`, and contains a matching `OPEN` row for each open
+position's market, side, and token. The check streams trade rows and stops
+early once every open position is matched.
 
 Existing trade CSVs are no longer rewritten just to add newer columns. New
 files use the current full header, while legacy files keep their historical
@@ -85,6 +92,8 @@ header and report code falls back when structured entry metadata is absent.
 - Assert that failed saves roll back in-memory state when disk state has not
   been committed.
 - Assert that failed trade logging leaves a journal so startup fails closed.
+- Test startup evidence drift in both directions: executed trade rows without
+  `paper_state.json`, and open state positions without matching `OPEN` rows.
 - Do not rewrite evidence ledgers for schema migration convenience. Preserve
   legacy headers and make readers backward-compatible.
 - Add fixture trade rows whenever a test creates open positions directly in

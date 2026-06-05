@@ -119,9 +119,10 @@ specialized reference docs.
   for executed actions. `OPEN`, `ADD`, `CLOSE`, and `PARTIAL_CLOSE` write a
   small `paper_state.json.journal` before changing the account book and clear
   it only after both state save and trade logging finish. A leftover journal,
-  or open positions with a missing/empty trade ledger, means the account book
-  and execution ledger may disagree, so startup fails closed for operator
-  reconciliation instead of trading from guessed state.
+  a missing state file with existing executed trade rows, open positions with a
+  missing/empty trade ledger, or open positions without matching `OPEN` rows
+  means the account book and execution ledger may disagree, so startup fails
+  closed for operator reconciliation instead of trading from guessed state.
 - Public dashboard exposure requires a real `DASHBOARD_TOKEN` with at least 32
   characters; empty, short, placeholder, basic, default, change-me, secret,
   token, password, abc, 123456, or other obvious example tokens stop startup
@@ -793,5 +794,7 @@ finish. Why: `paper_state.json` is the current account book, while
 middle, the bot must not quietly keep trading from one changed ledger and one
 unchanged ledger. Consequence: a leftover journal halts further paper
 accounting writes and makes the next startup fail closed for operator
-reconciliation. Startup also fails closed when open positions exist but the
-trade ledger is missing or empty.
+reconciliation. Startup also fails closed when the state file is missing but
+the trade ledger already has executed accounting actions, when open positions
+exist but the trade ledger is missing or empty, or when an open position has no
+matching `OPEN` row in the trade ledger.

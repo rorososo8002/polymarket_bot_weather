@@ -87,7 +87,9 @@
   `paper_trades.csv` with a small transaction journal. `OPEN`, `ADD`, `CLOSE`,
   and `PARTIAL_CLOSE` leave `paper_state.json.journal` behind if state saving
   or trade logging fails, and startup refuses to continue until an operator
-  reconciles the account book and execution ledger.
+  reconciles the account book and execution ledger. Startup also fails closed
+  when executed trade rows exist without `paper_state.json`, or when an open
+  state position has no matching `OPEN` row in `paper_trades.csv`.
 - Existing `paper_state.json` account numbers and stats now fail closed when
   unsafe: `cash_usd` must be finite and non-negative, `realized_pnl_usd` must be
   finite, stats win/loss counts must be non-negative integers, and stats PnL
@@ -293,9 +295,11 @@
   Local verification: focused realtime/coalescer tests passed with `31 passed`;
   full `pytest -q` passed with `383 passed`.
 - Paper state/trade ledger transaction hardening is complete locally and
-  remains paper-only. Local verification: focused paper/analyze/hardening/
-  portfolio/realtime tests passed with `166 passed`; full `pytest -q` passed
-  with `392 passed`.
+  remains paper-only. Startup now rejects obvious state/trade evidence drift:
+  executed trade rows without `paper_state.json`, and open positions without
+  matching `OPEN` ledger rows. Local verification: focused
+  `tests/test_paper_state_io.py` passed with `45 passed`; full `pytest -q`
+  passed with `398 passed`.
 - Other local hardening changes have not all been treated as one automatic
   deployment bundle; verify the specific commit and service state before
   assuming a future local change is live.

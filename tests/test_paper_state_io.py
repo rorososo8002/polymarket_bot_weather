@@ -83,6 +83,17 @@ def write_open_trade_for_valid_position(settings: Settings) -> None:
         )
 
 
+def write_trade_rows(settings: Settings, rows: list[dict[str, str]]) -> None:
+    path = Path(settings.trades_csv_path)
+    with path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=paper.TRADE_CSV_FIELDNAMES)
+        writer.writeheader()
+        for row in rows:
+            payload = {field: "" for field in paper.TRADE_CSV_FIELDNAMES}
+            payload.update(row)
+            writer.writerow(payload)
+
+
 def test_save_state_writes_temp_file_before_atomic_replace(tmp_path, monkeypatch):
     settings = settings_for(tmp_path)
     state_path = Path(settings.state_path)
@@ -177,6 +188,51 @@ def test_state_with_open_positions_and_missing_trade_ledger_fails_closed(tmp_pat
     write_state(Path(settings.state_path), valid_position_state())
 
     with pytest.raises(PaperStateLoadError, match="paper_trades.csv"):
+        PaperBroker(settings)
+
+
+def test_missing_state_with_executed_trade_ledger_fails_closed(tmp_path):
+    settings = settings_for(tmp_path)
+    write_trade_rows(
+        settings,
+        [
+            {
+                "ts": "2026-06-03T00:00:00+00:00",
+                "action": "OPEN",
+                "market_id": "market-1",
+                "side": "YES",
+                "token_id": "token-yes-1",
+                "shares": "12.500000",
+                "price": "0.420000",
+                "cash_delta_or_pnl": "-5.250000",
+            }
+        ],
+    )
+
+    with pytest.raises(PaperStateLoadError, match="paper_state.json is missing"):
+        PaperBroker(settings)
+
+
+def test_open_position_without_matching_open_trade_fails_closed(tmp_path):
+    settings = settings_for(tmp_path)
+    write_state(Path(settings.state_path), valid_position_state())
+    write_trade_rows(
+        settings,
+        [
+            {
+                "ts": "2026-06-03T00:00:00+00:00",
+                "action": "OPEN",
+                "market_id": "other-market",
+                "side": "YES",
+                "token_id": "other-token",
+                "shares": "12.500000",
+                "price": "0.420000",
+                "cash_delta_or_pnl": "-5.250000",
+            }
+        ],
+    )
+
+    with pytest.raises(PaperStateLoadError, match="no matching OPEN trade"):
         PaperBroker(settings)
 
 
@@ -278,6 +334,7 @@ def test_partial_close_save_failure_does_not_append_partial_trade(tmp_path, monk
 
 def test_log_trade_appends_to_legacy_trade_csv_without_rewriting_header(tmp_path):
     settings = settings_for(tmp_path)
+    write_state(Path(settings.state_path), {"cash_usd": 100.0, "positions": []})
     legacy_header = "ts,action,market_id,slug,question,market_type,side,token_id,shares,price,cash_delta_or_pnl,reason"
     Path(settings.trades_csv_path).write_text(
         legacy_header

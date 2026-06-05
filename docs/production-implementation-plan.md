@@ -227,9 +227,10 @@ ledger. The broker writes `paper_state.json.journal` before applying `OPEN`,
 `ADD`, `CLOSE`, or `PARTIAL_CLOSE`; clears it only after both the state save
 and trade row append finish; and refuses later accounting writes if any step
 fails. A leftover journal means the two ledgers may disagree and startup must
-stop for operator reconciliation. A state file with open positions but a
-missing or empty trade ledger is also treated as an obvious mismatch and fails
-closed.
+stop for operator reconciliation. A missing state file with existing executed
+trade rows, a state file with open positions but a missing or empty trade
+ledger, or an open position without a matching `OPEN` trade row is also treated
+as an obvious mismatch and fails closed.
 `cash_usd` must be a finite number and cannot be negative; `realized_pnl_usd`
 must be a finite number; stats `wins` and `losses` must be non-negative integer
 counts; and stats `pnl` must be finite. Position `side` must be `YES` or `NO`;
