@@ -26,17 +26,45 @@ def _safe_error(exc: BaseException) -> str:
     return f"{type(exc).__name__}: {text}"[:240]
 
 
-def _contains_executable_orderbook_update(message: str | dict[str, Any] | list[dict[str, Any]]) -> bool:
+def _executable_orderbook_update_token_ids(message: str | dict[str, Any] | list[dict[str, Any]]) -> set[str]:
     if isinstance(message, str):
         try:
             message = json.loads(message)
         except json.JSONDecodeError:
-            return False
+            return set()
     if isinstance(message, list):
-        return any(_contains_executable_orderbook_update(item) for item in message)
+        token_ids: set[str] = set()
+        for item in message:
+            token_ids.update(_executable_orderbook_update_token_ids(item))
+        return token_ids
     if not isinstance(message, dict):
-        return False
-    return str(message.get("event_type") or "") in {"book", "price_change"}
+        return set()
+    event_type = str(message.get("event_type") or "")
+    if event_type == "book":
+        token_id = str(message.get("asset_id") or "")
+        if token_id and isinstance(message.get("bids"), list) and isinstance(message.get("asks"), list):
+            return {token_id}
+        return set()
+    if event_type == "price_change":
+        token_ids: set[str] = set()
+        price_changes = message.get("price_changes")
+        if not isinstance(price_changes, list):
+            return token_ids
+        for change in price_changes:
+            if not isinstance(change, dict):
+                continue
+            token_id = str(change.get("asset_id") or "")
+            side = str(change.get("side") or "").upper()
+            price = valid_orderbook_price(change.get("price"))
+            size = valid_level_size(change.get("size"), allow_zero=True)
+            if token_id and side in {"BUY", "SELL"} and price is not None and size is not None:
+                token_ids.add(token_id)
+        return token_ids
+    return set()
+
+
+def _contains_executable_orderbook_update(message: str | dict[str, Any] | list[dict[str, Any]]) -> bool:
+    return bool(_executable_orderbook_update_token_ids(message))
 
 
 def market_subscription_message(asset_ids: Iterable[str]) -> dict[str, Any]:
@@ -277,6 +305,7 @@ class OrderBookMarketStream:
         self._started_at: datetime | None = None
         self._last_message_at: datetime | None = None
         self._last_book_at: datetime | None = None
+        self._last_book_at_by_token: dict[str, datetime] = {}
         self._reconnect_count = 0
         self._last_error = ""
 
@@ -310,9 +339,12 @@ class OrderBookMarketStream:
         with self._health_lock:
             self._last_message_at = now
         updated = self.cache.apply_message(message)
-        if updated and _contains_executable_orderbook_update(message):
+        executable_updated = updated.intersection(_executable_orderbook_update_token_ids(message))
+        if executable_updated:
             with self._health_lock:
                 self._last_book_at = now
+                for token_id in executable_updated:
+                    self._last_book_at_by_token[token_id] = now
         if updated and self.on_update is not None:
             self.on_update(updated)
         return updated
@@ -330,6 +362,7 @@ class OrderBookMarketStream:
             started_at = self._started_at
             last_message_at = self._last_message_at
             last_book_at = self._last_book_at
+            last_book_at_by_token = dict(self._last_book_at_by_token)
             reconnect_count = self._reconnect_count
             last_error = self._last_error
 
@@ -373,6 +406,73 @@ class OrderBookMarketStream:
         if last_error and stale:
             status_reason = f"{status_reason}; last_error={last_error}"
         return {
+            "thread_alive": thread_alive,
+            "reconnect_count": reconnect_count,
+            "last_message_at": _utc_iso(last_message_at) if last_message_at else None,
+            "last_message_age_seconds": last_message_age_seconds,
+            "last_book_at": _utc_iso(last_book_at) if last_book_at else None,
+            "last_book_at_by_token": {
+                token_id: _utc_iso(last_seen_at)
+                for token_id, last_seen_at in sorted(last_book_at_by_token.items())
+            },
+            "stale_book_age_seconds": stale_book_age_seconds,
+            "stale": stale,
+            "last_error": last_error,
+            "status_reason": status_reason,
+        }
+
+    def token_health_snapshot(self, token_id: str, *, now: datetime | None = None) -> dict[str, object]:
+        token = str(token_id)
+        current_time = now or _utc_now()
+        thread_alive = bool(self._thread and self._thread.is_alive())
+        with self._health_lock:
+            started_at = self._started_at
+            last_message_at = self._last_message_at
+            last_book_at = self._last_book_at_by_token.get(token)
+            reconnect_count = self._reconnect_count
+            last_error = self._last_error
+
+        stale_book_age_seconds: int | None = None
+        if last_book_at is not None:
+            stale_book_age_seconds = max(0, int((current_time - last_book_at).total_seconds()))
+        last_message_age_seconds: int | None = None
+        if last_message_at is not None:
+            last_message_age_seconds = max(0, int((current_time - last_message_at).total_seconds()))
+        seconds_since_start: int | None = None
+        if started_at is not None:
+            seconds_since_start = max(0, int((current_time - started_at).total_seconds()))
+        waiting_too_long = bool(
+            last_book_at is None
+            and started_at is not None
+            and (current_time - started_at).total_seconds() > self.stale_seconds
+        )
+        stale = (
+            not thread_alive
+            or waiting_too_long
+            or (stale_book_age_seconds is not None and stale_book_age_seconds > self.stale_seconds)
+        )
+        if not thread_alive:
+            status_reason = "websocket receiver thread is not running"
+        elif waiting_too_long:
+            status_reason = (
+                f"token {token} has no executable order book depth for {seconds_since_start}s "
+                f"after stream start; threshold={self.stale_seconds}s"
+            )
+        elif stale_book_age_seconds is not None and stale_book_age_seconds > self.stale_seconds:
+            status_reason = (
+                f"token {token} executable order book depth age {stale_book_age_seconds}s "
+                f"exceeds {self.stale_seconds}s"
+            )
+        elif last_book_at is None:
+            status_reason = f"token {token} waiting for executable order book depth"
+        else:
+            status_reason = f"token {token} executable order book depth fresh; age={stale_book_age_seconds}s"
+        if reconnect_count:
+            status_reason = f"{status_reason}; reconnects={reconnect_count}"
+        if last_error and stale:
+            status_reason = f"{status_reason}; last_error={last_error}"
+        return {
+            "token_id": token,
             "thread_alive": thread_alive,
             "reconnect_count": reconnect_count,
             "last_message_at": _utc_iso(last_message_at) if last_message_at else None,

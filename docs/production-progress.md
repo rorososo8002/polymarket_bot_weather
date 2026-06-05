@@ -158,6 +158,12 @@
   health blocks new entries, held-position exit evaluation pauses with
   `HOLD_STREAM_UNHEALTHY`, and a dead receiver thread can rebuild a WebSocket
   stream without falling back to REST polling.
+- Realtime order-book health now also records executable-depth freshness per
+  held `token_id`. If the overall WebSocket stream is fresh but one held token
+  is stale, only that position pauses with `HOLD_STREAM_UNHEALTHY`; other fresh
+  token positions can still be marked or closed from their own executable
+  depth. Indicative `best_bid_ask` updates still do not refresh executable
+  freshness.
 - Local verification after numeric Settings range validation: focused
   config/deployment pytest and full `pytest -q`. Full result: `273 passed`.
 - Local verification after malformed order-book level hardening: focused
@@ -181,6 +187,8 @@
 - Boolean config parsing hardening is complete locally and remains paper-only.
 - WebSocket stale/dead order-book hardening is complete locally and remains
   paper-only.
+- Token-level executable order-book freshness for held-position exit
+  evaluation is complete locally and remains paper-only.
 - WebSocket malformed order-book level hardening is complete locally and
   remains paper-only.
 - REST CLOB malformed order-book level hardening is complete locally and

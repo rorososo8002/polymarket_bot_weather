@@ -161,6 +161,12 @@ specialized reference docs.
   entries, pauses held-position exit evaluation with explicit
   `HOLD_STREAM_UNHEALTHY` logs, and may rebuild a dead WebSocket receiver
   without switching to REST polling.
+- Held-position marking and close evaluation also require fresh executable
+  order-book depth for that position's own `token_id`. Why: one token's fresh
+  update proves the WebSocket is alive, but it does not prove another held
+  YES/NO token has executable bid depth. Consequence: a globally fresh stream
+  can still pause only the stale-token position with `HOLD_STREAM_UNHEALTHY`
+  while fresh-token positions continue normal paper evaluation.
 - Paper analysis reports treat `paper_decisions.csv` and `paper_trades.csv` as
   source ledgers. Reports may scan full history when that is the promised
   meaning, but they must stream rows and keep only aggregates or bounded
@@ -549,6 +555,18 @@ Consequence: stale/dead WebSocket health blocks new entries, records the
 operator-readable reason in runner status and decision snapshots, pauses
 held-position exit evaluation with `HOLD_STREAM_UNHEALTHY`, and can rebuild a
 dead WebSocket receiver thread without falling back to REST polling.
+
+### 2026-06-06: Check Held Token Freshness Before Paper Exits
+
+Decision: Held-position marking and close evaluation must check the executable
+order-book freshness of the position's own `token_id`, not only the overall
+WebSocket stream freshness. Why: a fresh update on one token means the market
+stream is alive, but it does not prove another held YES/NO token has executable
+bid depth. Consequence: if the stream is globally stale, all held exits pause;
+if only one held token is stale, only that position logs
+`HOLD_STREAM_UNHEALTHY`, while positions with fresh executable depth can still
+be marked or closed. Indicative `best_bid_ask` updates remain display/reference
+data and do not refresh token-level executable freshness.
 
 ### 2026-06-03: Ignore Malformed Order-Book Price And Size Levels
 

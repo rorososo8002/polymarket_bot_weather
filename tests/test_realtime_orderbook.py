@@ -338,3 +338,60 @@ def test_market_stream_does_not_treat_best_bid_ask_as_executable_book_refresh(mo
 
     assert stale["stale"] is True
     assert "no executable order book depth received" in stale["status_reason"]
+
+
+def test_market_stream_tracks_executable_book_freshness_by_token(monkeypatch):
+    now = [datetime(2026, 6, 1, 0, 0, tzinfo=timezone.utc)]
+
+    class AliveThread:
+        def is_alive(self):
+            return True
+
+    monkeypatch.setattr("weather_bot.realtime_orderbook._utc_now", lambda: now[0])
+    stream = OrderBookMarketStream(stale_seconds=60)
+    stream._thread = AliveThread()
+    stream._started_at = now[0]
+
+    stream.apply_message(
+        {
+            "event_type": "book",
+            "asset_id": "stale-token",
+            "bids": [{"price": "0.49", "size": "10"}],
+            "asks": [{"price": "0.52", "size": "20"}],
+        }
+    )
+    now[0] += timedelta(seconds=30)
+    stream.apply_message(
+        {
+            "event_type": "best_bid_ask",
+            "asset_id": "stale-token",
+            "best_bid": "0.50",
+            "best_ask": "0.53",
+        }
+    )
+    now[0] += timedelta(seconds=31)
+    stream.apply_message(
+        {
+            "event_type": "book",
+            "asset_id": "fresh-token",
+            "bids": [{"price": "0.61", "size": "10"}],
+            "asks": [{"price": "0.63", "size": "20"}],
+        }
+    )
+
+    stream_health = stream.health_snapshot()
+    stale_token_health = stream.token_health_snapshot("stale-token")
+    fresh_token_health = stream.token_health_snapshot("fresh-token")
+
+    assert stream_health["stale"] is False
+    assert stream_health["last_book_at"] == "2026-06-01T00:01:01+00:00"
+    assert stream_health["last_book_at_by_token"] == {
+        "fresh-token": "2026-06-01T00:01:01+00:00",
+        "stale-token": "2026-06-01T00:00:00+00:00",
+    }
+    assert stale_token_health["last_book_at"] == "2026-06-01T00:00:00+00:00"
+    assert stale_token_health["stale_book_age_seconds"] == 61
+    assert stale_token_health["stale"] is True
+    assert "token stale-token executable order book depth age 61s exceeds 60s" in stale_token_health["status_reason"]
+    assert fresh_token_health["last_book_at"] == "2026-06-01T00:01:01+00:00"
+    assert fresh_token_health["stale"] is False

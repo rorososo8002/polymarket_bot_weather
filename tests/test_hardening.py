@@ -1076,6 +1076,98 @@ def test_stale_websocket_pauses_held_position_exit_evaluation(tmp_path):
     assert "last executable order book depth age 61s exceeds 60s" in rows[0]["reason"]
 
 
+def test_token_stale_websocket_pauses_only_that_position_exit_evaluation(tmp_path):
+    settings = Settings(
+        state_path=str(tmp_path / "state.json"),
+        trades_csv_path=str(tmp_path / "trades.csv"),
+        decisions_csv_path=str(tmp_path / "decisions.csv"),
+        raw_snapshots_path=str(tmp_path / "raw.jsonl"),
+        probability_stop_drop_threshold=0.10,
+        weather_taker_fee_rate=0.0,
+    )
+    broker = PaperBroker(settings)
+    broker.state.positions = [
+        PaperPosition(
+            position_id="fresh-position",
+            market_id="fresh-market",
+            question="Will NYC reach 90 F on May 25?",
+            token_id="fresh-token",
+            side="YES",
+            entry_price=0.50,
+            shares=10.0,
+            cost_usd=5.0,
+            opened_at=datetime.now(timezone.utc).isoformat(),
+            metadata={"entry_p_true": 0.70, "probability_stop_threshold": 0.60},
+        ),
+        PaperPosition(
+            position_id="stale-position",
+            market_id="stale-market",
+            question="Will Seoul reach 25 C on May 25?",
+            token_id="stale-token",
+            side="YES",
+            entry_price=0.50,
+            shares=10.0,
+            cost_usd=5.0,
+            opened_at=datetime.now(timezone.utc).isoformat(),
+            metadata={"entry_p_true": 0.70, "probability_stop_threshold": 0.60},
+        ),
+    ]
+    broker.state.cash_usd = 990.0
+    client = FakePolymarketClient(
+        books={
+            "fresh-token": book("fresh-token", bid=0.50, ask=0.52, bid_size=100.0),
+            "stale-token": book("stale-token", bid=0.50, ask=0.52, bid_size=100.0),
+        }
+    )
+
+    class MixedFreshnessStream:
+        def health_snapshot(self):
+            return {
+                "thread_alive": True,
+                "stale": False,
+                "status_reason": "executable order book depth fresh; age=0s",
+            }
+
+        def token_health_snapshot(self, token_id: str):
+            if token_id == "stale-token":
+                return {
+                    "token_id": token_id,
+                    "thread_alive": True,
+                    "stale": True,
+                    "status_reason": "token stale-token executable order book depth age 120s exceeds 60s",
+                }
+            return {
+                "token_id": token_id,
+                "thread_alive": True,
+                "stale": False,
+                "status_reason": f"token {token_id} executable order book depth fresh; age=0s",
+            }
+
+    client.stream = MixedFreshnessStream()
+    fresh_market = RawMarket("fresh-market", "Will NYC reach 90 F on May 25?", "fresh", True, False, "fresh-token", "fresh-no")
+    stale_market = RawMarket("stale-market", "Will Seoul reach 25 C on May 25?", "stale", True, False, "stale-token", "stale-no")
+    latest_edges = {
+        ("fresh-market", "YES"): EdgeResult("YES", 0.59, 0.50, -0.01, 0.0, 0.0, "latest"),
+        ("stale-market", "YES"): EdgeResult("YES", 0.59, 0.50, -0.01, 0.0, 0.0, "latest"),
+    }
+
+    messages = maybe_close_positions(
+        broker,
+        client,
+        {"fresh-market": fresh_market, "stale-market": stale_market},
+        latest_edges,
+    )
+
+    assert any(message.startswith("CLOSE YES") for message in messages)
+    assert any(message.startswith("HOLD_STREAM_UNHEALTHY YES") for message in messages)
+    assert [(pos.position_id, pos.token_id) for pos in broker.state.positions] == [("stale-position", "stale-token")]
+    rows = list(csv.DictReader((tmp_path / "trades.csv").open(encoding="utf-8")))
+    assert [row["action"] for row in rows] == ["CLOSE", "HOLD_STREAM_UNHEALTHY"]
+    assert rows[0]["token_id"] == "fresh-token"
+    assert rows[1]["token_id"] == "stale-token"
+    assert "token stale-token executable order book depth age 120s exceeds 60s" in rows[1]["reason"]
+
+
 def test_low_liquidity_limits_principal_recovery_tranche(tmp_path):
     settings = Settings(
         state_path=str(tmp_path / "state.json"),

@@ -53,6 +53,9 @@ verified settlement stations and reproducible paper accounting.
   blocks new entries and pauses held-position exit evaluation until executable
   WebSocket depth resumes. A dead receiver thread may rebuild the WebSocket
   stream, but the bot must not silently fall back to REST polling.
+- Held-position marking and close evaluation must also check executable-depth
+  freshness for that position's own `token_id`. A fresh update on one token is
+  not evidence that another held YES/NO token can be sold.
 - Parse CLOB order-book levels defensively in both WebSocket and REST paths. A
   level with non-numeric, non-finite, zero-size, negative, or out-of-range
   price/size is ignored, and malformed whole WebSocket snapshot shapes fail
@@ -201,6 +204,10 @@ duplicate position.
 `best_bid_ask` may update displayed/reference best bid and ask prices, but
 `p_exec` must be computed only from confirmed order-book depth carried by
 `book` snapshots or `price_change` updates.
+Held-position marking and close evaluation use the same executable-depth rule
+per `token_id`: a globally fresh WebSocket stream is not enough when the held
+token's own executable book is stale. That position must pause rather than
+being marked or closed from another token's fresh update.
 `OrderBook.best_bid` and `OrderBook.best_ask` are executable-depth helpers:
 they read only positive-size `bids` and `asks`. Display or diagnostic code that
 wants the indicative stream quote must use the explicit reference/indicative
