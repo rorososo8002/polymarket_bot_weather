@@ -49,6 +49,10 @@
   use cached paper-action rows so late SKIP bursts do not hide older closed
   trades. `ADD` add-on rows count as recent paper-trade activity, while realized
   PnL remains limited to close/settlement actions.
+- Dashboard scanner totals now disclose whether decision counts are exact
+  full-ledger totals or bounded recent-tail totals, so large
+  `paper_decisions.csv` protection cannot be mistaken for all-time cumulative
+  scanner history.
 - Dashboard operator labels are Korean, the right rail uses tabs for
   `스캐너 정보` and `최근 체결`, realized PnL sorts by parsed close time newest
   first, and open-position Polymarket links target the event slug rather than
@@ -254,6 +258,12 @@
   allowed maximum, and affordable preferred size. Local verification: focused
   `tests/test_portfolio.py` passed with `48 passed`; full `pytest -q` passed
   with `377 passed`.
+- Dashboard decision-total scope labeling is complete locally and remains
+  paper-only. Large `paper_decisions.csv` files still use recent-tail
+  initialization for responsiveness, and `/api/status` now exposes
+  `decision_totals_exact` plus `decision_totals_scope`. Local verification:
+  focused `tests/test_dashboard.py` passed with `38 passed`; full `pytest -q`
+  passed with `377 passed`.
 - Other local hardening changes have not all been treated as one automatic
   deployment bundle; verify the specific commit and service state before
   assuming a future local change is live.

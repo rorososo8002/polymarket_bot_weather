@@ -134,6 +134,11 @@ src/weather_bot/shadow_signals.py     public external-signal research only
 src/weather_bot/analyze_paper.py      paper performance report
 ```
 
+Dashboard scanner totals expose their counting scope. `decision_totals_exact`
+is true only when the scanner numbers come from the full decision ledger, and
+`decision_totals_scope=recent_tail` means the dashboard used the large-file
+tail guard for responsiveness.
+
 ## Strategy Contract
 
 `DECISION YES` and `DECISION NO` are model/order-book judgments, not guaranteed

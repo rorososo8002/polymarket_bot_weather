@@ -1,7 +1,7 @@
 ---
 title: Avoid full decision-log scans in runtime readers
 date: 2026-05-28
-last_updated: 2026-06-03
+last_updated: 2026-06-05
 category: performance-issues
 module: weather_bot.dashboard, weather_bot.analyze_paper, weather_bot.shadow_signals
 problem_type: performance_issue
@@ -45,6 +45,11 @@ Keep dashboard requests cheap when runtime files become large:
 - Cap the first decision-total scan.
 - For oversized decision logs, initialize scanner totals from recent rows and start incremental counting from the current file offset.
 - Preserve the append cache for new decisions after the dashboard is already running.
+- Expose scope metadata on the dashboard API for scanner totals:
+  `decision_totals_exact=true` and `decision_totals_scope=full` mean the
+  totals came from a complete decision ledger scan, while
+  `decision_totals_exact=false` and `decision_totals_scope=recent_tail` mean
+  the dashboard used the large-file recent-tail guard.
 
 Keep paper reports memory-bounded:
 
@@ -64,5 +69,8 @@ Streaming keeps the source-ledger meaning intact while avoiding memory growth pr
 - Do not add dashboard endpoints that parse full runtime CSV/JSONL files on request.
 - Treat `paper_decisions.csv`, `paper_trades.csv`, `paper_raw_snapshots.jsonl`, and restart logs as token-, latency-, and memory-dangerous.
 - Verify dashboard fixes against large-file behavior, not only small test fixtures.
+- When a dashboard aggregate is intentionally bounded for performance, expose
+  whether the number is full-history exact or a recent-tail estimate in the API
+  response. A fast number that looks cumulative can mislead operators.
 - If `/` works but `/api/status` hangs, check file sizes before blaming the SSH tunnel.
 - For analysis/report code, add a large-fixture test that fails if a CSV reader is materialized with `list(...)`.

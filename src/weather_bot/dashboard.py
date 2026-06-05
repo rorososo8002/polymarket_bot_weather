@@ -25,6 +25,9 @@ TRADE_ACTIVITY_ACTIONS = {"OPEN", "ADD", "CLOSE", "SETTLED", "PARTIAL_CLOSE"}
 REALIZED_TRADE_ACTIONS = {"CLOSE", "SETTLED", "PARTIAL_CLOSE"}
 TRADE_CACHE_RECENT_LIMIT = 400
 MAX_INITIAL_DECISION_TOTAL_SCAN_BYTES = 128 * 1024 * 1024
+DECISION_TOTALS_SCOPE_FULL = "full"
+DECISION_TOTALS_SCOPE_RECENT_TAIL = "recent_tail"
+DECISION_TOTALS_SCOPE_UNAVAILABLE = "unavailable"
 MIN_PUBLIC_DASHBOARD_TOKEN_LENGTH = 32
 LOCAL_DASHBOARD_HOSTS = {"127.0.0.1", "localhost", "::1"}
 WEAK_DASHBOARD_TOKEN_VALUES = {
@@ -1109,6 +1112,24 @@ def _empty_decision_totals() -> dict[str, int]:
     return {"decisions": 0, "forecast_unavailable": 0, "skips": 0, "entries": 0}
 
 
+def _decision_totals_result(totals: dict[str, int], *, exact: bool, scope: str) -> dict[str, Any]:
+    return {
+        **totals,
+        "decision_totals_exact": exact,
+        "decision_totals_scope": scope,
+    }
+
+
+def _decision_totals_from_cache(cache: dict[str, Any]) -> dict[str, Any]:
+    totals = cache.get("totals") if isinstance(cache.get("totals"), dict) else _empty_decision_totals()
+    scope = str(cache.get("scope") or DECISION_TOTALS_SCOPE_FULL)
+    return _decision_totals_result(
+        totals,
+        exact=bool(cache.get("exact", scope == DECISION_TOTALS_SCOPE_FULL)),
+        scope=scope,
+    )
+
+
 def _forecast_unavailable(row: dict[str, str]) -> bool:
     text = f"{row.get('reason') or ''} {row.get('note') or ''}".lower()
     return "forecast unavailable" in text or "no forecast" in text
@@ -1153,6 +1174,8 @@ def _scan_decision_totals(path: Path, stat_size: int, mtime_ns: int) -> dict[str
             if not header_raw:
                 return {
                     "totals": totals,
+                    "exact": True,
+                    "scope": DECISION_TOTALS_SCOPE_FULL,
                     "fieldnames": fieldnames,
                     "offset": offset,
                     "pending": pending,
@@ -1171,6 +1194,8 @@ def _scan_decision_totals(path: Path, stat_size: int, mtime_ns: int) -> dict[str
     except (OSError, csv.Error):
         return {
             "totals": _empty_decision_totals(),
+            "exact": False,
+            "scope": DECISION_TOTALS_SCOPE_UNAVAILABLE,
             "fieldnames": [],
             "offset": 0,
             "pending": b"",
@@ -1178,6 +1203,8 @@ def _scan_decision_totals(path: Path, stat_size: int, mtime_ns: int) -> dict[str
         }
     return {
         "totals": totals,
+        "exact": True,
+        "scope": DECISION_TOTALS_SCOPE_FULL,
         "fieldnames": fieldnames,
         "offset": min(offset, stat_size),
         "pending": pending,
@@ -1193,6 +1220,8 @@ def _recent_decision_totals_cache(path: Path, stat_size: int, mtime_ns: int) -> 
         fieldnames = []
     return {
         "totals": _decision_totals_from_rows(_read_csv(path, 5000)),
+        "exact": False,
+        "scope": DECISION_TOTALS_SCOPE_RECENT_TAIL,
         "fieldnames": fieldnames,
         "offset": stat_size,
         "pending": b"",
@@ -1219,15 +1248,23 @@ def _add_appended_decisions(cache: dict[str, Any], chunk: bytes) -> None:
         return
 
 
-def _decision_totals(path: Path) -> dict[str, int]:
+def _decision_totals(path: Path) -> dict[str, Any]:
     if not path.exists():
-        return _empty_decision_totals()
+        return _decision_totals_result(
+            _empty_decision_totals(),
+            exact=True,
+            scope=DECISION_TOTALS_SCOPE_FULL,
+        )
     key = str(path.resolve())
     with _DECISION_TOTALS_LOCK:
         try:
             stat = path.stat()
         except OSError:
-            return _empty_decision_totals()
+            return _decision_totals_result(
+                _empty_decision_totals(),
+                exact=False,
+                scope=DECISION_TOTALS_SCOPE_UNAVAILABLE,
+            )
         cache = _DECISION_TOTALS_CACHE.get(key)
         cache_offset = int(cache.get("offset", 0)) if cache else 0
         cache_mtime_ns = int(cache.get("mtime_ns", 0)) if cache else 0
@@ -1237,18 +1274,18 @@ def _decision_totals(path: Path) -> dict[str, int]:
             else:
                 cache = _scan_decision_totals(path, stat.st_size, stat.st_mtime_ns)
             _DECISION_TOTALS_CACHE[key] = cache
-            return dict(cache["totals"])
+            return _decision_totals_from_cache(cache)
         if stat.st_size > cache_offset:
             try:
                 with path.open("rb") as f:
                     f.seek(cache_offset)
                     chunk = f.read(stat.st_size - cache_offset)
             except OSError:
-                return dict(cache["totals"])
+                return _decision_totals_from_cache(cache)
             _add_appended_decisions(cache, chunk)
             cache["offset"] = stat.st_size
             cache["mtime_ns"] = stat.st_mtime_ns
-        return dict(cache["totals"])
+        return _decision_totals_from_cache(cache)
 
 
 def _empty_trade_totals() -> dict[str, float]:
@@ -1947,6 +1984,8 @@ def build_dashboard_payload(settings: Settings | None = None, auth_required: boo
             "skips": scanner_totals["skips"],
             "entries": scanner_totals["entries"],
             "entry_signals": scanner_totals["entries"],
+            "decision_totals_exact": scanner_totals["decision_totals_exact"],
+            "decision_totals_scope": scanner_totals["decision_totals_scope"],
             "actual_opens": int(trade_totals["opens"]),
             "actual_closes": int(trade_totals["closes"]),
             "latest_forecast_at": _latest_forecast_cache_at(settings),

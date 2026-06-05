@@ -151,6 +151,10 @@ specialized reference docs.
 - Dashboard trade-history panels treat SKIP rows as diagnostics, not executed
   trades. Recent trades, realized rows, and realized equity points use cached
   actual trade actions so SKIP bursts cannot hide older closes.
+- Dashboard scanner totals must disclose their counting scope. Full-ledger
+  totals use `decision_totals_exact=true` and `decision_totals_scope=full`;
+  large-file recent-tail initialization uses `decision_totals_exact=false` and
+  `decision_totals_scope=recent_tail`.
 - Dashboard open-position links point to Polymarket event pages using
   `event_slug`; condition-specific market slug suffixes such as `-25corbelow`
   or `-30corhigher` are not event URLs.
@@ -699,3 +703,14 @@ thousands of candidates, and two-leg combinations multiply those counts.
 Consequence: Paper-only portfolio selection stays bounded and responsive as the
 account scales, while small-account behavior and key order-size anchors remain
 stable.
+
+### 2026-06-05: Label Dashboard Decision-Total Scope
+
+Decision: `/api/status` exposes `decision_totals_exact` and
+`decision_totals_scope` beside scanner decision, skip, and entry counts.
+Why: Large `paper_decisions.csv` ledgers may initialize dashboard scanner
+totals from recent tail rows to keep the API responsive, and those bounded
+counts must not look like all-time cumulative totals.
+Consequence: Small ledgers report exact full-history totals. Oversized ledgers
+keep the performance guard, but operators and clients can see
+`recent_tail`/`false` before interpreting the scanner numbers.

@@ -345,6 +345,8 @@ def test_dashboard_payload_summarizes_state_trades_and_decisions(tmp_path):
     assert payload["scanner"]["forecast_unavailable"] == 1
     assert payload["scanner"]["skips"] == 1
     assert payload["scanner"]["entries"] == 1
+    assert payload["scanner"]["decision_totals_exact"] is True
+    assert payload["scanner"]["decision_totals_scope"] == "full"
     assert payload["bot"]["last_event_at"] == "2026-05-24T11:00:00+00:00"
     assert payload["bot"]["scan_interval_seconds"] == 7200
     assert payload["bot"]["orderbook_mode"] == "websocket"
@@ -439,6 +441,8 @@ def test_dashboard_scanner_counts_all_decisions_not_just_recent_tail(tmp_path):
     assert payload["scanner"]["decisions"] == 806
     assert payload["scanner"]["skips"] == 805
     assert payload["scanner"]["entries"] == 1
+    assert payload["scanner"]["decision_totals_exact"] is True
+    assert payload["scanner"]["decision_totals_scope"] == "full"
     assert "recent_decisions" not in payload
 
 
@@ -482,13 +486,25 @@ def test_dashboard_large_decision_file_skips_initial_full_scan(monkeypatch, tmp_
     state_path = tmp_path / "state.json"
     decisions_path = tmp_path / "decisions.csv"
     state_path.write_text(json.dumps({"cash_usd": 1000.0, "positions": []}), encoding="utf-8")
-    write_csv(
-        decisions_path,
-        [
-            {"ts": "2026-05-24T10:00:00+00:00", "side": "SKIP", "reason": "edge below", "note": ""},
-            {"ts": "2026-05-24T10:01:00+00:00", "side": "YES", "reason": "edge ok", "note": ""},
-        ],
+    rows = [
+        {
+            "ts": f"2026-05-24T09:{idx:02d}:00+00:00",
+            "side": "YES",
+            "reason": "old entry signal",
+            "note": "",
+        }
+        for idx in range(5)
+    ]
+    rows.extend(
+        {
+            "ts": f"2026-05-24T10:{idx % 60:02d}:00+00:00",
+            "side": "SKIP",
+            "reason": "edge below",
+            "note": "",
+        }
+        for idx in range(5000)
     )
+    write_csv(decisions_path, rows)
 
     def fail_full_scan(*_args, **_kwargs):
         raise AssertionError("large decision files should not block the dashboard with a full scan")
@@ -498,9 +514,11 @@ def test_dashboard_large_decision_file_skips_initial_full_scan(monkeypatch, tmp_
 
     payload = build_dashboard_payload(Settings(state_path=str(state_path), decisions_csv_path=str(decisions_path)))
 
-    assert payload["scanner"]["decisions"] == 2
-    assert payload["scanner"]["skips"] == 1
-    assert payload["scanner"]["entries"] == 1
+    assert payload["scanner"]["decisions"] == 5000
+    assert payload["scanner"]["skips"] == 5000
+    assert payload["scanner"]["entries"] == 0
+    assert payload["scanner"]["decision_totals_exact"] is False
+    assert payload["scanner"]["decision_totals_scope"] == "recent_tail"
 
 
 def test_dashboard_scanner_distinguishes_entry_signals_from_actual_opens(tmp_path):
