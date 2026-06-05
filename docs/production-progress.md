@@ -264,6 +264,11 @@
   `decision_totals_exact` plus `decision_totals_scope`. Local verification:
   focused `tests/test_dashboard.py` passed with `38 passed`; full `pytest -q`
   passed with `377 passed`.
+- AWC METAR bulk nowcast rows now require an explicit station ID match before
+  becoming observation evidence. Rows missing both `icaoId` and `station_id`
+  are skipped instead of inheriting the requested station ID. Local
+  verification: focused `tests/test_nowcast_provider.py` passed with
+  `15 passed`; full `pytest -q` passed with `378 passed`.
 - Other local hardening changes have not all been treated as one automatic
   deployment bundle; verify the specific commit and service state before
   assuming a future local change is live.

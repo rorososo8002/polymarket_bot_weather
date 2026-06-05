@@ -157,6 +157,28 @@ def test_aviationweather_provider_prefetches_multiple_metar_stations_once_per_re
     assert {"KLGA", "KATL", "RKSI"}.issubset(requested_ids)
 
 
+def test_aviationweather_provider_rejects_bulk_row_without_station_id():
+    payload = [
+        {
+            "obsTime": "2026-06-02T18:00:00.000Z",
+            "temp": 25.6,
+            "rawOb": "KLGA 021800Z 22009KT 10SM FEW050 26/14 A2991",
+        }
+    ]
+    provider, _calls = provider_for(payload)
+
+    observation = provider.observed_temperature_extremes_so_far(
+        STATION_MAP["nyc"],
+        target_date=date(2026, 6, 2),
+        now=datetime(2026, 6, 2, 18, 30, tzinfo=timezone.utc),
+    )
+
+    assert observation.usable is False
+    assert observation.observed_high_c is None
+    assert observation.observed_low_c is None
+    assert observation.unavailable_reason == "malformed-observation-payload"
+
+
 def test_aviationweather_request_log_records_external_fetch_not_cache_hit(tmp_path):
     request_log_path = tmp_path / "station_nowcast_request_log.jsonl"
     provider, calls = provider_for(

@@ -85,6 +85,10 @@ specialized reference docs.
   observed low-so-far is evidence only for daily-low markets. Providers should
   derive both extrema from one station-date response and cache it. No
   nearby-station or city-center substitutions.
+- AWC METAR bulk rows are observation evidence only when the row itself carries
+  an explicit station ID that matches the requested settlement station
+  case-insensitively. Rows missing both `icaoId` and `station_id` are invalid
+  evidence and must be skipped.
 - Public whale/external-signal research remains shadow-only. Promotion requires
   paired resolved public-signal and bot-entry samples, then only suggests a
   paper-only A/B experiment.
@@ -563,6 +567,16 @@ avoidable requests, while one shared response still preserves same-station
 observed high/low derivation. Consequence: AWC request logs count one bulk HTTP
 attempt with `station_id=METAR_BULK` and `requested_station_ids`, not one row
 per station.
+
+### 2026-06-06: Require Explicit Station IDs In AWC METAR Rows
+
+Decision: AWC METAR bulk nowcast rows must have an explicit `icaoId` or
+`station_id` that matches the requested settlement station case-insensitively.
+Rows with no station ID are skipped instead of inheriting the requested station
+ID. Why: a row without a station label cannot prove which official observation
+station produced the temperature, and wrong-station evidence contaminates
+paper-profit validation. Consequence: valid same-station rows still contribute
+observed high/low, while unlabeled rows produce no nowcast evidence.
 
 ### 2026-06-04: Gate Untradable Markets Before Forecast Requests
 

@@ -1,6 +1,7 @@
 ---
 title: Prefetch AWC METAR stations in bulk
 date: 2026-06-04
+last_updated: 2026-06-06
 category: best-practices
 module: station_nowcast
 problem_type: best_practice
@@ -49,6 +50,12 @@ enabled METAR station IDs in one JSON request. Each station then parses only
 records matching its own ICAO code and target local date. The existing parser
 still derives both observed high and observed low from that one response.
 
+Each AWC row must carry its own station label. `icaoId` and `station_id` are
+the observation row's name tag; if both are missing, the row is not evidence
+for any requested station and must be skipped. Do not fill that gap with the
+requested `station.station_id`, because that would be like writing a student's
+name on an unsigned answer sheet after the exam.
+
 `station_nowcast_request_log.jsonl` still records only real HTTP attempts. For
 AWC, a row now uses `request_mode=awc_metar_bulk_cache`,
 `station_id=METAR_BULK`, and `requested_station_ids` so request counts do not
@@ -59,6 +66,8 @@ max/min CSV is already one whole-table request.
 
 - Test that evaluating multiple METAR stations uses one HTTP call within the
   cache refresh.
+- Test that a bulk row missing both `icaoId` and `station_id` is skipped rather
+  than treated as the requested station.
 - Test that observed high and observed low still come from the same response.
 - Keep `target-date-not-today`, stale data, malformed payloads, and unsupported
   stations fail-closed.

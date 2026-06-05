@@ -616,7 +616,8 @@ class AviationWeatherMetarNowcastProvider:
         for record in payload:
             if not isinstance(record, dict):
                 continue
-            if str(record.get("icaoId") or record.get("station_id") or station.station_id).upper() != station.station_id:
+            record_station_id = str(record.get("icaoId") or record.get("station_id") or "").strip()
+            if not record_station_id or record_station_id.upper() != station.station_id.upper():
                 continue
             observed_at = _record_observed_at(record)
             temp_c = _extract_temperature_c(record)
