@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import csv
 import json
+import threading
+import urllib.error
+import urllib.request
+from http import HTTPStatus
 
 import pytest
 
@@ -10,11 +14,47 @@ from weather_bot.config import Settings
 from weather_bot.dashboard import HTML, _read_csv, build_dashboard_payload
 
 
+DASHBOARD_TEST_TOKEN = "a8f4c2d9e1b7a6c5f0d3e9b1a2c4d6f8"
+
+
 def write_csv(path, rows):
     with path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=rows[0].keys())
         writer.writeheader()
         writer.writerows(rows)
+
+
+def _start_test_dashboard(monkeypatch, dashboard_host: str):
+    monkeypatch.setattr(
+        dashboard_module,
+        "build_dashboard_payload",
+        lambda _settings, auth_required=False: {
+            "ok": True,
+            "security": {"auth_required": auth_required},
+        },
+    )
+    server = dashboard_module.ThreadingHTTPServer(("127.0.0.1", 0), dashboard_module.DashboardHandler)
+    server.settings = Settings(dashboard_host=dashboard_host, dashboard_token=DASHBOARD_TEST_TOKEN)
+    server.dashboard_token = DASHBOARD_TEST_TOKEN
+    server.dashboard_query_token_allowed = not dashboard_module._is_public_dashboard_host(dashboard_host)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server, thread, f"http://127.0.0.1:{server.server_port}"
+
+
+def _stop_test_dashboard(server, thread) -> None:
+    server.shutdown()
+    server.server_close()
+    thread.join(timeout=2)
+
+
+def _get_status(url: str, headers: dict[str, str] | None = None) -> int:
+    request = urllib.request.Request(url, headers=headers or {})
+    try:
+        with urllib.request.urlopen(request, timeout=2) as response:
+            return response.status
+    except urllib.error.HTTPError as exc:
+        return exc.code
 
 
 def test_read_csv_uses_tail_without_loading_entire_file(tmp_path):
@@ -197,6 +237,40 @@ def test_dashboard_allows_public_host_with_real_token(monkeypatch, host):
 
     assert created_servers[0].server_address == (host, 8787)
     assert created_servers[0].dashboard_token == "a8f4c2d9e1b7a6c5f0d3e9b1a2c4d6f8"
+
+
+@pytest.mark.parametrize("dashboard_host", ["0.0.0.0", "::"])
+def test_public_dashboard_api_status_rejects_query_token_and_accepts_header(monkeypatch, dashboard_host):
+    server, thread, base_url = _start_test_dashboard(monkeypatch, dashboard_host)
+    try:
+        assert _get_status(f"{base_url}/api/status") == HTTPStatus.FORBIDDEN
+        assert _get_status(f"{base_url}/api/status?token={DASHBOARD_TEST_TOKEN}") == HTTPStatus.FORBIDDEN
+        assert (
+            _get_status(
+                f"{base_url}/api/status",
+                headers={"X-Dashboard-Token": DASHBOARD_TEST_TOKEN},
+            )
+            == HTTPStatus.OK
+        )
+    finally:
+        _stop_test_dashboard(server, thread)
+
+
+@pytest.mark.parametrize("dashboard_host", ["localhost", "127.0.0.1"])
+def test_local_dashboard_api_status_keeps_query_token_first_load_compatibility(monkeypatch, dashboard_host):
+    server, thread, base_url = _start_test_dashboard(monkeypatch, dashboard_host)
+    try:
+        assert _get_status(f"{base_url}/api/status") == HTTPStatus.FORBIDDEN
+        assert _get_status(f"{base_url}/api/status?token={DASHBOARD_TEST_TOKEN}") == HTTPStatus.OK
+        assert (
+            _get_status(
+                f"{base_url}/api/status",
+                headers={"X-Dashboard-Token": DASHBOARD_TEST_TOKEN},
+            )
+            == HTTPStatus.OK
+        )
+    finally:
+        _stop_test_dashboard(server, thread)
 
 
 def test_dashboard_logs_redact_url_query_token(capsys):

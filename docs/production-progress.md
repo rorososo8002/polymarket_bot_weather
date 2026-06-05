@@ -94,8 +94,9 @@
   must be finite.
 - Dashboard startup fails closed on public hosts such as `0.0.0.0` or `::`
   unless `DASHBOARD_TOKEN` is at least 32 characters and not an obvious weak
-  example value. Browser API polling uses the token header instead of a token
-  query string, and server logs redact token query values.
+  example value. Public `/api/status` rejects URL query-token authentication
+  and accepts only the `X-Dashboard-Token` header; server logs still redact
+  token query values if they appear.
 - Boolean environment settings now accept only explicit true/false aliases.
   Unknown values raise `ValueError` at startup so safety switches such as
   `REQUIRE_DATE_HINT_FOR_TRADE` cannot be disabled by typos.
@@ -171,8 +172,8 @@
   remains paper-only.
 - Executable-only `OrderBook.best_bid/best_ask` hardening is complete locally
   and remains paper-only.
-- Public-dashboard token-strength hardening is complete locally and remains
-  paper-only.
+- Public-dashboard token-strength and public query-token rejection hardening is
+  complete locally and remains paper-only.
 - Numeric Settings range validation is complete locally and remains paper-only.
 - `SIZE_MODE` choice validation is complete locally and remains paper-only.
 - Explicit forecast-bias file fail-closed hardening is complete locally and
@@ -322,7 +323,9 @@
 7. For any public dashboard exposure, set a real random `DASHBOARD_TOKEN` with
    at least 32 characters. Empty, short, placeholder, basic, default,
    change-me, secret, token, password, abc, or 123456 style values stop the
-   dashboard before it binds to the public host.
+   dashboard before it binds to the public host. Public API access must use the
+   `X-Dashboard-Token` header; `?token=...` URLs are not accepted for public API
+   authentication.
 8. Build or run a paper-only SKIP diagnosis report before treating repeated
    SKIPs as strategy failure. Use `docs/codex/skip-diagnostics.md` to classify
    whether the blocker is account safety, minimum order, market liquidity,

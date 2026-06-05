@@ -116,10 +116,20 @@ sudo systemctl enable --now polymarket-weather-dashboard
 sudo systemctl status polymarket-weather-dashboard --no-pager
 ```
 
-Open:
+Open the dashboard shell:
 
 ```text
-http://SERVER_IP:8787/?token=YOUR_DASHBOARD_TOKEN
+http://SERVER_IP:8787/
+```
+
+The public page shell can load while the API data is still protected. Public
+`/api/status` requests must use the `X-Dashboard-Token` header; do not use or
+share `?token=...` URLs on a public dashboard. Anyone who knows or discovers
+the public URL, including automated scanners, can try to reach it.
+
+```bash
+curl -i http://SERVER_IP:8787/api/status
+curl -i -H "X-Dashboard-Token: YOUR_DASHBOARD_TOKEN" http://SERVER_IP:8787/api/status
 ```
 
 If the page does not load, open inbound TCP port `8787` in the VPS firewall or

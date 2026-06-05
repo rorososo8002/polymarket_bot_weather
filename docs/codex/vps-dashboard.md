@@ -28,12 +28,20 @@ below when the first command fails or when a task needs more detail.
 - The canonical dashboard access path is the public VPS URL `http://140.245.69.242:8787/`.
 - Do not suggest `127.0.0.1:8787` unless a local SSH tunnel is explicitly requested and verified listening.
 - Before saying the dashboard URL works, verify both `GET /` and `GET /api/status`.
-- `GET /` should return 200. `GET /api/status` must either return 200 without a token or be clearly reported as token-protected with 403.
+- `GET /` should return 200. On the public VPS with `DASHBOARD_TOKEN` set, bare `GET /api/status` must return 403.
 - Do not call the bare public dashboard URL usable when the API still requires `DASHBOARD_TOKEN`; the shell page can load while real dashboard data is blocked.
-- The default secure mode is token-protected public access: use `http://140.245.69.242:8787/?token=<DASHBOARD_TOKEN>`, verify bare `/api/status` returns 403, and verify tokenized `/api/status?token=<DASHBOARD_TOKEN>` returns 200.
-- Do not print the real `DASHBOARD_TOKEN` in logs, docs, commits, or final answers unless the user explicitly asks to display it. Reporting whether it exists, its length, and whether tokenized access works is acceptable.
+- The default secure mode is token-protected public access with the `X-Dashboard-Token` header. Verify bare `/api/status` returns 403, verify a query-token request such as `/api/status?token=example-rejected` also returns 403 on public hosts, and verify header-authenticated `/api/status` returns 200:
+
+```powershell
+curl.exe -i http://140.245.69.242:8787/api/status
+curl.exe -i "http://140.245.69.242:8787/api/status?token=example-rejected"
+curl.exe -i -H "X-Dashboard-Token: <DASHBOARD_TOKEN>" http://140.245.69.242:8787/api/status
+```
+
+- Do not print the real `DASHBOARD_TOKEN` in logs, docs, commits, or final answers unless the user explicitly asks to display it. Reporting whether it exists, its length, and whether header-authenticated access works is acceptable.
+- A public dashboard URL can be tried by anyone who knows or discovers the address, including automated scanners. Keep `DASHBOARD_TOKEN` private and do not share tokenized URLs.
 - If the user wants public dashboard access without a token, explain the benefits, risks, exposure scope, verification, and rollback before requesting explicit approval to clear `DASHBOARD_TOKEN` in `/etc/polymarket-weather-bot/dashboard.env` and restart `polymarket-weather-dashboard`.
-- After changing dashboard auth or host/port config, verify from the local machine with `curl.exe -i http://140.245.69.242:8787/` and `curl.exe -i http://140.245.69.242:8787/api/status`. Do not rely only on `systemctl status`.
+- After changing dashboard auth or host/port config, verify from the local machine with `curl.exe -i http://140.245.69.242:8787/`, bare `curl.exe -i http://140.245.69.242:8787/api/status`, and the header-authenticated `/api/status` command above when a token is set. Do not rely only on `systemctl status`.
 
 ## Resource Checks
 

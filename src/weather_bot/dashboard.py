@@ -542,7 +542,7 @@ HTML = r"""<!doctype html>
       <span>업데이트 <b id="updated">--</b></span>
     </div>
   </header>
-  <div id="lock" class="lock">대시보드 토큰이 없거나 맞지 않습니다. 주소의 <b>?token=...</b> 값을 확인하세요.</div>
+  <div id="lock" class="lock">대시보드 토큰이 없거나 맞지 않습니다. 브라우저에 저장된 토큰을 확인하세요.</div>
   <main class="grid">
     <aside class="col">
       <div class="panel-title">보유 포지션 <span id="open-count">0</span></div>
@@ -2017,9 +2017,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if not token:
             return True
         parsed = urlparse(self.path)
-        query_token = parse_qs(parsed.query).get("token", [""])[0]
         header_token = self.headers.get("X-Dashboard-Token", "")
-        return query_token == token or header_token == token
+        if header_token == token:
+            return True
+        if not bool(getattr(self.server, "dashboard_query_token_allowed", False)):
+            return False
+        query_token = parse_qs(parsed.query).get("token", [""])[0]
+        return query_token == token
 
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
@@ -2051,6 +2055,7 @@ def run_dashboard(settings: Settings | None = None) -> None:
     server = ThreadingHTTPServer((host, port), DashboardHandler)
     server.settings = settings  # type: ignore[attr-defined]
     server.dashboard_token = token  # type: ignore[attr-defined]
+    server.dashboard_query_token_allowed = not _is_public_dashboard_host(host)  # type: ignore[attr-defined]
     token_note = "enabled" if token else "disabled"
     print(f"Weather dashboard listening on http://{host}:{port} auth={token_note}")
     server.serve_forever()

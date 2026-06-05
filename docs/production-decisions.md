@@ -125,7 +125,10 @@ specialized reference docs.
 - Public dashboard exposure requires a real `DASHBOARD_TOKEN` with at least 32
   characters; empty, short, placeholder, basic, default, change-me, secret,
   token, password, abc, 123456, or other obvious example tokens stop startup
-  before binding to a public host.
+  before binding to a public host. Public dashboard API authentication accepts
+  only the `X-Dashboard-Token` header; `?token=...` query authentication is
+  rejected because URLs are easy to leak through browser history, copied links,
+  logs, and screen sharing.
 - Boolean environment settings accept only explicit true/false aliases. Unknown
   values fail startup instead of silently disabling safety switches.
 - Numeric Settings values for paper money, risk caps, fees, and runtime
@@ -436,7 +439,19 @@ exposes the service to anyone who can reach the URL, including automated
 scanners. Consequence: copied example files, empty, short, placeholder,
 basic/default/change-me, secret, token, password, abc, or 123456 values fail
 before the HTTP server binds; local development can still run without a token,
-and query-token values are redacted from dashboard logs.
+query-token values are redacted from dashboard logs, and public API requests
+must authenticate with `X-Dashboard-Token` instead of `?token=...`.
+
+### 2026-06-06: Reject Public Dashboard Query Token Authentication
+
+Decision: On public dashboard hosts such as `0.0.0.0` or `::`, `/api/status`
+rejects `?token=...` and accepts `DASHBOARD_TOKEN` only through the
+`X-Dashboard-Token` header. Localhost and `127.0.0.1` keep query-token
+first-load compatibility for development. Why: URL tokens are stored or copied
+more easily than headers, and a public dashboard can be probed by anyone who
+knows or finds the URL, including automated scanners. Consequence: bare public
+`/api/status` and public `/api/status?token=...` both return 403 when a token is
+configured; header-authenticated requests return 200.
 
 ### 2026-06-03: Do Not Use Observed High Nowcast For Daily-Low Markets
 

@@ -65,7 +65,9 @@ verified settlement stations and reproducible paper accounting.
   operator reconciliation.
 - Public dashboard binding fails closed unless `DASHBOARD_TOKEN` is at least
   32 characters and not an obvious weak example value. Local development on
-  `127.0.0.1` or `localhost` may still run without a token.
+  `127.0.0.1` or `localhost` may still run without a token. Public dashboard
+  API access accepts the token only through the `X-Dashboard-Token` header;
+  URL query tokens are rejected on public hosts.
 - Boolean environment settings accept only explicit true/false aliases. Unknown
   values fail startup with `ValueError` instead of silently becoming `False`.
 - Numeric paper-money, risk, fee, and runtime-cadence settings are validated
@@ -454,9 +456,9 @@ pagination. They do not reduce the registered 41-city station registry, the
 For public dashboard hosts such as `0.0.0.0` or `::`, `DASHBOARD_TOKEN` must be
 a real random value with at least 32 characters rather than empty, short,
 placeholder, basic, default, change-me, secret, token, password, abc, or 123456
-text. Query-string tokens are accepted for first-load compatibility but are
-redacted from logs, stored in browser local storage, and subsequent API polling
-uses the `X-Dashboard-Token` header.
+text. Public `/api/status` requests reject `?token=...` query authentication;
+the token must be sent in the `X-Dashboard-Token` header. Localhost and
+`127.0.0.1` keep query-token first-load compatibility for development only.
 
 ## Verification
 
