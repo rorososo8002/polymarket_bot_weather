@@ -1207,8 +1207,11 @@ def test_open_trade_logs_entry_probability_metadata(tmp_path):
     assert rows[0]["decision_ts"] == "2026-01-01T00:00:00+00:00"
 
 
-def test_resolved_market_settles_to_binary_payout():
-    settings = Settings()
+def test_resolved_market_settles_to_binary_payout(tmp_path):
+    settings = Settings(
+        state_path=str(tmp_path / "state.json"),
+        trades_csv_path=str(tmp_path / "trades.csv"),
+    )
     broker = PaperBroker(settings)
     broker.state = PaperState(
         cash_usd=900.0,
@@ -1244,8 +1247,11 @@ def test_resolved_market_settles_to_binary_payout():
     assert broker.state.positions == []
 
 
-def test_closed_market_settles_from_binary_outcome_prices_when_winner_field_missing():
-    settings = Settings()
+def test_closed_market_settles_from_binary_outcome_prices_when_winner_field_missing(tmp_path):
+    settings = Settings(
+        state_path=str(tmp_path / "state.json"),
+        trades_csv_path=str(tmp_path / "trades.csv"),
+    )
     broker = PaperBroker(settings)
     broker.state = PaperState(
         cash_usd=900.0,
@@ -1284,8 +1290,11 @@ def test_closed_market_settles_from_binary_outcome_prices_when_winner_field_miss
     assert broker.state.positions == []
 
 
-def test_closed_market_does_not_settle_from_ambiguous_outcome_prices():
-    settings = Settings()
+def test_closed_market_does_not_settle_from_ambiguous_outcome_prices(tmp_path):
+    settings = Settings(
+        state_path=str(tmp_path / "state.json"),
+        trades_csv_path=str(tmp_path / "trades.csv"),
+    )
     broker = PaperBroker(settings)
     position = PaperPosition(
         position_id="p1",
