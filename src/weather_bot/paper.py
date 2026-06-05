@@ -69,6 +69,27 @@ TRADE_CSV_FIELDNAMES = [
     "decision_ts",
 ]
 
+DECISION_CSV_FIELDNAMES = [
+    "ts",
+    "market_id",
+    "slug",
+    "question",
+    "market_type",
+    "side",
+    "p_true",
+    "p_exec",
+    "net_edge",
+    "size_usd",
+    "size_shares",
+    "entry_fraction",
+    "probability_stop_threshold",
+    "model_fair_price",
+    "target_exit_price",
+    "market_heat_score",
+    "reason",
+    "note",
+]
+
 DECISION_QUESTION_MAX_CHARS = 240
 DECISION_REASON_MAX_CHARS = 500
 DECISION_NOTE_MAX_CHARS = 500
@@ -747,17 +768,12 @@ class PaperBroker:
         return pnl
 
     def log_decision(self, market: RawMarket, result: EdgeResult, note: str, market_type: str = "temperature") -> str:
-        exists = self.decisions_csv_path.exists()
+        exists = self.decisions_csv_path.exists() and self.decisions_csv_path.stat().st_size > 0
         ts = utc_now_iso()
         with self.decisions_csv_path.open("a", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(
                 f,
-                fieldnames=[
-                    "ts", "market_id", "slug", "question", "market_type", "side", "p_true", "p_exec",
-                    "net_edge", "size_usd", "size_shares", "entry_fraction",
-                    "probability_stop_threshold", "model_fair_price", "target_exit_price",
-                    "market_heat_score", "reason", "note",
-                ],
+                fieldnames=DECISION_CSV_FIELDNAMES,
             )
             if not exists:
                 writer.writeheader()

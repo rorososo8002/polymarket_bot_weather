@@ -1423,6 +1423,53 @@ def test_raw_snapshot_log_removes_archives_older_than_retention_days(tmp_path):
     assert fresh_archive.exists()
 
 
+def test_decision_log_writes_header_when_existing_file_is_empty(tmp_path):
+    decisions_path = tmp_path / "decisions.csv"
+    decisions_path.write_text("", encoding="utf-8")
+    settings = Settings(
+        state_path=str(tmp_path / "state.json"),
+        trades_csv_path=str(tmp_path / "trades.csv"),
+        decisions_csv_path=str(decisions_path),
+        raw_snapshots_path=str(tmp_path / "snapshots.jsonl"),
+    )
+    broker = PaperBroker(settings)
+    result = EdgeResult(
+        side="SKIP",
+        p_true=0.5,
+        p_exec=None,
+        net_edge=-999.0,
+        size_usd=0.0,
+        size_shares=0.0,
+        reason="test skip",
+    )
+
+    broker.log_decision(temp_market(), result, "empty file should receive a header")
+
+    with decisions_path.open(newline="", encoding="utf-8") as f:
+        rows = list(csv.reader(f))
+    assert rows[0] == [
+        "ts",
+        "market_id",
+        "slug",
+        "question",
+        "market_type",
+        "side",
+        "p_true",
+        "p_exec",
+        "net_edge",
+        "size_usd",
+        "size_shares",
+        "entry_fraction",
+        "probability_stop_threshold",
+        "model_fair_price",
+        "target_exit_price",
+        "market_heat_score",
+        "reason",
+        "note",
+    ]
+    assert rows[1][1] == "m1"
+
+
 def test_decision_log_compacts_verbose_text_fields(tmp_path):
     settings = Settings(
         state_path=str(tmp_path / "state.json"),
