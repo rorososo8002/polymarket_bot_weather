@@ -34,6 +34,11 @@ specialized reference docs.
 - Forecasts refresh every 2 hours by default. Order books use the Polymarket
   CLOB WebSocket stream, and open-position token IDs stay subscribed until the
   position closes or settles.
+- Realtime nowcast-backed `WeatherSignal` refresh is separate from the
+  Open-Meteo forecast refresh cycle. Why: forecasts are slower-moving and
+  API-budgeted, while same-day observed high/low evidence can change during the
+  2-hour forecast window. Consequence: realtime paper decisions may recalculate
+  station nowcast on its own cache TTL using the existing forecast cache.
 - The WebSocket receiver thread must not run heavy strategy evaluation or write
   the strategy ledger directly. It updates the order-book cache and submits
   event work to a bounded coalescer/worker, which merges short bursts by
@@ -622,6 +627,17 @@ ID. Why: a row without a station label cannot prove which official observation
 station produced the temperature, and wrong-station evidence contaminates
 paper-profit validation. Consequence: valid same-station rows still contribute
 observed high/low, while unlabeled rows produce no nowcast evidence.
+
+### 2026-06-06: Refresh Realtime Nowcast Separately From Forecasts
+
+Decision: Realtime paper evaluation can recalculate market `WeatherSignal`
+values after `STATION_NOWCAST_CACHE_TTL_SECONDS` even when the larger
+Open-Meteo forecast cycle has not reached its 2-hour refresh boundary. Why:
+Open-Meteo forecasts are budget-sensitive and slow-moving, but same-day
+observed high/low evidence can change intraday and should affect entry/exit
+judgment. Consequence: the runner reuses the existing forecast client/cache for
+forecast evidence while allowing station nowcast to refresh on its own cache
+TTL.
 
 ### 2026-06-04: Gate Untradable Markets Before Forecast Requests
 

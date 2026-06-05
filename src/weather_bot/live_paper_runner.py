@@ -1040,7 +1040,14 @@ def _evaluate_realtime_update(
     signals_by_market: dict[str, WeatherSignal],
     market_types: dict[str, str],
     latest_edges: dict[tuple[str, str], EdgeResult],
+    *,
+    signal_refreshed_at_by_market: dict[str, datetime] | None = None,
+    probability_estimator: Any = estimate_weather_probability,
+    ensemble_client: OpenMeteoEnsembleClient | None = None,
+    observation_provider: Any | None = None,
+    now: datetime | None = None,
 ) -> None:
+    current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     websocket_health: dict[str, object] = {}
     stream = getattr(client, "stream", None)
     if stream is not None and hasattr(stream, "health_snapshot"):
@@ -1058,6 +1065,16 @@ def _evaluate_realtime_update(
         entry_bankroll = available_entry_bankroll(broker, client)
         candidates: list[PortfolioCandidate] = []
         for market in event_groups[event_key]:
+            _refresh_realtime_signal_if_needed(
+                market,
+                settings,
+                signals_by_market,
+                signal_refreshed_at_by_market,
+                probability_estimator=probability_estimator,
+                ensemble_client=ensemble_client,
+                observation_provider=observation_provider,
+                now=current,
+            )
             signal = signals_by_market[market.market_id]
             market_type = market_types[market.market_id]
             result, per_side = evaluate_market(
@@ -1093,6 +1110,43 @@ def _evaluate_realtime_update(
         _apply_event_portfolio(broker, candidates, entry_bankroll)
     for message in maybe_close_positions(broker, client, market_by_id, latest_edges):
         print(message)
+
+
+def _refresh_realtime_signal_if_needed(
+    market: RawMarket,
+    settings: Settings,
+    signals_by_market: dict[str, WeatherSignal],
+    signal_refreshed_at_by_market: dict[str, datetime] | None,
+    *,
+    probability_estimator: Any = estimate_weather_probability,
+    ensemble_client: OpenMeteoEnsembleClient | None = None,
+    observation_provider: Any | None = None,
+    now: datetime | None = None,
+) -> None:
+    if signal_refreshed_at_by_market is None:
+        return
+    current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    last_refreshed_at = signal_refreshed_at_by_market.get(market.market_id)
+    if last_refreshed_at is None:
+        signal_refreshed_at_by_market[market.market_id] = current
+        return
+    last_refreshed_at = last_refreshed_at.astimezone(timezone.utc)
+    if (current - last_refreshed_at).total_seconds() < settings.station_nowcast_cache_ttl_seconds:
+        return
+
+    gated = pre_forecast_tradeability_gate(market, settings, "temperature")
+    if gated is not None:
+        signal, _result = gated
+    else:
+        signal = _call_probability_estimator(
+            probability_estimator,
+            market.question,
+            settings=settings,
+            ensemble_client=ensemble_client,
+            observation_provider=observation_provider,
+        )
+    signals_by_market[market.market_id] = signal
+    signal_refreshed_at_by_market[market.market_id] = current
 
 
 def _stream_status_phase(
@@ -1193,6 +1247,7 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
                 for token_id in _market_token_ids(market)
             }
             signals_by_market: dict[str, WeatherSignal] = {}
+            signal_refreshed_at_by_market: dict[str, datetime] = {}
             market_types: dict[str, str] = {}
             failed_phase = "forecast_preparation"
             for market in stream_markets:
@@ -1206,6 +1261,7 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
                         observation_provider=observation_provider,
                     )
                 signals_by_market[market.market_id] = signal
+                signal_refreshed_at_by_market[market.market_id] = datetime.now(timezone.utc)
                 market_types[market.market_id] = "temperature"
 
             latest_edges: dict[tuple[str, str], EdgeResult] = {}
@@ -1229,6 +1285,9 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
                             signals_by_market,
                             market_types,
                             latest_edges,
+                            signal_refreshed_at_by_market=signal_refreshed_at_by_market,
+                            ensemble_client=ensemble_client,
+                            observation_provider=observation_provider,
                         )
 
             def update_evaluator_status(status: dict[str, object]) -> None:

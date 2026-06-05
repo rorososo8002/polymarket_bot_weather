@@ -2,6 +2,7 @@ import csv
 import json
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -14,6 +15,8 @@ from weather_bot.live_paper_runner import (
     run_forever,
 )
 from weather_bot.models import OrderBook, OrderLevel, PaperPosition, PaperState, RawMarket, WeatherSignal
+from weather_bot.nowcast import StationNowcastObservation
+from weather_bot.probability import OpenMeteoEnsembleClient, _today_for_timezone
 from weather_bot.weather_client import parse_weather_question
 
 
@@ -455,6 +458,110 @@ def test_realtime_forever_filters_non_temperature_before_probability_estimator(t
     assert "stop after stream setup" in status["message"]
     assert probability_calls == [temperature_question]
     assert set(stream_tokens) == {"temp-yes", "temp-no"}
+
+
+def test_realtime_update_refreshes_nowcast_signal_after_station_cache_ttl_without_refetching_forecast(tmp_path, monkeypatch):
+    target = _today_for_timezone("Asia/Seoul")
+    question = "Will the highest temperature in Seoul be 27C or higher today?"
+    market = RawMarket("seoul-27c", question, "seoul-27c", True, False, "yes", "no", event_id="seoul-today")
+    http_calls = 0
+
+    class FakeForecastResponse:
+        status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "daily": {
+                    "time": [target.isoformat()],
+                    "temperature_2m_max": [78.0],
+                    "temperature_2m_max_member01": [79.0],
+                    "temperature_2m_max_member02": [80.0],
+                    "temperature_2m_max_member03": [81.0],
+                }
+            }
+
+    def fake_forecast_get(*_args, **_kwargs):
+        nonlocal http_calls
+        http_calls += 1
+        return FakeForecastResponse()
+
+    class ChangingNowcastProvider:
+        def __init__(self):
+            self.calls = 0
+
+        def observed_high_so_far(self, station, *, target_date, now=None):
+            self.calls += 1
+            observed_high_c = 25.0 if self.calls == 1 else 27.0
+            return StationNowcastObservation(
+                station_id=station.station_id,
+                station_name=station.station_name,
+                observed_high_c=observed_high_c,
+                observed_at=datetime(2026, 6, 2, 8, 0, tzinfo=timezone.utc),
+                high_observed_at=datetime(2026, 6, 2, 8, 0, tzinfo=timezone.utc),
+                source="aviationweather-metar",
+                source_url="https://aviationweather.gov/api/data/metar",
+                settlement_source_url="https://www.wunderground.com/history/daily/kr/incheon/RKSI",
+                freshness_seconds=60,
+                unavailable_reason="",
+                raw_observation_count=4,
+                update_cadence="fixture",
+            )
+
+    class FakeClient:
+        def get_order_book(self, token_id):
+            return OrderBook(
+                token_id,
+                bids=[OrderLevel(0.45, 100)],
+                asks=[OrderLevel(0.50, 100)],
+            )
+
+    monkeypatch.setattr("weather_bot.probability.requests.get", fake_forecast_get)
+    settings = Settings(
+        state_path=str(tmp_path / "state.json"),
+        trades_csv_path=str(tmp_path / "trades.csv"),
+        decisions_csv_path=str(tmp_path / "decisions.csv"),
+        raw_snapshots_path=str(tmp_path / "raw.jsonl"),
+        portfolio_decisions_jsonl_path=str(tmp_path / "portfolio.jsonl"),
+        forecast_cache_path=str(tmp_path / "forecast_cache.json"),
+        forecast_cache_ttl_seconds=7200,
+        station_nowcast_cache_ttl_seconds=900,
+        min_net_edge=0.99,
+    )
+    ensemble_client = OpenMeteoEnsembleClient.from_settings(settings)
+    nowcast_provider = ChangingNowcastProvider()
+    initial_signal = runner_module._call_probability_estimator(
+        runner_module.estimate_weather_probability,
+        question,
+        settings=settings,
+        ensemble_client=ensemble_client,
+        observation_provider=nowcast_provider,
+    )
+    signal_refreshed_at = datetime(2026, 6, 2, 0, 0, tzinfo=timezone.utc)
+    broker = runner_module.PaperBroker(settings)
+    signals_by_market = {market.market_id: initial_signal}
+
+    runner_module._evaluate_realtime_update(
+        {"yes"},
+        FakeClient(),
+        broker,
+        settings,
+        {"yes": market, "no": market},
+        signals_by_market,
+        {market.market_id: "temperature"},
+        {},
+        signal_refreshed_at_by_market={market.market_id: signal_refreshed_at},
+        ensemble_client=ensemble_client,
+        observation_provider=nowcast_provider,
+        now=signal_refreshed_at + timedelta(seconds=settings.station_nowcast_cache_ttl_seconds + 1),
+    )
+
+    assert nowcast_provider.calls == 2
+    assert http_calls == 1
+    assert signals_by_market[market.market_id].nowcast["observed_high_c"] == 27.0
+    assert "evidence=forecast-plus-nowcast" in signals_by_market[market.market_id].note
 
 
 def test_stream_status_phase_surfaces_dead_and_stale_websocket():

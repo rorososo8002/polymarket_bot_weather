@@ -27,6 +27,10 @@
 - Temperature nowcast uses same-station observed extrema: observed high-so-far
   for daily-high markets and observed low-so-far for daily-low markets. METAR
   and HKO providers derive high/low from one station-date response and cache it.
+- Realtime paper evaluation now refreshes same-station nowcast-backed
+  `WeatherSignal` values on the station nowcast cache TTL inside a 2-hour
+  forecast cycle, while Open-Meteo forecast data still uses the forecast client
+  cache/default 2-hour cadence.
 - Realtime order-book cache treats `best_bid_ask` as indicative best-price
   reference only. Executable bid/ask depth comes only from `book` snapshots or
   `price_change` level updates.

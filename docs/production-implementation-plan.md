@@ -163,6 +163,13 @@ opens. The broker may still block entry for exposure, same-market hedge
 protection, missing token IDs, low confidence, invalid prices, insufficient
 liquidity, abnormal YES+NO ask sums, weak net return, or stale dependencies.
 
+Open-Meteo forecast refresh remains on the default 2-hour cadence unless an
+operator explicitly changes it. Realtime paper evaluation may recalculate
+same-station nowcast-backed `WeatherSignal` values on
+`STATION_NOWCAST_CACHE_TTL_SECONDS` using the existing ensemble client/cache, so
+same-day observed-temperature evidence can update without forcing extra
+Open-Meteo forecast HTTP calls.
+
 Entry must satisfy both:
 
 ```text
