@@ -14,6 +14,26 @@ from .stations import TRADING_READY_STATION_MAP
 from .weather_client import parse_weather_question
 
 
+TRUE_API_BOOL_VALUES = {"true", "1", "yes", "y", "on"}
+FALSE_API_BOOL_VALUES = {"false", "0", "no", "n", "off"}
+
+
+def parse_api_bool(value: Any, *, default: bool) -> bool | None:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in TRUE_API_BOOL_VALUES:
+            return True
+        if normalized in FALSE_API_BOOL_VALUES:
+            return False
+    return None
+
+
 class PolymarketClient:
     def __init__(self, gamma_base: str, clob_base: str, timeout: float = 15.0) -> None:
         self.gamma_base = gamma_base.rstrip("/")
@@ -115,6 +135,8 @@ class PolymarketClient:
         for row in rows:
             if not isinstance(row, dict) or not self._is_weather_market(row):
                 continue
+            if not self._is_new_entry_candidate(row):
+                continue
             market = self._parse_market(row, event_id=event_id or None, event_slug=event_slug)
             if market.yes_token_id and market.no_token_id:
                 markets.append(market)
@@ -181,6 +203,12 @@ class PolymarketClient:
         supported_metadata = re.search(r"\b(weather|climate|temperature)\b", metadata)
         return bool(supported_metadata and parsed.city and parsed.confidence >= 0.70)
 
+    @staticmethod
+    def _is_new_entry_candidate(row: dict[str, Any]) -> bool:
+        active = parse_api_bool(row.get("active"), default=True)
+        closed = parse_api_bool(row.get("closed"), default=False)
+        return active is True and closed is False
+
     def _parse_market(
         self,
         row: dict[str, Any],
@@ -194,13 +222,15 @@ class PolymarketClient:
                 row.get("outcomes"),
                 row.get("clobTokenIds"),
             )
+        active = parse_api_bool(row.get("active"), default=True)
+        closed = parse_api_bool(row.get("closed"), default=False)
 
         return RawMarket(
             market_id=str(row.get("id") or row.get("market") or row.get("conditionId") or "unknown"),
             question=str(row.get("question") or row.get("title") or ""),
             slug=row.get("slug"),
-            active=bool(row.get("active", True)),
-            closed=bool(row.get("closed", False)),
+            active=active is True,
+            closed=closed is not False,
             yes_token_id=yes_token_id,
             no_token_id=no_token_id,
             condition_id=row.get("conditionId") or row.get("condition_id"),

@@ -23,7 +23,7 @@ from .edge import (
     polymarket_taker_fee_usdc,
 )
 from .exit_policy import assess_exit, build_entry_plan, conservative_settlement_value, side_true_probability
-from .polymarket_client import PolymarketClient
+from .polymarket_client import PolymarketClient, parse_api_bool
 from .portfolio import adaptive_event_cap_fraction, is_complementary_with_positions, websocket_pricing_block_reason
 from .runner_status import update_runner_status_fields
 
@@ -1128,7 +1128,9 @@ class PaperBroker:
 
 def resolved_winning_side(market: RawMarket) -> Literal["YES", "NO"] | None:
     raw = market.raw or {}
-    if not (market.closed or raw.get("closed") or raw.get("resolved")):
+    raw_closed = parse_api_bool(raw.get("closed"), default=False)
+    raw_resolved = parse_api_bool(raw.get("resolved"), default=False)
+    if not (market.closed or raw_closed is True or raw_resolved is True):
         return None
     candidates = [
         raw.get("winningOutcome"),

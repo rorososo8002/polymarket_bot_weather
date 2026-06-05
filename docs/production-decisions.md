@@ -57,6 +57,11 @@ specialized reference docs.
 - Discovery maps YES/NO token IDs only from explicit outcome labels. If
   `tokens` or `outcomes` cannot prove the YES and NO side for `clobTokenIds`,
   the market is skipped rather than guessed from list order.
+- Discovery and the final paper-entry gate reject inactive or closed markets as
+  new-entry candidates, while closed markets remain valid evidence for settling
+  already-held paper positions. Why: a closed market is a scored answer sheet,
+  not a fresh price opportunity; mixing settlement evidence with buy candidates
+  contaminates paper-performance validation.
 - `best_bid_ask` is indicative price data only. Executable depth comes from
   `book` snapshots or `price_change` updates, not assumed sizes.
   `OrderBook.best_bid` and `OrderBook.best_ask` mean executable positive-size
@@ -834,3 +839,16 @@ reconciliation. Startup also fails closed when the state file is missing but
 the trade ledger already has executed accounting actions, when open positions
 exist but the trade ledger is missing or empty, or when an open position has no
 matching `OPEN` row in the trade ledger.
+
+### 2026-06-06: Keep Closed Markets Out Of New Paper Entries
+
+Decision: New paper-entry discovery and `_open_position_if_needed()` allow only
+active and not-closed markets. Closed markets can still be loaded by market ID
+for existing paper-position settlement.
+Why: A closed market is no longer a real buyable opportunity, even if it
+contains useful final-outcome evidence. Treating it as both a settlement
+answer sheet and a new-buy candidate pollutes the paper account's profitability
+test.
+Consequence: Category-slug event expansion, paginated discovery, and the final
+entry gate skip inactive/closed markets, while `maybe_settle_resolved_positions`
+continues to use closed markets to close already-held paper positions.

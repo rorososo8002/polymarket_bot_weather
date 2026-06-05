@@ -35,6 +35,9 @@ verified settlement stations and reproducible paper accounting.
 - Use the Polymarket CLOB WebSocket market stream for order books by default.
 - Keep token IDs for open positions subscribed even when discovery moves to
   newer markets.
+- Closed Polymarket markets are settlement evidence for already-held paper
+  positions only. New paper-entry candidates must be explicitly active/open;
+  inactive or closed markets are skipped before strategy entry.
 - WebSocket receiver callbacks must stay lightweight: update the order-book
   cache and enqueue event work through a bounded coalescer/worker. Do not run
   strategy evaluation, portfolio selection, close checks, or
@@ -258,6 +261,10 @@ object when present.
   `TRADING_READY_STATION_MAP` subset after the temperature-only filter. The
   parser treats rain, snow, precipitation, wind, humidity, and other
   non-temperature weather questions as unsupported.
+- Discovery treats `active` and `closed` API values as explicit booleans,
+  including string values such as `"true"` and `"false"`. Only active and not
+  closed markets can become new paper-entry candidates; closed markets may
+  still be fetched by market ID to settle existing paper positions.
 - Temperature range buckets such as `86-87F` or `22-23C` preserve their
   displayed inclusive endpoints exactly: `86-87F` means
   `86.0 <= temperature_f <= 87.0`. Do not apply exact-bucket half-step

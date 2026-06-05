@@ -13,6 +13,9 @@
   cities, refresh Open-Meteo forecasts every 2 hours by default, use the
   Polymarket CLOB WebSocket stream, keep held token IDs subscribed, fail closed
   on stale or unsupported data, and preserve paper-only execution.
+- New paper-entry discovery now excludes inactive or closed Polymarket markets
+  from both `/events` and weather category-slug expansion. Closed markets
+  remain usable only as settlement evidence for already-held paper positions.
 - The paper strategy is now temperature-only. Rain, snow, precipitation, wind,
   humidity, and other non-temperature weather markets are marked unsupported by
   the parser and excluded before forecast probability calculation, order-book

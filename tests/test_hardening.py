@@ -136,6 +136,80 @@ def test_discovery_uses_polymarket_weather_category_event_slugs():
     assert [market.market_id for market in markets] == ["m1", "m2"]
 
 
+def test_category_slug_discovery_excludes_inactive_and_closed_markets():
+    class CategoryClient(FakePolymarketClient):
+        def _get_web_text(self, path: str) -> str:
+            if path == "/weather/temperature":
+                return '<a href="/event/highest-temperature-in-nyc-on-may-25-2026">NYC</a>'
+            return ""
+
+        def _get(self, url: str, params: dict | None = None):
+            if "/events/slug/highest-temperature-in-nyc-on-may-25-2026" in url:
+                return {
+                    "id": "event-nyc",
+                    "slug": "highest-temperature-in-nyc-on-may-25-2026",
+                    "markets": [
+                        {
+                            "id": "inactive",
+                            "question": "Will NYC reach 88 F on May 25?",
+                            "active": False,
+                            "closed": False,
+                            **binary_token_fields("inactive-yes", "inactive-no"),
+                        },
+                        {
+                            "id": "closed",
+                            "question": "Will NYC reach 89 F on May 25?",
+                            "active": True,
+                            "closed": True,
+                            **binary_token_fields("closed-yes", "closed-no"),
+                        },
+                        {
+                            "id": "open",
+                            "question": "Will NYC reach 90 F on May 25?",
+                            "active": True,
+                            "closed": False,
+                            **binary_token_fields("open-yes", "open-no"),
+                        },
+                    ],
+                }
+            return []
+
+    markets = CategoryClient().discover_weather_markets()
+
+    assert [market.market_id for market in markets] == ["open"]
+
+
+@pytest.mark.parametrize(
+    ("active_value", "closed_value", "expected_active", "expected_closed"),
+    [
+        ("true", "false", True, False),
+        ("false", "true", False, True),
+        ("1", "0", True, False),
+        ("0", "1", False, True),
+    ],
+)
+def test_market_parser_parses_active_and_closed_boolean_strings(
+    active_value,
+    closed_value,
+    expected_active,
+    expected_closed,
+):
+    client = FakePolymarketClient()
+
+    market = client._parse_market(
+        {
+            "id": "m1",
+            "question": "Will NYC reach 90 F on May 25?",
+            "active": active_value,
+            "closed": closed_value,
+            **binary_token_fields("yes", "no"),
+        }
+    )
+
+    assert market.active is expected_active
+    assert market.closed is expected_closed
+
+
 def test_category_discovery_uses_temperature_pages_only():
     seen_paths: list[str] = []
 

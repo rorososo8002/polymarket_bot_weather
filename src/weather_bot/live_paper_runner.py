@@ -988,6 +988,8 @@ def _open_position_if_needed(
 ) -> None:
     if result.side not in {"YES", "NO"}:
         return
+    if not market.active or market.closed:
+        return
     token_id = market.yes_token_id if result.side == "YES" else market.no_token_id
     allow_same_side_add = (
         add_to_existing_position_id is not None

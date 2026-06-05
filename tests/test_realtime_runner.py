@@ -564,6 +564,34 @@ def test_realtime_update_refreshes_nowcast_signal_after_station_cache_ttl_withou
     assert "evidence=forecast-plus-nowcast" in signals_by_market[market.market_id].note
 
 
+def test_open_position_if_needed_blocks_inactive_or_closed_markets():
+    question = "Will NYC reach 90 F on May 25?"
+    result = runner_module.EdgeResult("YES", 0.70, 0.50, 0.20, 10.0, 20.0, "entry")
+    signal = WeatherSignal(0.70, 0.90, "test", "test", parse_weather_question(question))
+    opened_market_ids: list[str] = []
+
+    class FakeBroker:
+        def has_position(self, market_id, side):
+            return False
+
+        def has_any_position(self, market_id):
+            return False
+
+        def open_position(self, market, *_args, **_kwargs):
+            opened_market_ids.append(market.market_id)
+
+    markets = [
+        RawMarket("inactive", question, "inactive", False, False, "inactive-yes", "inactive-no"),
+        RawMarket("closed", question, "closed", True, True, "closed-yes", "closed-no"),
+        RawMarket("open", question, "open", True, False, "open-yes", "open-no"),
+    ]
+
+    for market in markets:
+        runner_module._open_position_if_needed(FakeBroker(), market, signal, result, "temperature")
+
+    assert opened_market_ids == ["open"]
+
+
 def test_stream_status_phase_surfaces_dead_and_stale_websocket():
     assert hasattr(runner_module, "_stream_status_phase")
 
