@@ -60,6 +60,10 @@ specialized reference docs.
 - City-date weather buckets share one correlated-risk budget. At most two
   complementary legs are selected per event, with a `$10` minimum leg and
   conservative city, event, and total exposure caps.
+- Portfolio allocation-size candidates stay dense for small allowed ranges but
+  are capped at 50 sizes for large ranges. The minimum order, allowed maximum,
+  and any affordable preferred size remain explicit candidates so large paper
+  bankrolls cannot make event selection explode computationally.
 - Event portfolio `scenario_probabilities` are normalized only when the
   temperature intervals are non-overlapping and exhaustive. Incomplete sets
   below one keep `other`; overlapping intervals or sums above one without full
@@ -683,3 +687,15 @@ the runner use the fixed-fraction branch while the operator believes Kelly
 sizing is active.
 Consequence: Invalid values raise `ValueError` during settings creation, before
 paper trading starts and before risk evidence is contaminated.
+
+### 2026-06-05: Cap Portfolio Allocation Size Candidates
+
+Decision: `_allocation_sizes` keeps one-dollar candidate spacing for small
+allowed ranges but caps large allocation grids at 50 sizes while preserving the
+minimum order, allowed maximum, and any affordable preferred size.
+Why: The event portfolio selector compares many leg and size combinations. A
+large paper bankroll or higher order cap can turn one-dollar grids into tens of
+thousands of candidates, and two-leg combinations multiply those counts.
+Consequence: Paper-only portfolio selection stays bounded and responsive as the
+account scales, while small-account behavior and key order-size anchors remain
+stable.

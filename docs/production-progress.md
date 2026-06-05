@@ -248,6 +248,12 @@
   full coverage fail closed with readable rejection reasons. Local
   verification: focused `tests/test_portfolio.py` passed with `45 passed`; full
   `pytest -q` passed with `371 passed`.
+- Portfolio allocation-size candidate limiting is complete locally and remains
+  paper-only. `_allocation_sizes` keeps one-dollar spacing for small ranges,
+  caps large candidate grids at 50 sizes, and preserves the minimum order,
+  allowed maximum, and affordable preferred size. Local verification: focused
+  `tests/test_portfolio.py` passed with `48 passed`; full `pytest -q` passed
+  with `377 passed`.
 - Other local hardening changes have not all been treated as one automatic
   deployment bundle; verify the specific commit and service state before
   assuming a future local change is live.

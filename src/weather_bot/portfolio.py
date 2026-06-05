@@ -124,6 +124,8 @@ class _ScenarioProbabilityAssessment:
 
 
 _SCENARIO_PROBABILITY_EPSILON = 1e-9
+_MAX_ALLOCATION_SIZE_CANDIDATES = 50
+_ALLOCATION_SIZE_ROUND_DIGITS = 6
 
 
 def adaptive_event_cap_fraction(entry_bankroll: float, settings: Settings) -> float:
@@ -458,17 +460,39 @@ def _scenario_pnl(
     return scenarios
 
 
-def _allocation_sizes(limit_usd: float, minimum_usd: float) -> list[float]:
+def _dedupe_allocation_sizes(values: list[float], minimum_usd: float, limit_usd: float) -> list[float]:
+    seen: set[float] = set()
+    for value in values:
+        rounded = round(float(value), _ALLOCATION_SIZE_ROUND_DIGITS)
+        if rounded + 1e-9 < minimum_usd or rounded - 1e-9 > limit_usd:
+            continue
+        seen.add(rounded)
+    return sorted(seen)
+
+
+def _allocation_sizes(limit_usd: float, minimum_usd: float, preferred_usd: float | None = None) -> list[float]:
     if limit_usd + 1e-9 < minimum_usd:
         return []
-    sizes = [
-        float(value)
-        for value in range(ceil(minimum_usd), floor(limit_usd) + 1)
+    first_whole_dollar = ceil(minimum_usd)
+    last_whole_dollar = floor(limit_usd)
+    dense_count = max(0, last_whole_dollar - first_whole_dollar + 1)
+    anchors = [minimum_usd, limit_usd]
+    if preferred_usd is not None:
+        anchors.append(preferred_usd)
+    if dense_count <= _MAX_ALLOCATION_SIZE_CANDIDATES:
+        dense_values = [float(value) for value in range(first_whole_dollar, last_whole_dollar + 1)]
+        dense_candidates = _dedupe_allocation_sizes([*anchors, *dense_values], minimum_usd, limit_usd)
+        if len(dense_candidates) <= _MAX_ALLOCATION_SIZE_CANDIDATES:
+            return dense_candidates
+
+    anchor_values = _dedupe_allocation_sizes(anchors, minimum_usd, limit_usd)
+    interior_slots = max(0, _MAX_ALLOCATION_SIZE_CANDIDATES - len(anchor_values))
+    interval = limit_usd - minimum_usd
+    spaced_values = [
+        minimum_usd + (interval * (index + 1) / (interior_slots + 1))
+        for index in range(interior_slots)
     ]
-    rounded_limit = round(limit_usd, 6)
-    if not sizes or abs(sizes[-1] - rounded_limit) > 1e-9:
-        sizes.append(rounded_limit)
-    return sizes
+    return _dedupe_allocation_sizes([*anchor_values, *spaced_values], minimum_usd, limit_usd)
 
 
 def _resize_candidate(candidate: PortfolioCandidate, size_usd: float) -> PortfolioCandidate:
@@ -599,7 +623,11 @@ def select_event_portfolio(
         for candidate in eligible:
             if candidate.add_to_existing_position_id is None and remaining_slots <= 0:
                 continue
-            for size_usd in _allocation_sizes(min(single_limit, candidate.result.size_usd), settings.min_order_usd):
+            for size_usd in _allocation_sizes(
+                min(single_limit, candidate.result.size_usd),
+                settings.min_order_usd,
+                preferred_usd=candidate.result.size_usd,
+            ):
                 plan = _build_plan(
                     (_resize_candidate(candidate, size_usd),),
                     held,
@@ -615,8 +643,16 @@ def select_event_portfolio(
                 continue
             if not _is_complementary(right, [left], held):
                 continue
-            left_sizes = _allocation_sizes(min(single_limit, left.result.size_usd), settings.min_order_usd)
-            right_sizes = _allocation_sizes(min(single_limit, right.result.size_usd), settings.min_order_usd)
+            left_sizes = _allocation_sizes(
+                min(single_limit, left.result.size_usd),
+                settings.min_order_usd,
+                preferred_usd=left.result.size_usd,
+            )
+            right_sizes = _allocation_sizes(
+                min(single_limit, right.result.size_usd),
+                settings.min_order_usd,
+                preferred_usd=right.result.size_usd,
+            )
             for left_size in left_sizes:
                 for right_size in right_sizes:
                     if left_size + right_size > available_budget + 1e-9:

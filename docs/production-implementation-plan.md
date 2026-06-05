@@ -307,6 +307,11 @@ For one city-date event, the selector compares one-leg and at-most-two-leg
 `YES+YES`, `YES+NO`, and `NO+NO` combinations across non-overlapping buckets.
 Same-market `YES+NO`, overlapping threshold positions, and third legs are
 blocked. Event decisions are logged to `paper_event_portfolios.jsonl`.
+Allocation-size candidates stay dense at one-dollar increments for small
+allowed ranges, but large ranges are capped at 50 candidate sizes. The selector
+must always keep the minimum order, the allowed maximum, and any affordable
+preferred candidate size in the grid so bigger bankrolls do not turn portfolio
+selection into an unbounded computation.
 `scenario_probabilities` is the event outcome table used for portfolio
 scoring. It may be normalized only when parsed temperature intervals form a
 non-overlapping exhaustive ladder across all outcomes. Incomplete interval sets

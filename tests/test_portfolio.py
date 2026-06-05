@@ -12,6 +12,7 @@ from weather_bot.paper import PaperBroker
 from weather_bot.portfolio import (
     EntryBankrollSnapshot,
     PortfolioCandidate,
+    _allocation_sizes,
     _temperature_interval,
     adaptive_event_cap_fraction,
     available_entry_bankroll,
@@ -127,6 +128,30 @@ def test_adaptive_city_date_cap_drops_from_ten_to_five_percent_at_one_thousand(t
     assert adaptive_event_cap_fraction(999.99, cfg) == 0.10
     assert adaptive_event_cap_fraction(1000.0, cfg) == 0.05
     assert adaptive_event_cap_fraction(1500.0, cfg) == 0.05
+
+
+def test_allocation_sizes_keep_one_dollar_steps_for_small_accounts():
+    assert _allocation_sizes(20.0, 10.0) == [float(value) for value in range(10, 21)]
+
+
+def test_allocation_sizes_cap_large_bankroll_candidates_and_keep_anchors():
+    sizes = _allocation_sizes(100_000.0, 10.0, preferred_usd=12_345.67)
+
+    assert len(sizes) <= 50
+    assert sizes[0] == 10.0
+    assert sizes[-1] == 100_000.0
+    assert 12_345.67 in sizes
+    assert sizes == sorted(set(sizes))
+    assert max(right - left for left, right in zip(sizes, sizes[1:])) > 1.0
+
+
+def test_allocation_sizes_cap_still_applies_with_decimal_anchors():
+    sizes = _allocation_sizes(59.5, 9.5, preferred_usd=33.3)
+
+    assert len(sizes) <= 50
+    assert sizes[0] == 9.5
+    assert sizes[-1] == 59.5
+    assert 33.3 in sizes
 
 
 def test_entry_bankroll_uses_lower_executable_liquidation_value(tmp_path):
