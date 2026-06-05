@@ -70,10 +70,12 @@ verified settlement stations and reproducible paper accounting.
   URL query tokens are rejected on public hosts.
 - Boolean environment settings accept only explicit true/false aliases. Unknown
   values fail startup with `ValueError` instead of silently becoming `False`.
-- Numeric paper-money, risk, fee, and runtime-cadence settings are validated
-  when `Settings` is created. Money amounts and runtime intervals that must
-  represent a real positive budget/window must be greater than 0; risk
-  fractions and the weather taker fee rate must stay between 0 and 1.
+- Numeric paper-money, risk, fee, runtime-cadence, dashboard-port, and shadow
+  research settings are validated when `Settings` is created. Money amounts,
+  runtime intervals, and positive shadow collection windows must be greater
+  than 0; risk fractions and the weather taker fee rate must stay between 0
+  and 1; `DASHBOARD_PORT` must be 1..65535; and `SHADOW_MAX_ROWS` may be 0
+  only to mean keeping no shadow rows.
 - `SIZE_MODE` is the paper order-size method switch and accepts only
   `fixed_fraction` or `kelly`; startup normalizes case and rejects typos.
 - Keep execution paper-only unless live trading is explicitly approved through

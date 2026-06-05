@@ -137,6 +137,12 @@ specialized reference docs.
   This prevents negative orders, negative fees, impossible exposure fractions,
   fee rates above 1, or zero timing windows from contaminating
   paper-performance evidence.
+- Dashboard port and shadow research integer limits are also startup
+  validation targets. `DASHBOARD_PORT` must be a real TCP port from 1 to 65535;
+  shadow research collection limits must be sane integers, with
+  `SHADOW_MAX_ROWS=0` preserved as "keep no shadow rows." This prevents broken
+  operator settings from quietly corrupting dashboard startup or research
+  samples.
 - `SIZE_MODE` accepts only `fixed_fraction` and `kelly` at `Settings` startup.
   Values are case-normalized, and typos such as `kellyy` raise `ValueError`
   before the runner can fall back to the wrong paper sizing path.
@@ -744,6 +750,20 @@ the runner use the fixed-fraction branch while the operator believes Kelly
 sizing is active.
 Consequence: Invalid values raise `ValueError` during settings creation, before
 paper trading starts and before risk evidence is contaminated.
+
+### 2026-06-06: Validate Dashboard Port And Shadow Research Limits At Startup
+
+Decision: `DASHBOARD_PORT` must be an integer from 1 to 65535. Shadow research
+integer controls must be explicit safe counts: `SHADOW_MAX_MARKETS`,
+`SHADOW_MAX_TRADES_PER_MARKET`, and `SHADOW_COMPARE_WINDOW_SECONDS` must be
+positive integers, while `SHADOW_MAX_ROWS` must be a non-negative integer so
+zero can intentionally keep no shadow rows.
+Why: The dashboard port is the local server's door number, and invalid values
+should fail before the dashboard tries to bind. Shadow settings control bounded
+public-data research; negative or nonsensical limits can quietly distort
+research samples.
+Consequence: Bad values raise `ValueError` during `Settings` creation and
+paper trading remains unchanged and paper-only.
 
 ### 2026-06-05: Cap Portfolio Allocation Size Candidates
 

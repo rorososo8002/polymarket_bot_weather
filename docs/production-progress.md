@@ -111,6 +111,12 @@
   and `kelly` are accepted, values are normalized to lowercase, and typos such
   as `kellyy` stop startup instead of silently falling back to fixed-fraction
   paper sizing.
+- Dashboard port and shadow research integer controls now fail closed at
+  `Settings` startup. `DASHBOARD_PORT` must be in the TCP port range
+  `1..65535`; `SHADOW_MAX_MARKETS`, `SHADOW_MAX_TRADES_PER_MARKET`, and
+  `SHADOW_COMPARE_WINDOW_SECONDS` must be positive integers; and
+  `SHADOW_MAX_ROWS` is a non-negative integer so `0` still means keep no
+  shadow rows.
 - Entry candidate `size_shares` now means the actual fee-adjusted shares bought
   with the all-in `size_usd` budget, so portfolio scenarios and broker-opened
   paper positions use the same held quantity.
@@ -178,6 +184,8 @@
   complete locally and remains paper-only.
 - Numeric Settings range validation is complete locally and remains paper-only.
 - `SIZE_MODE` choice validation is complete locally and remains paper-only.
+- Dashboard port and shadow integer Settings validation is complete locally and
+  remains paper-only.
 - Explicit forecast-bias file fail-closed hardening is complete locally and
   remains paper-only.
 - Analysis/shadow-report CSV streaming is complete locally and remains

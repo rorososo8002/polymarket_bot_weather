@@ -99,6 +99,36 @@ def test_settings_rejects_fee_rate_above_one():
     assert "at most 1" in str(exc_info.value)
 
 
+@pytest.mark.parametrize("dashboard_port", [0, 70000])
+def test_settings_rejects_dashboard_port_outside_tcp_range(dashboard_port):
+    with pytest.raises(ValueError, match="DASHBOARD_PORT") as exc_info:
+        Settings(dashboard_port=dashboard_port)
+
+    assert "between 1 and 65535" in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    ("override", "expected_name", "expected_reason"),
+    [
+        ({"shadow_max_markets": -1}, "SHADOW_MAX_MARKETS", "greater than 0"),
+        ({"shadow_max_trades_per_market": -1}, "SHADOW_MAX_TRADES_PER_MARKET", "greater than 0"),
+        ({"shadow_compare_window_seconds": -1}, "SHADOW_COMPARE_WINDOW_SECONDS", "greater than 0"),
+        ({"shadow_max_rows": -1}, "SHADOW_MAX_ROWS", "at least 0"),
+    ],
+)
+def test_settings_rejects_invalid_shadow_integer_controls(override, expected_name, expected_reason):
+    with pytest.raises(ValueError, match=expected_name) as exc_info:
+        Settings(**override)
+
+    assert expected_reason in str(exc_info.value)
+
+
+def test_settings_allows_zero_shadow_max_rows_as_empty_research_limit():
+    settings = Settings(shadow_max_rows=0)
+
+    assert settings.shadow_max_rows == 0
+
+
 @pytest.mark.parametrize(
     ("override", "expected_name"),
     [
@@ -160,6 +190,16 @@ def test_load_settings_reads_dashboard_env(monkeypatch):
     assert settings.dashboard_host == "0.0.0.0"
     assert settings.dashboard_port == 9999
     assert settings.dashboard_token == "secret"
+
+
+@pytest.mark.parametrize("raw_port", ["0", "70000"])
+def test_load_settings_rejects_dashboard_port_outside_tcp_range(monkeypatch, raw_port):
+    monkeypatch.setenv("DASHBOARD_PORT", raw_port)
+
+    with pytest.raises(ValueError, match="DASHBOARD_PORT") as exc_info:
+        load_settings()
+
+    assert "between 1 and 65535" in str(exc_info.value)
 
 
 def test_load_settings_reads_conservative_strategy_controls(monkeypatch):
@@ -344,3 +384,29 @@ def test_load_settings_reads_shadow_signal_research_controls(monkeypatch):
     assert settings.shadow_max_rows == 56
     assert settings.shadow_min_trade_usdc == 789.5
     assert settings.shadow_compare_window_seconds == 3600
+
+
+@pytest.mark.parametrize(
+    ("env_name", "expected_reason"),
+    [
+        ("SHADOW_MAX_MARKETS", "greater than 0"),
+        ("SHADOW_MAX_TRADES_PER_MARKET", "greater than 0"),
+        ("SHADOW_COMPARE_WINDOW_SECONDS", "greater than 0"),
+        ("SHADOW_MAX_ROWS", "at least 0"),
+    ],
+)
+def test_load_settings_rejects_negative_shadow_integer_controls(monkeypatch, env_name, expected_reason):
+    monkeypatch.setenv(env_name, "-1")
+
+    with pytest.raises(ValueError, match=env_name) as exc_info:
+        load_settings()
+
+    assert expected_reason in str(exc_info.value)
+
+
+def test_load_settings_allows_zero_shadow_max_rows_as_empty_research_limit(monkeypatch):
+    monkeypatch.setenv("SHADOW_MAX_ROWS", "0")
+
+    settings = load_settings()
+
+    assert settings.shadow_max_rows == 0

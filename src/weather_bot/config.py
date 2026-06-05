@@ -33,6 +33,20 @@ _POSITIVE_INTEGER_SETTINGS = (
     "raw_snapshots_min_free_bytes",
 )
 
+_SHADOW_POSITIVE_INTEGER_SETTINGS = (
+    "shadow_max_markets",
+    "shadow_max_trades_per_market",
+    "shadow_compare_window_seconds",
+)
+
+_NON_NEGATIVE_INTEGER_SETTINGS = (
+    "shadow_max_rows",
+)
+
+_TCP_PORT_SETTINGS = (
+    "dashboard_port",
+)
+
 _RATIO_SETTINGS = (
     "min_net_edge",
     "exit_net_edge",
@@ -179,6 +193,9 @@ class Settings:
     def __post_init__(self) -> None:
         _validate_positive_numbers(self, _POSITIVE_NUMBER_SETTINGS)
         _validate_positive_integers(self, _POSITIVE_INTEGER_SETTINGS)
+        _validate_positive_integers(self, _SHADOW_POSITIVE_INTEGER_SETTINGS)
+        _validate_non_negative_integers(self, _NON_NEGATIVE_INTEGER_SETTINGS)
+        _validate_tcp_ports(self, _TCP_PORT_SETTINGS)
         _validate_ratios(self, _RATIO_SETTINGS)
         _validate_non_negative_numbers(self, _NON_NEGATIVE_NUMBER_SETTINGS)
         _validate_rates(self, _RATE_SETTINGS)
@@ -217,6 +234,26 @@ def _validate_positive_integers(settings: Settings, field_names: tuple[str, ...]
             raise ValueError(f"{_setting_display_name(field_name)} must be a positive integer; got {value!r}")
         if value <= 0:
             raise ValueError(f"{_setting_display_name(field_name)} must be greater than 0; got {value!r}")
+
+
+def _validate_non_negative_integers(settings: Settings, field_names: tuple[str, ...]) -> None:
+    for field_name in field_names:
+        value = getattr(settings, field_name)
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError(f"{_setting_display_name(field_name)} must be a non-negative integer; got {value!r}")
+        if value < 0:
+            raise ValueError(f"{_setting_display_name(field_name)} must be at least 0; got {value!r}")
+
+
+def _validate_tcp_ports(settings: Settings, field_names: tuple[str, ...]) -> None:
+    for field_name in field_names:
+        value = getattr(settings, field_name)
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError(
+                f"{_setting_display_name(field_name)} must be an integer between 1 and 65535; got {value!r}"
+            )
+        if value < 1 or value > 65535:
+            raise ValueError(f"{_setting_display_name(field_name)} must be between 1 and 65535; got {value!r}")
 
 
 def _validate_ratios(settings: Settings, field_names: tuple[str, ...]) -> None:
