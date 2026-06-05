@@ -34,6 +34,15 @@ specialized reference docs.
 - Forecasts refresh every 2 hours by default. Order books use the Polymarket
   CLOB WebSocket stream, and open-position token IDs stay subscribed until the
   position closes or settles.
+- The WebSocket receiver thread must not run heavy strategy evaluation or write
+  the strategy ledger directly. It updates the order-book cache and submits
+  event work to a bounded coalescer/worker, which merges short bursts by
+  event/city/date before evaluating and writing `paper_decisions.csv`. Why:
+  the receiver is the market-price telephone line, so blocking it with
+  portfolio math or CSV writes can miss later price updates and grow the
+  decision ledger too aggressively. Consequence: `paper_runner_status.json`
+  exposes realtime evaluator queue depth, coalesced update count, dropped
+  update count, and worker errors.
 - The realtime bot records refresh-cycle failures in `paper_runner_status.json`
   instead of relying only on `systemd Restart=always`. Why: a restarted process
   without an operator-readable error can make the dashboard look stale rather
@@ -734,3 +743,18 @@ counts must not look like all-time cumulative totals.
 Consequence: Small ledgers report exact full-history totals. Oversized ledgers
 keep the performance guard, but operators and clients can see
 `recent_tail`/`false` before interpreting the scanner numbers.
+
+### 2026-06-06: Decouple WebSocket Receiving From Strategy Evaluation
+
+Decision: The WebSocket receiver callback updates the realtime order-book cache
+and enqueues evaluation work only. Strategy evaluation, portfolio selection,
+paper decision logging, and close checks run in a separate bounded
+coalescer/worker that groups short bursts by weather event before evaluation.
+Why: WebSocket receiving is the market-price telephone line; if it performs
+slow probability/portfolio math or appends too many decision rows inline, later
+price updates can wait behind that work and `paper_decisions.csv` can grow from
+noise rather than useful judgment evidence. Consequence: the paper strategy
+still preserves `paper_decisions.csv`, but bursty updates for the same
+event/city/date are collapsed to latest-state evaluations, and
+`paper_runner_status.json` reports queue depth, coalesced updates, dropped
+updates, evaluation errors, and recent evaluation timing.

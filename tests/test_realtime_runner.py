@@ -1,11 +1,18 @@
 import csv
 import json
+import threading
+import time
 
 import pytest
 
 from weather_bot import live_paper_runner as runner_module
 from weather_bot.config import Settings
-from weather_bot.live_paper_runner import StreamBackedPolymarketClient, _stream_market_registry, run_forever
+from weather_bot.live_paper_runner import (
+    RealtimeEvaluationCoalescer,
+    StreamBackedPolymarketClient,
+    _stream_market_registry,
+    run_forever,
+)
 from weather_bot.models import OrderBook, OrderLevel, PaperPosition, PaperState, RawMarket, WeatherSignal
 from weather_bot.weather_client import parse_weather_question
 
@@ -26,6 +33,115 @@ def test_stream_backed_client_reads_order_books_from_websocket_cache():
 
     assert book.best_bid == 0.49
     assert book.best_ask == 0.50
+
+
+def test_realtime_evaluation_coalescer_does_not_evaluate_on_enqueue():
+    evaluated = threading.Event()
+    worker = RealtimeEvaluationCoalescer(
+        event_key_by_token={"yes": "seoul|2026-05-25|temperature|max"},
+        evaluator=lambda _tokens: evaluated.set(),
+        coalesce_seconds=0.25,
+    )
+
+    worker.start()
+    try:
+        accepted = worker.enqueue_tokens({"yes"})
+
+        assert accepted == 1
+        assert evaluated.wait(0.03) is False
+        status = worker.status_snapshot()
+        assert status["queue_depth"] == 1
+        assert status["dropped_update_count"] == 0
+    finally:
+        worker.stop(drain=False)
+
+
+def test_realtime_evaluation_coalescer_merges_burst_updates_by_event():
+    calls: list[set[str]] = []
+    evaluated = threading.Event()
+
+    def evaluator(tokens: set[str]) -> None:
+        calls.append(set(tokens))
+        evaluated.set()
+
+    worker = RealtimeEvaluationCoalescer(
+        event_key_by_token={
+            "seoul-26-yes": "seoul|2026-05-25|temperature|max",
+            "seoul-26-no": "seoul|2026-05-25|temperature|max",
+        },
+        evaluator=evaluator,
+        coalesce_seconds=0.01,
+    )
+
+    worker.start()
+    try:
+        worker.enqueue_tokens({"seoul-26-yes"})
+        worker.enqueue_tokens({"seoul-26-no"})
+
+        assert evaluated.wait(1.0) is True
+        assert calls == [{"seoul-26-yes", "seoul-26-no"}]
+        status = worker.status_snapshot()
+        assert status["processed_batch_count"] == 1
+        assert status["coalesced_update_count"] == 1
+    finally:
+        worker.stop()
+
+
+def test_realtime_evaluation_coalescer_records_worker_errors_and_keeps_running():
+    calls = 0
+    recovered = threading.Event()
+    status_updates: list[dict[str, object]] = []
+
+    def evaluator(_tokens: set[str]) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("slow strategy evaluator failed")
+        recovered.set()
+
+    worker = RealtimeEvaluationCoalescer(
+        event_key_by_token={"yes": "seoul|2026-05-25|temperature|max"},
+        evaluator=evaluator,
+        status_update=status_updates.append,
+        coalesce_seconds=0.01,
+    )
+
+    worker.start()
+    try:
+        worker.enqueue_tokens({"yes"})
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline and worker.status_snapshot()["error_count"] == 0:
+            time.sleep(0.01)
+        worker.enqueue_tokens({"yes"})
+
+        assert recovered.wait(1.0) is True
+        status = worker.status_snapshot()
+        assert status["thread_alive"] is True
+        assert status["error_count"] == 1
+        assert "slow strategy evaluator failed" in status["last_error"]
+        assert status_updates
+        assert "slow strategy evaluator failed" in str(status_updates[-1]["last_error"])
+    finally:
+        worker.stop()
+
+
+def test_realtime_evaluation_coalescer_bounds_pending_events_and_counts_drops():
+    worker = RealtimeEvaluationCoalescer(
+        event_key_by_token={
+            "seoul-yes": "seoul|2026-05-25|temperature|max",
+            "london-yes": "london|2026-05-25|temperature|max",
+        },
+        evaluator=lambda _tokens: None,
+        max_pending_events=1,
+        coalesce_seconds=0.01,
+    )
+
+    assert worker.enqueue_tokens({"seoul-yes"}) == 1
+    assert worker.enqueue_tokens({"london-yes"}) == 0
+
+    status = worker.status_snapshot()
+    assert status["queue_depth"] == 1
+    assert status["dropped_update_count"] == 1
 
 
 def test_run_forever_uses_websocket_mode_by_default(monkeypatch):

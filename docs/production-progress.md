@@ -69,6 +69,13 @@
   failed phase before backing off and retrying. Local verification: focused
   `tests/test_realtime_runner.py` passed with `12 passed`; full `pytest -q`
   passed with `379 passed`.
+- The realtime WebSocket receiver now only marks updated token/event work for
+  evaluation instead of running strategy evaluation and writing
+  `paper_decisions.csv` inline. A bounded coalescer worker merges short bursts
+  by weather event, then runs paper-only strategy evaluation and exposes queue
+  depth, coalesced update count, dropped update count, and worker errors in
+  `paper_runner_status.json`. Local verification: focused realtime/coalescer
+  tests passed with `31 passed`; full `pytest -q` passed with `383 passed`.
 - Paper accounting is fee-aware end to end: `size_usd` is the all-in entry
   budget, closes add after-fee proceeds, and dashboard/liquidation values use
   after-exit-fee marks.
@@ -274,6 +281,11 @@
   are skipped instead of inheriting the requested station ID. Local
   verification: focused `tests/test_nowcast_provider.py` passed with
   `15 passed`; full `pytest -q` passed with `378 passed`.
+- WebSocket receiver and realtime strategy evaluation are separated locally and
+  remain paper-only: receiver callbacks enqueue/coalesce event updates, and a
+  bounded worker performs evaluation plus `paper_decisions.csv` evidence writes.
+  Local verification: focused realtime/coalescer tests passed with `31 passed`;
+  full `pytest -q` passed with `383 passed`.
 - Other local hardening changes have not all been treated as one automatic
   deployment bundle; verify the specific commit and service state before
   assuming a future local change is live.

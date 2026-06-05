@@ -35,6 +35,10 @@ verified settlement stations and reproducible paper accounting.
 - Use the Polymarket CLOB WebSocket market stream for order books by default.
 - Keep token IDs for open positions subscribed even when discovery moves to
   newer markets.
+- WebSocket receiver callbacks must stay lightweight: update the order-book
+  cache and enqueue event work through a bounded coalescer/worker. Do not run
+  strategy evaluation, portfolio selection, close checks, or
+  `paper_decisions.csv` writes inline on the receiver thread.
 - Map Polymarket YES/NO token IDs only from explicit outcome labels. If
   `tokens` or `outcomes` cannot prove which `clobTokenIds` entry is YES and
   which is NO, skip the market instead of trusting list order.

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 import inspect
 from datetime import datetime, timezone
 import threading
@@ -31,12 +32,15 @@ from .portfolio import (
 from .probability import OpenMeteoEnsembleClient, estimate_weather_probability
 from .realtime_orderbook import OrderBookMarketStream
 from .risk import fractional_kelly_binary
-from .runner_status import utc_now_iso, write_runner_status
+from .runner_status import update_runner_status_fields, utc_now_iso, write_runner_status
 from .stations import TRADING_READY_STATION_MAP
 from .weather_client import parse_weather_question
 
 
 ENTRY_BANKROLL_FAIL_CLOSED_REASON = "기존 포지션을 안전하게 평가할 수 없어 신규 진입 차단"
+
+REALTIME_EVALUATION_QUEUE_MAX_EVENTS = 256
+REALTIME_EVALUATION_COALESCE_SECONDS = 0.25
 
 
 def _call_probability_estimator(
@@ -65,6 +69,168 @@ class StreamBackedPolymarketClient(PolymarketClient):
 
     def get_order_book(self, token_id: str) -> OrderBook:
         return self.stream.get_order_book(token_id)
+
+
+class RealtimeEvaluationCoalescer:
+    """Coalesce WebSocket token updates before running strategy evaluation."""
+
+    def __init__(
+        self,
+        *,
+        event_key_by_token: dict[str, str],
+        evaluator: Callable[[set[str]], None],
+        max_pending_events: int = REALTIME_EVALUATION_QUEUE_MAX_EVENTS,
+        coalesce_seconds: float = REALTIME_EVALUATION_COALESCE_SECONDS,
+        status_update: Callable[[dict[str, object]], None] | None = None,
+    ) -> None:
+        self.event_key_by_token = {str(token): str(event_key) for token, event_key in event_key_by_token.items()}
+        self.evaluator = evaluator
+        self.max_pending_events = max(1, int(max_pending_events))
+        self.coalesce_seconds = max(0.0, float(coalesce_seconds))
+        self.status_update = status_update
+        self._condition = threading.Condition()
+        self._pending_tokens_by_event: dict[str, set[str]] = {}
+        self._stop_requested = False
+        self._drain_on_stop = True
+        self._thread: threading.Thread | None = None
+        self._enqueued_update_count = 0
+        self._coalesced_update_count = 0
+        self._dropped_update_count = 0
+        self._processed_batch_count = 0
+        self._processed_event_count = 0
+        self._error_count = 0
+        self._inflight_event_count = 0
+        self._last_error = ""
+        self._last_error_at: str | None = None
+        self._last_evaluated_at: str | None = None
+        self._last_evaluation_duration_seconds: float | None = None
+
+    def start(self) -> None:
+        with self._condition:
+            if self._thread is not None and self._thread.is_alive():
+                return
+            self._stop_requested = False
+            self._drain_on_stop = True
+            self._thread = threading.Thread(
+                target=self._run,
+                name="polymarket-realtime-evaluator",
+                daemon=True,
+            )
+            self._thread.start()
+
+    def stop(self, *, drain: bool = True, timeout: float = 5.0) -> None:
+        with self._condition:
+            self._stop_requested = True
+            self._drain_on_stop = drain
+            if not drain:
+                self._pending_tokens_by_event.clear()
+            self._condition.notify_all()
+            thread = self._thread
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=max(0.0, float(timeout)))
+
+    def enqueue_tokens(self, updated_token_ids: set[str]) -> int:
+        tokens_by_event: dict[str, set[str]] = {}
+        for token_id in updated_token_ids:
+            token = str(token_id)
+            event_key = self.event_key_by_token.get(token)
+            if event_key:
+                tokens_by_event.setdefault(event_key, set()).add(token)
+        if not tokens_by_event:
+            return 0
+
+        accepted = 0
+        with self._condition:
+            if self._stop_requested:
+                self._dropped_update_count += len(tokens_by_event)
+                return 0
+            for event_key, tokens in tokens_by_event.items():
+                pending = self._pending_tokens_by_event.get(event_key)
+                if pending is not None:
+                    pending.update(tokens)
+                    self._coalesced_update_count += 1
+                    accepted += 1
+                    continue
+                if len(self._pending_tokens_by_event) >= self.max_pending_events:
+                    self._dropped_update_count += 1
+                    continue
+                self._pending_tokens_by_event[event_key] = set(tokens)
+                self._enqueued_update_count += 1
+                accepted += 1
+            if accepted:
+                self._condition.notify_all()
+        return accepted
+
+    def status_snapshot(self) -> dict[str, object]:
+        with self._condition:
+            return {
+                "thread_alive": bool(self._thread is not None and self._thread.is_alive()),
+                "queue_depth": len(self._pending_tokens_by_event),
+                "max_pending_events": self.max_pending_events,
+                "coalesce_seconds": self.coalesce_seconds,
+                "inflight_event_count": self._inflight_event_count,
+                "enqueued_update_count": self._enqueued_update_count,
+                "coalesced_update_count": self._coalesced_update_count,
+                "dropped_update_count": self._dropped_update_count,
+                "processed_batch_count": self._processed_batch_count,
+                "processed_event_count": self._processed_event_count,
+                "error_count": self._error_count,
+                "last_error": self._last_error,
+                "last_error_at": self._last_error_at,
+                "last_evaluated_at": self._last_evaluated_at,
+                "last_evaluation_duration_seconds": self._last_evaluation_duration_seconds,
+            }
+
+    def _run(self) -> None:
+        while True:
+            with self._condition:
+                while not self._pending_tokens_by_event and not self._stop_requested:
+                    self._condition.wait()
+                if self._stop_requested and (not self._drain_on_stop or not self._pending_tokens_by_event):
+                    return
+
+                deadline = time.monotonic() + self.coalesce_seconds
+                while True:
+                    if self._stop_requested and not self._drain_on_stop:
+                        return
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    self._condition.wait(timeout=remaining)
+
+                pending = self._pending_tokens_by_event
+                self._pending_tokens_by_event = {}
+                self._inflight_event_count = len(pending)
+
+            updated_token_ids = {token for tokens in pending.values() for token in tokens}
+            started_at = time.monotonic()
+            try:
+                self.evaluator(updated_token_ids)
+            except Exception as exc:  # noqa: BLE001
+                self._record_error(exc)
+            finally:
+                duration = time.monotonic() - started_at
+                with self._condition:
+                    self._processed_batch_count += 1
+                    self._processed_event_count += len(pending)
+                    self._inflight_event_count = 0
+                    self._last_evaluated_at = utc_now_iso()
+                    self._last_evaluation_duration_seconds = round(duration, 3)
+
+    def _record_error(self, exc: BaseException) -> None:
+        safe_error = " ".join(str(exc).split())[:240]
+        if not safe_error:
+            safe_error = exc.__class__.__name__
+        with self._condition:
+            self._error_count += 1
+            self._last_error = f"{exc.__class__.__name__}: {safe_error}"
+            self._last_error_at = utc_now_iso()
+            snapshot = self.status_snapshot()
+        if self.status_update is not None:
+            try:
+                self.status_update(snapshot)
+            except Exception:
+                pass
 
 
 def position_size_usd(
@@ -966,6 +1132,7 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
         broker: PaperBroker | None = None
         ensemble_client: OpenMeteoEnsembleClient | None = None
         stream: OrderBookMarketStream | None = None
+        evaluator_worker: RealtimeEvaluationCoalescer | None = None
         try:
             discovery_client = PolymarketClient(settings.gamma_base, settings.clob_base)
             ensemble_client = OpenMeteoEnsembleClient.from_settings(settings)
@@ -1044,8 +1211,12 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
             latest_edges: dict[tuple[str, str], EdgeResult] = {}
             update_lock = threading.RLock()
             stream_holder: dict[str, StreamBackedPolymarketClient] = {}
+            event_key_by_token = {
+                token_id: _market_event_key(market)
+                for token_id, market in market_by_token.items()
+            }
 
-            def on_update(updated_token_ids: set[str]) -> None:
+            def evaluate_queued_update(updated_token_ids: set[str]) -> None:
                 with update_lock:
                     stream_client = stream_holder.get("client")
                     if stream_client is not None:
@@ -1059,6 +1230,19 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
                             market_types,
                             latest_edges,
                         )
+
+            def update_evaluator_status(status: dict[str, object]) -> None:
+                update_runner_status_fields(settings, realtime_evaluator=status)
+
+            evaluator_worker = RealtimeEvaluationCoalescer(
+                event_key_by_token=event_key_by_token,
+                evaluator=evaluate_queued_update,
+                status_update=update_evaluator_status,
+            )
+            evaluator_worker.start()
+
+            def on_update(updated_token_ids: set[str]) -> None:
+                evaluator_worker.enqueue_tokens(updated_token_ids)
 
             def build_stream() -> OrderBookMarketStream:
                 return OrderBookMarketStream(
@@ -1097,6 +1281,7 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
                     open_positions=len(broker.state.positions),
                     forecast=ensemble_client.health_snapshot(),
                     websocket=websocket_health,
+                    realtime_evaluator=evaluator_worker.status_snapshot() if evaluator_worker is not None else None,
                 )
 
             failed_phase = "runner_status_update"
@@ -1134,7 +1319,14 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
                     failed_phase = "websocket_stop"
                     raise
                 stream = None
+                if evaluator_worker is not None:
+                    evaluator_worker.stop()
+                    evaluator_worker = None
         except Exception as exc:  # noqa: BLE001
+            evaluator_status = evaluator_worker.status_snapshot() if evaluator_worker is not None else None
+            if evaluator_worker is not None:
+                evaluator_worker.stop(drain=False)
+                evaluator_worker = None
             if stream is not None:
                 try:
                     stream.stop()
@@ -1153,6 +1345,7 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
                 exposure_usd=round(broker.total_exposure(), 2) if broker is not None else None,
                 open_positions=len(broker.state.positions) if broker is not None else None,
                 forecast=ensemble_client.health_snapshot() if ensemble_client is not None else None,
+                realtime_evaluator=evaluator_status,
             )
             print(f"REALTIME ERROR: {message}")
             backoff_seconds = _realtime_error_backoff_seconds(settings)
