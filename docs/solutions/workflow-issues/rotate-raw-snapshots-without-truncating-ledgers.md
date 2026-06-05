@@ -1,7 +1,7 @@
 ---
 title: Rotate raw snapshots without truncating paper ledgers
 date: 2026-06-04
-last_updated: 2026-06-04
+last_updated: 2026-06-05
 category: workflow-issues
 module: vps_runtime_data
 problem_type: workflow_issue
@@ -10,9 +10,10 @@ severity: medium
 applies_when:
   - "VPS runtime data grows enough to threaten disk capacity"
   - "Cleaning up paper bot data without destroying account or strategy evidence"
+  - "Resetting the paper experiment only after the operator explicitly asks for a new bankroll window"
   - "Adding automatic cleanup for diagnostic raw snapshots"
   - "Recovering when the disk is already too full to upload a remote script"
-tags: [vps, runtime-data, logrotate, disk, paper-trading, raw-snapshots, syslog]
+tags: [vps, runtime-data, logrotate, disk, paper-trading, raw-snapshots, syslog, reset]
 ---
 
 # Rotate raw snapshots without truncating paper ledgers
@@ -108,6 +109,26 @@ The active `paper_raw_snapshots.jsonl` was recreated as a 0-byte writable file,
 and both `polymarket-weather-bot` and `polymarket-weather-dashboard` were
 verified active afterward.
 
+On 2026-06-05, the operator explicitly asked to discard old runtime evidence
+and start a fresh 200 USD paper experiment. That is a different operation from
+emergency cleanup. The safe reset order was:
+
+1. Stop both `polymarket-weather-bot` and `polymarket-weather-dashboard`.
+2. Delete old paper runtime files only after the operator-approved reset
+   boundary was clear.
+3. Recreate `data/paper_state.json` with 200 USD cash, zero positions, and
+   zeroed paper stats before restarting the bot.
+4. Recreate `paper_trades.csv` and `paper_decisions.csv` with current headers
+   so future appends stay parseable.
+5. Set `PORTFOLIO_DECISIONS_JSONL_PATH` under `data/` so portfolio diagnostics
+   do not grow as a root-level project file.
+6. Restart services, run remote pytest, verify dashboard HTML and protected
+   `/api/status`, and then treat all later performance as a new experiment
+   window.
+
+That reset reduced root disk use from 100% to 14%. After restart, the bot was
+paper-only and began trading from the fresh 200 USD bankroll.
+
 ## 4. What To Check Next Time
 
 - Check disk pressure with `df -h /` before and after cleanup.
@@ -126,6 +147,9 @@ verified active afterward.
   after restart.
 - Run SSH checks serially from Windows PowerShell. Parallel SSH commands can
   temporarily fail to access the same private key file.
+- If the operator requests a fresh bankroll reset, document the reset boundary
+  in the handoff docs and never mix pre-reset and post-reset performance
+  results.
 
 ## 5. What This Project Must Be Especially Careful About
 
@@ -134,3 +158,9 @@ Do not delete, truncate, or rotate `paper_state.json`, `paper_trades.csv`, or
 paper account book and strategy evidence. If they grow too large, build
 archive-aware readers or explicit export jobs first, then preserve enough
 history to keep settlement, performance review, and debugging meaningful.
+
+The only exception is an explicit operator-approved paper reset, such as
+"start a new 200 USD experiment." In that case, deletion is not cache cleanup;
+it is a new measurement window. Stop services first, recreate the account book
+and CSV headers deliberately, record the reset date, and judge profitability
+only from the post-reset data.

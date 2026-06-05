@@ -231,6 +231,16 @@
   `data/archive/paper_raw_snapshots.20260604T115423Z.jsonl.zst` at 144MB, and
   recreated a fresh writable raw snapshot file. `paper_decisions.csv` was
   preserved because it is the strategy evidence ledger.
+- Oracle VPS was reset for a fresh 200 USD paper-only experiment on
+  2026-06-05 UTC at the operator's request. Old paper state, decisions, trades,
+  raw snapshots, request logs, archives, and the root-level
+  `paper_event_portfolios.jsonl` were cleared; before service restart,
+  `data/paper_state.json` was recreated with 200 USD cash and zero positions,
+  and
+  `PORTFOLIO_DECISIONS_JSONL_PATH` points under `data/`. Root disk use dropped
+  from 100% to 14%. Remote focused pytest passed with `93 passed`; remote full
+  `pytest -q` passed with `421 passed`; bot and dashboard services were
+  restarted and are paper-only.
 - Forecast request logging is implemented so future Open-Meteo usage reviews
   count real HTTP attempts from `forecast_request_log.jsonl` instead of trying
   to infer calls from overwritten `forecast_cache.json` entries. Rows include
@@ -376,10 +386,10 @@
     `raw_snapshot_storage.status=suspended` when disk pressure is dangerous.
     Do not rotate or truncate `paper_decisions.csv` until reports/dashboard
     readers have an explicit archive-aware path or bounded operator option.
-12. The VPS still has a large active `paper_decisions.csv` ledger, around 16GB
-    at the 2026-06-04 cleanup. Treat it as evidence, not disposable cache. If
-    it needs cleanup, first build archive-aware readers or a bounded explicit
-    operator path.
+12. The active VPS paper experiment was intentionally reset on 2026-06-05 UTC:
+    `paper_state.json` starts from 200 USD cash with zero positions, and old
+    paper evidence ledgers are no longer available on the VPS runtime path.
+    Future performance comparisons must treat this as a new experiment window.
 
 ## For The Next AI
 

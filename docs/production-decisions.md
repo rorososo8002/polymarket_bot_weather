@@ -133,6 +133,11 @@ specialized reference docs.
   missing/empty trade ledger, or open positions without matching `OPEN` rows
   means the account book and execution ledger may disagree, so startup fails
   closed for operator reconciliation instead of trading from guessed state.
+- An operator-approved paper reset creates a new performance window. Why: old
+  decisions, trades, and state are experimental evidence for the previous
+  bankroll, not neutral cache. Consequence: after the 2026-06-05 UTC VPS reset,
+  active paper results start from 200 USD cash and zero positions; do not mix
+  them with pre-reset logs when judging profitability.
 - Public dashboard exposure requires a real `DASHBOARD_TOKEN` with at least 32
   characters; empty, short, placeholder, basic, default, change-me, secret,
   token, password, abc, 123456, or other obvious example tokens stop startup

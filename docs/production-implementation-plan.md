@@ -355,6 +355,12 @@ MAX_CITY_EXPOSURE_FRACTION=0.20
 MAX_TOTAL_EXPOSURE_FRACTION=0.90
 ```
 
+`BANKROLL_USD` is the paper starting cash, not real money. The checked-in
+example remains 100 USD, but the active Oracle VPS experiment was intentionally
+reset on 2026-06-05 UTC with an operator override of `BANKROLL_USD=200`, a
+fresh `paper_state.json`, and empty paper ledgers. Treat results after that
+reset as a new paper-performance window, not a continuation of the old logs.
+
 For one city-date event, the selector compares one-leg and at-most-two-leg
 `YES+YES`, `YES+NO`, and `NO+NO` combinations across non-overlapping buckets.
 Same-market `YES+NO`, overlapping threshold positions, and third legs are
@@ -454,6 +460,7 @@ RAW_SNAPSHOTS_MAX_BYTES=104857600
 RAW_SNAPSHOTS_RETENTION_DAYS=7
 RAW_SNAPSHOTS_MIN_FREE_BYTES=1073741824
 RAW_SNAPSHOTS_MAX_DISK_USAGE_PCT=0.90
+PORTFOLIO_DECISIONS_JSONL_PATH=paper_event_portfolios.jsonl
 DISCOVERY_MAX_PAGES=8
 DISCOVERY_PAGE_SIZE=100
 WEATHER_TAKER_FEE_RATE=0.05
