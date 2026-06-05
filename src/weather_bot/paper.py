@@ -5,6 +5,7 @@ import gzip
 import json
 import os
 import shutil
+from copy import deepcopy
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from math import isfinite
@@ -98,6 +99,10 @@ TEXT_TRUNCATION_SUFFIX = "...[truncated]"
 
 class PaperStateLoadError(RuntimeError):
     """Raised when paper accounting state is unsafe to trade from."""
+
+
+class PaperAccountingTransactionError(RuntimeError):
+    """Raised when a state/trade ledger update cannot finish safely."""
 
 
 _MISSING = object()
@@ -275,24 +280,9 @@ def _ensure_csv_columns(path: Path, required_fieldnames: list[str]) -> list[str]
     existing_fieldnames = _csv_header(path)
     if not existing_fieldnames:
         return list(required_fieldnames)
-    missing = [field for field in required_fieldnames if field not in existing_fieldnames]
-    if not missing:
-        return existing_fieldnames
-
-    upgraded_fieldnames = [*existing_fieldnames, *missing]
-    tmp_path = path.with_name(f"{path.name}.{uuid4().hex}.tmp")
-    try:
-        with path.open("r", newline="", encoding="utf-8") as source, tmp_path.open("w", newline="", encoding="utf-8") as target:
-            reader = csv.DictReader(source)
-            writer = csv.DictWriter(target, fieldnames=upgraded_fieldnames, extrasaction="ignore")
-            writer.writeheader()
-            for row in reader:
-                writer.writerow(row)
-        os.replace(tmp_path, path)
-    finally:
-        if tmp_path.exists():
-            tmp_path.unlink()
-    return upgraded_fieldnames
+    # Existing trade CSVs are evidence ledgers. Do not rewrite old rows just to
+    # backfill newly introduced columns; append with the header already present.
+    return existing_fieldnames
 
 
 def _position_from_state(raw: dict[str, Any], index: int) -> PaperPosition:
@@ -339,11 +329,115 @@ class PaperBroker:
         self.settings = settings
         self.state_path = Path(settings.state_path)
         self.trades_csv_path = Path(settings.trades_csv_path)
+        self.accounting_journal_path = self.state_path.with_name(f"{self.state_path.name}.journal")
         self.decisions_csv_path = Path(settings.decisions_csv_path)
         self.portfolio_decisions_jsonl_path = Path(settings.portfolio_decisions_jsonl_path)
         self.raw_snapshots_path = Path(settings.raw_snapshots_path)
         self._raw_snapshot_storage_suspended = False
+        self._accounting_halted_reason = ""
+        self._fail_if_unresolved_accounting_journal()
         self.state = self.load_state()
+        self._validate_trade_state_consistency()
+
+    def _fail_if_unresolved_accounting_journal(self) -> None:
+        if not self.accounting_journal_path.exists():
+            return
+        raise PaperStateLoadError(
+            "unresolved paper accounting transaction journal exists at "
+            f"{self.accounting_journal_path}; paper_state.json and paper_trades.csv may not agree; "
+            "refusing to start paper trading until an operator reconciles the ledgers"
+        )
+
+    def _validate_trade_state_consistency(self) -> None:
+        """Catch obvious startup mismatches without scanning huge trade ledgers."""
+        if not self.state.positions:
+            return
+        try:
+            if not self.trades_csv_path.exists() or self.trades_csv_path.stat().st_size <= 0:
+                raise PaperStateLoadError(
+                    f"paper_state.json has open positions but paper_trades.csv is missing or empty at "
+                    f"{self.trades_csv_path}; refusing to start paper trading"
+                )
+        except OSError as exc:
+            raise PaperStateLoadError(
+                f"cannot inspect paper_trades.csv at {self.trades_csv_path}; refusing to start paper trading"
+            ) from exc
+        header = _csv_header(self.trades_csv_path)
+        required = {"action", "market_id", "side", "token_id"}
+        missing = sorted(required.difference(header))
+        if missing:
+            raise PaperStateLoadError(
+                f"paper_state.json has open positions but paper_trades.csv is missing required columns "
+                f"{missing}; refusing to start paper trading"
+            )
+
+    def _ensure_accounting_open(self) -> None:
+        if self._accounting_halted_reason:
+            raise PaperAccountingTransactionError(self._accounting_halted_reason)
+
+    def _write_accounting_journal(self, payload: dict[str, Any]) -> None:
+        self.accounting_journal_path.parent.mkdir(parents=True, exist_ok=True)
+        row = {
+            "created_at": utc_now_iso(),
+            "state_path": str(self.state_path),
+            "trades_csv_path": str(self.trades_csv_path),
+            **payload,
+        }
+        tmp_path = self.accounting_journal_path.with_name(
+            f"{self.accounting_journal_path.name}.{uuid4().hex}.tmp"
+        )
+        try:
+            tmp_path.write_text(json.dumps(row, indent=2, ensure_ascii=False), encoding="utf-8")
+            os.replace(tmp_path, self.accounting_journal_path)
+        finally:
+            if tmp_path.exists():
+                tmp_path.unlink()
+
+    def _clear_accounting_journal(self) -> None:
+        if self.accounting_journal_path.exists():
+            self.accounting_journal_path.unlink()
+
+    def _halt_accounting(self, action: str, exc: BaseException) -> None:
+        self._accounting_halted_reason = (
+            f"paper accounting transaction failed for {action}: {type(exc).__name__}: {exc}; "
+            f"journal={self.accounting_journal_path}; refusing further paper accounting writes"
+        )
+
+    def _run_accounting_transaction(
+        self,
+        action: str,
+        *,
+        market_id: str,
+        mutate_state: Any,
+        write_trade: Any,
+    ) -> Any:
+        self._ensure_accounting_open()
+        snapshot = deepcopy(self.state)
+        state_saved = False
+        journal_base = {
+            "action": action,
+            "market_id": market_id,
+            "phase": "started",
+        }
+        try:
+            self._write_accounting_journal(journal_base)
+            result = mutate_state()
+            self._write_accounting_journal({**journal_base, "phase": "state_mutated"})
+            self.save_state()
+            state_saved = True
+            self._write_accounting_journal({**journal_base, "phase": "state_saved"})
+            write_trade()
+            self._write_accounting_journal({**journal_base, "phase": "trade_logged"})
+            self._clear_accounting_journal()
+            return result
+        except Exception as exc:  # noqa: BLE001
+            if not state_saved:
+                self.state = snapshot
+            self._halt_accounting(action, exc)
+            raise PaperAccountingTransactionError(
+                f"paper accounting transaction failed for {action}; "
+                f"journal left at {self.accounting_journal_path} for operator reconciliation"
+            ) from exc
 
     def load_state(self) -> PaperState:
         if not self.state_path.exists():
@@ -403,6 +497,7 @@ class PaperBroker:
         )
 
     def save_state(self) -> None:
+        self._ensure_accounting_open()
         payload = {
             "cash_usd": self.state.cash_usd,
             "realized_pnl_usd": self.state.realized_pnl_usd,
@@ -573,69 +668,79 @@ class PaperBroker:
         opened_at = utc_now_iso()
         entry_side_probability = side_true_probability(result.side, result.p_true)
         if add_position is not None:
-            old_shares = add_position.shares
-            old_price = add_position.entry_price
-            old_cost = add_position.cost_usd
-            new_shares = old_shares + shares
-            add_position.shares = new_shares
-            add_position.cost_usd = old_cost + spend
-            add_position.entry_price = (
-                ((old_price * old_shares) + (result.p_exec * shares)) / new_shares
-                if new_shares > 0
-                else result.p_exec
-            )
-            add_position.last_mark_price = result.p_exec
-            metadata = add_position.metadata
-            metadata["add_count"] = int(metadata.get("add_count", 0)) + 1
-            metadata["last_add_ts"] = opened_at
-            metadata["last_add_price"] = result.p_exec
-            metadata["last_add_size_usd"] = spend
-            metadata["last_add_shares"] = shares
-            metadata["last_add_edge"] = result.net_edge
-            metadata["last_add_p_true"] = result.p_true
-            metadata["last_add_side_probability"] = entry_side_probability
-            metadata["last_add_decision_ts"] = decision_ts
-            metadata["last_add_rationale"] = entry_plan.rationale
-            metadata["entry_fraction"] = add_position.cost_usd / risk_bankroll if risk_bankroll > 0 else 0.0
-            metadata["probability_stop_threshold"] = max(
-                float(metadata.get("probability_stop_threshold", 0.0)),
-                entry_plan.probability_stop_threshold,
-            )
-            metadata["model_fair_price"] = entry_plan.model_fair_price
-            metadata["target_exit_price"] = entry_plan.target_exit_price
-            metadata["market_heat_score"] = entry_plan.market_heat_score
-            metadata["entry_notional_usdc"] = round(
-                float(metadata.get("entry_notional_usdc", old_shares * old_price)) + shares * result.p_exec,
-                6,
-            )
-            metadata["entry_fee_usdc"] = round(float(metadata.get("entry_fee_usdc", 0.0)) + entry_fee_usdc, 5)
-            metadata["reason"] = result.reason
-            metadata["slug"] = market.slug
-            metadata["event_slug"] = market.event_slug
-            metadata["market_type"] = market_type
-            metadata["city"] = city
-            metadata["date_hint"] = date_hint
-            self.state.cash_usd -= spend
-            self.save_state()
             add_reason = f"{entry_plan.rationale}; add_to_position={add_position.position_id}; entry_fee=${entry_fee_usdc:.5f}"
-            self.log_trade(
+
+            def mutate_add_position() -> PaperPosition:
+                old_shares = add_position.shares
+                old_price = add_position.entry_price
+                old_cost = add_position.cost_usd
+                new_shares = old_shares + shares
+                add_position.shares = new_shares
+                add_position.cost_usd = old_cost + spend
+                add_position.entry_price = (
+                    ((old_price * old_shares) + (result.p_exec * shares)) / new_shares
+                    if new_shares > 0
+                    else result.p_exec
+                )
+                add_position.last_mark_price = result.p_exec
+                metadata = add_position.metadata
+                metadata["add_count"] = int(metadata.get("add_count", 0)) + 1
+                metadata["last_add_ts"] = opened_at
+                metadata["last_add_price"] = result.p_exec
+                metadata["last_add_size_usd"] = spend
+                metadata["last_add_shares"] = shares
+                metadata["last_add_edge"] = result.net_edge
+                metadata["last_add_p_true"] = result.p_true
+                metadata["last_add_side_probability"] = entry_side_probability
+                metadata["last_add_decision_ts"] = decision_ts
+                metadata["last_add_rationale"] = entry_plan.rationale
+                metadata["entry_fraction"] = add_position.cost_usd / risk_bankroll if risk_bankroll > 0 else 0.0
+                metadata["probability_stop_threshold"] = max(
+                    float(metadata.get("probability_stop_threshold", 0.0)),
+                    entry_plan.probability_stop_threshold,
+                )
+                metadata["model_fair_price"] = entry_plan.model_fair_price
+                metadata["target_exit_price"] = entry_plan.target_exit_price
+                metadata["market_heat_score"] = entry_plan.market_heat_score
+                metadata["entry_notional_usdc"] = round(
+                    float(metadata.get("entry_notional_usdc", old_shares * old_price)) + shares * result.p_exec,
+                    6,
+                )
+                metadata["entry_fee_usdc"] = round(float(metadata.get("entry_fee_usdc", 0.0)) + entry_fee_usdc, 5)
+                metadata["reason"] = result.reason
+                metadata["slug"] = market.slug
+                metadata["event_slug"] = market.event_slug
+                metadata["market_type"] = market_type
+                metadata["city"] = city
+                metadata["date_hint"] = date_hint
+                self.state.cash_usd -= spend
+                return add_position
+
+            def log_add_position() -> None:
+                self.log_trade(
+                    "ADD",
+                    market,
+                    result.side,
+                    token_id,
+                    shares,
+                    result.p_exec,
+                    -spend,
+                    add_reason,
+                    market_type,
+                    entry_metadata={
+                        "entry_p_true": result.p_true,
+                        "entry_side_probability": entry_side_probability,
+                        "entry_net_edge": result.net_edge,
+                        "decision_ts": decision_ts,
+                    },
+                )
+
+            return self._run_accounting_transaction(
                 "ADD",
-                market,
-                result.side,
-                token_id,
-                shares,
-                result.p_exec,
-                -spend,
-                add_reason,
-                market_type,
-                entry_metadata={
-                    "entry_p_true": result.p_true,
-                    "entry_side_probability": entry_side_probability,
-                    "entry_net_edge": result.net_edge,
-                    "decision_ts": decision_ts,
-                },
+                market_id=market.market_id,
+                mutate_state=mutate_add_position,
+                write_trade=log_add_position,
             )
-            return add_position
         pos = PaperPosition(
             position_id=str(uuid4()),
             market_id=market.market_id,
@@ -671,50 +776,70 @@ class PaperBroker:
                 "date_hint": date_hint, # Tracks city-date exposure caps.
             },
         )
-        self.state.cash_usd -= spend
-        self.state.positions.append(pos)
-        self.save_state()
         open_reason = f"{entry_plan.rationale}; entry_fee=${entry_fee_usdc:.5f}"
-        self.log_trade(
+
+        def mutate_open_position() -> PaperPosition:
+            self.state.cash_usd -= spend
+            self.state.positions.append(pos)
+            return pos
+
+        def log_open_position() -> None:
+            self.log_trade(
+                "OPEN",
+                market,
+                result.side,
+                token_id,
+                shares,
+                result.p_exec,
+                -spend,
+                open_reason,
+                market_type,
+                entry_metadata={
+                    "entry_p_true": result.p_true,
+                    "entry_side_probability": entry_side_probability,
+                    "entry_net_edge": result.net_edge,
+                    "decision_ts": decision_ts,
+                },
+            )
+
+        return self._run_accounting_transaction(
             "OPEN",
-            market,
-            result.side,
-            token_id,
-            shares,
-            result.p_exec,
-            -spend,
-            open_reason,
-            market_type,
-            entry_metadata={
-                "entry_p_true": result.p_true,
-                "entry_side_probability": entry_side_probability,
-                "entry_net_edge": result.net_edge,
-                "decision_ts": decision_ts,
-            },
+            market_id=market.market_id,
+            mutate_state=mutate_open_position,
+            write_trade=log_open_position,
         )
-        return pos
 
     def close_position(self, pos: PaperPosition, market: RawMarket | None, exit_price: float, reason: str) -> float:
         gross_proceeds = pos.shares * exit_price
         exit_fee_usdc = polymarket_taker_fee_usdc(pos.shares, exit_price, self.settings.weather_taker_fee_rate)
         proceeds = gross_proceeds - exit_fee_usdc
         pnl = proceeds - pos.cost_usd
-        self.state.cash_usd += proceeds
-        self.state.realized_pnl_usd += pnl
-        # Track win rate by market type.
         market_type = str(pos.metadata.get("market_type", "temperature"))
-        st = self.state.stats.setdefault(market_type, {"wins": 0, "losses": 0, "pnl": 0.0})
-        if pnl > 0:
-            st["wins"] += 1
-        else:
-            st["losses"] += 1
-        st["pnl"] = round(st["pnl"] + pnl, 6)
-        self.state.positions = [p for p in self.state.positions if p.position_id != pos.position_id]
-        self.save_state()
         dummy = market or RawMarket(pos.market_id, pos.question, None, True, False)
         close_reason = f"{reason}; exit_fee=${exit_fee_usdc:.5f} gross=${gross_proceeds:.5f} net=${proceeds:.5f}"
-        self.log_trade("CLOSE", dummy, pos.side, pos.token_id, pos.shares, exit_price, pnl, close_reason, market_type)
-        return pnl
+
+        def mutate_close_position() -> float:
+            self.state.cash_usd += proceeds
+            self.state.realized_pnl_usd += pnl
+            # Track win rate by market type.
+            st = self.state.stats.setdefault(market_type, {"wins": 0, "losses": 0, "pnl": 0.0})
+            if pnl > 0:
+                st["wins"] += 1
+            else:
+                st["losses"] += 1
+            st["pnl"] = round(st["pnl"] + pnl, 6)
+            self.state.positions = [p for p in self.state.positions if p.position_id != pos.position_id]
+            return pnl
+
+        def log_close_position() -> None:
+            self.log_trade("CLOSE", dummy, pos.side, pos.token_id, pos.shares, exit_price, pnl, close_reason, market_type)
+
+        return self._run_accounting_transaction(
+            "CLOSE",
+            market_id=pos.market_id,
+            mutate_state=mutate_close_position,
+            write_trade=log_close_position,
+        )
 
     def partial_close_position(
         self,
@@ -749,23 +874,32 @@ class PaperBroker:
         cost_basis_closed = pos.cost_usd * fraction
         pnl = proceeds - cost_basis_closed
 
-        self.state.cash_usd += proceeds
-        self.state.realized_pnl_usd += pnl
-
-        # Add PnL by market type, but do not count a partial close as a win/loss.
         market_type = str(pos.metadata.get("market_type", "temperature"))
-        st = self.state.stats.setdefault(market_type, {"wins": 0, "losses": 0, "pnl": 0.0})
-        st["pnl"] = round(st["pnl"] + pnl, 6)
-
-        # Update the remaining position in place.
-        pos.shares = round(pos.shares - shares_to_close, 6)
-        pos.cost_usd = round(pos.cost_usd - cost_basis_closed, 6)
-
         dummy = RawMarket(pos.market_id, pos.question, pos.metadata.get("slug"), True, False)
         close_reason = f"{reason}; exit_fee=${exit_fee_usdc:.5f} gross=${gross_proceeds:.5f} net=${proceeds:.5f}"
-        self.log_trade("PARTIAL_CLOSE", dummy, pos.side, pos.token_id, shares_to_close, exit_price, pnl, close_reason, market_type)
-        self.save_state()
-        return pnl
+
+        def mutate_partial_close_position() -> float:
+            self.state.cash_usd += proceeds
+            self.state.realized_pnl_usd += pnl
+
+            # Add PnL by market type, but do not count a partial close as a win/loss.
+            st = self.state.stats.setdefault(market_type, {"wins": 0, "losses": 0, "pnl": 0.0})
+            st["pnl"] = round(st["pnl"] + pnl, 6)
+
+            # Update the remaining position in place.
+            pos.shares = round(pos.shares - shares_to_close, 6)
+            pos.cost_usd = round(pos.cost_usd - cost_basis_closed, 6)
+            return pnl
+
+        def log_partial_close_position() -> None:
+            self.log_trade("PARTIAL_CLOSE", dummy, pos.side, pos.token_id, shares_to_close, exit_price, pnl, close_reason, market_type)
+
+        return self._run_accounting_transaction(
+            "PARTIAL_CLOSE",
+            market_id=pos.market_id,
+            mutate_state=mutate_partial_close_position,
+            write_trade=log_partial_close_position,
+        )
 
     def log_decision(self, market: RawMarket, result: EdgeResult, note: str, market_type: str = "temperature") -> str:
         exists = self.decisions_csv_path.exists() and self.decisions_csv_path.stat().st_size > 0
@@ -821,6 +955,7 @@ class PaperBroker:
         market_type: str = "",
         entry_metadata: dict[str, Any] | None = None,
     ) -> None:
+        self._ensure_accounting_open()
         exists = self.trades_csv_path.exists() and self.trades_csv_path.stat().st_size > 0
         fieldnames = _ensure_csv_columns(self.trades_csv_path, TRADE_CSV_FIELDNAMES)
         entry_metadata = entry_metadata or {}

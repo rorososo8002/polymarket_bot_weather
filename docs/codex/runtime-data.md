@@ -30,10 +30,19 @@ Read this file only for runtime logs, paper-trading data, dashboard readers, or 
   `paper_decisions.csv` as a cleanup shortcut. `paper_state.json` is the current
   paper account book, `paper_trades.csv` is the execution ledger, and
   `paper_decisions.csv` is the strategy evidence ledger.
+- `paper_state.json.journal` is a paper-accounting transaction marker. It
+  means `paper_state.json` and `paper_trades.csv` may have been interrupted
+  mid-update. Do not delete it just to restart the bot; inspect the state and
+  trade ledgers, reconcile the mismatch, then remove the marker only as part of
+  that operator recovery.
 
 ## Trading Interpretation
 
 - `YES` and `NO` rows in `paper_decisions.csv` are candidate decisions. Actual first entries are `OPEN` rows in `paper_trades.csv`; same-side paper add-ons are `ADD` rows and update an existing open position rather than creating a duplicate position.
+- `OPEN`, `ADD`, `CLOSE`, and `PARTIAL_CLOSE` are the executed paper actions
+  that must update both `paper_state.json` and `paper_trades.csv`. If either
+  write fails, the bot leaves `paper_state.json.journal` and fails closed
+  instead of making more paper trades from uncertain accounting.
 - When entries appear missing, check existing open positions and exposure caps before assuming the entry path is broken.
 - Repeated valid signals for an already-held market should not create duplicate positions. Same-side add-ons are allowed only through the explicit `ADD` path after the add-on price/probability/budget gates pass; opposite-side same-market entries remain blocked.
 
@@ -52,6 +61,13 @@ Read this file only for runtime logs, paper-trading data, dashboard readers, or 
 ## Analysis And Reports
 
 - `paper_decisions.csv` and `paper_trades.csv` are paper-performance source ledgers, not disposable cache files. Do not truncate, rewrite, or delete them to make reports faster.
+- Do not rewrite an existing `paper_trades.csv` just to add newer columns.
+  New trade files use the current full header, but legacy headers should remain
+  as evidence and report code must use backward-compatible fallbacks.
+- If `paper_state.json` contains open positions but `paper_trades.csv` is
+  missing or empty, treat that as an obvious evidence mismatch. Start from
+  fail-closed recovery, not from a fresh account and not from a rewritten
+  trade ledger.
 - New `paper_decisions.csv` rows compact verbose question, reason, and note
   text so the strategy evidence ledger does not become a raw-data warehouse.
   New `paper_event_portfolios.jsonl` rows keep selected legs, rejection

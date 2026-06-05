@@ -115,6 +115,13 @@ specialized reference docs.
   and existing corrupt, structurally invalid, account-number invalid,
   stats-field invalid, or position-field invalid paper state fails closed
   instead of resetting.
+- `paper_state.json` and `paper_trades.csv` are paired paper-accounting ledgers
+  for executed actions. `OPEN`, `ADD`, `CLOSE`, and `PARTIAL_CLOSE` write a
+  small `paper_state.json.journal` before changing the account book and clear
+  it only after both state save and trade logging finish. A leftover journal,
+  or open positions with a missing/empty trade ledger, means the account book
+  and execution ledger may disagree, so startup fails closed for operator
+  reconciliation instead of trading from guessed state.
 - Public dashboard exposure requires a real `DASHBOARD_TOKEN` with at least 32
   characters; empty, short, placeholder, basic, default, change-me, secret,
   token, password, abc, 123456, or other obvious example tokens stop startup
@@ -141,8 +148,9 @@ specialized reference docs.
 - Resolved Brier scoring uses `paper_trades.csv` `OPEN` entry metadata first:
   `entry_p_true` is the YES probability at actual paper entry time. Legacy
   trade CSVs without those columns fall back to the latest entry decision so
-  old reports do not break, but new scoreable entries must carry the entry
-  probability in the execution ledger.
+  old reports do not break. Existing trade CSV headers are not rewritten just
+  to add newer columns; new files get the current full header, while legacy
+  files keep their evidence format and analysis falls back when needed.
 - `paper_raw_snapshots.jsonl` is diagnostic evidence, not a source ledger.
   Normal raw decision snapshots are off by default; `RAW_SNAPSHOTS_MODE=error`
   saves only error evidence, and `debug` is for bounded investigations. Raw
@@ -758,3 +766,17 @@ still preserves `paper_decisions.csv`, but bursty updates for the same
 event/city/date are collapsed to latest-state evaluations, and
 `paper_runner_status.json` reports queue depth, coalesced updates, dropped
 updates, evaluation errors, and recent evaluation timing.
+
+### 2026-06-06: Fail Closed On Paper State And Trade Ledger Transaction Drift
+
+Decision: `OPEN`, `ADD`, `CLOSE`, and `PARTIAL_CLOSE` are guarded by a
+`paper_state.json.journal` transaction marker. The broker writes the marker
+before mutating the paper account, saves `paper_state.json`, appends the
+matching `paper_trades.csv` row, then clears the marker only after both ledgers
+finish. Why: `paper_state.json` is the current account book, while
+`paper_trades.csv` is the execution diary. If a disk or CSV write fails in the
+middle, the bot must not quietly keep trading from one changed ledger and one
+unchanged ledger. Consequence: a leftover journal halts further paper
+accounting writes and makes the next startup fail closed for operator
+reconciliation. Startup also fails closed when open positions exist but the
+trade ledger is missing or empty.

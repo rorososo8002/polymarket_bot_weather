@@ -1274,6 +1274,16 @@ def test_run_cycle_logs_skip_when_entry_bankroll_cannot_price_held_position(monk
         ),
         encoding="utf-8",
     )
+    (tmp_path / "trades.csv").write_text(
+        "\n".join(
+            [
+                "ts,action,market_id,slug,question,market_type,side,token_id,shares,price,cash_delta_or_pnl,reason",
+                "2026-06-01T00:00:00+00:00,OPEN,held,held,Will the highest temperature in Seoul be 25C on May 25?,temperature,YES,missing-token,20.000000,0.500000,-10.000000,fixture held position",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     markets = [market("seoul-26", "26\u00b0C")]
     books = {
         "seoul-26-yes": orderbook("seoul-26-yes", 0.39, 0.40),

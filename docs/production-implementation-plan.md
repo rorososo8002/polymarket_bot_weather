@@ -57,6 +57,12 @@ verified settlement stations and reproducible paper accounting.
 - Persist `paper_state.json` through an atomic temp-file replace. Existing
   corrupt, unreadable, structurally invalid, or position-field invalid paper
   state fails closed instead of starting a new default account.
+- Treat `paper_state.json` and `paper_trades.csv` as paired paper-accounting
+  ledgers for executed actions. `OPEN`, `ADD`, `CLOSE`, and `PARTIAL_CLOSE`
+  write a small `paper_state.json.journal` before changing the account book.
+  If state saving or trade logging fails before the journal is cleared, later
+  paper accounting writes and the next `PaperBroker` startup fail closed for
+  operator reconciliation.
 - Public dashboard binding fails closed unless `DASHBOARD_TOKEN` is at least
   32 characters and not an obvious weak example value. Local development on
   `127.0.0.1` or `localhost` may still run without a token.
@@ -107,9 +113,12 @@ Resolved Brier scoring treats an `OPEN` row in `paper_trades.csv` as the
 canonical entry-time forecast evidence. New `OPEN` rows record `entry_p_true`,
 `entry_side_probability`, `entry_net_edge`, and `decision_ts`; older CSVs
 without those columns fall back to the latest entry decision for that market so
-legacy reports remain readable. `ADD` rows are same-side paper add-ons to an
-existing position; they are trade activity and accounting evidence, but they do
-not replace the original `OPEN` row as the first-entry Brier reference.
+legacy reports remain readable. Existing legacy trade CSV headers are not
+rewritten just to add newer columns; appenders preserve the current header and
+analysis falls back when structured entry fields are absent. `ADD` rows are
+same-side paper add-ons to an existing position; they are trade activity and
+accounting evidence, but they do not replace the original `OPEN` row as the
+first-entry Brier reference.
 `paper_raw_snapshots.jsonl` is high-volume diagnostic evidence, not a source
 ledger. Normal decision snapshots are disabled by default:
 `RAW_SNAPSHOTS_MODE=error` records only error diagnostics, while `debug` may be
@@ -211,6 +220,14 @@ saves write a complete temporary file first and then replace the live file with
 invalid account structure, invalid account number, invalid stats field, or
 invalid position field, `PaperBroker` refuses to start so the bot cannot trade
 from guessed cash, hidden positions, or polluted performance statistics.
+Executed account changes are paired with `paper_trades.csv`, the execution
+ledger. The broker writes `paper_state.json.journal` before applying `OPEN`,
+`ADD`, `CLOSE`, or `PARTIAL_CLOSE`; clears it only after both the state save
+and trade row append finish; and refuses later accounting writes if any step
+fails. A leftover journal means the two ledgers may disagree and startup must
+stop for operator reconciliation. A state file with open positions but a
+missing or empty trade ledger is also treated as an obvious mismatch and fails
+closed.
 `cash_usd` must be a finite number and cannot be negative; `realized_pnl_usd`
 must be a finite number; stats `wins` and `losses` must be non-negative integer
 counts; and stats `pnl` must be finite. Position `side` must be `YES` or `NO`;

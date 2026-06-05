@@ -83,6 +83,11 @@
   `os.replace`, and existing corrupt, structurally invalid, or position-field
   invalid `paper_state.json` fails closed instead of starting from a fresh
   default account.
+- Executed paper accounting actions now guard `paper_state.json` and
+  `paper_trades.csv` with a small transaction journal. `OPEN`, `ADD`, `CLOSE`,
+  and `PARTIAL_CLOSE` leave `paper_state.json.journal` behind if state saving
+  or trade logging fails, and startup refuses to continue until an operator
+  reconciles the account book and execution ledger.
 - Existing `paper_state.json` account numbers and stats now fail closed when
   unsafe: `cash_usd` must be finite and non-negative, `realized_pnl_usd` must be
   finite, stats win/loss counts must be non-negative integers, and stats PnL
@@ -286,6 +291,10 @@
   bounded worker performs evaluation plus `paper_decisions.csv` evidence writes.
   Local verification: focused realtime/coalescer tests passed with `31 passed`;
   full `pytest -q` passed with `383 passed`.
+- Paper state/trade ledger transaction hardening is complete locally and
+  remains paper-only. Local verification: focused paper/analyze/hardening/
+  portfolio/realtime tests passed with `166 passed`; full `pytest -q` passed
+  with `392 passed`.
 - Other local hardening changes have not all been treated as one automatic
   deployment bundle; verify the specific commit and service state before
   assuming a future local change is live.

@@ -311,6 +311,16 @@ def test_realtime_forever_settles_resolved_open_positions_before_streaming(tmp_p
         ),
         encoding="utf-8",
     )
+    trades_path.write_text(
+        "\n".join(
+            [
+                "ts,action,market_id,slug,question,market_type,side,token_id,shares,price,cash_delta_or_pnl,reason",
+                "2026-05-27T16:21:30+00:00,OPEN,held,held,Will the highest temperature in Seoul be 25C or higher on May 28?,temperature,NO,held-no,100.000000,0.400000,-40.000000,fixture held position",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     closed_market = RawMarket(
         market_id="held",
         question="Will the highest temperature in Seoul be 25째C or higher on May 28?",
