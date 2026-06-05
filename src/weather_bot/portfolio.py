@@ -289,11 +289,6 @@ def _temperature_interval_bounds(question: str) -> TemperatureBucketInterval | N
     return temperature_bucket_interval_bounds_f(parsed)
 
 
-def _intervals_do_not_overlap(left: tuple[float, float], right: tuple[float, float]) -> bool:
-    epsilon = 1e-9
-    return left[1] <= right[0] + epsilon or right[1] <= left[0] + epsilon
-
-
 def _bucket_intervals_do_not_overlap(left: TemperatureBucketInterval, right: TemperatureBucketInterval) -> bool:
     epsilon = 1e-9
     if left.upper_f < right.lower_f - epsilon:
@@ -334,17 +329,6 @@ def is_complementary_with_positions(question: str, side: str, held: list[PaperPo
         if held_interval is None or not _bucket_intervals_do_not_overlap(candidate_interval, held_interval):
             return False
     return True
-
-
-def _intervals_cover_all_outcomes(intervals: list[tuple[float, float]]) -> bool:
-    if not intervals:
-        return False
-    ordered = sorted(intervals)
-    if not isinf(ordered[0][0]) or ordered[0][0] > 0:
-        return False
-    if not isinf(ordered[-1][1]) or ordered[-1][1] < 0:
-        return False
-    return all(abs(left[1] - right[0]) <= 1e-9 for left, right in zip(ordered, ordered[1:]))
 
 
 def _bucket_intervals_overlap(intervals: list[TemperatureBucketInterval]) -> bool:

@@ -308,6 +308,11 @@
   matching `OPEN` ledger rows. Local verification: focused
   `tests/test_paper_state_io.py` passed with `45 passed`; full `pytest -q`
   passed with `398 passed`.
+- Dashboard HTML/CSS/JS now lives in `src/weather_bot/dashboard_template.py`,
+  while `src/weather_bot/dashboard.py` keeps the read-only API, file-reading,
+  payload, and HTTP handler logic. This was a mechanical no-behavior cleanup;
+  `weather_bot.dashboard.HTML` remains re-exported for existing tests and
+  callers.
 - Other local hardening changes have not all been treated as one automatic
   deployment bundle; verify the specific commit and service state before
   assuming a future local change is live.
