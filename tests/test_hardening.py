@@ -751,6 +751,44 @@ def test_indicative_best_bid_only_does_not_mark_or_close_position(tmp_path):
     assert float(rows[0]["price"]) == 0.50
 
 
+def test_exit_signal_without_executable_bid_logs_triggered_no_liquidity(tmp_path):
+    settings = Settings(
+        state_path=str(tmp_path / "state.json"),
+        trades_csv_path=str(tmp_path / "trades.csv"),
+        decisions_csv_path=str(tmp_path / "decisions.csv"),
+        raw_snapshots_path=str(tmp_path / "raw.jsonl"),
+        probability_stop_drop_threshold=0.10,
+    )
+    broker = PaperBroker(settings)
+    broker.state.positions = [
+        PaperPosition(
+            position_id="p1",
+            market_id="m1",
+            question="Will NYC reach 90 F on May 25?",
+            token_id="yes",
+            side="YES",
+            entry_price=0.50,
+            shares=10.0,
+            cost_usd=5.0,
+            opened_at=datetime.now(timezone.utc).isoformat(),
+            last_mark_price=0.50,
+            metadata={"entry_p_true": 0.80, "probability_stop_threshold": 0.70},
+        )
+    ]
+    client = FakePolymarketClient(books={"yes": OrderBook("yes", bids=[], asks=[])})
+    latest_edges = {("m1", "YES"): EdgeResult("YES", 0.20, None, -999.0, 0.0, 0.0, "exit evidence")}
+
+    messages = maybe_close_positions(broker, client, {"m1": temp_market()}, latest_edges)
+
+    assert len(broker.state.positions) == 1
+    assert any("HOLD_NO_LIQUIDITY" in message for message in messages)
+    rows = list(csv.DictReader((tmp_path / "trades.csv").open(encoding="utf-8")))
+    assert [row["action"] for row in rows] == ["HOLD_NO_LIQUIDITY"]
+    assert "exit signal fired but no executable liquidity" in rows[0]["reason"]
+    assert "exit_trigger=probability_stop" in rows[0]["reason"]
+    assert "probability stop" in rows[0]["reason"]
+
+
 def test_probability_stop_closes_immediately(tmp_path):
     settings = Settings(
         state_path=str(tmp_path / "state.json"),
@@ -900,6 +938,7 @@ def test_probability_stop_low_liquidity_partial_close_does_not_mark_error(tmp_pa
     assert round(broker.state.positions[0].shares, 6) == 80.0
     rows = list(csv.DictReader((tmp_path / "trades.csv").open(encoding="utf-8")))
     assert [row["action"] for row in rows] == ["PARTIAL_CLOSE"]
+    assert "exit_trigger=probability_stop" in rows[0]["reason"]
 
 
 def test_settlement_risk_blocks_runner_and_closes_full_position(tmp_path):
@@ -1074,6 +1113,8 @@ def test_stale_websocket_pauses_held_position_exit_evaluation(tmp_path):
     assert [row["action"] for row in rows] == ["HOLD_STREAM_UNHEALTHY"]
     assert "held-position exit evaluation paused" in rows[0]["reason"]
     assert "last executable order book depth age 61s exceeds 60s" in rows[0]["reason"]
+    assert broker.state.positions[0].metadata["last_exit_signal_trigger"] == "probability_stop"
+    assert "probability stop" in broker.state.positions[0].metadata["last_exit_signal_reason"]
 
 
 def test_token_stale_websocket_pauses_only_that_position_exit_evaluation(tmp_path):

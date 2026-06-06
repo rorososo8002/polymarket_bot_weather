@@ -186,6 +186,16 @@ specialized reference docs.
   YES/NO token has executable bid depth. Consequence: a globally fresh stream
   can still pause only the stale-token position with `HOLD_STREAM_UNHEALTHY`
   while fresh-token positions continue normal paper evaluation.
+- Held-position exit blockers must preserve the fired exit signal. Why:
+  `paper_trades.csv` is the paper execution ledger, so a generic
+  `HOLD_NO_LIQUIDITY` row cannot distinguish "no exit signal yet" from
+  "probability stop, take profit, or edge faded fired but no executable buyer
+  existed." Consequence: no executable bid depth still logs
+  `HOLD_NO_LIQUIDITY` and stale WebSocket depth still logs
+  `HOLD_STREAM_UNHEALTHY`, but blocked close reasons include
+  `exit_trigger=<trigger>` when `assess_exit()` would close. WebSocket-stale
+  holds also keep the latest model/nowcast exit signal in position metadata
+  without using fake prices.
 - Paper analysis reports treat `paper_decisions.csv` and `paper_trades.csv` as
   source ledgers. Reports may scan full history when that is the promised
   meaning, but they must stream rows and keep only aggregates or bounded

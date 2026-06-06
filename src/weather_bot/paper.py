@@ -23,7 +23,7 @@ from .edge import (
     polymarket_taker_fee_per_share,
     polymarket_taker_fee_usdc,
 )
-from .exit_policy import assess_exit, build_entry_plan, conservative_settlement_value, side_true_probability
+from .exit_policy import ExitAssessment, assess_exit, build_entry_plan, conservative_settlement_value, side_true_probability
 from .polymarket_client import PolymarketClient, parse_api_bool
 from .portfolio import adaptive_event_cap_fraction, is_complementary_with_positions, websocket_pricing_block_reason
 from .runner_status import update_runner_status_fields
@@ -1314,6 +1314,53 @@ def _runner_hold_reason(
     )
 
 
+def _exit_assessment_for_position(
+    pos: PaperPosition,
+    mark: float,
+    edge: EdgeResult | None,
+    settings: Settings,
+    now: datetime,
+) -> ExitAssessment:
+    hours = (now - parse_iso(pos.opened_at)).total_seconds() / 3600.0
+    return assess_exit(pos, mark, edge, settings, hours)
+
+
+def _store_exit_assessment_metadata(
+    pos: PaperPosition,
+    assessment: ExitAssessment,
+    *,
+    blocked_by: str | None = None,
+) -> None:
+    pos.metadata["last_model_fair_price"] = assessment.model_fair_price
+    pos.metadata["last_target_exit_price"] = assessment.target_exit_price
+    pos.metadata["last_market_heat_score"] = assessment.market_heat_score
+    pos.metadata["last_exit_assessment"] = assessment.reason if blocked_by is None else blocked_by
+    if assessment.should_close:
+        pos.metadata["last_exit_signal_trigger"] = assessment.trigger
+        pos.metadata["last_exit_signal_reason"] = assessment.reason
+        if blocked_by:
+            pos.metadata["last_exit_signal_blocker"] = blocked_by
+        else:
+            pos.metadata.pop("last_exit_signal_blocker", None)
+    else:
+        pos.metadata.pop("last_exit_signal_trigger", None)
+        pos.metadata.pop("last_exit_signal_reason", None)
+        pos.metadata.pop("last_exit_signal_blocker", None)
+
+
+def _exit_reason_with_trigger(assessment: ExitAssessment) -> str:
+    return f"exit_trigger={assessment.trigger}; {assessment.reason}"
+
+
+def _blocked_exit_reason(assessment: ExitAssessment, blocker: str) -> str:
+    if assessment.should_close:
+        return (
+            f"exit signal fired but no executable liquidity; "
+            f"exit_trigger={assessment.trigger}; assessment={assessment.reason}; {blocker}"
+        )
+    return blocker
+
+
 def maybe_close_positions(
     broker: PaperBroker,
     client: PolymarketClient,
@@ -1339,6 +1386,7 @@ def maybe_close_positions(
        happened.
     """
     messages: list[str] = []
+    now = datetime.now(timezone.utc)
     stream = getattr(client, "stream", None)
     if stream is not None and hasattr(stream, "health_snapshot"):
         health = stream.health_snapshot()
@@ -1348,7 +1396,9 @@ def maybe_close_positions(
                 market = _market_for_position(pos, market_by_id.get(pos.market_id))
                 market_type = str(pos.metadata.get("market_type", "temperature"))
                 mark = pos.last_mark_price if pos.last_mark_price is not None else pos.entry_price
-                pos.metadata["last_exit_assessment"] = stream_block_reason
+                edge = latest_edges.get((pos.market_id, pos.side))
+                assessment = _exit_assessment_for_position(pos, mark, edge, broker.settings, now)
+                _store_exit_assessment_metadata(pos, assessment, blocked_by=stream_block_reason)
                 pos.metadata["last_websocket_health"] = health
                 broker.log_trade(
                     "HOLD_STREAM_UNHEALTHY",
@@ -1367,7 +1417,6 @@ def maybe_close_positions(
                 )
             broker.save_state()
             return messages
-    now = datetime.now(timezone.utc)
     for pos in list(broker.state.positions):
         try:
             token_block_reason: str | None = None
@@ -1379,7 +1428,9 @@ def maybe_close_positions(
                 market = _market_for_position(pos, market_by_id.get(pos.market_id))
                 market_type = str(pos.metadata.get("market_type", "temperature"))
                 mark = pos.last_mark_price if pos.last_mark_price is not None else pos.entry_price
-                pos.metadata["last_exit_assessment"] = token_block_reason
+                edge = latest_edges.get((pos.market_id, pos.side))
+                assessment = _exit_assessment_for_position(pos, mark, edge, broker.settings, now)
+                _store_exit_assessment_metadata(pos, assessment, blocked_by=token_block_reason)
                 pos.metadata["last_websocket_token_health"] = token_health
                 broker.log_trade(
                     "HOLD_STREAM_UNHEALTHY",
@@ -1407,7 +1458,11 @@ def maybe_close_positions(
                 pos.metadata["no_liquidity_cycles"] = no_liq
                 pos.metadata["absorbable_shares"] = 0.0
                 pos.metadata["can_fully_close"] = False
-                pos.metadata["last_exit_assessment"] = "no executable bid depth; indicative best_bid_ask ignored"
+                edge = latest_edges.get((pos.market_id, pos.side))
+                assessment = _exit_assessment_for_position(pos, mark, edge, broker.settings, now)
+                blocker = "no executable bid depth; indicative best_bid_ask ignored"
+                reason = _blocked_exit_reason(assessment, blocker)
+                _store_exit_assessment_metadata(pos, assessment, blocked_by=reason)
                 if book.indicative_best_bid is not None:
                     pos.metadata["indicative_best_bid"] = round(book.indicative_best_bid, 6)
                 broker.log_trade(
@@ -1418,12 +1473,12 @@ def maybe_close_positions(
                     pos.shares,
                     mark,
                     0.0,
-                    "no executable bid depth; indicative best_bid_ask ignored",
+                    reason,
                     market_type,
                 )
                 messages.append(
                     f"HOLD_NO_LIQUIDITY {pos.side} shares={pos.shares:.2f} "
-                    f"mark={mark:.4f} cycles={no_liq} reason=no executable bid depth; indicative best_bid_ask ignored"
+                    f"mark={mark:.4f} cycles={no_liq} reason={reason}"
                 )
                 continue
 
@@ -1460,13 +1515,9 @@ def maybe_close_positions(
             pos.metadata["can_fully_close"] = can_fully_close
 
             # Step 3: evaluate exit conditions.
-            hours = (now - parse_iso(pos.opened_at)).total_seconds() / 3600.0
             edge = latest_edges.get((pos.market_id, pos.side))
-            assessment = assess_exit(pos, mark, edge, broker.settings, hours)
-            pos.metadata["last_model_fair_price"] = assessment.model_fair_price
-            pos.metadata["last_target_exit_price"] = assessment.target_exit_price
-            pos.metadata["last_market_heat_score"] = assessment.market_heat_score
-            pos.metadata["last_exit_assessment"] = assessment.reason
+            assessment = _exit_assessment_for_position(pos, mark, edge, broker.settings, now)
+            _store_exit_assessment_metadata(pos, assessment)
 
             if not assessment.should_close:
                 continue
@@ -1474,7 +1525,7 @@ def maybe_close_positions(
             market = _market_for_position(pos, market_by_id.get(pos.market_id))
             market_type = str(pos.metadata.get("market_type", "temperature"))
             runner_decision: SettlementRunnerDecision | None = None
-            close_reason = assessment.reason
+            close_reason = _exit_reason_with_trigger(assessment)
             if pos.metadata.get("settlement_runner_active") and assessment.trigger in PROFIT_RUNNER_TRIGGERS:
                 runner_decision = _runner_decision(pos, mark, edge, broker.settings)
                 if runner_decision.keep_runner:
@@ -1482,13 +1533,13 @@ def maybe_close_positions(
                         runner_decision,
                         status="active",
                         held_shares=pos.shares,
-                        assessment_reason=assessment.reason,
+                        assessment_reason=close_reason,
                     )
                     pos.metadata["last_settlement_runner_decision"] = reason
                     broker.log_trade("HOLD_RUNNER", market, pos.side, pos.token_id, pos.shares, mark, 0.0, reason, market_type)
                     messages.append(f"HOLD_RUNNER {pos.side} shares={pos.shares:.2f} price={mark:.4f} reason={reason}")
                     continue
-                close_reason = f"{assessment.reason}; {runner_decision.reason}"
+                close_reason = f"{close_reason}; {runner_decision.reason}"
 
             if runner_decision is None and assessment.trigger in PROFIT_RUNNER_TRIGGERS:
                 runner_decision = _runner_decision(pos, mark, edge, broker.settings)
@@ -1502,7 +1553,7 @@ def maybe_close_positions(
                         reason = (
                             f"tranche=principal_recovery action=hold low_liquidity "
                             f"desired_shares={desired_close:.4f} absorbable={absorbable:.4f}; "
-                            f"{runner_decision.reason}; assessment={assessment.reason}"
+                            f"{runner_decision.reason}; assessment={close_reason}"
                         )
                         broker.log_trade("HOLD_NO_LIQUIDITY", market, pos.side, pos.token_id, pos.shares, mark, 0.0, reason, market_type)
                         messages.append(
@@ -1522,7 +1573,7 @@ def maybe_close_positions(
                         f"runner_target_shares={runner_decision.runner_shares:.4f} "
                         f"exit_vwap={tranche_vwap:.4f} slippage={tranche_slippage:.4f} "
                         f"{'low_liquidity ' if low_liquidity else ''}"
-                        f"{runner_decision.reason}; assessment={assessment.reason}"
+                        f"{runner_decision.reason}; assessment={close_reason}"
                     )
                     pnl = broker.partial_close_position(pos, shares_to_close, tranche_vwap, principal_reason)
                     if not low_liquidity and pos.shares <= runner_decision.max_runner_shares + 0.000001:
@@ -1535,7 +1586,7 @@ def maybe_close_positions(
                         runner_decision,
                         status=runner_status,
                         held_shares=pos.shares,
-                        assessment_reason=assessment.reason,
+                        assessment_reason=close_reason,
                         low_liquidity=low_liquidity,
                     )
                     pos.metadata["last_settlement_runner_decision"] = hold_reason
@@ -1550,7 +1601,7 @@ def maybe_close_positions(
                         f"target_runner={runner_decision.runner_shares:.2f} status={runner_status} reason={hold_reason}"
                     )
                     continue
-                close_reason = f"{assessment.reason}; {runner_decision.reason}"
+                close_reason = f"{close_reason}; {runner_decision.reason}"
 
             # Step 4: execute the selected close path.
             if can_fully_close:

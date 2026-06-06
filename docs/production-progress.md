@@ -454,6 +454,17 @@
   status was `phase=discovering` with empty `last_error`, dashboard HTML
   returned HTTP 200, public bare `/api/status` and query-token `/api/status`
   returned HTTP 403, and header-authenticated `/api/status` returned HTTP 200.
+- Held-position exit blockers now preserve the fired exit signal locally and
+  remain paper-only. If `assess_exit()` says to close but there is no
+  executable bid depth, `paper_trades.csv` keeps `HOLD_NO_LIQUIDITY` instead of
+  pretending to sell, while the reason records
+  `exit signal fired but no executable liquidity` plus
+  `exit_trigger=<trigger>`. Partial closes also preserve the original
+  `exit_trigger`, and stale WebSocket holds store the latest model/nowcast exit
+  signal in position metadata without using fake prices. Local verification:
+  focused hardening pytest passed with `3 passed`, related
+  hardening/exit/realtime pytest passed with `90 passed`, and full
+  `pytest -q` passed with `444 passed`.
 
 ## Next Work
 

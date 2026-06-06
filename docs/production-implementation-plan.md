@@ -448,6 +448,13 @@ risk exemption.
 
 Evaluation failure sentinels such as `net_edge=-999` with no executable
 `p_exec` are not exit signals.
+When an actual exit assessment fires but the close cannot execute, the broker
+must keep the paper-only blocker action instead of pretending to sell. No
+executable bid depth logs `HOLD_NO_LIQUIDITY`, stale executable WebSocket depth
+logs `HOLD_STREAM_UNHEALTHY`, and the reason or position metadata must preserve
+the original `exit_trigger` such as `probability_stop`, `take_profit`, or
+`edge_faded`. Indicative `best_bid_ask` quotes still cannot supply executable
+depth.
 
 ## SKIP Diagnostics Contract
 
