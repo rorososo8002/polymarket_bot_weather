@@ -17,9 +17,10 @@ Date: 2026-05-28 Asia/Seoul
 
 There are uncommitted local changes that should be reviewed before committing:
 
-- Forecast cadence was later slowed to 2 hours for Open-Meteo API budget:
-  - `FORECAST_REFRESH_INTERVAL_SECONDS=7200`
-  - `FORECAST_CACHE_TTL_SECONDS=7200`
+- Forecast HTTP calls now use one-at-a-time Open-Meteo drip-feed defaults:
+  - `FORECAST_REFRESH_INTERVAL_SECONDS=7200` for the market-discovery/WebSocket rebuild cycle, not forecast HTTP cadence
+  - `FORECAST_CACHE_TTL_SECONDS=2400`
+  - `FORECAST_REQUEST_MIN_INTERVAL_SECONDS=60`
 - Dashboard CSV loading was patched to read only recent tail rows instead of loading full runtime CSV files into memory.
 - Runtime/log reading rule was added to `AGENTS.md`: use recent lines or targeted filters by default.
 - Some unused code was removed from probability/weather client modules.
@@ -42,8 +43,9 @@ Do not copy old pre-Oracle runtime files to Oracle. Start the Oracle paper run f
    - `ORDERBOOK_STREAM_ENABLED=true`
    - `ORDERBOOK_STREAM_STALE_SECONDS=60`
    - `RUNNER_HEALTH_STATUS_INTERVAL_SECONDS=5`
-   - `FORECAST_REFRESH_INTERVAL_SECONDS=7200`
-   - `FORECAST_CACHE_TTL_SECONDS=7200`
+   - `FORECAST_REFRESH_INTERVAL_SECONDS=7200` for the market-discovery/WebSocket rebuild cycle, not forecast HTTP cadence
+   - `FORECAST_CACHE_TTL_SECONDS=2400`
+   - `FORECAST_REQUEST_MIN_INTERVAL_SECONDS=60`
    - `FORECAST_RATE_LIMIT_STATE_PATH=/opt/polymarket-weather-bot/data/forecast_rate_limit_state.json`
    - paper trading only
 5. Start services on Oracle:

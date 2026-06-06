@@ -11,9 +11,9 @@ def test_supported_city_allowlist_is_not_used_as_discovery_event_cap():
     assert Settings.discovery_page_size == 100
 
 
-def test_default_forecast_cadence_is_two_hours_to_preserve_api_budget():
+def test_default_forecast_budget_drip_feeds_city_requests():
     assert Settings.forecast_refresh_interval_seconds == 7200
-    assert Settings.forecast_cache_ttl_seconds == 7200
+    assert Settings.forecast_cache_ttl_seconds == 2400
     assert Settings.forecast_rate_limit_state_path == ""
 
 
@@ -129,6 +129,12 @@ def test_settings_allows_zero_shadow_max_rows_as_empty_research_limit():
     assert settings.shadow_max_rows == 0
 
 
+def test_settings_defaults_to_one_forecast_http_request_per_minute():
+    settings = Settings()
+
+    assert settings.forecast_request_min_interval_seconds == 60
+
+
 @pytest.mark.parametrize(
     ("override", "expected_name"),
     [
@@ -224,6 +230,7 @@ def test_load_settings_reads_conservative_strategy_controls(monkeypatch):
 def test_load_settings_reads_forecast_cache_controls(monkeypatch):
     monkeypatch.setenv("FORECAST_CACHE_PATH", "data/custom_forecast_cache.json")
     monkeypatch.setenv("FORECAST_CACHE_TTL_SECONDS", "600")
+    monkeypatch.setenv("FORECAST_REQUEST_MIN_INTERVAL_SECONDS", "30")
     monkeypatch.setenv("FORECAST_REQUEST_LOG_PATH", "data/custom_forecast_request_log.jsonl")
     monkeypatch.setenv("FORECAST_RATE_LIMIT_STATE_PATH", "data/custom_forecast_rate_limit_state.json")
 
@@ -231,6 +238,7 @@ def test_load_settings_reads_forecast_cache_controls(monkeypatch):
 
     assert settings.forecast_cache_path == "data/custom_forecast_cache.json"
     assert settings.forecast_cache_ttl_seconds == 600
+    assert settings.forecast_request_min_interval_seconds == 30
     assert settings.forecast_request_log_path == "data/custom_forecast_request_log.jsonl"
     assert settings.forecast_rate_limit_state_path == "data/custom_forecast_rate_limit_state.json"
 

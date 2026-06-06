@@ -30,8 +30,10 @@ verified settlement stations and reproducible paper accounting.
   `date_hint` is not forecastable strategy evidence. The runner must log SKIP
   before calling Open-Meteo rather than letting `estimate_weather_probability`
   fall back to today's date.
-- Refresh Open-Meteo forecasts every 2 hours by default, unless an operator
-  deliberately overrides the cadence.
+- Open-Meteo forecast HTTP calls are globally serialized and drip-fed by
+  `FORECAST_REQUEST_MIN_INTERVAL_SECONDS=60` by default. One real request must
+  finish or timeout, then at least 60 seconds must pass before the next real
+  Open-Meteo HTTP request starts. Cache hits do not count as calls.
 - Use the Polymarket CLOB WebSocket market stream for order books by default.
 - Keep token IDs for open positions subscribed even when discovery moves to
   newer markets.
@@ -169,12 +171,18 @@ opens. The broker may still block entry for exposure, same-market hedge
 protection, missing token IDs, low confidence, invalid prices, insufficient
 liquidity, abnormal YES+NO ask sums, weak net return, or stale dependencies.
 
-Open-Meteo forecast refresh remains on the default 2-hour cadence unless an
-operator explicitly changes it. Realtime paper evaluation may recalculate
-same-station nowcast-backed `WeatherSignal` values on
-`STATION_NOWCAST_CACHE_TTL_SECONDS` using the existing ensemble client/cache, so
-same-day observed-temperature evidence can update without forcing extra
-Open-Meteo forecast HTTP calls.
+Open-Meteo forecast HTTP requests are not a burst job. The production default
+keeps `FORECAST_CACHE_TTL_SECONDS=2400` and
+`FORECAST_REQUEST_MIN_INTERVAL_SECONDS=60`, so the forecast answer sheet is
+fresh for 40 minutes while real HTTP calls move through one global queue:
+previous request finishes or times out, at least 60 seconds pass, then the next
+city/station request may start. `FORECAST_REFRESH_INTERVAL_SECONDS=7200` remains
+the larger market-discovery and stream-cycle interval, not the forecast-call
+burst cadence. Realtime paper evaluation may recalculate same-station
+nowcast-backed `WeatherSignal` values on `STATION_NOWCAST_CACHE_TTL_SECONDS`
+using the existing ensemble client/cache, so same-day observed-temperature
+evidence can update without turning cache hits into extra Open-Meteo HTTP
+calls.
 
 Entry must satisfy both:
 
@@ -304,10 +312,36 @@ object when present.
   It checks that the market is temperature-shaped, the city is trading-ready,
   and required date evidence exists. Markets that fail this gate record SKIP
   diagnostics without spending forecast API calls.
-- `forecast_rate_limit_state.json` persists an Open-Meteo daily-limit cooldown
-  after HTTP 429. A fresh runner process must read it and skip new forecast
-  HTTP calls until the recorded UTC reset time, while still allowing fresh
-  cache hits.
+- `forecast_rate_limit_state.json` persists Open-Meteo cooldowns after HTTP
+  429. Daily quota responses block new forecast HTTP calls until the recorded
+  next UTC reset time, while `Too many concurrent requests` responses use a
+  short 15-minute `concurrent` cooldown. A fresh runner process must read the
+  memo and skip new forecast HTTP calls while it is active, while still
+  allowing fresh cache hits. Legacy memo files without `kind` are reclassified
+  from their `reason` text.
+- `ReadTimeout` from Open-Meteo is a temporary unanswered forecast call, not a
+  reason to hammer the same forecast key immediately. The client does not
+  retry `ReadTimeout` inside the same request. It records one real HTTP attempt
+  in `forecast_request_log.jsonl`, places that exact forecast cache key under a
+  30-minute in-process temporary failure memo, and lets other city/station/date
+  keys continue. The skipped key can be tried again after the memo expires.
+- Real Open-Meteo forecast HTTP calls use one global queue across client
+  instances. Cache hits return immediately because they do not spend API
+  budget. On a cache miss, the previous real request must finish or timeout,
+  then the client waits at least `FORECAST_REQUEST_MIN_INTERVAL_SECONDS` before
+  starting the next real HTTP request. This is the intended 41-city rotation
+  shape:
+
+```text
+Seoul request starts
+request finishes or times out
+wait at least 60 seconds
+Beijing request starts
+request finishes or times out
+wait at least 60 seconds
+next city
+```
+
 - `WEATHER_BIAS_JSON` is optional forecast calibration data. If it is empty,
   the bot uses conservative neutral defaults. If it is explicitly set, the file
   must be readable valid JSON shaped as station IDs to numeric variable bias
@@ -447,8 +481,10 @@ ORDERBOOK_STREAM_ENABLED=true
 ORDERBOOK_STREAM_URL=wss://ws-subscriptions-clob.polymarket.com/ws/market
 ORDERBOOK_STREAM_STALE_SECONDS=60
 RUNNER_HEALTH_STATUS_INTERVAL_SECONDS=5
+# market-discovery/WebSocket rebuild cycle, not forecast HTTP cadence
 FORECAST_REFRESH_INTERVAL_SECONDS=7200
-FORECAST_CACHE_TTL_SECONDS=7200
+FORECAST_CACHE_TTL_SECONDS=2400
+FORECAST_REQUEST_MIN_INTERVAL_SECONDS=60
 FORECAST_RATE_LIMIT_STATE_PATH=forecast_rate_limit_state.json
 WEATHER_BIAS_JSON=
 STATION_NOWCAST_ENABLED=true

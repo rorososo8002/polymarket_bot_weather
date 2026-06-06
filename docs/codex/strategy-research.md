@@ -18,7 +18,11 @@ Read this file only for strategy changes, probability modeling, trading behavior
 - Unknown markets and unknown stations are skips, not guesses or city-centroid fallbacks.
 - The current paper strategy is temperature-only. There is no environment
   switch that re-enables non-temperature weather markets.
-- Refresh forecast data through the Open-Meteo cache every 2 hours by default.
+- Refresh forecast data through the Open-Meteo cache with a default
+  `FORECAST_CACHE_TTL_SECONDS=2400`. Real Open-Meteo forecast HTTP calls are
+  globally serialized by `FORECAST_REQUEST_MIN_INTERVAL_SECONDS=60`: one
+  request must finish or timeout, then at least 60 seconds pass before the next
+  real request starts.
 - Apply the forecast TTL to memory and disk cache entries alike. A reachable
   dashboard is not proof of fresh forecast data; inspect the last successful
   forecast time and cache age.

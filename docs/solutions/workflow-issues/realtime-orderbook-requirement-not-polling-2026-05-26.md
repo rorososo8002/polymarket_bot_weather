@@ -15,7 +15,7 @@ tags: [realtime, orderbook, websocket, trading, requirements]
 # Realtime orderbook requirements are not polling requirements
 
 ## Context
-The bot requirement was to refresh forecasts on a slow cadence while monitoring Polymarket order books in real time. A short REST interval was still described as order-book monitoring, which violated the requirement and confused the production docs.
+The bot requirement was to protect Open-Meteo forecast calls while monitoring Polymarket order books in real time. A short REST interval was still described as order-book monitoring, which violated the requirement and confused the production docs.
 
 ## Guidance
 Treat realtime trading data requirements as stream requirements unless the user explicitly accepts polling. For this bot, the default long-running path must use the Polymarket CLOB WebSocket market channel, maintain an in-memory order-book cache, and trigger evaluation from WebSocket updates.
@@ -25,6 +25,7 @@ Configuration examples and handoff docs should show only the realtime path:
 ```text
 ORDERBOOK_STREAM_ENABLED=true
 ORDERBOOK_STREAM_URL=wss://ws-subscriptions-clob.polymarket.com/ws/market
+# market-discovery/WebSocket rebuild cycle, not forecast HTTP cadence
 FORECAST_REFRESH_INTERVAL_SECONDS=7200
 ```
 
@@ -42,13 +43,13 @@ Trading behavior changes materially when prices are observed by event stream ins
 Before:
 
 ```text
-Forecasts refresh on the configured cadence; order books use a short REST interval.
+Forecast calls are protected by cache/request pacing; order books use a short REST interval.
 ```
 
 After:
 
 ```text
-Forecasts refresh on the configured cadence; order books are monitored through WebSocket events.
+Forecast calls are protected by cache/request pacing; order books are monitored through WebSocket events.
 ```
 
 ## Related

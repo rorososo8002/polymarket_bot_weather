@@ -31,14 +31,19 @@ specialized reference docs.
   means use neutral defaults, but a missing, unreadable, invalid JSON,
   malformed, or non-numeric explicit file produces `forecast-unavailable` with
   zero confidence instead of silently removing calibration.
-- Forecasts refresh every 2 hours by default. Order books use the Polymarket
-  CLOB WebSocket stream, and open-position token IDs stay subscribed until the
-  position closes or settles.
+- Real Open-Meteo forecast HTTP calls are globally drip-fed by
+  `FORECAST_REQUEST_MIN_INTERVAL_SECONDS=60`: one request must finish or
+  timeout, then at least 60 seconds pass before the next real request starts.
+  `FORECAST_CACHE_TTL_SECONDS=2400` is the default forecast answer-sheet
+  freshness window. Cache hits do not count as calls. Order books use the
+  Polymarket CLOB WebSocket stream, and open-position token IDs stay subscribed
+  until the position closes or settles.
 - Realtime nowcast-backed `WeatherSignal` refresh is separate from the
-  Open-Meteo forecast refresh cycle. Why: forecasts are slower-moving and
-  API-budgeted, while same-day observed high/low evidence can change during the
-  2-hour forecast window. Consequence: realtime paper decisions may recalculate
-  station nowcast on its own cache TTL using the existing forecast cache.
+  Open-Meteo forecast cache/request throttle. Why: forecasts are slower-moving and
+  API-budgeted, while same-day observed high/low evidence can change while a
+  cached forecast answer sheet is still valid. Consequence: realtime paper
+  decisions may recalculate station nowcast on its own cache TTL using the
+  existing forecast cache.
 - The WebSocket receiver thread must not run heavy strategy evaluation or write
   the strategy ledger directly. It updates the order-book cache and submits
   event work to a bounded coalescer/worker, which merges short bursts by
@@ -150,8 +155,8 @@ specialized reference docs.
 - Numeric Settings values for paper money, risk caps, fees, and runtime
   freshness windows fail closed at startup when they are outside safe ranges.
   This prevents negative orders, negative fees, impossible exposure fractions,
-  fee rates above 1, or zero timing windows from contaminating
-  paper-performance evidence.
+  fee rates above 1, zero cache TTL, or zero stream-cycle timing windows from
+  contaminating paper-performance evidence.
 - Dashboard port and shadow research integer limits are also startup
   validation targets. `DASHBOARD_PORT` must be a real TCP port from 1 to 65535;
   shadow research collection limits must be sane integers, with
@@ -194,10 +199,29 @@ specialized reference docs.
   HTTP attempts are recorded in `forecast_request_log.jsonl` with cache-miss
   reason and safe city/station metadata; the log rotates at 10MB into
   `data/archive/` with zstd compression.
+- Real Open-Meteo forecast HTTP calls are serialized across
+  `OpenMeteoEnsembleClient` instances. Why: Open-Meteo can reject bursty or
+  overlapping city requests with `Too many concurrent requests`, and a timeout
+  can still be running server-side after the local client gives up.
+  Consequence: cache hits return immediately, but cache misses wait behind the
+  previous real request and then honor
+  `FORECAST_REQUEST_MIN_INTERVAL_SECONDS=60` before starting.
 - `forecast_rate_limit_state.json` is the Open-Meteo cooldown memo, not a
-  forecast. When a real HTTP request returns 429, the bot records a UTC
-  `blocked_until` time and later runner cycles skip new Open-Meteo calls until
-  that time. Cache hits can still be used because they do not spend API budget.
+  forecast. When a real HTTP request returns 429, the bot records the 429 kind
+  and a UTC `blocked_until` time, then later runner cycles skip new
+  Open-Meteo calls until that time. Daily quota responses use the next UTC
+  reset cooldown. `Too many concurrent requests` uses a short 15-minute
+  `concurrent` cooldown and does not permanently disable the client for the
+  whole market-discovery/stream cycle. Legacy state files without `kind` are
+  reclassified from their reason text, so old concurrent memos do not keep behaving like
+  daily-limit blocks. Cache hits can still be used because they do not spend API
+  budget.
+- Open-Meteo `ReadTimeout` is handled as a per-forecast-key temporary miss.
+  Why: a server-side request can still be running after the local client gives
+  up, so immediate retries can stack up behind one slow city and trigger
+  concurrent-request limiting. Consequence: one timed-out key receives a
+  30-minute in-process temporary failure memo, repeated calls for that same key
+  fail fast without another HTTP attempt, and other city keys continue.
 - Station nowcast caches are not METAR/HKO call ledgers. Real AWC METAR and
   HKO max/min HTTP attempts are recorded in
   `station_nowcast_request_log.jsonl` with source, request time, status, and
@@ -235,20 +259,20 @@ confidence. Why: city-centroid forecasts are exploration data, not production
 trading data. Consequence: parser support and trading support use the same
 verified station set.
 
-### 2026-05-26: Forecast Cache Refresh Is 30 Minutes
+### 2026-05-26: Forecast API Budget Must Be Protected
 
-Decision: Forecast cache TTL and refresh interval default to 7200 seconds. Why:
-Open-Meteo forecast data moves slower than order books, and the free API budget
-can be exhausted by many ensemble city-date requests. Consequence: WebSocket
-evaluations keep streaming prices in real time, while forecast refreshes spend
-API budget more slowly.
+Decision: Forecast API budget must be protected with cache freshness and real
+request pacing. Why: Open-Meteo forecast data moves slower than order books,
+and the free API budget can be exhausted by many ensemble city-date requests.
+Consequence: current forecast HTTP calls use a 40-minute cache TTL plus a
+one-request-at-a-time 60-second throttle.
 
 ### 2026-05-26: Order Books Use The CLOB WebSocket Stream
 
 Decision: Default order-book monitoring uses the Polymarket CLOB WebSocket
 market channel. Why: realtime order-book monitoring was required; a REST loop
-is polling. Consequence: discovery/forecasts refresh slowly while book events
-trigger paper evaluation.
+is polling. Consequence: discovery cycles remain slower, real forecast HTTP
+requests are drip-fed, and book events trigger paper evaluation.
 
 ### 2026-05-26: Keep Paper Trading As The Execution Boundary
 
@@ -543,11 +567,11 @@ operator must fix the setting before paper trading continues.
 Decision: `Settings` validates paper-money, risk-fraction, fee-rate, and
 runtime-cadence values as soon as settings are created. Why: a negative minimum
 order, negative fee rate, fee rate above 1, exposure cap above 1, zero
-bankroll, zero cache TTL, zero forecast refresh interval, or zero stale window
-makes the paper account measure a broken experiment instead of strategy
-performance. Consequence: invalid env values raise `ValueError` with the
-setting name and range rule before the live paper runner, dashboard payload, or
-paper broker can start from bad assumptions.
+bankroll, zero cache TTL, zero stream-cycle interval, or zero stale window makes
+the paper account measure a broken experiment instead of strategy performance.
+Consequence: invalid env values raise `ValueError` with the setting name and
+range rule before the live paper runner, dashboard payload, or paper broker can
+start from bad assumptions.
 
 ### 2026-06-03: Use Executable Depth Health For WebSocket Safety
 
@@ -660,12 +684,11 @@ observed high/low, while unlabeled rows produce no nowcast evidence.
 
 Decision: Realtime paper evaluation can recalculate market `WeatherSignal`
 values after `STATION_NOWCAST_CACHE_TTL_SECONDS` even when the larger
-Open-Meteo forecast cycle has not reached its 2-hour refresh boundary. Why:
-Open-Meteo forecasts are budget-sensitive and slow-moving, but same-day
-observed high/low evidence can change intraday and should affect entry/exit
-judgment. Consequence: the runner reuses the existing forecast client/cache for
-forecast evidence while allowing station nowcast to refresh on its own cache
-TTL.
+market-discovery/stream cycle has not restarted. Why: Open-Meteo forecasts are
+budget-sensitive and slow-moving, but same-day observed high/low evidence can
+change intraday and should affect entry/exit judgment. Consequence: the runner
+reuses the existing forecast client/cache for forecast evidence while allowing
+station nowcast to refresh on its own cache TTL.
 
 ### 2026-06-04: Gate Untradable Markets Before Forecast Requests
 
@@ -729,13 +752,43 @@ probability estimation, WebSocket subscription, or paper trade logging.
 
 ### 2026-06-04: Slow Open-Meteo Forecast Refresh And Persist Daily Limit Cooldown
 
-Decision: Refresh Open-Meteo forecasts every 2 hours by default and persist
-HTTP 429 daily-limit cooldowns in `forecast_rate_limit_state.json`. Why: the
-ensemble API can count one weather request as multiple equivalent calls, so a
-30-minute cadence across many trading-ready cities can drain the free daily
-budget. Consequence: realtime order books still stream, cached forecasts remain
-usable, but new forecast HTTP calls pause until the recorded UTC reset time
-after a daily-limit response.
+Status: Superseded for refresh cadence by the 2026-06-06 drip-feed rule, but
+the persisted 429 cooldown behavior remains active.
+Decision: Persist HTTP 429 cooldowns in `forecast_rate_limit_state.json`.
+Daily quota responses use the next UTC reset time, while `Too many concurrent
+requests` uses a 15-minute `concurrent` cooldown. Why: the ensemble API can
+count one weather request as multiple equivalent calls, but a burst/concurrency
+warning is not the same as exhausting the whole daily quota. Consequence:
+realtime order books still stream, cached forecasts remain usable, new forecast
+HTTP calls pause for the right cooldown window, and the dashboard can
+distinguish `rate_limit_kind`.
+
+### 2026-06-06: Do Not Immediately Retry Open-Meteo ReadTimeouts
+
+Decision: A `ReadTimeout` is not retried immediately by
+`OpenMeteoEnsembleClient`. The failed forecast cache key gets a 30-minute
+temporary failure memo, while other forecast keys can continue. Why: if the
+client times out after 20 seconds, Open-Meteo may still be processing the
+server-side request; calling the same key again can turn one slow city into a
+request stack. Consequence: `forecast_request_log.jsonl` records only the real
+timed-out HTTP attempt with `temporary_failure_kind=read_timeout`, same-key
+re-entry fails fast as unavailable, and the key is retried only after the memo
+expires.
+
+### 2026-06-06: Drip-Feed Open-Meteo Forecast HTTP Calls
+
+Decision: Real Open-Meteo forecast HTTP requests are serialized globally across
+`OpenMeteoEnsembleClient` instances and spaced by
+`FORECAST_REQUEST_MIN_INTERVAL_SECONDS=60` after the previous real request
+finishes or times out. The forecast cache TTL defaults to
+`FORECAST_CACHE_TTL_SECONDS=2400`, so a roughly 40-minute 40-city rotation can
+refresh one city at a time instead of keeping every successful forecast valid
+through a long multi-market window. Why: Open-Meteo rejected the prior bursty
+pattern with `Too many concurrent requests`, and a local timeout can still
+represent a server-side request in progress. Consequence: cache hits return
+immediately, but cache misses follow the shape "city request starts ->
+finish/timeout -> wait at least 60 seconds -> next city request"; do not batch
+many cities into one forecast request or immediately retry a slow city.
 
 ### 2026-06-04: Keep Runtime Raw Diagnostics Bounded By Default
 

@@ -160,7 +160,7 @@ For repeated SKIPs, collect:
 - WebSocket health: thread alive, stale or fresh, subscribed token count.
 - Order-book evidence: bid depth, ask depth, spread, and whether depth came
   from executable levels.
-- Count by reason over a fixed window such as 30 minutes, 2 hours, or 24 hours.
+- Count by reason over a fixed operator-chosen window such as 1 hour or 24 hours.
 
 ## When To Investigate
 

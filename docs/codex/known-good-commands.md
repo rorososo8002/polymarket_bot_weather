@@ -33,37 +33,50 @@ summary:
 & 'C:\Users\wpdla\Python312\python.exe' --version
 ```
 
-## Oracle SSH Preflight
+## Oracle SSH Key Lookup
 
 Use the private key only as an SSH identity file. Never open, print, copy, or
 commit its contents. Do not use the adjacent `.pub` file.
 
+Do not hand-type the Korean Oracle SSH directory path from logs. In Codex or
+PowerShell output, that path can appear mojibaked or can be blocked by the
+sandbox. Discover the directory object under `Documents`, then join the known
+key filename:
+
 ```powershell
-$key = 'C:\Users\wpdla\Documents\오라클ssh\ssh-key-2026-05-25.key'
-if (-not (Test-Path -LiteralPath $key)) {
-  $key = (Get-ChildItem -LiteralPath 'C:\Users\wpdla\Documents' -Recurse -Filter 'ssh-key-2026-05-25.key' -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
-}
+$sshDir = Get-ChildItem -LiteralPath "$env:USERPROFILE\Documents" -Directory |
+  Where-Object { $_.Name -like '*ssh*' } |
+  Select-Object -First 1
+$key = Join-Path $sshDir.FullName 'ssh-key-2026-05-25.key'
 $oracle = 'ubuntu@140.245.69.242'
-Test-Path -LiteralPath $key
+Test-Path -LiteralPath $key -PathType Leaf
+```
+
+If sandboxing reports access denied for the key directory, request one
+escalated `scp` or `ssh` command. Do not keep trying path spellings. The key
+contents must not be printed.
+
+## Oracle SSH Preflight
+
+After running the key lookup block:
+
+```powershell
 ssh -i $key $oracle date
 ```
 
 `Test-Path` checks whether the key file exists without reading its contents.
 The `date` command is a harmless first SSH request. If this fails, inspect that
-error before attempting longer remote commands.
-Run repeated SSH checks serially when they use this same Windows identity file.
+error before attempting longer remote commands. Run repeated SSH checks
+serially when they use this same Windows identity file.
 
 ## Oracle Interactive Session
 
 Use an interactive session for multi-step remote work. This avoids fragile
 nested quoting between Windows PowerShell and the remote Linux shell.
 
+After running the key lookup block:
+
 ```powershell
-$key = 'C:\Users\wpdla\Documents\오라클ssh\ssh-key-2026-05-25.key'
-if (-not (Test-Path -LiteralPath $key)) {
-  $key = (Get-ChildItem -LiteralPath 'C:\Users\wpdla\Documents' -Recurse -Filter 'ssh-key-2026-05-25.key' -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
-}
-$oracle = 'ubuntu@140.245.69.242'
 ssh -i $key $oracle
 ```
 
@@ -76,14 +89,10 @@ sudo -u polymarket .venv/bin/python -m pytest -q
 
 ## Oracle Service Logs
 
-For a bounded recent log check from local PowerShell:
+For a bounded recent log check from local PowerShell, first run the key lookup
+block, then:
 
 ```powershell
-$key = 'C:\Users\wpdla\Documents\오라클ssh\ssh-key-2026-05-25.key'
-if (-not (Test-Path -LiteralPath $key)) {
-  $key = (Get-ChildItem -LiteralPath 'C:\Users\wpdla\Documents' -Recurse -Filter 'ssh-key-2026-05-25.key' -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
-}
-$oracle = 'ubuntu@140.245.69.242'
 ssh -i $key $oracle sudo journalctl -u polymarket-weather-bot --since=-30min --no-pager
 ```
 
@@ -92,14 +101,10 @@ spaces because nested shell quoting becomes fragile.
 
 ## Oracle SCP Shape
 
-Use this shape when a specific bounded file transfer is required:
+Use this shape when a specific bounded file transfer is required. First run the
+key lookup block, then:
 
 ```powershell
-$key = 'C:\Users\wpdla\Documents\오라클ssh\ssh-key-2026-05-25.key'
-if (-not (Test-Path -LiteralPath $key)) {
-  $key = (Get-ChildItem -LiteralPath 'C:\Users\wpdla\Documents' -Recurse -Filter 'ssh-key-2026-05-25.key' -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
-}
-$oracle = 'ubuntu@140.245.69.242'
 scp -i $key '.\path\to\file' "${oracle}:/tmp/"
 ```
 
@@ -122,14 +127,9 @@ Example local script path:
 .deploy_tmp/update_forecast_env_1800.sh
 ```
 
-Copy and run it:
+Copy and run it after the key lookup block:
 
 ```powershell
-$key = 'C:\Users\wpdla\Documents\오라클ssh\ssh-key-2026-05-25.key'
-if (-not (Test-Path -LiteralPath $key)) {
-  $key = (Get-ChildItem -LiteralPath 'C:\Users\wpdla\Documents' -Recurse -Filter 'ssh-key-2026-05-25.key' -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
-}
-$oracle = 'ubuntu@140.245.69.242'
 scp -i $key .deploy_tmp\update_forecast_env_1800.sh "${oracle}:/tmp/update_forecast_env_1800.sh"
 ssh -i $key $oracle bash /tmp/update_forecast_env_1800.sh
 ```
@@ -157,3 +157,4 @@ Do not print the real dashboard token in logs, docs, commits, or final answers.
 - `docs/codex/vps-dashboard.md`
 - `docs/solutions/workflow-issues/pytest-temp-permission-2026-05-26.md`
 - `docs/solutions/workflow-issues/run-remote-pytest-from-app-cwd.md`
+- `docs/solutions/workflow-issues/verify-ssh-key-file-before-tightening-permissions.md`

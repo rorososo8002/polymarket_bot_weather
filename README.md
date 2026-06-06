@@ -7,7 +7,9 @@ This bot is intentionally conservative:
 - It registers 41 Polymarket weather cities, but paper trading runs only on the
   40 trading-ready cities with conflict-free Polymarket rule evidence.
 - It forecasts at the exact station used by the market rules, not a city center.
-- It refreshes forecast data every 2 hours by default.
+- It drip-feeds real Open-Meteo forecast HTTP calls one at a time, with at
+  least 60 seconds after one request finishes or times out before the next
+  starts.
 - It monitors Polymarket order books through the CLOB WebSocket market stream by default.
 - It is paper-only. No private key is required and no real orders are sent.
 
@@ -67,8 +69,10 @@ ORDERBOOK_STREAM_ENABLED=true
 ORDERBOOK_STREAM_URL=wss://ws-subscriptions-clob.polymarket.com/ws/market
 ORDERBOOK_STREAM_HEARTBEAT_SECONDS=10
 ORDERBOOK_STREAM_RECONNECT_SECONDS=2
+# market-discovery/WebSocket rebuild cycle, not forecast HTTP cadence
 FORECAST_REFRESH_INTERVAL_SECONDS=7200
-FORECAST_CACHE_TTL_SECONDS=7200
+FORECAST_CACHE_TTL_SECONDS=2400
+FORECAST_REQUEST_MIN_INTERVAL_SECONDS=60
 DISCOVERY_MAX_PAGES=8
 DISCOVERY_PAGE_SIZE=100
 ```
@@ -85,7 +89,13 @@ registered station list, the 40-city trading-ready execution list, or normal
 category discovery after 41 events. Runner status reports the actual event,
 city, market, and token coverage.
 
-The order-book path is event-driven from the Polymarket CLOB WebSocket market channel. Forecast and market snapshots are refreshed every 2 hours by default; forecast requests should not run on every order-book update.
+The order-book path is event-driven from the Polymarket CLOB WebSocket market
+channel. Forecast cache entries stay fresh for 40 minutes by default, and real
+Open-Meteo HTTP requests are globally serialized: one city request finishes or
+times out, then the bot waits at least 60 seconds before the next real
+Open-Meteo request. `FORECAST_REFRESH_INTERVAL_SECONDS=7200` remains the larger
+market-discovery and stream-cycle interval, not permission to burst forecast
+requests.
 
 ## Registered Station Registry
 

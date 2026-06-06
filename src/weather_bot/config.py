@@ -40,6 +40,7 @@ _SHADOW_POSITIVE_INTEGER_SETTINGS = (
 )
 
 _NON_NEGATIVE_INTEGER_SETTINGS = (
+    "forecast_request_min_interval_seconds",
     "shadow_max_rows",
 )
 
@@ -120,7 +121,8 @@ class Settings:
     shadow_min_trade_usdc: float = 100.0
     shadow_compare_window_seconds: int = 86400
     forecast_cache_path: str = ""
-    forecast_cache_ttl_seconds: int = 7200
+    forecast_cache_ttl_seconds: int = 2400
+    forecast_request_min_interval_seconds: int = 60
     forecast_request_log_path: str = ""
     forecast_rate_limit_state_path: str = ""
     station_nowcast_enabled: bool = True
@@ -380,6 +382,10 @@ def load_settings() -> Settings:
         ),
         forecast_cache_path=os.getenv("FORECAST_CACHE_PATH", Settings.forecast_cache_path),
         forecast_cache_ttl_seconds=_int_env("FORECAST_CACHE_TTL_SECONDS", Settings.forecast_cache_ttl_seconds),
+        forecast_request_min_interval_seconds=_int_env(
+            "FORECAST_REQUEST_MIN_INTERVAL_SECONDS",
+            Settings.forecast_request_min_interval_seconds,
+        ),
         forecast_request_log_path=os.getenv(
             "FORECAST_REQUEST_LOG_PATH",
             Settings.forecast_request_log_path,

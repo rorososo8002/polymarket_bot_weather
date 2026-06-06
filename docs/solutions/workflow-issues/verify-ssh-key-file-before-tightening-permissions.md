@@ -1,7 +1,7 @@
 ---
 title: Verify SSH key file before tightening permissions
 date: 2026-05-26
-last_updated: 2026-06-03
+last_updated: 2026-06-06
 category: workflow-issues
 module: vps_operations
 problem_type: workflow_issue
@@ -10,8 +10,10 @@ severity: low
 applies_when:
   - "Checking Oracle VPS access from Windows PowerShell"
   - "The recursive SSH key search hits an access-denied directory"
+  - "The Oracle SSH directory has Korean characters or appears mojibaked in logs"
+  - "The sandbox cannot read the local SSH key directory without escalation"
   - "Several SSH checks need to use the same private key"
-tags: [ssh, powershell, vps, oracle, private-key, workflow]
+tags: [ssh, powershell, vps, oracle, private-key, workflow, unicode-path]
 ---
 
 # Verify SSH Key File Before Tightening Permissions
@@ -30,28 +32,49 @@ parallel SSH checks also produced intermittent `Identity file ... not
 accessible: Permission denied` errors while trying to read the same Windows
 private key.
 
+A third version happened during deployment from the sandboxed Codex
+environment: typing the Korean Oracle SSH directory path directly, or relying
+on a mojibaked path copied from documentation, produced empty output or access
+errors. The fix was to discover the directory object under `Documents` by name
+pattern, then join the known key filename. When sandbox permissions blocked the
+key directory, the correct next step was a single escalated `scp` or `ssh`
+request that did not print or open the key.
+
 ## 2. Why It Mattered
 
 Tightening permissions on the wrong path can leave SSH still failing while
 making the investigation look like a permissions issue. It also increases the
 risk of accidentally printing or opening key material while troubleshooting.
 
+For Korean or otherwise non-ASCII path names, hand-typing a path from a log is
+fragile. The path may render differently in PowerShell, Codex, Markdown, or the
+terminal transcript. Treat the directory object as the truth, not the displayed
+text.
+
 ## 3. How It Was Fixed
 
-First locate the key file without reading its contents:
+First locate the key file without reading its contents. Prefer object-based
+directory discovery over hand-typing the Korean path:
 
 ```powershell
-$key = 'C:\Users\wpdla\Documents\오라클ssh\ssh-key-2026-05-25.key'
-Test-Path -LiteralPath $key
+$sshDir = Get-ChildItem -LiteralPath "$env:USERPROFILE\Documents" -Directory |
+  Where-Object { $_.Name -like '*ssh*' } |
+  Select-Object -First 1
+$key = Join-Path $sshDir.FullName 'ssh-key-2026-05-25.key'
+Test-Path -LiteralPath $key -PathType Leaf
 ```
 
-If the exact path is not present, fall back to a search that tolerates
-access-denied directories:
+If the directory object cannot be found, then fall back to a bounded recursive
+search that tolerates access-denied directories:
 
 ```powershell
-$key = (Get-ChildItem -LiteralPath 'C:\Users\wpdla\Documents' -Recurse -Filter 'ssh-key-2026-05-25.key' -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
-Test-Path -LiteralPath $key
+$key = (Get-ChildItem -LiteralPath "$env:USERPROFILE\Documents" -Recurse -Filter 'ssh-key-2026-05-25.key' -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
+Test-Path -LiteralPath $key -PathType Leaf
 ```
+
+If the directory exists but the sandbox reports access denied, do not keep
+trying path spellings. Request one escalated operation for the actual `scp` or
+`ssh` command and state that the key contents will not be printed.
 
 When troubleshooting key permissions, inspect metadata only:
 
@@ -74,8 +97,12 @@ look broken.
 
 - Confirm the path is a file before applying key-file permissions.
 - Never open, print, copy, or commit private key contents.
-- Prefer the known exact Oracle key path when it exists; use `Get-ChildItem
-  -ErrorAction SilentlyContinue` only as a fallback when the path is missing.
+- Prefer object-based discovery of the Oracle SSH directory under `Documents`.
+  Do not hand-type mojibaked Korean path text from logs.
+- Use `Get-ChildItem -ErrorAction SilentlyContinue` only as a fallback when the
+  directory object lookup fails.
+- If sandbox permissions block the key directory, request a single escalated
+  `scp` or `ssh` command instead of repeating failed local path probes.
 - Validate access with a harmless remote command before doing operational work.
 - Avoid parallel SSH probes that reuse the same local identity file.
 

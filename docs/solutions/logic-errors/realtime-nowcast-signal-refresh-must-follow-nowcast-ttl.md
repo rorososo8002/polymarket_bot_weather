@@ -6,9 +6,9 @@ module: weather_bot.live_paper_runner
 problem_type: logic_error
 component: background_job
 symptoms:
-  - "Realtime paper evaluation could reuse the first `WeatherSignal` for the full 2-hour forecast refresh window."
+  - "Realtime paper evaluation could reuse the first `WeatherSignal` for too long while the stream kept running."
   - "`STATION_NOWCAST_CACHE_TTL_SECONDS` could expire without any new nowcast-backed probability calculation."
-  - "Same-day observed high/low evidence could miss entry or exit decisions until the next forecast cycle."
+  - "Same-day observed high/low evidence could miss entry or exit decisions until the next large stream cycle."
 root_cause: logic_error
 resolution_type: code_fix
 severity: medium
@@ -21,26 +21,27 @@ tags: [realtime, nowcast, forecast-cache, ttl, paper-trading, weather-signal]
 
 `run_realtime_forever()` calculated a `WeatherSignal` for each streamed market
 before starting the WebSocket monitoring loop. That signal was then reused while
-the loop waited for the next Open-Meteo forecast refresh.
+the loop kept monitoring the WebSocket stream.
 
 `WeatherSignal` is the market's probability answer sheet. It contains the model
 probability, confidence, source note, parsed weather question, and any nowcast
-payload. If that answer sheet is reused for 2 hours, the WebSocket prices can be
+payload. If that answer sheet is reused too long, the WebSocket prices can be
 fresh while the observed-temperature evidence inside the signal is old.
 
 ## 2. Why It Was A Problem
 
 Open-Meteo forecasts and same-day nowcast do not move on the same clock.
 
-Open-Meteo is the big forecast answer sheet, so the bot keeps its default
-2-hour cadence to protect API budget. Same-station nowcast is the current-day
-observation evidence: the high-so-far or low-so-far at the settlement station.
-That evidence can change during the 2-hour forecast window.
+Open-Meteo is the big forecast answer sheet, so the bot protects API budget
+with the forecast cache and one-at-a-time HTTP request throttle. Same-station
+nowcast is the current-day observation evidence: the high-so-far or low-so-far
+at the settlement station. That evidence can change while a cached forecast is
+still valid.
 
 The project already had `STATION_NOWCAST_CACHE_TTL_SECONDS=900`, meaning the
 nowcast provider was ready to refresh observation evidence after 15 minutes. But
 the realtime runner was holding the already-built `WeatherSignal`, so the
-provider's shorter TTL could not matter until the whole forecast cycle restarted.
+provider's shorter TTL could not matter until the large stream cycle restarted.
 
 ## 3. How It Was Fixed
 
@@ -93,10 +94,13 @@ can make the paper strategy look better or worse than it really is because the
 bot may ignore that today's observed high/low has already crossed a market
 threshold.
 
-Never fix this by shrinking the Open-Meteo forecast cadence casually. Forecasts
-are API-budgeted evidence. The safer pattern is to separate the clocks:
+Never fix this by making Open-Meteo requests bursty. Forecasts are API-budgeted
+evidence. The safer pattern is to separate the clocks:
 
-- Open-Meteo forecast refresh stays on the default 2-hour cadence.
+- Open-Meteo forecast HTTP calls stay globally serialized with
+  `FORECAST_REQUEST_MIN_INTERVAL_SECONDS=60`.
+- The forecast cache TTL is the forecast answer-sheet freshness window and
+  defaults to `FORECAST_CACHE_TTL_SECONDS=2400`.
 - Same-station nowcast-backed signals may refresh on
   `STATION_NOWCAST_CACHE_TTL_SECONDS`.
 - Missing, stale, malformed, unsupported, or unmapped nowcast remains

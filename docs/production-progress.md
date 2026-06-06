@@ -10,9 +10,10 @@
   settlement runners, and shadow public-signal research.
 - Current strategy guardrails are active: register only the 41 `STATION_MAP`
   cities, execute paper trading only for the 40 `TRADING_READY_STATION_MAP`
-  cities, refresh Open-Meteo forecasts every 2 hours by default, use the
-  Polymarket CLOB WebSocket stream, keep held token IDs subscribed, fail closed
-  on stale or unsupported data, and preserve paper-only execution.
+  cities, drip-feed real Open-Meteo forecast HTTP calls one at a time with a
+  default 60-second post-finish gap, use the Polymarket CLOB WebSocket stream,
+  keep held token IDs subscribed, fail closed on stale or unsupported data, and
+  preserve paper-only execution.
 - New paper-entry discovery now excludes inactive or closed Polymarket markets
   from both `/events` and weather category-slug expansion. Closed markets
   remain usable only as settlement evidence for already-held paper positions.
@@ -31,9 +32,9 @@
   for daily-high markets and observed low-so-far for daily-low markets. METAR
   and HKO providers derive high/low from one station-date response and cache it.
 - Realtime paper evaluation now refreshes same-station nowcast-backed
-  `WeatherSignal` values on the station nowcast cache TTL inside a 2-hour
-  forecast cycle, while Open-Meteo forecast data still uses the forecast client
-  cache/default 2-hour cadence.
+  `WeatherSignal` values on the station nowcast cache TTL inside the larger
+  stream cycle, while real Open-Meteo forecast HTTP calls still go through the
+  forecast client cache and global 60-second request throttle.
 - Realtime order-book cache treats `best_bid_ask` as indicative best-price
   reference only. Executable bid/ask depth comes only from `book` snapshots or
   `price_change` level updates.
@@ -112,7 +113,7 @@
 - Numeric money, risk, fee, and runtime-cadence settings now fail closed at
   `Settings` startup. Negative minimum orders, negative weather taker fees,
   weather taker fees above 1, exposure fractions above 1, zero bankroll, zero
-  cache TTL, zero forecast refresh interval, and zero WebSocket stale windows
+  cache TTL, zero stream-cycle interval, and zero WebSocket stale windows
   raise operator-readable `ValueError` messages before paper trading can start.
 - `SIZE_MODE` now fails closed at `Settings` startup. Only `fixed_fraction`
   and `kelly` are accepted, values are normalized to lowercase, and typos such
@@ -247,9 +248,60 @@
   cache-miss reason plus safe city/station metadata, and the request log rotates
   at 10MB into `data/archive/` with zstd compression.
 - Open-Meteo forecast-budget hardening is complete locally and remains
-  paper-only. Forecast refresh/cache defaults are 2 hours, and HTTP 429 daily
-  limit responses persist a `forecast_rate_limit_state.json` cooldown so later
-  runner cycles skip new forecast HTTP calls until the recorded UTC reset time.
+  paper-only. Forecast cache defaults to 40 minutes, real Open-Meteo forecast
+  HTTP calls are globally serialized with a 60-second post-finish gap, and HTTP
+  429 daily limit responses persist a `forecast_rate_limit_state.json` cooldown
+  so later runner cycles skip new forecast HTTP calls until the recorded UTC
+  reset time.
+- Open-Meteo 429 classification is deployed to the Oracle VPS and remains
+  paper-only.
+  Daily quota 429 responses keep the next-UTC-day cooldown, while
+  `Too many concurrent requests` responses persist only a 15-minute
+  `concurrent` cooldown and do not permanently disable the client for the
+  whole market-discovery/stream cycle. Legacy cooldown state files without `kind` are
+  reclassified from their reason text, so an old concurrent 429 memo does not
+  keep blocking until the next-day daily reset. Forecast request-log rows and
+  health snapshots expose `rate_limit_kind`. Local verification:
+  `tests/test_probability_ensemble.py` passed with `45 passed`,
+  `tests/test_realtime_runner.py` passed with `18 passed`, and full
+  `pytest -q` passed with `423 passed`. Remote verification on 2026-06-06 UTC:
+  focused probability pytest passed with `45 passed`, realtime runner pytest
+  passed with `18 passed`, `polymarket-weather-bot` restarted active with PID
+  `192056`, and the old concurrent cooldown memo is no longer an effective
+  block under the deployed code.
+- Open-Meteo ReadTimeout duplicate-request guard is deployed to the Oracle VPS
+  and remains paper-only. A `ReadTimeout` now records one real HTTP attempt, skips
+  immediate tenacity retries, and places only that forecast cache key under a
+  30-minute in-process temporary failure memo. Later calls for the same
+  city/station/date/model key fail fast as `forecast-unavailable` without
+  spending another Open-Meteo request, while different city keys can continue.
+  Forecast request-log rows expose `temporary_failure_kind=read_timeout` and
+  `temporary_failure_blocked_until` for the real timed-out attempt. Local
+  verification: focused `tests/test_probability_ensemble.py` passed with
+  `46 passed`, focused `tests/test_realtime_runner.py` passed with
+  `18 passed`, and full `pytest -q` passed with `424 passed`. Remote
+  verification on 2026-06-06 UTC: focused probability pytest passed with
+  `46 passed`, focused realtime runner pytest passed with `18 passed`, remote
+  full `pytest -q` passed with `424 passed`, `polymarket-weather-bot`
+  restarted active with PID `193573`, runner phase was `discovering`, and
+  `runner_last_error` was empty.
+- Open-Meteo forecast HTTP drip-feed is deployed to the Oracle VPS and remains
+  paper-only. The default forecast cache TTL is now
+  `FORECAST_CACHE_TTL_SECONDS=2400`, and real forecast HTTP requests use
+  `FORECAST_REQUEST_MIN_INTERVAL_SECONDS=60`: a request must finish or timeout,
+  then the bot waits at least 60 seconds before the next real Open-Meteo
+  request starts. Cache hits do not wait because they do not call Open-Meteo.
+  Local verification: focused config/probability/deployment pytest passed with
+  `119 passed`; full local pytest reached `422 passed` but hit 4 Windows
+  temp-file `PermissionError` failures in existing paper-accounting journal
+  tests. Remote verification on 2026-06-06 UTC: focused config/probability/
+  deployment pytest passed with `119 passed`, live env safe values are
+  `FORECAST_CACHE_TTL_SECONDS=2400` and
+  `FORECAST_REQUEST_MIN_INTERVAL_SECONDS=60`, dashboard env uses
+  `FORECAST_CACHE_TTL_SECONDS=2400`, `polymarket-weather-bot` restarted active
+  with PID `195560`, `polymarket-weather-dashboard` restarted active with PID
+  `195566`, dashboard HTML and authenticated `/api/status` returned HTTP 200,
+  and runner status was `phase=discovering` with empty `last_error`.
 - Paper-state account-number and stats-field validation is complete locally and
   remains paper-only. Existing bad `paper_state.json` files raise
   `PaperStateLoadError` instead of resetting or loading polluted cash/PnL

@@ -24,8 +24,8 @@ tags: [config, settings, validation, fail-closed, paper-trading, risk, dashboard
 
 The paper bot could start with unsafe numeric configuration values. Examples
 include a negative minimum order, a negative or above-1 fee rate, an exposure
-fraction above 1, zero bankroll, zero forecast refresh interval, zero forecast
-cache TTL, zero WebSocket stale window, an invalid dashboard port, or negative
+fraction above 1, zero bankroll, zero forecast cache TTL, zero stream-cycle
+interval, zero WebSocket stale window, an invalid dashboard port, or negative
 shadow research collection limits.
 
 ## Why It Was A Problem

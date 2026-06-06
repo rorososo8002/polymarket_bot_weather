@@ -5,10 +5,12 @@ import math
 import os
 import re
 import statistics
+import threading
+import time
 from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 from zoneinfo import ZoneInfo
 
 import requests
@@ -32,6 +34,8 @@ from .weather_client import parse_weather_question, temperature_bucket_interval_
 # Default model set.  If Open-Meteo changes a model id, override with:
 # OPEN_METEO_ENSEMBLE_MODELS=gfs_seamless,ecmwf_ifs025,gem_global
 DEFAULT_ENSEMBLE_MODELS = "gfs_seamless,ecmwf_ifs025"
+CONCURRENT_RATE_LIMIT_BACKOFF_SECONDS = 15 * 60
+FORECAST_READ_TIMEOUT_BACKOFF_SECONDS = 30 * 60
 
 
 def _utc_now() -> datetime:
@@ -258,6 +262,10 @@ class OpenMeteoRateLimitCooldown(RuntimeError):
     """Raised when a persisted Open-Meteo daily limit block prevents a request."""
 
 
+class OpenMeteoTemporaryForecastCooldown(RuntimeError):
+    """Raised when a recent transient forecast failure prevents a duplicate request."""
+
+
 def _read_explicit_bias_json(path: str) -> dict[str, dict[str, float]]:
     try:
         raw_text = Path(path).read_text(encoding="utf-8")
@@ -329,13 +337,18 @@ def bias_for(station: StationMeta, variable: str) -> float:
 # ---------------------------------------------------------------------------
 
 class OpenMeteoEnsembleClient:
+    _request_throttle_lock = threading.Lock()
+    _request_throttle_last_finished_at: datetime | None = None
+
     def __init__(
         self,
         timeout: float = 20.0,
         cache_path: str | Path | None = None,
-        cache_ttl_seconds: int = 21600,
+        cache_ttl_seconds: int = 2400,
         request_log_path: str | Path | None = None,
         rate_limit_state_path: str | Path | None = None,
+        request_min_interval_seconds: int = 0,
+        sleep: Callable[[float], None] | None = None,
     ) -> None:
         self.timeout = timeout
         self.base_url = os.getenv("OPEN_METEO_ENSEMBLE_BASE", "https://ensemble-api.open-meteo.com/v1/ensemble")
@@ -344,6 +357,8 @@ class OpenMeteoEnsembleClient:
         self.request_log_path = Path(request_log_path) if request_log_path else None
         self.rate_limit_state_path = Path(rate_limit_state_path) if rate_limit_state_path else None
         self.cache_ttl_seconds = max(0, int(cache_ttl_seconds))
+        self.request_min_interval_seconds = max(0, int(request_min_interval_seconds))
+        self._sleep = sleep or time.sleep
         self.disabled_reason = ""
         self._cache: dict[str, dict[str, Any]] = {}
         self._last_attempt_at: datetime | None = None
@@ -355,6 +370,11 @@ class OpenMeteoEnsembleClient:
         self._latest_cache_created_at: datetime | None = None
         self._rate_limit_state_error = ""
         self._rate_limit_blocked_until: datetime | None = None
+        self._rate_limit_kind = ""
+        self._temporary_failure_blocked_until_by_cache_key: dict[str, datetime] = {}
+        self._temporary_failure_reason_by_cache_key: dict[str, str] = {}
+        self._temporary_failure_last_reason = ""
+        self._request_throttle_last_wait_seconds = 0.0
 
     @classmethod
     def from_settings(cls, settings: Settings) -> "OpenMeteoEnsembleClient":
@@ -370,7 +390,13 @@ class OpenMeteoEnsembleClient:
             cache_ttl_seconds=settings.forecast_cache_ttl_seconds,
             request_log_path=request_log_path,
             rate_limit_state_path=rate_limit_state_path,
+            request_min_interval_seconds=settings.forecast_request_min_interval_seconds,
         )
+
+    @classmethod
+    def reset_request_throttle_for_tests(cls) -> None:
+        with cls._request_throttle_lock:
+            cls._request_throttle_last_finished_at = None
 
     def _cache_key(self, latitude: float, longitude: float, timezone: str, forecast_days: int) -> str:
         return "|".join([
@@ -455,9 +481,45 @@ class OpenMeteoEnsembleClient:
             return None
         return None
 
+    def _clear_temporary_failure(self, cache_key: str) -> None:
+        self._temporary_failure_blocked_until_by_cache_key.pop(cache_key, None)
+        self._temporary_failure_reason_by_cache_key.pop(cache_key, None)
+        if not self._temporary_failure_blocked_until_by_cache_key:
+            self._temporary_failure_last_reason = ""
+
+    def _remember_temporary_failure(self, cache_key: str, reason: str, attempted_at: datetime) -> datetime:
+        blocked_until = attempted_at.astimezone(timezone.utc) + timedelta(seconds=FORECAST_READ_TIMEOUT_BACKOFF_SECONDS)
+        self._temporary_failure_blocked_until_by_cache_key[cache_key] = blocked_until
+        self._temporary_failure_reason_by_cache_key[cache_key] = reason
+        self._temporary_failure_last_reason = (
+            f"Open-Meteo forecast temporarily unavailable until {_utc_iso(blocked_until)}: {reason[:160]}"
+        )
+        return blocked_until
+
+    def _temporary_failure_cooldown_reason(self, cache_key: str) -> str:
+        blocked_until = self._temporary_failure_blocked_until_by_cache_key.get(cache_key)
+        if blocked_until is None:
+            return ""
+        if blocked_until <= _utc_now():
+            self._clear_temporary_failure(cache_key)
+            return ""
+        reason = self._temporary_failure_reason_by_cache_key.get(cache_key, "recent forecast request failed")
+        self._temporary_failure_last_reason = (
+            f"Open-Meteo forecast temporarily unavailable until {_utc_iso(blocked_until)}: {reason[:160]}"
+        )
+        return self._temporary_failure_last_reason
+
+    def _active_temporary_failure_count(self) -> int:
+        current = _utc_now()
+        for cache_key, blocked_until in list(self._temporary_failure_blocked_until_by_cache_key.items()):
+            if blocked_until <= current:
+                self._clear_temporary_failure(cache_key)
+        return len(self._temporary_failure_blocked_until_by_cache_key)
+
     def _store_cached_data(self, cache_key: str, data: dict[str, Any]) -> None:
         created_at = _utc_now()
         self._remember_cached_data(cache_key, data, created_at)
+        self._clear_temporary_failure(cache_key)
         self._last_failure_reason = ""
         if self.cache_ttl_seconds <= 0 or self.cache_path is None:
             return
@@ -493,6 +555,31 @@ class OpenMeteoEnsembleClient:
         except Exception as exc:
             self._request_log_error = _safe_error(exc)
 
+    def _wait_for_request_slot_locked(self) -> None:
+        self._request_throttle_last_wait_seconds = 0.0
+        if self.request_min_interval_seconds <= 0:
+            return
+        last_finished_at = type(self)._request_throttle_last_finished_at
+        if last_finished_at is None:
+            return
+        elapsed_seconds = (_utc_now() - last_finished_at).total_seconds()
+        wait_seconds = self.request_min_interval_seconds - elapsed_seconds
+        if wait_seconds <= 0:
+            return
+        self._request_throttle_last_wait_seconds = wait_seconds
+        self._sleep(wait_seconds)
+
+    def _get_with_request_throttle(self, *, params: dict[str, Any]) -> tuple[datetime, requests.Response]:
+        with type(self)._request_throttle_lock:
+            self._wait_for_request_slot_locked()
+            attempted_at = _utc_now()
+            self._last_attempt_at = attempted_at
+            try:
+                resp = requests.get(self.base_url, params=params, timeout=self.timeout)
+            finally:
+                type(self)._request_throttle_last_finished_at = _utc_now()
+            return attempted_at, resp
+
     def _parse_rate_limit_blocked_until(self, value: Any) -> datetime:
         try:
             blocked_until = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
@@ -508,13 +595,38 @@ class OpenMeteoEnsembleClient:
         next_day = current.date() + timedelta(days=1)
         return datetime(next_day.year, next_day.month, next_day.day, 0, 15, tzinfo=timezone.utc)
 
-    def _persist_rate_limit_cooldown(self, reason: str, attempted_at: datetime) -> datetime | None:
-        blocked_until = self._next_rate_limit_reset(attempted_at)
+    @staticmethod
+    def _rate_limit_kind_from_body(body: str) -> str:
+        lowered = body.lower()
+        if "too many concurrent requests" in lowered or "concurrent" in lowered:
+            return "concurrent"
+        return "daily"
+
+    def _rate_limit_blocked_until_for_kind(self, kind: str, attempted_at: datetime) -> datetime:
+        if kind == "concurrent":
+            return attempted_at.astimezone(timezone.utc) + timedelta(seconds=CONCURRENT_RATE_LIMIT_BACKOFF_SECONDS)
+        return self._next_rate_limit_reset(attempted_at)
+
+    def _blocked_until_from_rate_limit_state(self, raw: dict[str, Any]) -> tuple[datetime, str]:
+        reason = str(raw.get("reason") or "").strip()
+        kind = str(raw.get("kind") or "").strip() or self._rate_limit_kind_from_body(reason)
+        blocked_until = self._parse_rate_limit_blocked_until(raw.get("blocked_until"))
+        if kind == "concurrent" and not raw.get("kind") and raw.get("last_rate_limited_at"):
+            attempted_at = self._parse_rate_limit_blocked_until(raw.get("last_rate_limited_at"))
+            blocked_until = min(blocked_until, self._rate_limit_blocked_until_for_kind(kind, attempted_at))
+        return blocked_until, kind
+
+    def _persist_rate_limit_cooldown(self, reason: str, attempted_at: datetime, kind: str = "daily") -> datetime | None:
+        blocked_until = self._rate_limit_blocked_until_for_kind(kind, attempted_at)
         self._rate_limit_blocked_until = blocked_until
+        self._rate_limit_kind = kind
         if self.rate_limit_state_path is None:
             return blocked_until
+        cooldown_seconds = max(0, int((blocked_until - attempted_at.astimezone(timezone.utc)).total_seconds()))
         row = {
             "blocked_until": _utc_iso(blocked_until),
+            "cooldown_seconds": cooldown_seconds,
+            "kind": kind,
             "last_rate_limited_at": _utc_iso(attempted_at),
             "reason": reason,
             "status_code": 429,
@@ -529,22 +641,36 @@ class OpenMeteoEnsembleClient:
 
     def _rate_limit_cooldown_reason(self) -> str:
         if self.rate_limit_state_path is None or not self.rate_limit_state_path.exists():
+            if self._rate_limit_blocked_until is not None and self._rate_limit_blocked_until > _utc_now():
+                reason = self._last_failure_reason or "Open-Meteo rate limited"
+                if self._rate_limit_kind == "concurrent":
+                    return (
+                        f"Open-Meteo concurrent request cooldown until "
+                        f"{_utc_iso(self._rate_limit_blocked_until)}: {reason[:160]}"
+                    )
+                return f"Open-Meteo rate limited until {_utc_iso(self._rate_limit_blocked_until)}: {reason[:160]}"
             self._rate_limit_blocked_until = None
+            self._rate_limit_kind = ""
             return ""
         try:
             raw = json.loads(self.rate_limit_state_path.read_text(encoding="utf-8"))
             if not isinstance(raw, dict):
                 raise ValueError("rate limit state must be a JSON object")
-            blocked_until = self._parse_rate_limit_blocked_until(raw.get("blocked_until"))
+            blocked_until, kind = self._blocked_until_from_rate_limit_state(raw)
         except Exception as exc:
             self._rate_limit_state_error = _safe_error(exc)
             return f"Open-Meteo rate-limit state is invalid: {self._rate_limit_state_error}"
 
         self._rate_limit_state_error = ""
         self._rate_limit_blocked_until = blocked_until
+        self._rate_limit_kind = kind
         if blocked_until <= _utc_now():
+            self._rate_limit_blocked_until = None
+            self._rate_limit_kind = ""
             return ""
         reason = str(raw.get("reason") or "Open-Meteo rate limited").strip()
+        if kind == "concurrent":
+            return f"Open-Meteo concurrent request cooldown until {_utc_iso(blocked_until)}: {reason[:160]}"
         return f"Open-Meteo rate limited until {_utc_iso(blocked_until)}: {reason[:160]}"
 
     def _request_log_row(
@@ -564,6 +690,9 @@ class OpenMeteoEnsembleClient:
         station_id: str = "",
         station_name: str = "",
         rate_limit_blocked_until: datetime | None = None,
+        rate_limit_kind: str = "",
+        temporary_failure_blocked_until: datetime | None = None,
+        temporary_failure_kind: str = "",
     ) -> dict[str, Any]:
         return {
             "attempted_at": _utc_iso(attempted_at),
@@ -582,10 +711,16 @@ class OpenMeteoEnsembleClient:
             "timezone": timezone_name,
             "error": error,
             "rate_limit_blocked_until": _utc_iso(rate_limit_blocked_until) if rate_limit_blocked_until else "",
+            "rate_limit_kind": rate_limit_kind,
+            "temporary_failure_blocked_until": (
+                _utc_iso(temporary_failure_blocked_until) if temporary_failure_blocked_until else ""
+            ),
+            "temporary_failure_kind": temporary_failure_kind,
         }
 
     def health_snapshot(self, now: datetime | None = None) -> dict[str, Any]:
         current = (now or _utc_now()).astimezone(timezone.utc)
+        temporary_failure_count = self._active_temporary_failure_count()
         cache_age_seconds: int | None = None
         if self._latest_cache_created_at is not None:
             cache_age_seconds = max(0, int((current - self._latest_cache_created_at).total_seconds()))
@@ -607,12 +742,22 @@ class OpenMeteoEnsembleClient:
             "rate_limit_blocked_until": (
                 _utc_iso(self._rate_limit_blocked_until) if self._rate_limit_blocked_until is not None else ""
             ),
+            "rate_limit_kind": self._rate_limit_kind,
+            "temporary_failure_count": temporary_failure_count,
+            "temporary_failure_last_reason": self._temporary_failure_last_reason if temporary_failure_count else "",
+            "request_min_interval_seconds": self.request_min_interval_seconds,
+            "request_throttle_last_finished_at": (
+                _utc_iso(type(self)._request_throttle_last_finished_at)
+                if type(self)._request_throttle_last_finished_at is not None
+                else ""
+            ),
+            "request_throttle_last_wait_seconds": int(round(self._request_throttle_last_wait_seconds)),
         }
 
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=0.5, min=0.5, max=4),
-        retry=retry_if_exception(lambda exc: not (_is_rate_limited(exc) or _is_rate_limit_cooldown(exc))),
+        retry=retry_if_exception(lambda exc: _should_retry_forecast_exception(exc)),
         reraise=True,
     )
     def forecast_daily_ensemble(
@@ -636,9 +781,14 @@ class OpenMeteoEnsembleClient:
             raise OpenMeteoRateLimitCooldown(f"ensemble disabled for cycle: {self.disabled_reason}")
         rate_limit_cooldown_reason = self._rate_limit_cooldown_reason()
         if rate_limit_cooldown_reason:
-            self.disabled_reason = rate_limit_cooldown_reason
             self._last_failure_reason = rate_limit_cooldown_reason
+            if self._rate_limit_kind != "concurrent":
+                self.disabled_reason = rate_limit_cooldown_reason
             raise OpenMeteoRateLimitCooldown(rate_limit_cooldown_reason)
+        temporary_failure_reason = self._temporary_failure_cooldown_reason(cache_key)
+        if temporary_failure_reason:
+            self._last_failure_reason = temporary_failure_reason
+            raise OpenMeteoTemporaryForecastCooldown(temporary_failure_reason)
         params = {
             "latitude": latitude,
             "longitude": longitude,
@@ -648,21 +798,26 @@ class OpenMeteoEnsembleClient:
             "timezone": timezone,
             "forecast_days": forecast_days,
         }
+        attempted_at = _utc_now()
+        resp: requests.Response | None = None
         try:
-            attempted_at = _utc_now()
-            self._last_attempt_at = attempted_at
-            resp = requests.get(self.base_url, params=params, timeout=self.timeout)
+            attempted_at, resp = self._get_with_request_throttle(params=params)
             resp.raise_for_status()
         except requests.HTTPError as exc:
+            attempted_at = self._last_attempt_at or attempted_at
             if _is_rate_limited(exc):
-                body = getattr(resp, "text", "") or str(exc)
+                body = getattr(resp, "text", "") if resp is not None else ""
+                body = body or str(exc)
                 rate_limit_reason = f"Open-Meteo rate limited: {body[:160]}"
-                blocked_until = self._persist_rate_limit_cooldown(rate_limit_reason, attempted_at)
+                rate_limit_kind = self._rate_limit_kind_from_body(body)
+                blocked_until = self._persist_rate_limit_cooldown(rate_limit_reason, attempted_at, rate_limit_kind)
                 reset_text = f" until {_utc_iso(blocked_until)}" if blocked_until is not None else ""
-                self.disabled_reason = f"{rate_limit_reason}{reset_text}"
-                self._last_failure_reason = self.disabled_reason
+                self._last_failure_reason = f"{rate_limit_reason}{reset_text}"
+                if rate_limit_kind != "concurrent":
+                    self.disabled_reason = self._last_failure_reason
             else:
                 blocked_until = None
+                rate_limit_kind = ""
                 self._last_failure_reason = _safe_error(exc)
             response = getattr(exc, "response", None)
             status_code = getattr(response, "status_code", getattr(resp, "status_code", None))
@@ -682,10 +837,36 @@ class OpenMeteoEnsembleClient:
                     station_id=station_id,
                     station_name=station_name,
                     rate_limit_blocked_until=blocked_until,
+                    rate_limit_kind=rate_limit_kind,
+                )
+            )
+            raise
+        except requests.ReadTimeout as exc:
+            attempted_at = self._last_attempt_at or attempted_at
+            timeout_reason = _safe_error(exc)
+            blocked_until = self._remember_temporary_failure(cache_key, timeout_reason, attempted_at)
+            self._last_failure_reason = self._temporary_failure_last_reason
+            self._append_request_log(
+                self._request_log_row(
+                    attempted_at=attempted_at,
+                    cache_key=cache_key,
+                    latitude=latitude,
+                    longitude=longitude,
+                    timezone_name=timezone,
+                    forecast_days=forecast_days,
+                    status="error",
+                    error=self._last_failure_reason,
+                    cache_miss_reason=cache_miss_reason,
+                    city=city,
+                    station_id=station_id,
+                    station_name=station_name,
+                    temporary_failure_blocked_until=blocked_until,
+                    temporary_failure_kind="read_timeout",
                 )
             )
             raise
         except Exception as exc:
+            attempted_at = self._last_attempt_at or attempted_at
             self._last_failure_reason = _safe_error(exc)
             self._append_request_log(
                 self._request_log_row(
@@ -753,6 +934,23 @@ def _is_rate_limited(exc: BaseException) -> bool:
 
 def _is_rate_limit_cooldown(exc: BaseException) -> bool:
     return isinstance(exc, OpenMeteoRateLimitCooldown)
+
+
+def _is_temporary_forecast_cooldown(exc: BaseException) -> bool:
+    return isinstance(exc, OpenMeteoTemporaryForecastCooldown)
+
+
+def _is_read_timeout(exc: BaseException) -> bool:
+    return isinstance(exc, requests.ReadTimeout)
+
+
+def _should_retry_forecast_exception(exc: BaseException) -> bool:
+    return not (
+        _is_rate_limited(exc)
+        or _is_rate_limit_cooldown(exc)
+        or _is_temporary_forecast_cooldown(exc)
+        or _is_read_timeout(exc)
+    )
 
 
 WEEKDAY_INDEX = {

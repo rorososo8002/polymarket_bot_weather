@@ -52,8 +52,8 @@ timestamp, recent failure reason, cache age, stale warning, and disk-save error.
 Record WebSocket health separately: receiver-thread liveness, reconnect count,
 last incoming message, last executable order-book depth update, stale-book age,
 operator-readable status reason, and the recent stream error. Refresh
-`paper_runner_status.json` every few seconds while the runner waits for the next
-forecast cycle.
+`paper_runner_status.json` every few seconds while the runner continues its
+market-discovery/stream cycle.
 
 Only `book` snapshots and `price_change` level updates refresh the executable
 order-book timestamp. A `best_bid_ask` refresh proves only quote freshness; it
