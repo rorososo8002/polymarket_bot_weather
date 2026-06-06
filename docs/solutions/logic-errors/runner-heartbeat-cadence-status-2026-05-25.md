@@ -40,13 +40,13 @@ write_runner_status(settings, "streaming", message="websocket streaming ...", cy
 
 The dashboard reads `paper_runner_status.json` and reports `phase`, progress, `last_event_at`, and `next_scan_in_seconds` so a long discovery step is visible as `DISCOVERING` rather than looking dead.
 
-Also keep long-running loops on wall-clock cadence. In the current realtime runner, market discovery and forecast signals refresh every `forecast_refresh_interval_seconds`; order-book updates arrive through WebSocket events between refreshes:
+Also keep long-running loops on wall-clock cadence. In the current realtime runner, market discovery and WebSocket streams rebuild on `stream_cycle_interval_seconds`; order-book updates arrive through WebSocket events between rebuilds:
 
 ```python
 refresh_started_at = datetime.now(timezone.utc)
 while True:
     elapsed = (datetime.now(timezone.utc) - refresh_started_at).total_seconds()
-    if elapsed >= settings.forecast_refresh_interval_seconds:
+    if elapsed >= settings.stream_cycle_interval_seconds:
         break
     time.sleep(1)
 ```

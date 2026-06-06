@@ -532,7 +532,7 @@ def _parse_datetime(value: str) -> datetime | None:
 
 
 def _status_interval_seconds(settings: Settings) -> int:
-    return max(1, int(settings.forecast_refresh_interval_seconds))
+    return max(1, int(settings.stream_cycle_interval_seconds))
 
 
 def _sorted_recent(rows: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:

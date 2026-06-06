@@ -13,7 +13,7 @@ _POSITIVE_NUMBER_SETTINGS = (
     "orderbook_stream_reconnect_seconds",
     "orderbook_stream_stale_seconds",
     "runner_health_status_interval_seconds",
-    "forecast_refresh_interval_seconds",
+    "stream_cycle_interval_seconds",
     "forecast_cache_ttl_seconds",
     "station_nowcast_cache_ttl_seconds",
     "station_nowcast_freshness_seconds",
@@ -99,7 +99,7 @@ class Settings:
     orderbook_stream_reconnect_seconds: int = 2
     orderbook_stream_stale_seconds: int = 60
     runner_health_status_interval_seconds: int = 5
-    forecast_refresh_interval_seconds: int = 7200
+    stream_cycle_interval_seconds: int = 2400
     discovery_max_pages: int = 8
     discovery_page_size: int = 100
     state_path: str = "paper_state.json"
@@ -338,7 +338,7 @@ def load_settings() -> Settings:
         orderbook_stream_reconnect_seconds=_int_env("ORDERBOOK_STREAM_RECONNECT_SECONDS", Settings.orderbook_stream_reconnect_seconds),
         orderbook_stream_stale_seconds=_int_env("ORDERBOOK_STREAM_STALE_SECONDS", Settings.orderbook_stream_stale_seconds),
         runner_health_status_interval_seconds=_int_env("RUNNER_HEALTH_STATUS_INTERVAL_SECONDS", Settings.runner_health_status_interval_seconds),
-        forecast_refresh_interval_seconds=_int_env("FORECAST_REFRESH_INTERVAL_SECONDS", Settings.forecast_refresh_interval_seconds),
+        stream_cycle_interval_seconds=_int_env("STREAM_CYCLE_INTERVAL_SECONDS", Settings.stream_cycle_interval_seconds),
         discovery_max_pages=_int_env("DISCOVERY_MAX_PAGES", Settings.discovery_max_pages),
         discovery_page_size=_int_env("DISCOVERY_PAGE_SIZE", Settings.discovery_page_size),
         state_path=os.getenv("STATE_PATH", Settings.state_path),

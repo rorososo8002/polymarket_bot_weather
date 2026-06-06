@@ -291,6 +291,10 @@
   `FORECAST_REQUEST_MIN_INTERVAL_SECONDS=60`: a request must finish or timeout,
   then the bot waits at least 60 seconds before the next real Open-Meteo
   request starts. Cache hits do not wait because they do not call Open-Meteo.
+  The old forecast-refresh setting name has been removed from code, tests,
+  docs, example env files, and the active VPS env; the
+  market-discovery/WebSocket rebuild interval is now
+  `STREAM_CYCLE_INTERVAL_SECONDS=2400`.
   Local verification: focused config/probability/deployment pytest passed with
   `119 passed`; full local pytest reached `422 passed` but hit 4 Windows
   temp-file `PermissionError` failures in existing paper-accounting journal
@@ -302,6 +306,14 @@
   with PID `195560`, `polymarket-weather-dashboard` restarted active with PID
   `195566`, dashboard HTML and authenticated `/api/status` returned HTTP 200,
   and runner status was `phase=discovering` with empty `last_error`.
+  Follow-up deploy after removing the old setting name: local focused pytest
+  passed with `179 passed`; remote focused pytest passed with `179 passed`;
+  active VPS env safe values are `STREAM_CYCLE_INTERVAL_SECONDS=2400`,
+  `FORECAST_CACHE_TTL_SECONDS=2400`, and
+  `FORECAST_REQUEST_MIN_INTERVAL_SECONDS=60`; bot restarted active with PID
+  `196183`; dashboard restarted active with PID `196190`; dashboard HTML and
+  authenticated `/api/status` returned HTTP 200; and API
+  `scan_interval_seconds` is `2400`.
 - Paper-state account-number and stats-field validation is complete locally and
   remains paper-only. Existing bad `paper_state.json` files raise
   `PaperStateLoadError` instead of resetting or loading polluted cash/PnL

@@ -176,9 +176,9 @@ keeps `FORECAST_CACHE_TTL_SECONDS=2400` and
 `FORECAST_REQUEST_MIN_INTERVAL_SECONDS=60`, so the forecast answer sheet is
 fresh for 40 minutes while real HTTP calls move through one global queue:
 previous request finishes or times out, at least 60 seconds pass, then the next
-city/station request may start. `FORECAST_REFRESH_INTERVAL_SECONDS=7200` remains
-the larger market-discovery and stream-cycle interval, not the forecast-call
-burst cadence. Realtime paper evaluation may recalculate same-station
+city/station request may start. `STREAM_CYCLE_INTERVAL_SECONDS=2400` is the
+market-discovery and WebSocket rebuild interval, not the forecast-call burst
+cadence. Realtime paper evaluation may recalculate same-station
 nowcast-backed `WeatherSignal` values on `STATION_NOWCAST_CACHE_TTL_SECONDS`
 using the existing ensemble client/cache, so same-day observed-temperature
 evidence can update without turning cache hits into extra Open-Meteo HTTP
@@ -481,8 +481,7 @@ ORDERBOOK_STREAM_ENABLED=true
 ORDERBOOK_STREAM_URL=wss://ws-subscriptions-clob.polymarket.com/ws/market
 ORDERBOOK_STREAM_STALE_SECONDS=60
 RUNNER_HEALTH_STATUS_INTERVAL_SECONDS=5
-# market-discovery/WebSocket rebuild cycle, not forecast HTTP cadence
-FORECAST_REFRESH_INTERVAL_SECONDS=7200
+STREAM_CYCLE_INTERVAL_SECONDS=2400
 FORECAST_CACHE_TTL_SECONDS=2400
 FORECAST_REQUEST_MIN_INTERVAL_SECONDS=60
 FORECAST_RATE_LIMIT_STATE_PATH=forecast_rate_limit_state.json

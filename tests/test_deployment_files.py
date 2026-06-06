@@ -74,7 +74,8 @@ def test_vps_env_example_keeps_runtime_state_under_data_dir():
     assert "PORTFOLIO_DECISIONS_JSONL_PATH=/opt/polymarket-weather-bot/data/paper_event_portfolios.jsonl" in text
     assert "ORDERBOOK_STREAM_STALE_SECONDS=60" in text
     assert "RUNNER_HEALTH_STATUS_INTERVAL_SECONDS=5" in text
-    assert "FORECAST_REFRESH_INTERVAL_SECONDS=7200" in text
+    assert "STREAM_CYCLE_INTERVAL_SECONDS=2400" in text
+    assert ("FORECAST_" + "REFRESH_INTERVAL_SECONDS") not in text
     assert "FORECAST_CACHE_TTL_SECONDS=2400" in text
     assert "DISCOVERY_MAX_PAGES=8" in text
     assert "DISCOVERY_PAGE_SIZE=100" in text

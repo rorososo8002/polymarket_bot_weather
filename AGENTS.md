@@ -95,8 +95,8 @@ trading-risk, server, or workflow work, read:
   freshness window. It lets the 40 trading-ready cities rotate roughly one at a
   time instead of keeping each successful forecast valid through a long
   multi-market window.
-- `FORECAST_REFRESH_INTERVAL_SECONDS=7200` is the larger market-discovery and
-  stream-cycle interval. Do not confuse it with the real Open-Meteo HTTP call
+- `STREAM_CYCLE_INTERVAL_SECONDS=2400` is the market-discovery and WebSocket
+  rebuild interval. Do not confuse it with the real Open-Meteo HTTP call
   spacing above.
 - Use the Polymarket CLOB WebSocket market stream for order books by default.
 - Do not silently replace realtime streaming with polling.

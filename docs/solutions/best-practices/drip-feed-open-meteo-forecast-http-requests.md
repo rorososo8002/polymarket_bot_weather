@@ -68,8 +68,7 @@ Production defaults:
 ```text
 FORECAST_CACHE_TTL_SECONDS=2400
 FORECAST_REQUEST_MIN_INTERVAL_SECONDS=60
-# market-discovery/WebSocket rebuild cycle, not forecast HTTP cadence
-FORECAST_REFRESH_INTERVAL_SECONDS=7200
+STREAM_CYCLE_INTERVAL_SECONDS=2400
 ```
 
 `FORECAST_CACHE_TTL_SECONDS=2400` means a successful forecast answer sheet is
@@ -81,8 +80,8 @@ valid through a long multi-market window.
 call cannot start until the previous real request has finished or timed out and
 at least 60 seconds have passed.
 
-`FORECAST_REFRESH_INTERVAL_SECONDS=7200` is still the larger market-discovery
-and stream-cycle interval. It is not permission to burst forecast HTTP calls.
+`STREAM_CYCLE_INTERVAL_SECONDS=2400` is the market-discovery and WebSocket
+rebuild interval. It is not permission to burst forecast HTTP calls.
 
 Cache hits do not wait because they are not phone calls. They only read the
 answer sheet already stored locally.

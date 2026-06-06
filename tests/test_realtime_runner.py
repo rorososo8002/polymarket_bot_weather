@@ -526,7 +526,7 @@ def test_realtime_update_refreshes_nowcast_signal_after_station_cache_ttl_withou
         raw_snapshots_path=str(tmp_path / "raw.jsonl"),
         portfolio_decisions_jsonl_path=str(tmp_path / "portfolio.jsonl"),
         forecast_cache_path=str(tmp_path / "forecast_cache.json"),
-        forecast_cache_ttl_seconds=7200,
+        forecast_cache_ttl_seconds=2400,
         station_nowcast_cache_ttl_seconds=900,
         min_net_edge=0.99,
     )

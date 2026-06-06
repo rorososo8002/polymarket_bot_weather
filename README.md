@@ -69,8 +69,7 @@ ORDERBOOK_STREAM_ENABLED=true
 ORDERBOOK_STREAM_URL=wss://ws-subscriptions-clob.polymarket.com/ws/market
 ORDERBOOK_STREAM_HEARTBEAT_SECONDS=10
 ORDERBOOK_STREAM_RECONNECT_SECONDS=2
-# market-discovery/WebSocket rebuild cycle, not forecast HTTP cadence
-FORECAST_REFRESH_INTERVAL_SECONDS=7200
+STREAM_CYCLE_INTERVAL_SECONDS=2400
 FORECAST_CACHE_TTL_SECONDS=2400
 FORECAST_REQUEST_MIN_INTERVAL_SECONDS=60
 DISCOVERY_MAX_PAGES=8
@@ -93,9 +92,8 @@ The order-book path is event-driven from the Polymarket CLOB WebSocket market
 channel. Forecast cache entries stay fresh for 40 minutes by default, and real
 Open-Meteo HTTP requests are globally serialized: one city request finishes or
 times out, then the bot waits at least 60 seconds before the next real
-Open-Meteo request. `FORECAST_REFRESH_INTERVAL_SECONDS=7200` remains the larger
-market-discovery and stream-cycle interval, not permission to burst forecast
-requests.
+Open-Meteo request. `STREAM_CYCLE_INTERVAL_SECONDS=2400` is the market-discovery
+and WebSocket rebuild interval, not permission to burst forecast requests.
 
 ## Registered Station Registry
 

@@ -12,7 +12,7 @@ def test_supported_city_allowlist_is_not_used_as_discovery_event_cap():
 
 
 def test_default_forecast_budget_drip_feeds_city_requests():
-    assert Settings.forecast_refresh_interval_seconds == 7200
+    assert Settings.stream_cycle_interval_seconds == 2400
     assert Settings.forecast_cache_ttl_seconds == 2400
     assert Settings.forecast_rate_limit_state_path == ""
 
@@ -139,7 +139,7 @@ def test_settings_defaults_to_one_forecast_http_request_per_minute():
     ("override", "expected_name"),
     [
         ({"bankroll_usd": 0.0}, "BANKROLL_USD"),
-        ({"forecast_refresh_interval_seconds": 0}, "FORECAST_REFRESH_INTERVAL_SECONDS"),
+        ({"stream_cycle_interval_seconds": 0}, "STREAM_CYCLE_INTERVAL_SECONDS"),
         ({"forecast_cache_ttl_seconds": 0}, "FORECAST_CACHE_TTL_SECONDS"),
         ({"orderbook_stream_stale_seconds": 0}, "ORDERBOOK_STREAM_STALE_SECONDS"),
     ],
@@ -262,7 +262,7 @@ def test_load_settings_reads_realtime_orderbook_stream(monkeypatch):
     monkeypatch.setenv("ORDERBOOK_STREAM_HEARTBEAT_SECONDS", "10")
     monkeypatch.setenv("ORDERBOOK_STREAM_STALE_SECONDS", "45")
     monkeypatch.setenv("RUNNER_HEALTH_STATUS_INTERVAL_SECONDS", "7")
-    monkeypatch.setenv("FORECAST_REFRESH_INTERVAL_SECONDS", "600")
+    monkeypatch.setenv("STREAM_CYCLE_INTERVAL_SECONDS", "600")
 
     settings = load_settings()
 
@@ -270,7 +270,7 @@ def test_load_settings_reads_realtime_orderbook_stream(monkeypatch):
     assert settings.orderbook_stream_heartbeat_seconds == 10
     assert settings.orderbook_stream_stale_seconds == 45
     assert settings.runner_health_status_interval_seconds == 7
-    assert settings.forecast_refresh_interval_seconds == 600
+    assert settings.stream_cycle_interval_seconds == 600
 
 
 @pytest.mark.parametrize("raw", ["true", "1", "yes", "y", "on"])

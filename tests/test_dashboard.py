@@ -422,7 +422,7 @@ def test_dashboard_payload_summarizes_state_trades_and_decisions(tmp_path):
     assert payload["scanner"]["decision_totals_exact"] is True
     assert payload["scanner"]["decision_totals_scope"] == "full"
     assert payload["bot"]["last_event_at"] == "2026-05-24T11:00:00+00:00"
-    assert payload["bot"]["scan_interval_seconds"] == 7200
+    assert payload["bot"]["scan_interval_seconds"] == 2400
     assert payload["bot"]["orderbook_mode"] == "websocket"
     assert payload["positions"][0]["unrealized_pnl"] == pytest.approx(8.8)
     assert "events" not in payload

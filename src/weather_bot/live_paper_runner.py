@@ -1353,7 +1353,7 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
                 while True:
                     now = datetime.now(timezone.utc)
                     elapsed = (now - refresh_started_at).total_seconds()
-                    if elapsed >= settings.forecast_refresh_interval_seconds:
+                    if elapsed >= settings.stream_cycle_interval_seconds:
                         break
                     websocket_health = stream.health_snapshot()
                     if _stream_should_rebuild(websocket_health, token_count=len(market_by_token)):
