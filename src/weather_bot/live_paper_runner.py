@@ -1497,6 +1497,17 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
                     evaluator_worker = None
         except Exception as exc:  # noqa: BLE001
             evaluator_status = evaluator_worker.status_snapshot() if evaluator_worker is not None else None
+            websocket_health = None
+            if stream is not None and hasattr(stream, "health_snapshot"):
+                try:
+                    websocket_health = stream.health_snapshot()
+                except Exception as health_exc:  # noqa: BLE001
+                    websocket_health = {
+                        "thread_alive": False,
+                        "stale": True,
+                        "last_error": f"{health_exc.__class__.__name__}: {health_exc}",
+                        "status_reason": "websocket health snapshot failed during realtime error handling",
+                    }
             if evaluator_worker is not None:
                 evaluator_worker.stop(drain=False)
                 evaluator_worker = None
@@ -1518,6 +1529,7 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
                 exposure_usd=round(broker.total_exposure(), 2) if broker is not None else None,
                 open_positions=len(broker.state.positions) if broker is not None else None,
                 forecast=ensemble_client.health_snapshot() if ensemble_client is not None else None,
+                websocket=websocket_health,
                 realtime_evaluator=evaluator_status,
             )
             print(f"REALTIME ERROR: {message}")

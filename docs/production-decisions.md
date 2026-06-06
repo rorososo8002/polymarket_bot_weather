@@ -55,6 +55,10 @@ durable prevention lessons belong in `docs/solutions/`.
 
 - Use the Polymarket CLOB WebSocket market stream by default. Do not silently
   replace realtime streaming with polling.
+- `websocket-client` must be importable before the paper runner starts a market
+  stream. A missing WebSocket dependency fails closed and records the import
+  failure in runner status WebSocket health instead of hiding it in a background
+  thread traceback.
 - Keep token IDs for open positions subscribed even when discovery moves to
   newer markets.
 - Discovery maps YES/NO token IDs only from explicit outcome labels. If

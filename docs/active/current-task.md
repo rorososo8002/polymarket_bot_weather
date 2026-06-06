@@ -8,10 +8,10 @@ Status: none
 
 ## Last Verified State
 
-- Fresh-chat handoff now uses this active task card plus
-  `docs/production-decisions.md` as the mandatory non-trivial read set.
-- Historical process detail is archived under `docs/archive/`.
-- Durable prevention rules live under `docs/solutions/`.
+- WebSocket dependency hardening was completed for the paper runner.
+- Local `websocket` import check passed with version `1.9.0`.
+- Focused realtime tests passed: `37 passed`.
+- Full pytest passed: `459 passed`.
 
 ## Next Action
 

@@ -460,6 +460,75 @@ def test_realtime_forever_filters_non_temperature_before_probability_estimator(t
     assert set(stream_tokens) == {"temp-yes", "temp-no"}
 
 
+def test_realtime_forever_records_missing_websocket_dependency_in_status(tmp_path, monkeypatch):
+    question = "Will the highest temperature in Seoul be 27C or higher today?"
+    market = RawMarket("seoul-27c", question, "seoul-27c", True, False, "yes", "no")
+
+    class FakeClient:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def discover_weather_markets(self, *, max_pages, page_size):
+            return [market]
+
+        def get_market(self, market_id):
+            assert market_id == market.market_id
+            return market
+
+    class MissingWebsocketStream:
+        def __init__(self, *_args, **_kwargs):
+            self.health = {
+                "thread_alive": False,
+                "stale": True,
+                "last_error": "websocket-client import failed: ModuleNotFoundError: No module named 'websocket'",
+                "status_reason": (
+                    "websocket receiver thread is not running; "
+                    "last_error=websocket-client import failed: ModuleNotFoundError: No module named 'websocket'"
+                ),
+            }
+
+        def start(self, token_ids):
+            assert set(token_ids) == {"yes", "no"}
+            raise RuntimeError("Install websocket-client to use real-time Polymarket orderbook streaming.")
+
+        def stop(self):
+            return None
+
+        def health_snapshot(self):
+            return dict(self.health)
+
+    def estimate(question_arg, **_kwargs):
+        return WeatherSignal(0.5, 0.9, "test", "test", parse_weather_question(question_arg))
+
+    monkeypatch.setattr(runner_module, "PolymarketClient", FakeClient)
+    monkeypatch.setattr(runner_module, "OrderBookMarketStream", MissingWebsocketStream)
+    monkeypatch.setattr(runner_module, "estimate_weather_probability", estimate)
+
+    def stop_after_error_backoff(_seconds):
+        raise RuntimeError("stop after error backoff")
+
+    monkeypatch.setattr(runner_module.time, "sleep", stop_after_error_backoff)
+
+    settings = Settings(
+        state_path=str(tmp_path / "state.json"),
+        trades_csv_path=str(tmp_path / "trades.csv"),
+        decisions_csv_path=str(tmp_path / "decisions.csv"),
+        raw_snapshots_path=str(tmp_path / "raw.jsonl"),
+        portfolio_decisions_jsonl_path=str(tmp_path / "portfolio.jsonl"),
+    )
+
+    with pytest.raises(RuntimeError, match="stop after error backoff"):
+        runner_module.run_realtime_forever(settings)
+
+    status = json.loads((tmp_path / "paper_runner_status.json").read_text(encoding="utf-8"))
+    assert status["phase"] == "error"
+    assert status["failed_phase"] == "websocket_start"
+    assert "Install websocket-client" in status["message"]
+    assert status["websocket"]["thread_alive"] is False
+    assert "websocket-client import failed" in status["websocket"]["last_error"]
+    assert "No module named 'websocket'" in status["websocket"]["status_reason"]
+
+
 def test_realtime_update_refreshes_nowcast_signal_after_station_cache_ttl_without_refetching_forecast(tmp_path, monkeypatch):
     target = _today_for_timezone("Asia/Seoul")
     question = "Will the highest temperature in Seoul be 27C or higher today?"

@@ -11,6 +11,7 @@ from .models import OrderBook, OrderLevel
 from .orderbook_validation import finite_float, valid_level_size, valid_orderbook_price
 
 MARKET_STREAM_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
+WEBSOCKET_CLIENT_MISSING_MESSAGE = "Install websocket-client to use real-time Polymarket orderbook streaming."
 
 
 def _utc_now() -> datetime:
@@ -24,6 +25,18 @@ def _utc_iso(value: datetime) -> str:
 def _safe_error(exc: BaseException) -> str:
     text = " ".join(str(exc).split())
     return f"{type(exc).__name__}: {text}"[:240]
+
+
+def _websocket_client_import_error(exc: BaseException) -> str:
+    return f"websocket-client import failed: {_safe_error(exc)}"
+
+
+def _import_websocket_client() -> Any:
+    try:
+        import websocket  # type: ignore[import-not-found]
+    except ImportError as exc:
+        raise RuntimeError(WEBSOCKET_CLIENT_MISSING_MESSAGE) from exc
+    return websocket
 
 
 def _executable_orderbook_update_token_ids(message: str | dict[str, Any] | list[dict[str, Any]]) -> set[str]:
@@ -322,6 +335,13 @@ class OrderBookMarketStream:
             return
         if self._thread and self._thread.is_alive():
             return
+        try:
+            _import_websocket_client()
+        except RuntimeError as exc:
+            cause = exc.__cause__ if isinstance(exc.__cause__, BaseException) else exc
+            with self._health_lock:
+                self._last_error = _websocket_client_import_error(cause)
+            raise
         self._stop.clear()
         with self._health_lock:
             self._started_at = _utc_now()
@@ -490,11 +510,12 @@ class OrderBookMarketStream:
 
     def _run_forever(self) -> None:
         try:
-            import websocket  # type: ignore[import-not-found]
-        except ImportError as exc:
+            websocket = _import_websocket_client()
+        except RuntimeError as exc:
+            cause = exc.__cause__ if isinstance(exc.__cause__, BaseException) else exc
             with self._health_lock:
-                self._last_error = _safe_error(exc)
-            raise RuntimeError("Install websocket-client to use real-time Polymarket orderbook streaming.") from exc
+                self._last_error = _websocket_client_import_error(cause)
+            raise
 
         while not self._stop.is_set():
             try:

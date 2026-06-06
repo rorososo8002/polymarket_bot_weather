@@ -1,3 +1,4 @@
+import builtins
 import json
 from datetime import datetime, timedelta, timezone
 
@@ -16,6 +17,28 @@ def test_market_subscription_uses_token_ids_with_custom_features():
         "assets_ids": ["yes", "no"],
         "custom_feature_enabled": True,
     }
+
+
+def test_market_stream_start_fails_fast_when_websocket_client_missing(monkeypatch):
+    real_import = builtins.__import__
+
+    def missing_websocket_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "websocket":
+            raise ModuleNotFoundError("No module named 'websocket'")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", missing_websocket_import)
+    stream = OrderBookMarketStream()
+
+    with pytest.raises(RuntimeError, match="Install websocket-client"):
+        stream.start(["yes"])
+
+    health = stream.health_snapshot()
+    assert stream._thread is None
+    assert health["thread_alive"] is False
+    assert health["stale"] is True
+    assert "websocket-client import failed" in health["last_error"]
+    assert "No module named 'websocket'" in health["status_reason"]
 
 
 def test_stream_cache_applies_book_snapshot_and_price_changes():
