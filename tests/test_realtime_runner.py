@@ -564,6 +564,74 @@ def test_realtime_update_refreshes_nowcast_signal_after_station_cache_ttl_withou
     assert "evidence=forecast-plus-nowcast" in signals_by_market[market.market_id].note
 
 
+def test_realtime_update_refreshes_held_exit_edge_when_entry_bankroll_is_unusable(tmp_path):
+    question = "Will the highest temperature in Seoul be 27C or higher today?"
+    market = RawMarket("seoul-held", question, "seoul-held", True, False, "held-yes", "held-no", event_id="seoul-today")
+
+    class FakeClient:
+        def get_order_book(self, token_id):
+            if token_id == "held-yes":
+                return OrderBook(
+                    token_id,
+                    bids=[OrderLevel(0.40, 1.0)],
+                    asks=[OrderLevel(0.50, 100.0)],
+                )
+            return OrderBook(
+                token_id,
+                bids=[OrderLevel(0.40, 100.0)],
+                asks=[OrderLevel(0.50, 100.0)],
+            )
+
+    settings = Settings(
+        state_path=str(tmp_path / "state.json"),
+        trades_csv_path=str(tmp_path / "trades.csv"),
+        decisions_csv_path=str(tmp_path / "decisions.csv"),
+        raw_snapshots_path=str(tmp_path / "raw.jsonl"),
+        portfolio_decisions_jsonl_path=str(tmp_path / "portfolio.jsonl"),
+        min_net_edge=0.99,
+        max_holding_hours=999999,
+    )
+    broker = runner_module.PaperBroker(settings)
+    broker.state.positions = [
+        PaperPosition(
+            position_id="held-position",
+            market_id=market.market_id,
+            question=question,
+            token_id="held-yes",
+            side="YES",
+            entry_price=0.50,
+            shares=100.0,
+            cost_usd=50.0,
+            opened_at="2026-06-02T00:00:00+00:00",
+            metadata={
+                "entry_p_true": 0.80,
+                "entry_side_probability": 0.80,
+                "probability_stop_threshold": 0.0,
+                "market_type": "temperature",
+            },
+        )
+    ]
+    signals_by_market = {
+        market.market_id: WeatherSignal(0.20, 0.90, "test", "fresh signal", parse_weather_question(question))
+    }
+    latest_edges: dict[tuple[str, str], runner_module.EdgeResult] = {}
+
+    runner_module._evaluate_realtime_update(
+        {"held-yes"},
+        FakeClient(),
+        broker,
+        settings,
+        {"held-yes": market, "held-no": market},
+        signals_by_market,
+        {market.market_id: "temperature"},
+        latest_edges,
+    )
+
+    held_edge = latest_edges[(market.market_id, "YES")]
+    assert held_edge.p_true == 0.20
+    assert "exit evidence" in held_edge.reason
+
+
 def test_open_position_if_needed_blocks_inactive_or_closed_markets():
     question = "Will NYC reach 90 F on May 25?"
     result = runner_module.EdgeResult("YES", 0.70, 0.50, 0.20, 10.0, 20.0, "entry")

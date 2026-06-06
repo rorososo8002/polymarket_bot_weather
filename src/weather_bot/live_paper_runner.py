@@ -679,6 +679,34 @@ def _event_portfolio_candidates(
     return executable or [PortfolioCandidate(market, signal, result, market_type, decision_ts)]
 
 
+def _refresh_held_exit_edges_from_signal(
+    broker: PaperBroker,
+    market: RawMarket,
+    signal: WeatherSignal,
+    latest_edges: dict[tuple[str, str], EdgeResult],
+    entry_bankroll_reason: str | None,
+) -> dict[str, EdgeResult]:
+    refreshed: dict[str, EdgeResult] = {}
+    reason = "held exit evidence refreshed from latest signal while new entries are blocked"
+    if entry_bankroll_reason:
+        reason = f"{reason}; entry_bankroll_reason={entry_bankroll_reason}"
+    for pos in broker.state.positions:
+        if pos.market_id != market.market_id:
+            continue
+        edge = EdgeResult(
+            pos.side,
+            signal.p_true,
+            None,
+            -999.0,
+            0.0,
+            0.0,
+            reason,
+        )
+        latest_edges[(pos.market_id, pos.side)] = edge
+        refreshed[pos.side] = edge
+    return refreshed
+
+
 def _is_temperature_market(market: RawMarket) -> bool:
     parsed = parse_weather_question(market.question)
     return parsed.variable == "temperature" and parsed.threshold_f is not None and parsed.operator is not None
@@ -1107,6 +1135,15 @@ def _evaluate_realtime_update(
             )
             for side, edge_result in per_side.items():
                 latest_edges[(market.market_id, side)] = edge_result
+            held_exit_edges: dict[str, EdgeResult] = {}
+            if not per_side and "entry_bankroll=$" in result.reason:
+                held_exit_edges = _refresh_held_exit_edges_from_signal(
+                    broker,
+                    market,
+                    signal,
+                    latest_edges,
+                    entry_bankroll.reason,
+                )
             decision_ts = broker.log_decision(market, result, signal.note, market_type)
             candidates.extend(_event_portfolio_candidates(market, signal, result, per_side, market_type, decision_ts))
             broker.log_raw_snapshot(
@@ -1124,6 +1161,7 @@ def _evaluate_realtime_update(
                     "entry_bankroll": entry_bankroll.__dict__,
                     "websocket": websocket_health,
                     "per_side": {side: edge.__dict__ for side, edge in per_side.items()},
+                    "held_exit_edges": {side: edge.__dict__ for side, edge in held_exit_edges.items()},
                 },
             )
         _apply_event_portfolio(broker, candidates, entry_bankroll)

@@ -35,6 +35,11 @@
   `WeatherSignal` values on the station nowcast cache TTL inside the larger
   stream cycle, while real Open-Meteo forecast HTTP calls still go through the
   forecast client cache and global 60-second request throttle.
+- Realtime held-position exit evidence now refreshes from the latest
+  `WeatherSignal` even when the conservative new-entry bankroll is unusable.
+  New entries still fail closed, but already-held paper positions can receive
+  fresh probability-stop evidence. Local verification:
+  `tests/test_realtime_runner.py` passed with `19 passed`.
 - Realtime order-book cache treats `best_bid_ask` as indicative best-price
   reference only. Executable bid/ask depth comes only from `book` snapshots or
   `price_change` level updates.

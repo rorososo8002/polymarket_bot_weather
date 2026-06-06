@@ -249,6 +249,10 @@ If the conservative new-entry bankroll is not positive, or if the calculated
 order is below `MIN_ORDER_USD`, the live evaluator returns SKIP before
 expected-return math. It must not call positive-share helpers with zero or
 below-minimum entry sizes.
+This new-entry SKIP must not starve already-held paper positions of exit
+evidence: realtime evaluation still writes the latest `WeatherSignal.p_true`
+into held-position `latest_edges` so probability-stop checks can react to fresh
+nowcast or forecast evidence while new entries remain blocked.
 
 `paper_state.json` is the paper account book, not a disposable cache. State
 saves write a complete temporary file first and then replace the live file with

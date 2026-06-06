@@ -949,3 +949,18 @@ test.
 Consequence: Category-slug event expansion, paginated discovery, and the final
 entry gate skip inactive/closed markets, while `maybe_settle_resolved_positions`
 continues to use closed markets to close already-held paper positions.
+
+### 2026-06-07: Keep Held Exit Evidence Independent From New-Entry Bankroll
+
+Decision: In realtime evaluation, an unusable conservative new-entry bankroll
+still blocks new paper entries, but no longer prevents already-held positions
+from receiving a fresh `latest_edges` probability record from the current
+`WeatherSignal`.
+Why: `entry_bankroll` is the new-buy budget gate. It can correctly become
+unusable when an existing position cannot be fully marked from executable bid
+depth, but that must not turn off the probability-stop evidence path for the
+position that is already open.
+Consequence: Fresh nowcast or forecast evidence can reach held-position exit
+checks even during new-entry SKIPs. The edge record is marked as exit evidence,
+has zero order size, and keeps real orders, wallets, and live trading out of
+scope.
