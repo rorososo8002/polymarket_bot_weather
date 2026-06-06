@@ -1,6 +1,8 @@
 import json
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from weather_bot.edge import executable_buy_price, executable_sell_price
 from weather_bot.models import OrderBook
 from weather_bot.realtime_orderbook import OrderBookMarketStream, OrderBookStreamCache, market_subscription_message
@@ -53,6 +55,25 @@ def test_stream_cache_applies_book_snapshot_and_price_changes():
     book = cache.get_order_book("yes")
     assert book.best_bid == 0.50
     assert book.best_ask == 0.53
+
+
+def test_price_change_without_prior_book_snapshot_does_not_create_executable_depth():
+    cache = OrderBookStreamCache()
+
+    updated = cache.apply_message(
+        {
+            "event_type": "price_change",
+            "market": "condition",
+            "price_changes": [
+                {"asset_id": "yes", "side": "BUY", "price": "0.50", "size": "15"},
+            ],
+            "timestamp": "2",
+        }
+    )
+
+    assert updated == set()
+    with pytest.raises(KeyError, match="no websocket orderbook snapshot"):
+        cache.get_order_book("yes")
 
 
 def test_book_snapshot_ignores_malformed_levels_and_keeps_valid_levels():

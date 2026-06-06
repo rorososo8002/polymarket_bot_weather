@@ -100,6 +100,9 @@ trading-risk, server, or workflow work, read:
   spacing above.
 - Use the Polymarket CLOB WebSocket market stream for order books by default.
 - Do not silently replace realtime streaming with polling.
+- A WebSocket `price_change` delta must not create executable depth for a token
+  until that token has received an initial `book` snapshot in the current
+  stream cache.
 - Keep token IDs for open positions subscribed even when discovery moves to
   newer markets.
 

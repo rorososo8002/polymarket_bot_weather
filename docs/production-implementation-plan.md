@@ -3,109 +3,49 @@
 ## Goal
 
 Run a conservative paper-trading bot for Polymarket weather markets using only
-verified settlement stations and reproducible paper accounting.
+verified settlement stations, realtime executable order books, and reproducible
+paper accounting.
 
 ## Non-Negotiable Rules
 
-- Register only the 41 cities in `src/weather_bot/stations.py`.
-- Execute the paper strategy only on temperature markets. Rain, snow,
-  precipitation, wind, humidity, and other non-temperature weather markets are
-  outside the current experiment and are excluded before forecast probability
-  calculation, order-book subscription, or paper trade logging. The current
-  paper runtime has no operator environment switch for re-enabling them.
-- Treat `STATION_MAP` as the single source of truth for registered
-  settlement-station metadata, not as proof that a city may be traded.
-- Treat `TRADING_READY_STATION_MAP` as the paper-trading execution universe. A
-  city is trading-ready only when stored official Polymarket rule evidence
-  confirms the settlement station and no station-code conflict is known.
-  Current count: 40 trading-ready cities. Karachi remains registered in
-  `STATION_MAP`, but excluded from execution until the `OPMR` registry entry is
-  reconciled with the official rule evidence that points to `OPKC`.
-- Skip unsupported cities, unsupported question shapes, stale data, missing
-  order books, suspicious values, or invalid parsed data.
-- Forecast dates must match the target market date exactly. If the target date
-  is absent from the Open-Meteo daily forecast, skip as unavailable; do not use
-  a nearest-date substitute.
-- When `REQUIRE_DATE_HINT_FOR_TRADE=true`, a market with no parsed
-  `date_hint` is not forecastable strategy evidence. The runner must log SKIP
-  before calling Open-Meteo rather than letting `estimate_weather_probability`
-  fall back to today's date.
-- Open-Meteo forecast HTTP calls are globally serialized and drip-fed by
-  `FORECAST_REQUEST_MIN_INTERVAL_SECONDS=60` by default. One real request must
-  finish or timeout, then at least 60 seconds must pass before the next real
-  Open-Meteo HTTP request starts. Cache hits do not count as calls. Startup
-  rejects values below 60 seconds so an operator typo cannot disable the
-  drip-feed budget guard.
-- Use the Polymarket CLOB WebSocket market stream for order books by default.
-- Keep token IDs for open positions subscribed even when discovery moves to
-  newer markets.
-- Closed Polymarket markets are settlement evidence for already-held paper
-  positions only. New paper-entry candidates must be explicitly active/open;
-  inactive or closed markets are skipped before strategy entry.
-- WebSocket receiver callbacks must stay lightweight: update the order-book
-  cache and enqueue event work through a bounded coalescer/worker. Do not run
-  strategy evaluation, portfolio selection, close checks, or
-  `paper_decisions.csv` writes inline on the receiver thread.
-- Map Polymarket YES/NO token IDs only from explicit outcome labels. If
-  `tokens` or `outcomes` cannot prove which `clobTokenIds` entry is YES and
-  which is NO, skip the market instead of trusting list order.
-- Treat `best_bid_ask` stream messages as indicative best-price references
-  only. They must not create or move executable bid/ask depth, and they must
-  not enqueue realtime paper strategy evaluation.
-- Treat WebSocket freshness as executable-depth freshness. Only `book`
-  snapshots and `price_change` updates refresh the usable order-book clock;
-  indicative `best_bid_ask` messages do not. Stale or dead WebSocket health
-  blocks new entries and pauses held-position exit evaluation until executable
-  WebSocket depth resumes. A dead receiver thread may rebuild the WebSocket
-  stream, but the bot must not silently fall back to REST polling.
-- Held-position marking and close evaluation must also check executable-depth
-  freshness for that position's own `token_id`. A fresh update on one token is
-  not evidence that another held YES/NO token can be sold.
-- Parse CLOB order-book levels defensively in both WebSocket and REST paths. A
-  level with non-numeric, non-finite, zero-size, negative, or out-of-range
-  price/size is ignored, and malformed whole WebSocket snapshot shapes fail
-  closed instead of replacing the executable order book.
-- Persist `paper_state.json` through an atomic temp-file replace. Existing
-  corrupt, unreadable, structurally invalid, or position-field invalid paper
-  state fails closed instead of starting a new default account.
-- Treat `paper_state.json` and `paper_trades.csv` as paired paper-accounting
-  ledgers for executed actions. `OPEN`, `ADD`, `CLOSE`, and `PARTIAL_CLOSE`
-  write a small `paper_state.json.journal` before changing the account book.
-  If state saving or trade logging fails before the journal is cleared, later
-  paper accounting writes and the next `PaperBroker` startup fail closed for
-  operator reconciliation.
-- Public dashboard binding fails closed unless `DASHBOARD_TOKEN` is at least
-  32 characters and not an obvious weak example value. Local development on
-  `127.0.0.1` or `localhost` may still run without a token. Public dashboard
-  API access accepts the token only through the `X-Dashboard-Token` header;
-  URL query tokens are rejected on public hosts.
-- Boolean environment settings accept only explicit true/false aliases. Unknown
-  values fail startup with `ValueError` instead of silently becoming `False`.
-- Numeric paper-money, risk, fee, runtime-cadence, dashboard-port, and shadow
-  research settings are validated when `Settings` is created. Money amounts,
-  runtime intervals, and positive shadow collection windows must be greater
-  than 0; risk fractions and the weather taker fee rate must stay between 0
-  and 1; `DASHBOARD_PORT` must be 1..65535; and `SHADOW_MAX_ROWS` may be 0
-  only to mean keeping no shadow rows.
-- `SIZE_MODE` is the paper order-size method switch and accepts only
-  `fixed_fraction` or `kelly`; startup normalizes case and rejects typos.
 - Keep execution paper-only unless live trading is explicitly approved through
   `docs/live-trading-safety-plan.md`.
+- Execute the paper strategy only on temperature markets for the 40
+  `TRADING_READY_STATION_MAP` cities. `STATION_MAP` is the registry; it is not
+  proof that a city may trade.
+- Skip unsupported cities, unsupported question shapes, stale data, missing
+  order books, suspicious values, invalid parsed data, inactive markets, closed
+  new-entry candidates, and unprovable YES/NO token mappings.
+- Forecast target dates must match exactly. Nearby Open-Meteo dates are not
+  substitutes.
+- Real Open-Meteo forecast HTTP calls are globally serialized and drip-fed by
+  `FORECAST_REQUEST_MIN_INTERVAL_SECONDS=60`. Cache hits do not count as calls.
+- Use the Polymarket CLOB WebSocket stream for order books. Do not silently
+  replace realtime streaming with polling.
+- Treat WebSocket `price_change` messages as deltas only. They may update
+  executable depth only after that token has received an initial `book`
+  snapshot in the current stream cache.
+- Keep held-position token IDs subscribed until the position closes or settles.
+- WebSocket receiver callbacks must stay lightweight: update cache, enqueue
+  event work, and leave strategy evaluation to the bounded worker.
+- `paper_state.json`, `paper_trades.csv`, and `paper_decisions.csv` are
+  evidence ledgers. Do not delete, truncate, or rotate them for token savings.
 
 ## Architecture
 
 ```text
 weather event discovery
-  -> supported-city parser
-  -> settlement-station forecast and optional same-station nowcast
-  -> CLOB WebSocket order-book cache
+  -> supported-city and temperature-only parser
+  -> station-rule and trading-ready gate
+  -> exact-date forecast plus optional same-station nowcast
+  -> CLOB WebSocket executable order-book cache
   -> fee-aware YES/NO VWAP edge and expected net-return filter
   -> city-date portfolio selector
-  -> PaperBroker risk checks, opens, exits, settlements, and logs
+  -> PaperBroker risk checks, opens, exits, settlements, and ledgers
   -> dashboard, runner status, reports, and shadow research artifacts
 ```
 
-Shadow research is a separate public-data path:
+Shadow research is separate:
 
 ```text
 supported weather markets -> bounded public Data API rows
@@ -114,33 +54,7 @@ supported weather markets -> bounded public Data API rows
   -> shadow_signal_report.md
 ```
 
-The shadow path is never an execution input by default.
-
-Paper-report readers treat `paper_decisions.csv` and `paper_trades.csv` as
-source ledgers. Full-history analysis may scan every row to preserve its
-meaning, but it must stream rows and keep only aggregates, market-level lookup
-state, or bounded research samples in memory.
-New `paper_decisions.csv` rows keep the strategy evidence fields but compact
-verbose question, reason, and note text. `paper_event_portfolios.jsonl` records
-selected legs, rejection counts/samples, and worst scenario PnL rather than
-full candidate or scenario maps.
-Resolved Brier scoring treats an `OPEN` row in `paper_trades.csv` as the
-canonical entry-time forecast evidence. New `OPEN` rows record `entry_p_true`,
-`entry_side_probability`, `entry_net_edge`, and `decision_ts`; older CSVs
-without those columns fall back to the latest entry decision for that market so
-legacy reports remain readable. Existing legacy trade CSV headers are not
-rewritten just to add newer columns; appenders preserve the current header and
-analysis falls back when structured entry fields are absent. `ADD` rows are
-same-side paper add-ons to an existing position; they are trade activity and
-accounting evidence, but they do not replace the original `OPEN` row as the
-first-entry Brier reference.
-`paper_raw_snapshots.jsonl` is high-volume diagnostic evidence, not a source
-ledger. Normal decision snapshots are disabled by default:
-`RAW_SNAPSHOTS_MODE=error` records only error diagnostics, while `debug` may be
-used for a bounded investigation. Active raw snapshots rotate in-process over
-100MB into compressed `data/archive/` files, old raw archives are retained for
-7 days by default, and dangerous disk pressure suspends raw writes while adding
-a `raw_snapshot_storage` warning to `paper_runner_status.json`.
+Shadow data is never an execution input by default.
 
 ## Code Map
 
@@ -162,30 +76,13 @@ src/weather_bot/shadow_signals.py     public external-signal research only
 src/weather_bot/analyze_paper.py      paper performance report
 ```
 
-Dashboard scanner totals expose their counting scope. `decision_totals_exact`
-is true only when the scanner numbers come from the full decision ledger, and
-`decision_totals_scope=recent_tail` means the dashboard used the large-file
-tail guard for responsiveness.
-
 ## Strategy Contract
 
-`DECISION YES` and `DECISION NO` are model/order-book judgments, not guaranteed
-opens. The broker may still block entry for exposure, same-market hedge
-protection, missing token IDs, low confidence, invalid prices, insufficient
-liquidity, abnormal YES+NO ask sums, weak net return, or stale dependencies.
-
-Open-Meteo forecast HTTP requests are not a burst job. The production default
-keeps `FORECAST_CACHE_TTL_SECONDS=2400` and
-`FORECAST_REQUEST_MIN_INTERVAL_SECONDS=60`, so the forecast answer sheet is
-fresh for 40 minutes while real HTTP calls move through one global queue:
-previous request finishes or times out, at least 60 seconds pass, then the next
-city/station request may start. `STREAM_CYCLE_INTERVAL_SECONDS=2400` is the
-market-discovery and WebSocket rebuild interval, not the forecast-call burst
-cadence. Realtime paper evaluation may recalculate same-station
-nowcast-backed `WeatherSignal` values on `STATION_NOWCAST_CACHE_TTL_SECONDS`
-using the existing ensemble client/cache, so same-day observed-temperature
-evidence can update without turning cache hits into extra Open-Meteo HTTP
-calls.
+`DECISION YES` and `DECISION NO` are strategy judgments, not guaranteed opens.
+The broker may still block entry for exposure, same-market hedge protection,
+missing token IDs, low confidence, invalid prices, insufficient liquidity,
+abnormal YES+NO ask sums, weak net return, stale dependencies, or account
+safety.
 
 Entry must satisfy both:
 
@@ -194,195 +91,55 @@ net_edge > configured threshold
 expected_net_return >= ENTRY_MIN_EXPECTED_NET_RETURN_PCT
 ```
 
-`p_exec` is the executable ask-side VWAP and already includes entry spread and
-slippage. Do not subtract entry spread or entry slippage a second time.
-Entry liquidity checks must follow actual order sizing. Probe executable ask
-depth with at least `MIN_ORDER_USD`, compute fee-aware edge and `size_usd`, then
-recheck executable ask depth for that final `size_usd`. If the final VWAP
-changes, recalculate edge, fee, shares, and expected return from the final
-price. If confirmed ask depth cannot absorb the full final `size_usd` but can
-absorb at least `MIN_ORDER_USD`, scale the paper entry down to the executable
-amount and log the partial-fill sizing. If confirmed ask depth is below
-`MIN_ORDER_USD`, skip; do not record a paper fill from unavailable liquidity.
-Same-market opposite-side entries remain blocked. Same-side add-ons are allowed
-only in paper mode when the current executable price is at least
-`ADD_TO_POSITION_DROP_PCT` below the existing average entry, the current side
-probability is still above the position's `probability_stop_threshold`, edge and
-expected return remain positive, and cash/city/date/event exposure caps leave at
-least `MIN_ORDER_USD`. Add-ons update the existing paper position's shares,
-cost, and average entry price and log an `ADD` action rather than creating a
-duplicate position.
-`best_bid_ask` may update displayed/reference best bid and ask prices, but
-`p_exec` must be computed only from confirmed order-book depth carried by
-`book` snapshots or `price_change` updates.
-Held-position marking and close evaluation use the same executable-depth rule
-per `token_id`: a globally fresh WebSocket stream is not enough when the held
-token's own executable book is stale. That position must pause rather than
-being marked or closed from another token's fresh update.
-`OrderBook.best_bid` and `OrderBook.best_ask` are executable-depth helpers:
-they read only positive-size `bids` and `asks`. Display or diagnostic code that
-wants the indicative stream quote must use the explicit reference/indicative
-fields instead.
-Those executable levels must have finite prices in the valid Polymarket token
-range and finite positive sizes. WebSocket `price_change` may accept size zero
-only as an explicit remove-level update. Bad REST and WebSocket levels are
-discarded; a malformed WebSocket snapshot shape does not overwrite the previous
-executable book.
-`WEATHER_TAKER_FEE_RATE=0.05` follows the Polymarket formula:
-
-```text
-fee_usdc = shares * fee_rate * price * (1 - price)
-```
+`p_exec` is executable ask-side VWAP. It already includes spread/slippage
+through the actual book price, so do not subtract those twice.
 
 `size_usd` is the all-in paper-entry budget. The broker buys fewer shares than
 `size_usd / p_exec` so entry notional plus fee stays inside the budget. Normal
 and partial closes add only after-fee proceeds to paper cash. Dashboard market
-value and new-entry liquidation bankroll also use after-exit-fee value.
-Profit-taking and edge-faded exit triggers also use after-fee liquidation PnL:
-the current executable sell value minus exit fee minus `PaperPosition.cost_usd`.
-Raw token-price movement may be logged for diagnostics, but it is not the
-profit threshold.
-`EdgeResult.size_shares`, portfolio scenario PnL, and broker-opened paper
-positions use this same fee-adjusted actual share count:
-`size_usd / (p_exec + fee_per_share)`.
-If the conservative new-entry bankroll is not positive, or if the calculated
-order is below `MIN_ORDER_USD`, the live evaluator returns SKIP before
-expected-return math. It must not call positive-share helpers with zero or
-below-minimum entry sizes.
-This new-entry SKIP must not starve already-held paper positions of exit
-evidence: realtime evaluation still writes the latest `WeatherSignal.p_true`
-into held-position `latest_edges` so probability-stop checks can react to fresh
-nowcast or forecast evidence while new entries remain blocked.
+value and liquidation bankroll also use after-exit-fee value.
 
-`paper_state.json` is the paper account book, not a disposable cache. State
-saves write a complete temporary file first and then replace the live file with
-`os.replace`. If an existing state file is corrupt JSON, unreadable, has an
-invalid account structure, invalid account number, invalid stats field, or
-invalid position field, `PaperBroker` refuses to start so the bot cannot trade
-from guessed cash, hidden positions, or polluted performance statistics.
-Executed account changes are paired with `paper_trades.csv`, the execution
-ledger. The broker writes `paper_state.json.journal` before applying `OPEN`,
-`ADD`, `CLOSE`, or `PARTIAL_CLOSE`; clears it only after both the state save
-and trade row append finish; and refuses later accounting writes if any step
-fails. A leftover journal means the two ledgers may disagree and startup must
-stop for operator reconciliation. A missing state file with existing executed
-trade rows, a state file with open positions but a missing or empty trade
-ledger, or an open position without a matching `OPEN` trade row is also treated
-as an obvious mismatch and fails closed.
-`cash_usd` must be a finite number and cannot be negative; `realized_pnl_usd`
-must be a finite number; stats `wins` and `losses` must be non-negative integer
-counts; and stats `pnl` must be finite. Position `side` must be `YES` or `NO`;
-`shares` must be finite and positive; the persisted average entry price field
-`entry_price` must be between 0 and 1; `cost_usd` must be non-negative;
-`market_id` and `token_id` must be non-empty; and `metadata` must be a JSON
-object when present.
+Entry liquidity checks follow actual order sizing:
+
+1. Probe executable ask depth with at least `MIN_ORDER_USD`.
+2. Compute fee-aware edge and actual `size_usd`.
+3. Recheck executable ask depth for that final `size_usd`.
+4. Recalculate edge, fee, shares, and expected return if final VWAP changes.
+5. Scale down only when the confirmed executable amount still meets
+   `MIN_ORDER_USD`; otherwise skip.
+
+Same-market opposite-side entries are blocked. Same-side add-ons are allowed
+only in paper mode when price has dropped enough, live probability remains
+above the position stop, edge and expected return stay positive, and cash plus
+exposure caps leave at least `MIN_ORDER_USD`.
 
 ## Weather And Discovery Contract
 
-- A weather `event` is one city-date question; a `market` is one tradable
-  binary result inside that event.
-- Discovery expands every supported temperature binary market inside every
-  trading-ready weather-category event it finds. The 41-city station registry
-  is not an event-count cutoff, and the executable universe is the 40-city
-  `TRADING_READY_STATION_MAP` subset after the temperature-only filter. The
-  parser treats rain, snow, precipitation, wind, humidity, and other
-  non-temperature weather questions as unsupported.
-- Discovery treats `active` and `closed` API values as explicit booleans,
-  including string values such as `"true"` and `"false"`. Only active and not
-  closed markets can become new paper-entry candidates; closed markets may
-  still be fetched by market ID to settle existing paper positions.
-- Temperature range buckets such as `86-87F` or `22-23C` preserve their
-  displayed inclusive endpoints exactly: `86-87F` means
-  `86.0 <= temperature_f <= 87.0`. Do not apply exact-bucket half-step
-  expansion to range markets. Existing exact buckets such as `87F` still use
-  the legacy rounded-cell behavior pending a separate settlement-rule review.
+- A weather event is one city-date question; a market is one tradable binary
+  result inside that event.
+- Discovery expands supported temperature binary markets inside trading-ready
+  weather-category events. It does not use the 41-city station registry as an
+  event-count cutoff.
+- Temperature range buckets such as `86-87F` or `22-23C` preserve displayed
+  inclusive endpoints exactly.
 - Same-station nowcast may adjust probability only when the provider is
   explicitly mapped to the same settlement station. Current trading-ready
-  sources: AWC METAR for 39 ICAO stations and HKO max/min CSV for Hong Kong.
-  Karachi/OPMR remains registered metadata only and is excluded from paper
-  trading until its `OPMR`/`OPKC` rule-evidence conflict is resolved.
-- Nowcast target-date access is narrow. The target date may be the station's
-  local today, or the station's local yesterday only during the post-close
-  freshness window controlled by `STATION_NOWCAST_FRESHNESS_SECONDS`. That
-  yesterday path is for already-held paper exits and settlement-risk evidence,
-  not for making new entries more aggressive. Older target dates, future
-  observations, stale observations, missing values, and wrong-station rows fail
-  closed.
-- AWC METAR nowcast uses bulk prefetch for the enabled ICAO set. One AWC JSON
-  response is shared across METAR stations in the same cache refresh, and each
-  city filters its own station-date rows from that response. Yesterday
-  post-close requests expand `hoursBeforeNow` far enough to include the target
-  local day, and the bulk cache is reused only when it covers at least the
-  needed lookback. This preserves high/low derivation from one response without
-  sending one HTTP request per station. HKO remains a single official max/min
-  CSV request.
-- Temperature nowcast derives observed high-so-far and observed low-so-far from
-  one station-date response when the source provides enough observations. Use
-  observed high only for daily-high markets and observed low only for daily-low
-  markets; do not cross-apply one metric to the other.
-- For exact/range temperature buckets, same-station nowcast inside the bucket
-  is exit-only risk evidence for held NO positions. If observed high/low fully
-  moves outside the exact/range bucket so YES is impossible, preserve the
-  existing probability adjustment to `p_true=0.0`. Do not use this rule to make
-  new entries more aggressive.
-- Real AWC METAR and HKO max/min HTTP attempts are counted in
-  `station_nowcast_request_log.jsonl`. Cache hits do not write rows, so the log
-  measures external observation usage rather than in-memory reuse. AWC rows use
-  `request_mode=awc_metar_bulk_cache` and `requested_station_ids`; HKO rows stay
-  station-specific.
-- Missing, stale, malformed, future-date, unmapped, or unsupported nowcast data
-  is not guessed. It remains forecast-only or fail-closed depending on context.
-- Missing exact target-date forecasts are not guessed. Nearby forecast dates
-  are not strategy data for the target city-date market.
-- `pre_forecast_tradeability_gate` runs before Open-Meteo forecast fetching.
-  It checks that the market is temperature-shaped, the city is trading-ready,
-  and required date evidence exists. Markets that fail this gate record SKIP
-  diagnostics without spending forecast API calls.
+  sources are AWC METAR for ICAO stations and HKO max/min CSV for Hong Kong.
+- Nowcast target-date access is narrow: station local today, or station local
+  yesterday only during the post-close freshness window for held-position exit
+  and settlement-risk evidence.
+- AWC METAR nowcast uses one bulk request for the enabled ICAO set, then each
+  city filters its own station-date rows. HKO remains one official CSV request.
+- Daily-high markets use observed high; daily-low markets use observed low. Do
+  not cross-apply one metric to the other.
+- Real observation HTTP attempts are counted in
+  `station_nowcast_request_log.jsonl`; cache hits do not write rows.
+- Missing, stale, malformed, future-date, unmapped, unsupported, or wrong
+  station data remains forecast-only or fail-closed depending on context.
 - `forecast_rate_limit_state.json` persists Open-Meteo cooldowns after HTTP
-  429. Daily quota responses block new forecast HTTP calls until the recorded
-  next UTC reset time, while `Too many concurrent requests` responses use a
-  short 15-minute `concurrent` cooldown. A fresh runner process must read the
-  memo and skip new forecast HTTP calls while it is active, while still
-  allowing fresh cache hits. Legacy memo files without `kind` are reclassified
-  from their `reason` text.
-- `ReadTimeout` from Open-Meteo is a temporary unanswered forecast call, not a
-  reason to hammer the same forecast key immediately. The client does not
-  retry `ReadTimeout` inside the same request. It records one real HTTP attempt
-  in `forecast_request_log.jsonl`, places that exact forecast cache key under a
-  30-minute in-process temporary failure memo, and lets other city/station/date
-  keys continue. The skipped key can be tried again after the memo expires.
-- Real Open-Meteo forecast HTTP calls use one global queue across client
-  instances. Cache hits return immediately because they do not spend API
-  budget. On a cache miss, the previous real request must finish or timeout,
-  then the client waits at least `FORECAST_REQUEST_MIN_INTERVAL_SECONDS` before
-  starting the next real HTTP request. This is the intended 41-city rotation
-  shape:
-
-```text
-Seoul request starts
-request finishes or times out
-wait at least 60 seconds
-Beijing request starts
-request finishes or times out
-wait at least 60 seconds
-next city
-```
-
-- `WEATHER_BIAS_JSON` is optional forecast calibration data. If it is empty,
-  the bot uses conservative neutral defaults. If it is explicitly set, the file
-  must be readable valid JSON shaped as station IDs to numeric variable bias
-  values in Fahrenheit. Missing, invalid, malformed, or non-numeric explicit
-  bias files produce `forecast-unavailable` with zero confidence instead of an
-  uncorrected forecast.
-- Rule evidence is also fail-closed. If a city lacks a stored Polymarket rules
-  URL/station phrase, or if the found rule source conflicts with the registry,
-  discovery and probability estimation exclude it from paper trading.
-- YES/NO token mapping is fail-closed. `clobTokenIds` are tradable asset IDs,
-  but they are not safe to interpret by position alone. Discovery must map them
-  through explicit `tokens[].outcome` or the market `outcomes` field, and skip
-  if the labels are missing, duplicated, malformed, or not exactly YES/NO.
-
-Detailed station evidence lives in `docs/station-registry-audit.md`.
+  429. Daily quota and concurrent-request cooldowns are distinct.
+- `ReadTimeout` creates one logged real attempt and a temporary per-key miss; do
+  not hammer the same key immediately.
 
 ## Portfolio And Risk Contract
 
@@ -396,9 +153,7 @@ entry_bankroll = min(cost_basis_bankroll, liquidation_bankroll)
 
 Unrealized profits do not increase new-entry sizing. Executable unrealized
 losses reduce sizing immediately. If any held position cannot be valued from a
-usable order book, new entries fail closed.
-The runner surfaces that as an operator-readable SKIP, not as an exception from
-zero-share expected-return calculation.
+usable order book, new entries fail closed with an operator-readable SKIP.
 
 Default portfolio limits:
 
@@ -415,29 +170,27 @@ MAX_CITY_EXPOSURE_FRACTION=0.20
 MAX_TOTAL_EXPOSURE_FRACTION=0.90
 ```
 
-`BANKROLL_USD` is the paper starting cash, not real money. The checked-in
-example remains 100 USD, but the active Oracle VPS experiment was intentionally
-reset on 2026-06-05 UTC with an operator override of `BANKROLL_USD=200`, a
-fresh `paper_state.json`, and empty paper ledgers. Treat results after that
-reset as a new paper-performance window, not a continuation of the old logs.
+The active Oracle VPS experiment was reset on 2026-06-05 UTC with an operator
+override of `BANKROLL_USD=200`, fresh `paper_state.json`, and empty paper
+ledgers. Treat post-reset results as a new performance window.
 
 For one city-date event, the selector compares one-leg and at-most-two-leg
 `YES+YES`, `YES+NO`, and `NO+NO` combinations across non-overlapping buckets.
 Same-market `YES+NO`, overlapping threshold positions, and third legs are
-blocked. Event decisions are logged to `paper_event_portfolios.jsonl`.
-Allocation-size candidates stay dense at one-dollar increments for small
-allowed ranges, but large ranges are capped at 50 candidate sizes. The selector
-must always keep the minimum order, the allowed maximum, and any affordable
-preferred candidate size in the grid so bigger bankrolls do not turn portfolio
-selection into an unbounded computation.
-`scenario_probabilities` is the event outcome table used for portfolio
-scoring. It may be normalized only when parsed temperature intervals form a
-non-overlapping exhaustive ladder across all outcomes. Incomplete interval sets
-keep an `other` scenario when the probability sum is below one; overlapping
-intervals or sums above one without exhaustive coverage fail closed with a
-readable rejection reason.
+blocked. Allocation-size candidates are capped for large ranges while keeping
+the minimum order, allowed maximum, and any affordable preferred size.
 
-## Exit Policy Contract
+## Accounting And Exit Contract
+
+`paper_state.json` is the paper account book. It is saved by complete temp-file
+write followed by atomic replacement. Bad existing state fails closed instead of
+starting a fresh guessed account.
+
+Executed account changes are paired with `paper_trades.csv`. `OPEN`, `ADD`,
+`CLOSE`, and `PARTIAL_CLOSE` write `paper_state.json.journal` before mutation
+and clear it only after both the state save and trade row append finish. A
+leftover journal or obvious state/trade mismatch stops startup for operator
+reconciliation.
 
 Open positions close only through:
 
@@ -445,36 +198,38 @@ Open positions close only through:
 - model-target take profit
 - overheated take profit
 - valid edge-faded exit
-- nowcast bucket lock risk for held NO exact/range buckets
+- nowcast bucket-lock risk for held NO exact/range buckets
 - max holding time
 - resolved settlement
 
-Resolved settlement requires a proven YES/NO winner. Explicit winner fields
-such as `winningOutcome` are preferred. If those fields are absent on a closed
-binary market, `outcomePrices` may be used only when the YES and NO prices are
-exactly `1/0` or `0/1`. Ambiguous prices are not guessed and leave the paper
-position open for later evidence.
+Exit triggers use after-fee liquidation PnL. Evaluation failure sentinels such
+as `net_edge=-999` with no executable `p_exec` are not exit signals.
 
-Profit-taking exits first evaluate the settlement-runner policy. The broker
-compares fee-adjusted sell-now value with conservative hold-to-settlement value.
-If settlement value is at least as good, it sells a principal-recovery tranche
-and caps the remaining runner at `SETTLEMENT_RUNNER_MAX_FRACTION=0.25` by
-default. Active runners are rechecked with fresh probability; they are not a
-risk exemption.
+If an actual exit signal fires but no executable close is available, the broker
+keeps the blocker action instead of pretending to sell. No executable bid depth
+logs `HOLD_NO_LIQUIDITY`; stale executable WebSocket depth logs
+`HOLD_STREAM_UNHEALTHY`; the reason or metadata must preserve the original
+`exit_trigger`.
 
-Evaluation failure sentinels such as `net_edge=-999` with no executable
-`p_exec` are not exit signals.
-An explicit `nowcast_bucket_lock_risk` exit signal is different: it is attached
-only when same-station observed high/low is inside an exact/range bucket held
-against by a NO position. It is exit evidence for an existing position, not a
-new-entry signal.
-When an actual exit assessment fires but the close cannot execute, the broker
-must keep the paper-only blocker action instead of pretending to sell. No
-executable bid depth logs `HOLD_NO_LIQUIDITY`, stale executable WebSocket depth
-logs `HOLD_STREAM_UNHEALTHY`, and the reason or position metadata must preserve
-the original `exit_trigger` such as `probability_stop`, `take_profit`, or
-`edge_faded`. Indicative `best_bid_ask` quotes still cannot supply executable
-depth.
+Resolved settlement requires a proven YES/NO winner. Explicit winner fields are
+preferred; closed binary `outcomePrices` are accepted only when YES/NO are
+exactly `1/0` or `0/1`.
+
+## Runtime Data Contract
+
+Paper-report readers treat `paper_decisions.csv` and `paper_trades.csv` as
+source ledgers. Full-history reports may scan every row, but they must stream
+rows and keep only aggregates, market-level lookup state, or bounded research
+samples in memory.
+
+`paper_raw_snapshots.jsonl` is high-volume diagnostic evidence, not a source
+ledger. Normal snapshots default to error-only, debug mode is bounded, active
+raw snapshots rotate over 100MB into compressed `data/archive/`, and disk
+pressure may suspend raw writes with a runner-status warning.
+
+Dashboard scanner totals expose their counting scope:
+`decision_totals_exact=true` means full-ledger totals, and
+`decision_totals_scope=recent_tail` means large-file tail protection was used.
 
 ## SKIP Diagnostics Contract
 
@@ -483,16 +238,15 @@ classified before changing strategy thresholds or risk settings.
 
 Use `docs/codex/skip-diagnostics.md` to separate:
 
-- account-safety SKIPs, such as unpriceable held positions
+- account-safety SKIPs
 - minimum-order or budget SKIPs
 - market-liquidity SKIPs
 - weather-data or parser SKIPs
 - strategy-threshold SKIPs
 
-A future paper-only skip diagnosis report should aggregate
-`paper_decisions.csv`, `paper_event_portfolios.jsonl`, runner status, and
-order-book health into counts by reason category. That report is for
-investigation only; it must not feed live orders or automatic threshold changes.
+A future paper-only SKIP diagnosis report may aggregate `paper_decisions.csv`,
+`paper_event_portfolios.jsonl`, runner status, and order-book health. It must
+not feed live orders or automatic threshold changes.
 
 ## Shadow Research Contract
 
@@ -508,9 +262,6 @@ at least 20 paired resolved external-signal and bot-entry rows
 external signal win rate >= matched bot entry win rate + 5 percentage points
 next step is paper-only A/B experiment, never automatic copy trading
 ```
-
-Bot `SKIP` rows remain diagnostics but cannot inflate public-signal advantage.
-Detailed shadow rules live in `docs/shadow-signal-research.md`.
 
 ## Runtime Defaults
 
@@ -553,16 +304,9 @@ DASHBOARD_PORT=8787
 DASHBOARD_TOKEN=
 ```
 
-`DISCOVERY_MAX_PAGES` and `DISCOVERY_PAGE_SIZE` only bound fallback Gamma
-pagination. They do not reduce the registered 41-city station registry, the
-40-city trading-ready execution subset, or normal category discovery.
-
-For public dashboard hosts such as `0.0.0.0` or `::`, `DASHBOARD_TOKEN` must be
-a real random value with at least 32 characters rather than empty, short,
-placeholder, basic, default, change-me, secret, token, password, abc, or 123456
-text. Public `/api/status` requests reject `?token=...` query authentication;
-the token must be sent in the `X-Dashboard-Token` header. Localhost and
-`127.0.0.1` keep query-token first-load compatibility for development only.
+For public dashboard hosts such as `0.0.0.0` or `::`, use a real random
+`DASHBOARD_TOKEN` with at least 32 characters and send it through the
+`X-Dashboard-Token` header.
 
 ## Verification
 
@@ -582,4 +326,6 @@ local, VPS, SSH, and dashboard commands live in
 - Station audit: `docs/station-registry-audit.md`
 - Shadow research detail: `docs/shadow-signal-research.md`
 - Live trading safety: `docs/live-trading-safety-plan.md`
+- Historical handoff archive:
+  `docs/archive/production-handoff-history-2026-06-07.md`
 - Durable mistakes and prevention rules: `docs/solutions/`

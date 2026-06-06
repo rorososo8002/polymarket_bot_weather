@@ -100,6 +100,7 @@ def _set_level(levels: list[OrderLevel], price: float, size: float, *, reverse: 
 class OrderBookStreamCache:
     def __init__(self) -> None:
         self._books: dict[str, OrderBook] = {}
+        self._snapshot_token_ids: set[str] = set()
         self._lock = threading.RLock()
 
     def get_order_book(self, token_id: str) -> OrderBook:
@@ -154,6 +155,7 @@ class OrderBookStreamCache:
         )
         with self._lock:
             self._books[token_id] = book
+            self._snapshot_token_ids.add(token_id)
         return {token_id}
 
     def _apply_price_change(self, message: dict[str, Any]) -> set[str]:
@@ -167,6 +169,8 @@ class OrderBookStreamCache:
                     continue
                 token_id = str(change.get("asset_id") or "")
                 if not token_id:
+                    continue
+                if token_id not in self._snapshot_token_ids:
                     continue
                 side = str(change.get("side") or "").upper()
                 if side not in {"BUY", "SELL"}:
