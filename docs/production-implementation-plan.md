@@ -33,7 +33,9 @@ verified settlement stations and reproducible paper accounting.
 - Open-Meteo forecast HTTP calls are globally serialized and drip-fed by
   `FORECAST_REQUEST_MIN_INTERVAL_SECONDS=60` by default. One real request must
   finish or timeout, then at least 60 seconds must pass before the next real
-  Open-Meteo HTTP request starts. Cache hits do not count as calls.
+  Open-Meteo HTTP request starts. Cache hits do not count as calls. Startup
+  rejects values below 60 seconds so an operator typo cannot disable the
+  drip-feed budget guard.
 - Use the Polymarket CLOB WebSocket market stream for order books by default.
 - Keep token IDs for open positions subscribed even when discovery moves to
   newer markets.
@@ -48,7 +50,8 @@ verified settlement stations and reproducible paper accounting.
   `tokens` or `outcomes` cannot prove which `clobTokenIds` entry is YES and
   which is NO, skip the market instead of trusting list order.
 - Treat `best_bid_ask` stream messages as indicative best-price references
-  only. They must not create or move executable bid/ask depth.
+  only. They must not create or move executable bid/ask depth, and they must
+  not enqueue realtime paper strategy evaluation.
 - Treat WebSocket freshness as executable-depth freshness. Only `book`
   snapshots and `price_change` updates refresh the usable order-book clock;
   indicative `best_bid_ask` messages do not. Stale or dead WebSocket health
@@ -235,6 +238,10 @@ fee_usdc = shares * fee_rate * price * (1 - price)
 `size_usd / p_exec` so entry notional plus fee stays inside the budget. Normal
 and partial closes add only after-fee proceeds to paper cash. Dashboard market
 value and new-entry liquidation bankroll also use after-exit-fee value.
+Profit-taking and edge-faded exit triggers also use after-fee liquidation PnL:
+the current executable sell value minus exit fee minus `PaperPosition.cost_usd`.
+Raw token-price movement may be logged for diagnostics, but it is not the
+profit threshold.
 `EdgeResult.size_shares`, portfolio scenario PnL, and broker-opened paper
 positions use this same fee-adjusted actual share count:
 `size_usd / (p_exec + fee_per_share)`.

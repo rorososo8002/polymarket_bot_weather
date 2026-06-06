@@ -5,6 +5,7 @@ import gzip
 import json
 import os
 import shutil
+import time
 from copy import deepcopy
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -27,6 +28,8 @@ from .polymarket_client import PolymarketClient, parse_api_bool
 from .portfolio import adaptive_event_cap_fraction, is_complementary_with_positions, websocket_pricing_block_reason
 from .runner_status import update_runner_status_fields
 
+_ATOMIC_REPLACE_RETRY_DELAYS_SECONDS = (0.01, 0.05, 0.1)
+
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
@@ -34,6 +37,17 @@ def utc_now_iso() -> str:
 
 def parse_iso(ts: str) -> datetime:
     return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+
+
+def _atomic_replace_with_retry(tmp_path: Path, final_path: Path) -> None:
+    for delay in (*_ATOMIC_REPLACE_RETRY_DELAYS_SECONDS, None):
+        try:
+            os.replace(tmp_path, final_path)
+            return
+        except PermissionError:
+            if delay is None:
+                raise
+            time.sleep(delay)
 
 
 @dataclass(frozen=True)
@@ -474,7 +488,7 @@ class PaperBroker:
         )
         try:
             tmp_path.write_text(json.dumps(row, indent=2, ensure_ascii=False), encoding="utf-8")
-            os.replace(tmp_path, self.accounting_journal_path)
+            _atomic_replace_with_retry(tmp_path, self.accounting_journal_path)
         finally:
             if tmp_path.exists():
                 tmp_path.unlink()
@@ -594,7 +608,7 @@ class PaperBroker:
         tmp_path = self.state_path.with_name(f"{self.state_path.name}.{uuid4().hex}.tmp")
         try:
             tmp_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-            os.replace(tmp_path, self.state_path)
+            _atomic_replace_with_retry(tmp_path, self.state_path)
         finally:
             if tmp_path.exists():
                 tmp_path.unlink()

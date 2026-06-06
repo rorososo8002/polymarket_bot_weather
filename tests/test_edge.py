@@ -1,8 +1,10 @@
 import inspect
 
+import pytest
+
 import weather_bot.edge as edge_module
 from weather_bot.edge import no_net_edge, vwap_for_size, yes_net_edge
-from weather_bot.models import OrderLevel
+from weather_bot.models import OrderBook, OrderLevel
 
 
 def test_vwap_for_size_single_level():
@@ -72,3 +74,44 @@ def test_executable_net_return_rejects_thin_088_to_092_round_trip():
     assert estimate.expected_gross_profit_usdc == 4.0
     assert estimate.estimated_cost_usdc > 0
     assert estimate.expected_net_return_pct < 0.06
+
+
+def test_executable_buy_price_can_use_fee_adjusted_all_in_budget():
+    book = OrderBook(token_id="yes", bids=[], asks=[OrderLevel(price=0.50, size=19.6)])
+
+    p_exec, shares, slippage = edge_module.executable_buy_price(book, 10.0, fee_rate=0.05)
+
+    assert p_exec == 0.50
+    assert shares == pytest.approx(10.0 / (0.50 + 0.05 * 0.50 * 0.50))
+    assert slippage == 0.0
+
+
+def test_executable_buy_price_without_fee_still_uses_gross_notional_budget():
+    book = OrderBook(token_id="yes", bids=[], asks=[OrderLevel(price=0.50, size=19.2)])
+
+    p_exec, shares, slippage = edge_module.executable_buy_price(book, 10.0)
+
+    assert p_exec is None
+    assert shares == 0.0
+    assert slippage == 0.0
+
+
+def test_executable_buy_price_solves_fee_budget_across_multiple_ask_levels():
+    book = OrderBook(
+        token_id="yes",
+        bids=[],
+        asks=[
+            OrderLevel(price=0.50, size=10),
+            OrderLevel(price=0.60, size=20),
+        ],
+    )
+
+    p_exec, shares, slippage = edge_module.executable_buy_price(book, 10.0, fee_rate=0.05)
+
+    assert p_exec is not None
+    all_in_cost = shares * (p_exec + edge_module.polymarket_taker_fee_per_share(p_exec, 0.05))
+    best_ask_only_shares = edge_module.fee_adjusted_entry_shares(10.0, 0.50, 0.05)
+    assert all_in_cost == pytest.approx(10.0)
+    assert shares < best_ask_only_shares
+    assert p_exec > 0.50
+    assert slippage == pytest.approx(p_exec - 0.50)

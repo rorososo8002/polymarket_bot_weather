@@ -345,8 +345,8 @@ class OrderBookMarketStream:
                 self._last_book_at = now
                 for token_id in executable_updated:
                     self._last_book_at_by_token[token_id] = now
-        if updated and self.on_update is not None:
-            self.on_update(updated)
+        if executable_updated and self.on_update is not None:
+            self.on_update(executable_updated)
         return updated
 
     def _record_reconnect(self, exc: BaseException | None = None) -> None:

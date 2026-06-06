@@ -34,6 +34,7 @@ specialized reference docs.
 - Real Open-Meteo forecast HTTP calls are globally drip-fed by
   `FORECAST_REQUEST_MIN_INTERVAL_SECONDS=60`: one request must finish or
   timeout, then at least 60 seconds pass before the next real request starts.
+  Values below 60 seconds fail startup instead of weakening the budget guard.
   `FORECAST_CACHE_TTL_SECONDS=2400` is the default forecast answer-sheet
   freshness window. Cache hits do not count as calls. Order books use the
   Polymarket CLOB WebSocket stream, and open-position token IDs stay subscribed
@@ -71,6 +72,8 @@ specialized reference docs.
   `book` snapshots or `price_change` updates, not assumed sizes.
   `OrderBook.best_bid` and `OrderBook.best_ask` mean executable positive-size
   depth only; reference/indicative fields are for display and diagnostics.
+  Realtime paper evaluation is enqueued only for executable depth updates, so
+  quote-only or trade-only messages do not grow the decision ledger.
 - Executable order-book levels are used only after shared defensive numeric
   parsing in both REST CLOB and WebSocket paths. Non-numeric, non-finite,
   zero-size, negative, or out-of-range executable prices/sizes are discarded;
@@ -83,6 +86,12 @@ specialized reference docs.
   `size_usd`, not the maximum single-market cap. The evaluator may probe the
   minimum order first to estimate price, but it must recheck final depth and
   recalculate edge, fees, shares, and expected return when final VWAP changes.
+- Exit decisions that claim profit or bounded loss are fee-aware too. Take
+  profit, overheated profit, and edge-faded exits compare after-fee liquidation
+  PnL against the configured thresholds, not raw token-price movement. Why:
+  raw price gains can still be after-fee account losses. Consequence: exit
+  reasons disclose both `net_pnl` and `raw_pnl`, while the close decision uses
+  the account-book value.
 - New-entry evaluation blocks before expected-return math when
   `entry_bankroll <= 0` or the calculated order is below the `$10` minimum, so
   fail-closed account uncertainty is logged as SKIP instead of a zero-share
@@ -789,6 +798,18 @@ represent a server-side request in progress. Consequence: cache hits return
 immediately, but cache misses follow the shape "city request starts ->
 finish/timeout -> wait at least 60 seconds -> next city request"; do not batch
 many cities into one forecast request or immediately retry a slow city.
+`FORECAST_REQUEST_MIN_INTERVAL_SECONDS` values below 60 fail startup because
+they weaken the production budget guard instead of changing a harmless tuning
+knob.
+
+### 2026-06-06: Judge Exits By After-Fee Liquidation PnL
+
+Decision: Profit exits and edge-faded loss limits use after-fee liquidation
+PnL, not raw token-price movement. Why: a token can move up enough to satisfy a
+price-only profit percentage while the paper account still loses money after
+entry and exit fees. Consequence: `assess_exit()` calculates sell-now proceeds
+minus exit fee minus `PaperPosition.cost_usd`; exit reasons show both
+`net_pnl` and `raw_pnl`, but configured profit/loss thresholds use `net_pnl`.
 
 ### 2026-06-04: Keep Runtime Raw Diagnostics Bounded By Default
 

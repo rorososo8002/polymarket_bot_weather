@@ -70,6 +70,12 @@ in-memory `PaperState` back to the snapshot from before the attempted action.
 If the state save succeeded but trade logging failed, the journal remains
 because the disk state may already have changed.
 
+The journal and state-file atomic replace path also retries short transient
+`PermissionError` failures. This is mainly for Windows local verification,
+where a temp file or destination can be briefly locked while the atomic replace
+is otherwise safe. The retry window is small; persistent failures still leave
+the journal and fail closed for operator reconciliation.
+
 Startup also catches obvious state/trade evidence drift. If
 `paper_state.json` is missing but `paper_trades.csv` already contains executed
 accounting actions, the broker refuses to start a fresh account over that
@@ -94,6 +100,8 @@ header and report code falls back when structured entry metadata is absent.
 - Assert that failed trade logging leaves a journal so startup fails closed.
 - Test startup evidence drift in both directions: executed trade rows without
   `paper_state.json`, and open state positions without matching `OPEN` rows.
+- Simulate one transient `PermissionError` on journal replacement so Windows
+  file-lock timing does not create flaky full-suite failures.
 - Do not rewrite evidence ledgers for schema migration convenience. Preserve
   legacy headers and make readers backward-compatible.
 - Add fixture trade rows whenever a test creates open positions directly in

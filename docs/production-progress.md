@@ -87,6 +87,15 @@
 - Paper accounting is fee-aware end to end: `size_usd` is the all-in entry
   budget, closes add after-fee proceeds, and dashboard/liquidation values use
   after-exit-fee marks.
+- Exit triggers are fee-aware end to end: model-target profit, overheated
+  profit, and edge-faded loss limits compare after-fee liquidation PnL against
+  configured thresholds instead of raw token-price movement.
+- `FORECAST_REQUEST_MIN_INTERVAL_SECONDS` now fails startup below 60 seconds,
+  matching the Open-Meteo drip-feed contract instead of allowing a typo to
+  weaken the budget guard.
+- Paper state and accounting-journal atomic replacement now retries short
+  transient Windows `PermissionError` file locks while still failing closed on
+  persistent ledger-write failures.
 - Paper account state is persisted with a temp-file write followed by
   `os.replace`, and existing corrupt, structurally invalid, or position-field
   invalid `paper_state.json` fails closed instead of starting from a fresh
@@ -408,6 +417,38 @@
 - Before any deployment, explain the change, benefit, risk, verification method,
   public exposure implications, and rollback method, then get explicit user
   approval.
+- After-fee exit-trigger hardening, forecast-request minimum-spacing validation,
+  fee-aware all-in buy-depth probing, and transient Windows journal-replace
+  retry are deployed to the Oracle VPS and remain paper-only. Local full
+  verification: `pytest -q` passed with `440 passed`. Remote verification on
+  2026-06-06 UTC: focused exit/config/edge/paper-state pytest passed with
+  `134 passed`, portfolio pytest passed with `48 passed`, full pytest passed
+  with `440 passed`, active env kept
+  `FORECAST_REQUEST_MIN_INTERVAL_SECONDS=60`, `polymarket-weather-bot`
+  restarted active with PID `199286`, `polymarket-weather-dashboard` restarted
+  active with PID `199291`, dashboard HTML returned HTTP 200, public bare
+  `/api/status` and query-token `/api/status` returned HTTP 403,
+  header-authenticated `/api/status` returned HTTP 200, and runner status was
+  `phase=discovering` with empty `last_error`. During deployment, the app root
+  permission was corrected to `polymarket:polymarket` with mode `755` after an
+  archive-preserving payload copy briefly narrowed it to `700`.
+- Realtime paper evaluation now enqueues only executable `book` and
+  `price_change` depth updates. `best_bid_ask`, `last_trade_price`, and other
+  reference-only messages can update display/reference metadata but do not wake
+  the strategy evaluator or grow `paper_decisions.csv`. Multi-level
+  `executable_buy_price()` now solves the actual all-in budget across VWAP and
+  fee instead of overspending from a best-ask share estimate. `.codexignore`
+  excludes additional growing runtime evidence files, and dashboard build
+  verification now documents header-token `/api/status` checks instead of
+  public query-token checks. Local verification: focused realtime/edge/
+  portfolio tests passed with `93 passed`; full `pytest -q` passed with
+  `442 passed`. Remote verification on 2026-06-06 UTC: focused pytest passed
+  with `216 passed`, full pytest passed with `442 passed`,
+  `polymarket-weather-bot` restarted active with PID `201851`,
+  `polymarket-weather-dashboard` restarted active with PID `201857`, runner
+  status was `phase=discovering` with empty `last_error`, dashboard HTML
+  returned HTTP 200, public bare `/api/status` and query-token `/api/status`
+  returned HTTP 403, and header-authenticated `/api/status` returned HTTP 200.
 
 ## Next Work
 

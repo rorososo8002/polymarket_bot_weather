@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from .config import Settings
-from .edge import clamp_probability, polymarket_taker_fee_per_share
+from .edge import clamp_probability, polymarket_taker_fee_per_share, polymarket_taker_fee_usdc
 from .models import EdgeResult, PaperPosition
 
 
@@ -28,6 +28,14 @@ class ExitAssessment:
     target_exit_price: float
     market_heat_score: float
     trigger: str = "hold"
+
+
+@dataclass(frozen=True)
+class _LiquidationPnl:
+    net_usd: float
+    net_pct: float
+    raw_pct: float
+    exit_fee_usdc: float
 
 
 def side_true_probability(side: Literal["YES", "NO"] | str, p_true_yes: float) -> float:
@@ -72,6 +80,24 @@ def probability_stop_threshold(side: Literal["YES", "NO"] | str, p_true_yes: flo
     return max(0.0, side_probability - settings.probability_stop_drop_threshold)
 
 
+def _liquidation_pnl(pos: PaperPosition, mark_price: float, settings: Settings) -> _LiquidationPnl | None:
+    if pos.cost_usd <= 0 or pos.shares <= 0:
+        return None
+    raw_pct = (mark_price - pos.entry_price) / pos.entry_price if pos.entry_price > 0 else 0.0
+    exit_fee_usdc = polymarket_taker_fee_usdc(pos.shares, mark_price, settings.weather_taker_fee_rate)
+    net_usd = pos.shares * mark_price - exit_fee_usdc - pos.cost_usd
+    return _LiquidationPnl(
+        net_usd=net_usd,
+        net_pct=net_usd / pos.cost_usd,
+        raw_pct=raw_pct,
+        exit_fee_usdc=exit_fee_usdc,
+    )
+
+
+def _pnl_reason(pnl: _LiquidationPnl) -> str:
+    return f"net_pnl={pnl.net_pct:.1%}, raw_pnl={pnl.raw_pct:.1%}, exit_fee=${pnl.exit_fee_usdc:.5f}"
+
+
 def build_entry_plan(
     result: EdgeResult,
     bankroll_before: float,
@@ -113,7 +139,16 @@ def assess_exit(
     fair = model_fair_price(pos.side, p_true, settings)
     target = target_exit_price(pos.entry_price, fair, settings)
     heat = market_heat_score(mark_price, fair)
-    pnl_pct = (mark_price - pos.entry_price) / pos.entry_price if pos.entry_price > 0 else 0.0
+    pnl = _liquidation_pnl(pos, mark_price, settings)
+    if pnl is None:
+        return ExitAssessment(
+            False,
+            f"hold: invalid position cost or shares for liquidation PnL, cost=${pos.cost_usd:.5f}, shares={pos.shares:.5f}",
+            fair,
+            target,
+            heat,
+            "invalid_position_cost",
+        )
 
     entry_p_true = float(pos.metadata.get("entry_p_true", p_true))
     entry_side_probability = float(
@@ -138,20 +173,20 @@ def assess_exit(
             "probability_stop",
         )
 
-    if mark_price >= target and pnl_pct >= settings.min_profit_pct:
+    if mark_price >= target and pnl.net_pct >= settings.min_profit_pct:
         return ExitAssessment(
             True,
-            f"take profit: market reached model target {target:.4f} ({pnl_pct:.1%})",
+            f"take profit: market reached model target {target:.4f} ({_pnl_reason(pnl)})",
             fair,
             target,
             heat,
             "take_profit",
         )
 
-    if mark_price >= fair + settings.overheat_margin and pnl_pct > 0:
+    if mark_price >= fair + settings.overheat_margin and pnl.net_pct > 0:
         return ExitAssessment(
             True,
-            f"take profit: overheated vs model fair {fair:.4f}, heat={heat:.1%}",
+            f"take profit: overheated vs model fair {fair:.4f}, heat={heat:.1%}, {_pnl_reason(pnl)}",
             fair,
             target,
             heat,
@@ -162,11 +197,11 @@ def assess_exit(
         latest_edge is not None
         and latest_edge.p_exec is not None
         and latest_edge.net_edge <= settings.exit_net_edge
-        and pnl_pct >= -settings.edge_fade_max_loss_pct
+        and pnl.net_pct >= -settings.edge_fade_max_loss_pct
     ):
         return ExitAssessment(
             True,
-            f"edge faded: latest_edge={latest_edge.net_edge:.4f}, pnl={pnl_pct:.1%}",
+            f"edge faded: latest_edge={latest_edge.net_edge:.4f}, {_pnl_reason(pnl)}",
             fair,
             target,
             heat,
@@ -176,4 +211,10 @@ def assess_exit(
     if holding_hours >= settings.max_holding_hours:
         return ExitAssessment(True, f"max holding hours {holding_hours:.1f}", fair, target, heat, "max_holding")
 
-    return ExitAssessment(False, f"hold: mark={mark_price:.4f}, target={target:.4f}, fair={fair:.4f}, heat={heat:.1%}, pnl={pnl_pct:.1%}", fair, target, heat)
+    return ExitAssessment(
+        False,
+        f"hold: mark={mark_price:.4f}, target={target:.4f}, fair={fair:.4f}, heat={heat:.1%}, {_pnl_reason(pnl)}",
+        fair,
+        target,
+        heat,
+    )

@@ -27,6 +27,13 @@ data/
 paper_state.json
 paper_trades.csv
 paper_decisions.csv
+paper_event_portfolios.jsonl
 paper_raw_snapshots.jsonl
 paper_runner_status.json
 forecast_cache.json
+forecast_rate_limit_state.json
+forecast_request_log.jsonl
+station_nowcast_request_log.jsonl
+shadow_external_signals.jsonl
+shadow_public_notes.jsonl
+shadow_signal_report.md

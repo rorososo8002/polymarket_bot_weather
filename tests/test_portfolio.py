@@ -408,9 +408,10 @@ def test_evaluate_market_reprices_edge_when_final_order_walks_the_book(tmp_path)
 
     assert result.side == "YES"
     assert result.size_usd == pytest.approx(20.0)
-    assert result.p_exec == pytest.approx(0.45)
-    assert result.net_edge == pytest.approx(0.35)
-    assert per_side["YES"].reason.startswith("YES edge=0.3500, p_exec_vwap=0.4500")
+    assert result.size_shares == pytest.approx(45.0)
+    assert result.p_exec == pytest.approx(20.0 / 45.0)
+    assert result.net_edge == pytest.approx(0.80 - (20.0 / 45.0))
+    assert per_side["YES"].reason.startswith("YES edge=0.3556, p_exec_vwap=0.4444")
 
 
 def test_event_portfolio_selects_one_profitable_leg(tmp_path):

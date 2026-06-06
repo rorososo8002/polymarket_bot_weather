@@ -40,8 +40,11 @@ _SHADOW_POSITIVE_INTEGER_SETTINGS = (
 )
 
 _NON_NEGATIVE_INTEGER_SETTINGS = (
-    "forecast_request_min_interval_seconds",
     "shadow_max_rows",
+)
+
+_MINIMUM_INTEGER_SETTINGS = (
+    ("forecast_request_min_interval_seconds", 60),
 )
 
 _TCP_PORT_SETTINGS = (
@@ -197,6 +200,7 @@ class Settings:
         _validate_positive_integers(self, _POSITIVE_INTEGER_SETTINGS)
         _validate_positive_integers(self, _SHADOW_POSITIVE_INTEGER_SETTINGS)
         _validate_non_negative_integers(self, _NON_NEGATIVE_INTEGER_SETTINGS)
+        _validate_minimum_integers(self, _MINIMUM_INTEGER_SETTINGS)
         _validate_tcp_ports(self, _TCP_PORT_SETTINGS)
         _validate_ratios(self, _RATIO_SETTINGS)
         _validate_non_negative_numbers(self, _NON_NEGATIVE_NUMBER_SETTINGS)
@@ -245,6 +249,17 @@ def _validate_non_negative_integers(settings: Settings, field_names: tuple[str, 
             raise ValueError(f"{_setting_display_name(field_name)} must be a non-negative integer; got {value!r}")
         if value < 0:
             raise ValueError(f"{_setting_display_name(field_name)} must be at least 0; got {value!r}")
+
+
+def _validate_minimum_integers(settings: Settings, field_specs: tuple[tuple[str, int], ...]) -> None:
+    for field_name, minimum in field_specs:
+        value = getattr(settings, field_name)
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError(
+                f"{_setting_display_name(field_name)} must be an integer at least {minimum}; got {value!r}"
+            )
+        if value < minimum:
+            raise ValueError(f"{_setting_display_name(field_name)} must be at least {minimum}; got {value!r}")
 
 
 def _validate_tcp_ports(settings: Settings, field_names: tuple[str, ...]) -> None:

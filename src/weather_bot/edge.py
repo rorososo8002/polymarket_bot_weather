@@ -148,19 +148,50 @@ def _best_executable_price(levels: list[OrderLevel]) -> float | None:
     return None
 
 
-def executable_buy_price(book: OrderBook, target_usd: float) -> tuple[float | None, float, float]:
+def _all_in_buy_cost(shares: float, levels: list[OrderLevel], fee_rate: float) -> tuple[float, float] | None:
+    p_exec = vwap_for_size(levels, shares)
+    if p_exec is None:
+        return None
+    return shares * (p_exec + polymarket_taker_fee_per_share(p_exec, fee_rate)), p_exec
+
+
+def executable_buy_price(book: OrderBook, target_usd: float, fee_rate: float = 0.0) -> tuple[float | None, float, float]:
     """Estimate VWAP execution price, shares, and slippage for a target USD order.
 
-    Uses best ask to estimate shares first, then computes VWAP over ask levels.
+    When `fee_rate` is provided, `target_usd` is treated as the all-in paper
+    budget, so the initial share estimate includes expected entry fees.
     """
     if target_usd <= 0:
         raise ValueError("target_usd must be positive")
+    if fee_rate < 0:
+        raise ValueError("fee_rate must be non-negative")
     best_ask = _best_executable_price(book.asks)
     if best_ask is None or best_ask <= 0:
         return None, 0.0, 0.0
-    shares = target_usd / best_ask
-    p_exec = vwap_for_size(book.asks, shares)
-    if p_exec is None:
+    available_shares = sum(level.size for level in book.asks if level.size > 0)
+    if available_shares <= 0:
+        return None, 0.0, 0.0
+    max_cost = _all_in_buy_cost(available_shares, book.asks, fee_rate)
+    if max_cost is None or max_cost[0] + 1e-9 < target_usd:
+        return None, 0.0, 0.0
+    low = 0.0
+    high = available_shares
+    p_exec = max_cost[1]
+    for _ in range(64):
+        mid = (low + high) / 2.0
+        if mid <= 0:
+            break
+        cost = _all_in_buy_cost(mid, book.asks, fee_rate)
+        if cost is None:
+            high = mid
+            continue
+        if cost[0] <= target_usd:
+            low = mid
+            p_exec = cost[1]
+        else:
+            high = mid
+    shares = low
+    if shares <= 0:
         return None, 0.0, 0.0
     slippage = max(0.0, p_exec - best_ask)
     return p_exec, shares, slippage

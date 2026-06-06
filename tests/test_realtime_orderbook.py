@@ -340,6 +340,45 @@ def test_market_stream_does_not_treat_best_bid_ask_as_executable_book_refresh(mo
     assert "no executable order book depth received" in stale["status_reason"]
 
 
+def test_market_stream_enqueues_only_executable_orderbook_updates():
+    calls: list[set[str]] = []
+    stream = OrderBookMarketStream(on_update=lambda token_ids: calls.append(set(token_ids)))
+
+    stream.apply_message(
+        {
+            "event_type": "best_bid_ask",
+            "asset_id": "quote-only",
+            "best_bid": "0.41",
+            "best_ask": "0.44",
+        }
+    )
+    stream.apply_message(
+        {
+            "event_type": "last_trade_price",
+            "asset_id": "trade-only",
+            "price": "0.57",
+        }
+    )
+    stream.apply_message(
+        [
+            {
+                "event_type": "best_bid_ask",
+                "asset_id": "quote-only",
+                "best_bid": "0.42",
+                "best_ask": "0.45",
+            },
+            {
+                "event_type": "book",
+                "asset_id": "depth-token",
+                "bids": [{"price": "0.49", "size": "10"}],
+                "asks": [{"price": "0.52", "size": "20"}],
+            },
+        ]
+    )
+
+    assert calls == [{"depth-token"}]
+
+
 def test_market_stream_tracks_executable_book_freshness_by_token(monkeypatch):
     now = [datetime(2026, 6, 1, 0, 0, tzinfo=timezone.utc)]
 

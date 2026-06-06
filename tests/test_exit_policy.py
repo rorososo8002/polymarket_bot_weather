@@ -1,7 +1,10 @@
 from datetime import datetime, timezone
 
+import pytest
+
 from weather_bot.config import Settings
 from weather_bot.exit_policy import assess_exit, build_entry_plan, model_fair_price, target_exit_price
+from weather_bot.edge import polymarket_taker_fee_usdc
 from weather_bot.models import EdgeResult, PaperPosition
 
 
@@ -38,6 +41,41 @@ def test_take_profit_when_mark_reaches_model_target():
     assert "model target" in assessment.reason
 
 
+def test_take_profit_requires_after_fee_net_profit():
+    settings = Settings(
+        min_profit_pct=0.03,
+        take_profit_to_fair_ratio=0.0,
+        model_error_margin=0.0,
+        resolution_error_margin=0.0,
+        weather_taker_fee_rate=0.05,
+    )
+    shares = 100.0
+    entry_price = 0.50
+    cost_usd = shares * entry_price + polymarket_taker_fee_usdc(
+        shares,
+        entry_price,
+        settings.weather_taker_fee_rate,
+    )
+    pos = PaperPosition(
+        position_id="p1",
+        market_id="m1",
+        question="Will Seoul reach 21C?",
+        token_id="t1",
+        side="YES",
+        entry_price=entry_price,
+        shares=shares,
+        cost_usd=cost_usd,
+        opened_at=datetime.now(timezone.utc).isoformat(),
+        metadata={"entry_p_true": 0.50, "probability_stop_threshold": 0.40},
+    )
+    edge = EdgeResult("YES", 0.50, 0.515, 0.01, 0.0, 0.0, "latest")
+
+    assessment = assess_exit(pos, 0.515, edge, settings, 1.0)
+
+    assert not assessment.should_close
+    assert "net_pnl" in assessment.reason
+
+
 def test_probability_stop_closes_when_model_probability_drops():
     settings = Settings(probability_stop_drop_threshold=0.10)
     pos = PaperPosition(
@@ -56,6 +94,72 @@ def test_probability_stop_closes_when_model_probability_drops():
     assessment = assess_exit(pos, 0.50, latest_edge, settings, 1.0)
     assert assessment.should_close
     assert "probability stop" in assessment.reason
+
+
+def test_edge_fade_uses_after_fee_loss_limit():
+    settings = Settings(edge_fade_max_loss_pct=0.02, weather_taker_fee_rate=0.05)
+    shares = 100.0
+    entry_price = 0.50
+    cost_usd = shares * entry_price + polymarket_taker_fee_usdc(
+        shares,
+        entry_price,
+        settings.weather_taker_fee_rate,
+    )
+    pos = PaperPosition(
+        position_id="p1",
+        market_id="m1",
+        question="Will Seoul reach 21C?",
+        token_id="t1",
+        side="YES",
+        entry_price=entry_price,
+        shares=shares,
+        cost_usd=cost_usd,
+        opened_at=datetime.now(timezone.utc).isoformat(),
+        metadata={"entry_p_true": 0.55, "probability_stop_threshold": 0.45},
+    )
+    latest_edge = EdgeResult("YES", 0.55, 0.50, -0.01, 0.0, 0.0, "latest")
+
+    assessment = assess_exit(pos, 0.50, latest_edge, settings, 1.0)
+
+    assert not assessment.should_close
+    assert "net_pnl" in assessment.reason
+
+
+def test_exit_reason_reports_after_fee_net_profit_when_closing():
+    settings = Settings(
+        min_profit_pct=0.03,
+        take_profit_to_fair_ratio=0.0,
+        model_error_margin=0.0,
+        resolution_error_margin=0.0,
+        weather_taker_fee_rate=0.05,
+    )
+    shares = 100.0
+    entry_price = 0.50
+    cost_usd = shares * entry_price + polymarket_taker_fee_usdc(
+        shares,
+        entry_price,
+        settings.weather_taker_fee_rate,
+    )
+    pos = PaperPosition(
+        position_id="p1",
+        market_id="m1",
+        question="Will Seoul reach 21C?",
+        token_id="t1",
+        side="YES",
+        entry_price=entry_price,
+        shares=shares,
+        cost_usd=cost_usd,
+        opened_at=datetime.now(timezone.utc).isoformat(),
+        metadata={"entry_p_true": 0.50, "probability_stop_threshold": 0.40},
+    )
+    edge = EdgeResult("YES", 0.50, 0.55, 0.0, 0.0, 0.0, "latest")
+
+    assessment = assess_exit(pos, 0.55, edge, settings, 1.0)
+
+    assert assessment.should_close
+    assert "net_pnl" in assessment.reason
+    assert "raw_pnl" in assessment.reason
+    assert assessment.trigger == "take_profit"
 
 
 def test_invalid_edge_sentinel_does_not_trigger_edge_fade_exit():
@@ -78,3 +182,26 @@ def test_invalid_edge_sentinel_does_not_trigger_edge_fade_exit():
 
     assert not assessment.should_close
     assert "hold" in assessment.reason
+
+
+@pytest.mark.parametrize("cost_usd", [0.0, -1.0])
+def test_exit_assessment_fail_closes_when_position_cost_is_invalid(cost_usd):
+    settings = Settings()
+    pos = PaperPosition(
+        position_id="p1",
+        market_id="m1",
+        question="q",
+        token_id="t1",
+        side="YES",
+        entry_price=0.50,
+        shares=10,
+        cost_usd=cost_usd,
+        opened_at=datetime.now(timezone.utc).isoformat(),
+        metadata={"entry_p_true": 0.70, "probability_stop_threshold": 0.60},
+    )
+    latest_edge = EdgeResult("YES", 0.70, 0.70, 0.10, 0.0, 0.0, "latest")
+
+    assessment = assess_exit(pos, 0.70, latest_edge, settings, 1.0)
+
+    assert not assessment.should_close
+    assert assessment.trigger == "invalid_position_cost"

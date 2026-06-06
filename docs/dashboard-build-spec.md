@@ -155,7 +155,9 @@ Before production use, also verify the page and API from the target host:
 
 ```powershell
 curl.exe -i http://140.245.69.242:8787/
-curl.exe -i "http://140.245.69.242:8787/api/status?token=<DASHBOARD_TOKEN>"
+curl.exe -i http://140.245.69.242:8787/api/status
+curl.exe -i "http://140.245.69.242:8787/api/status?token=example-rejected"
+curl.exe -i -H "X-Dashboard-Token: <DASHBOARD_TOKEN>" http://140.245.69.242:8787/api/status
 ```
 
 Do not print the real dashboard token in logs, docs, commits, or final answers.

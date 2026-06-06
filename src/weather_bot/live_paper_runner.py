@@ -338,11 +338,13 @@ def _side_edge_metrics(
     return entry_fee_per_share, edge, side_probability
 
 
-def _max_executable_buy_target_usd(book: OrderBook) -> float:
-    best_ask = book.best_ask
-    if best_ask is None or best_ask <= 0:
-        return 0.0
-    return best_ask * sum(level.size for level in book.asks if level.size > 0)
+def _max_executable_buy_target_usd(book: OrderBook, fee_rate: float) -> float:
+    total = 0.0
+    for level in book.asks:
+        if level.size <= 0:
+            continue
+        total += level.size * (level.price + polymarket_taker_fee_per_share(level.price, fee_rate))
+    return total
 
 
 def _side_result(
@@ -359,7 +361,11 @@ def _side_result(
     if liquidity_reason:
         return EdgeResult("SKIP", signal.p_true, None, -999.0, 0.0, 0.0, liquidity_reason)
 
-    p_exec, _shares, slip = executable_buy_price(book, settings.min_order_usd)
+    p_exec, _shares, slip = executable_buy_price(
+        book,
+        settings.min_order_usd,
+        fee_rate=settings.weather_taker_fee_rate,
+    )
     if p_exec is None:
         return EdgeResult("SKIP", signal.p_true, None, -999.0, 0.0, 0.0, f"{side} liquidity filter: insufficient ask depth [{market_type}]")
 
@@ -381,10 +387,17 @@ def _side_result(
         )
         if size_usd < settings.min_order_usd:
             break
-        checked_p_exec, _checked_shares, checked_slip = executable_buy_price(book, size_usd)
+        checked_p_exec, _checked_shares, checked_slip = executable_buy_price(
+            book,
+            size_usd,
+            fee_rate=settings.weather_taker_fee_rate,
+        )
         if checked_p_exec is None:
             requested_size_usd = size_usd
-            capped_size_usd = min(requested_size_usd, _max_executable_buy_target_usd(book))
+            capped_size_usd = min(
+                requested_size_usd,
+                _max_executable_buy_target_usd(book, settings.weather_taker_fee_rate),
+            )
             if capped_size_usd + 1e-9 < settings.min_order_usd:
                 return EdgeResult(
                     "SKIP",
@@ -396,7 +409,11 @@ def _side_result(
                     f"{side} liquidity filter: insufficient ask depth for minimum order "
                     f"${settings.min_order_usd:.2f}; available=${max(0.0, capped_size_usd):.2f} [{market_type}]",
                 )
-            checked_p_exec, _checked_shares, checked_slip = executable_buy_price(book, capped_size_usd)
+            checked_p_exec, _checked_shares, checked_slip = executable_buy_price(
+                book,
+                capped_size_usd,
+                fee_rate=settings.weather_taker_fee_rate,
+            )
             if checked_p_exec is None:
                 return EdgeResult(
                     "SKIP",

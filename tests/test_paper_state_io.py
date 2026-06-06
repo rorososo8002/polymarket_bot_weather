@@ -247,6 +247,27 @@ def test_unresolved_accounting_journal_fails_closed_on_startup(tmp_path):
         PaperBroker(settings)
 
 
+def test_accounting_journal_replace_retries_transient_permission_error(tmp_path, monkeypatch):
+    settings = settings_for(tmp_path)
+    broker = PaperBroker(settings)
+    real_replace = paper.os.replace
+    journal_path = accounting_journal_path(settings)
+    attempts = {"count": 0}
+
+    def flaky_replace(src, dst):
+        if Path(dst) == journal_path and attempts["count"] == 0:
+            attempts["count"] += 1
+            raise PermissionError("journal briefly locked")
+        real_replace(src, dst)
+
+    monkeypatch.setattr(paper.os, "replace", flaky_replace)
+
+    broker._write_accounting_journal({"action": "OPEN", "market_id": "market-1", "phase": "started"})
+
+    assert attempts["count"] == 1
+    assert journal_path.exists()
+
+
 def test_open_position_save_failure_rolls_back_memory_and_leaves_journal(tmp_path, monkeypatch):
     settings = settings_for(tmp_path)
     broker = PaperBroker(settings)

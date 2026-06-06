@@ -1,7 +1,7 @@
 ---
 title: Best-bid-ask messages are not executable order-book depth
 date: 2026-06-03
-last_updated: 2026-06-04
+last_updated: 2026-06-07
 category: logic-errors
 module: weather_bot.realtime_orderbook, weather_bot.edge, weather_bot.models, weather_bot.live_paper_runner, weather_bot.paper
 problem_type: logic_error
@@ -10,6 +10,7 @@ symptoms:
   - "`best_bid_ask` messages could create a bid or ask level with size 1.0."
   - "A quote-only stream update could look like executable paper-trading liquidity."
   - "`OrderBook.best_bid` and `OrderBook.best_ask` could still return indicative prices before executable depth."
+  - "Quote-only or trade-only messages could still enqueue realtime paper evaluation work."
 root_cause: logic_error
 resolution_type: code_fix
 severity: high
@@ -40,6 +41,9 @@ many shares can actually be bought or sold there.
 - Fixing the stream cache was not enough while shared best-price properties
   still preferred indicative quotes. That left liquidity filters, `YES+NO` ask
   checks, spread audits, and position marks vulnerable to the same confusion.
+- Fixing executable-depth freshness was not enough while the stream callback
+  still passed all updated token IDs into the realtime evaluator. That kept
+  quote-only and trade-only messages in the `paper_decisions.csv` path.
 
 ## Solution
 Keep indicative best bid/ask prices separate from executable depth:
@@ -85,12 +89,22 @@ Held-position marking must also fail closed. If there is no executable bid
 depth, keep the previous mark and log `HOLD_NO_LIQUIDITY` rather than marking
 PnL from an indicative `best_bid_ask` quote.
 
+The realtime evaluator should be triggered only by executable depth changes:
+
+```python
+executable_updated = updated.intersection(_executable_orderbook_update_token_ids(message))
+if executable_updated and self.on_update is not None:
+    self.on_update(executable_updated)
+```
+
 Regression tests now cover both important cases:
 
 - `best_bid_ask` alone preserves reference prices but leaves executable depth
   empty.
 - `best_bid_ask` after a snapshot updates reference prices without moving the
   snapshot-confirmed bid/ask levels.
+- `best_bid_ask` and `last_trade_price` do not enqueue realtime paper
+  evaluation; mixed messages enqueue only the token IDs with executable depth.
 - Better indicative prices do not rescue abnormal executable `YES+NO` ask sums
   or wide executable spreads.
 - A quote-only held-position book does not update mark price or unrealized PnL.
@@ -115,6 +129,8 @@ known.
   reference/indicative names for display.
 - `executable_buy_price()` and `executable_sell_price()` should use confirmed
   positive-size levels.
+- Realtime evaluation callbacks should receive only executable `book` or
+  `price_change` token IDs, not every token whose reference metadata changed.
 - In trading code, a missing or quote-only order book must mean skip, not guess.
 
 ## Related Issues
