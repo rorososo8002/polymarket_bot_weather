@@ -44,6 +44,9 @@ detail belongs in `docs/archive/`, and durable prevention rules belong in
 - Historical completion details moved to
   `docs/archive/production-handoff-history-2026-06-07.md`. Reusable mistake
   prevention rules remain in `docs/solutions/`.
+- New-chat continuation now uses `docs/active/current-task.md` as the only
+  default unfinished-work card. This file is an optional compact board, not the
+  default resume source.
 
 ## In Progress
 
@@ -81,8 +84,8 @@ detail belongs in `docs/archive/`, and durable prevention rules belong in
 > Do not redesign from scratch. Continue from this document's 'In Progress' and 'Next Work' sections. Do not reimplement completed items. If the code and documents disagree, record the drift before continuing.
 
 - First read `AGENTS.md`, this file,
-  `docs/production-implementation-plan.md`, and
-  `docs/production-decisions.md`.
+  `docs/active/current-task.md`, and `docs/production-decisions.md`. Use this
+  file as a compact board, not as the active task card.
 - Use `TRADING_READY_STATION_MAP` for execution candidates. `STATION_MAP` is
   the registry, not proof that a city may trade.
 - Preserve the paper-only boundary, settlement-runner path, exit-trigger

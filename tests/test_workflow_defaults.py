@@ -73,3 +73,36 @@ def test_known_good_commands_include_local_test_and_oracle_first_steps():
     assert "ssh -i $key $oracle date" in text
     assert "cd /opt/polymarket-weather-bot" in text
     assert "sudo -u polymarket .venv/bin/python -m pytest -q" in text
+
+
+def test_fresh_chat_uses_active_task_card_not_process_diary():
+    agents_text = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+    active_readme = (ROOT / "docs" / "active" / "README.md").read_text(encoding="utf-8")
+    current_task = (ROOT / "docs" / "active" / "current-task.md").read_text(encoding="utf-8")
+
+    assert "Mandatory fresh-chat read set" in agents_text
+    assert "docs/active/current-task.md" in agents_text
+    assert "docs/production-decisions.md" in agents_text
+    assert "docs/production-progress.md` as an optional compact project board" in agents_text
+    assert "Status: none" in current_task or "Status: active" in current_task
+    assert "## New Chat Prompt" in current_task
+    assert "Mandatory Fresh-Chat Read Set" in active_readme
+    assert "docs/active/current-task.md" in active_readme
+
+
+def test_handoff_docs_stay_compact_and_avoid_chronological_ledgers():
+    line_limits = {
+        "docs/active/current-task.md": 80,
+        "docs/production-progress.md": 140,
+        "docs/production-decisions.md": 220,
+        "docs/production-implementation-plan.md": 350,
+    }
+    for relative_path, max_lines in line_limits.items():
+        text = (ROOT / relative_path).read_text(encoding="utf-8")
+        assert len(text.splitlines()) <= max_lines, f"{relative_path} should stay under {max_lines} lines"
+
+    decisions = (ROOT / "docs" / "production-decisions.md").read_text(encoding="utf-8")
+    progress = (ROOT / "docs" / "production-progress.md").read_text(encoding="utf-8")
+
+    assert "## Compact Ledger" not in decisions
+    assert "Completed local" not in progress

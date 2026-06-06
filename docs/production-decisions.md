@@ -141,6 +141,9 @@ durable prevention lessons belong in `docs/solutions/`.
 
 ## Runtime Data And Handoff Hygiene
 
+- `docs/active/current-task.md` is the only default unfinished-work handoff
+  card. It must be replace-only, short, and set back to `Status: none` when no
+  work remains. Do not append completed history to it.
 - `paper_decisions.csv` and `paper_trades.csv` are source ledgers. Reports may
   scan full history when that is the promised meaning, but must stream rows and
   keep only aggregates or bounded lookups in memory.

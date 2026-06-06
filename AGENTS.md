@@ -29,43 +29,60 @@
 
 ## Fresh Chat And Handoff
 
-Before non-trivial implementation, debugging, production, deployment, strategy,
-trading-risk, server, or workflow work, read:
+Mandatory fresh-chat read set for non-trivial implementation, debugging,
+production, deployment, strategy, trading-risk, server, or workflow work:
 
-1. `docs/production-progress.md`
-2. `docs/production-implementation-plan.md`
+1. `AGENTS.md` (this entrance guide; if it was not already loaded)
+2. `docs/active/current-task.md`
 3. `docs/production-decisions.md`
 
-- Start from the `In Progress` and `Next Work` sections in
-  `docs/production-progress.md`.
+- `docs/active/current-task.md` is the active task card. It is the only default
+  place for unfinished work. If it says `Status: active`, continue from its
+  `Next Action`. If it says `Status: none`, start from the user's latest
+  request and use the conditional reads below.
+- `docs/production-decisions.md` is the active rule book. It keeps current
+  safety, trading, runtime, and handoff rules.
 - Do not redesign from scratch unless the user explicitly asks for a redesign.
 - Do not reimplement completed work.
 - If code and docs disagree, record the drift before continuing.
-- Keep the three handoff docs current for non-trivial work.
-- Keep the three handoff docs compact. They are the default fresh-chat read
-  set, so do not turn them into manuals, roadmaps, transcripts, or detailed
-  research logs. Prefer a compact summary plus a link to a situation-specific
-  doc.
-- Keep bot strategy, goals, work tracks, and risk direction in
-  `docs/production-implementation-plan.md`. This file should describe the
-  current strategy contract, not every implementation detail.
-- Keep `docs/production-progress.md` short and current with these sections:
-  `Completed`, `In Progress`, `Next Work`, `For The Next AI`.
-- Always include this text under `For The Next AI`:
-
-> Do not redesign from scratch. Continue from this document's 'In Progress' and 'Next Work' sections. Do not reimplement completed items. If the code and documents disagree, record the drift before continuing.
-
-- Keep important decisions, rejected options, risks, and reasons in
+- Keep `docs/active/current-task.md` replace-only. Do not append completion
+  history to it. Use it only for unfinished work that a future chat may need to
+  resume.
+- When work is complete, set `docs/active/current-task.md` back to
+  `Status: none` unless there is a real unfinished follow-up. Completion
+  evidence belongs in git commits, tests, `docs/archive/`, or `docs/solutions/`.
+- Keep bot strategy, goals, risk direction, and implementation contracts in
+  `docs/production-implementation-plan.md`, but read it only when the task
+  touches strategy, risk, forecast, order books, portfolio, accounting,
+  settlement, or runner behavior.
+- Keep important active decisions, rejected options, risks, and reasons in
   `docs/production-decisions.md`. Keep it as a compact decision ledger:
   current rule, why it exists, and operational consequence.
 - Move old chronological detail to `docs/archive/` or reusable lessons to
-  `docs/solutions/`. Do not turn the progress file into a work diary.
-- Do not add situation-specific docs such as roadmap, dashboard, VPS, runtime,
-  live-trading, or shadow-research references to the default `For The Next AI`
-  read list unless they truly become mandatory for every fresh chat. Mention
-  them as conditional reads in `Next Work` instead.
+  `docs/solutions/`. Do not turn `docs/active/current-task.md`,
+  `docs/production-progress.md`, or `docs/production-decisions.md` into a work
+  diary.
+- Keep `docs/production-progress.md` as an optional compact project board, not
+  the default resume source.
 - Do not update handoff docs for tiny typo fixes, simple explanations, or
   read-only investigation unless the finding affects future implementation.
+
+Conditional reads:
+
+- Strategy, trading-risk, forecast, order-book, portfolio, paper-accounting,
+  settlement, or runner behavior:
+  `docs/production-implementation-plan.md`
+- Routine local pytest or VPS/SSH command:
+  `docs/codex/known-good-commands.md`
+- VPS/server/dashboard deployment work:
+  `docs/codex/known-good-commands.md`, then `docs/codex/vps-dashboard.md` and
+  `docs/codex/ssh-powershell.md` as needed
+- Runtime/log work:
+  `docs/codex/runtime-data.md`
+- Live-trading planning or implementation:
+  `docs/live-trading-safety-plan.md`
+- Repeated bug, workflow correction, or prevention-rule work:
+  relevant entries under `docs/solutions/`
 
 ## Safety And Weather Bot Rules
 

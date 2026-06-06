@@ -31,12 +31,31 @@ Progress docs are kept short and current with these sections:
 Older chronological details should move to `docs/archive/`, while durable
 lessons should move to `docs/solutions/`.
 
+On 2026-06-07, the handoff files were compacted into distinct roles:
+
+- `docs/active/current-task.md` is the only default unfinished-work card.
+- `docs/production-progress.md` is an optional compact board.
+- `docs/production-decisions.md` is the active rule book.
+- `docs/production-implementation-plan.md` is the strategy contract, read only
+  when the task touches strategy, risk, forecast, order books, portfolio,
+  accounting, settlement, or runner behavior.
+
+Historical completion and deployment process detail moved to
+`docs/archive/production-handoff-history-2026-06-07.md`. The default fresh-chat
+read set should not be used as a chronological diary.
+
 ## 4. What To Check Next Time
 
 - Before adding a new rule to `AGENTS.md`, ask whether every future task really
   needs it.
 - Confirm that `docs/production-progress.md` is a current handoff, not a work
   diary.
+- Confirm that `docs/active/current-task.md` contains only unfinished work and
+  returns to `Status: none` when work is complete.
+- Check that `docs/production-decisions.md` contains active rules, not a second
+  chronological ledger.
+- Keep old process history in `docs/archive/` unless every future agent truly
+  needs it during startup.
 - Inspect large files with bounded reads.
 - Do not delete `.git/`, `runtime/`, or `.antigravitycli/` for token savings.
 
