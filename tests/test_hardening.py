@@ -11,7 +11,13 @@ import requests
 
 from weather_bot.config import Settings
 from weather_bot.edge import no_net_edge, polymarket_taker_fee_usdc, yes_net_edge
-from weather_bot.live_paper_runner import _sleep_seconds_until_next_cycle, evaluate_market, refresh_open_position_edges, run_cycle
+from weather_bot.live_paper_runner import (
+    _refresh_held_exit_edges_from_signal,
+    _sleep_seconds_until_next_cycle,
+    evaluate_market,
+    refresh_open_position_edges,
+    run_cycle,
+)
 from weather_bot.models import EdgeResult, OrderBook, OrderLevel, PaperPosition, PaperState, RawMarket, WeatherSignal
 from weather_bot.paper import PaperBroker, maybe_close_positions, maybe_settle_resolved_positions
 from weather_bot.polymarket_client import PolymarketClient
@@ -1310,6 +1316,83 @@ def test_held_positions_are_re_evaluated_even_when_not_in_scan_results():
     )
 
     assert latest_edges[("held", "YES")].p_true == 0.1
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "Will the highest temperature in Hong Kong be 30C today?",
+        "Will the highest temperature in Hong Kong be 30-31C today?",
+    ],
+)
+def test_nowcast_inside_exact_or_range_bucket_flags_no_exit_risk(tmp_path, question):
+    settings = Settings(
+        state_path=str(tmp_path / "state.json"),
+        trades_csv_path=str(tmp_path / "trades.csv"),
+        decisions_csv_path=str(tmp_path / "decisions.csv"),
+        raw_snapshots_path=str(tmp_path / "raw.jsonl"),
+        portfolio_decisions_jsonl_path=str(tmp_path / "portfolios.jsonl"),
+        probability_stop_drop_threshold=0.20,
+        model_error_margin=0.0,
+        resolution_error_margin=0.0,
+        weather_taker_fee_rate=0.0,
+    )
+    market = RawMarket(
+        market_id="hk-30c",
+        question=question,
+        slug="hong-kong-30c",
+        active=True,
+        closed=False,
+        yes_token_id="yes",
+        no_token_id="no",
+    )
+    broker = PaperBroker(settings)
+    broker.state = PaperState(
+        cash_usd=190.0,
+        positions=[
+            PaperPosition(
+                position_id="p1",
+                market_id=market.market_id,
+                question=question,
+                token_id="no",
+                side="NO",
+                entry_price=0.50,
+                shares=20.0,
+                cost_usd=10.0,
+                opened_at=datetime.now(timezone.utc).isoformat(),
+                metadata={
+                    "entry_p_true": 0.20,
+                    "entry_side_probability": 0.80,
+                    "probability_stop_threshold": 0.60,
+                },
+            )
+        ],
+    )
+    parsed = parse_weather_question(question)
+    signal = WeatherSignal(
+        p_true=0.35,
+        confidence=0.95,
+        source="test+nowcast",
+        note="forecast-plus-nowcast",
+        parsed=parsed,
+        nowcast={"observed_high_c": 30.4, "observed_high_f": 86.72},
+    )
+    latest_edges: dict[tuple[str, str], EdgeResult] = {}
+
+    _refresh_held_exit_edges_from_signal(broker, market, signal, latest_edges, None)
+    messages = maybe_close_positions(
+        broker,
+        FakePolymarketClient(books={"no": book("no", bid=0.50, ask=0.51)}),
+        {market.market_id: market},
+        latest_edges,
+    )
+
+    assert any(message.startswith("CLOSE NO") for message in messages)
+    assert broker.state.positions == []
+    rows = list(csv.DictReader((tmp_path / "trades.csv").open(encoding="utf-8")))
+    assert rows[0]["action"] == "CLOSE"
+    assert "exit_trigger=nowcast_bucket_lock_risk" in rows[0]["reason"]
+    assert "observed_high_c=30.4" in rows[0]["reason"]
 
 
 def test_run_cycle_reuses_one_ensemble_client_for_all_markets(monkeypatch, tmp_path):

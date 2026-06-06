@@ -124,6 +124,14 @@ specialized reference docs.
   observed low-so-far is evidence only for daily-low markets. Providers should
   derive both extrema from one station-date response and cache it. No
   nearby-station or city-center substitutions.
+- Exact/range bucket nowcast inside the bucket is an exit-only risk signal for
+  held NO positions. Why: a NO position can become dangerous before the
+  probability-stop threshold fires. Consequence:
+  `nowcast_bucket_lock_risk` may close or preserve a blocked close signal for
+  existing paper positions, while new entries remain governed by the normal
+  edge and portfolio gates. Daily-high uses observed high, daily-low uses
+  observed low, and observed values fully outside the exact/range bucket keep
+  the existing YES-impossible probability behavior.
 - AWC METAR bulk rows are observation evidence only when the row itself carries
   an explicit station ID that matches the requested settlement station
   case-insensitively. Rows missing both `icaoId` and `station_id` are invalid
@@ -974,3 +982,19 @@ Consequence: Fresh nowcast or forecast evidence can reach held-position exit
 checks even during new-entry SKIPs. The edge record is marked as exit evidence,
 has zero order size, and keeps real orders, wallets, and live trading out of
 scope.
+
+### 2026-06-07: Treat Exact/Range Bucket Nowcast As Held-NO Exit Risk
+
+Decision: For exact and range temperature buckets, same-station observed
+high/low inside the bucket creates a `nowcast_bucket_lock_risk` exit signal for
+held NO positions.
+Why: A market such as `30C` or `30-31C` is a settlement bucket, not simply a
+threshold. If the official station has already entered that bucket and has not
+fully moved beyond it, a held NO is exposed even when generic probability-stop
+math still looks tolerable.
+Consequence: Existing paper positions can close, partially close, or log a
+liquidity/freshness blocker with `exit_trigger=nowcast_bucket_lock_risk`. The
+rule is not a new-entry booster. If observed high/low fully exits the bucket so
+YES is impossible, the existing probability adjustment to `p_true=0.0` remains
+the authority; daily-low markets still use observed low rather than observed
+high.

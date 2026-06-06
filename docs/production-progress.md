@@ -465,6 +465,15 @@
   focused hardening pytest passed with `3 passed`, related
   hardening/exit/realtime pytest passed with `90 passed`, and full
   `pytest -q` passed with `444 passed`.
+- Exact/range temperature bucket nowcast risk is complete locally and remains
+  paper-only. For held NO positions, same-station observed high/low inside an
+  exact or range bucket now carries an exit-only
+  `nowcast_bucket_lock_risk` signal; observed values fully outside the bucket
+  still preserve the existing YES-impossible probability behavior, and
+  daily-low markets use observed low rather than observed high. Local
+  verification: focused new tests passed with `4 passed`, related
+  probability/exit/hardening/parser/portfolio pytest passed with `185 passed`,
+  and full `pytest -q` passed with `448 passed`.
 
 ## Next Work
 

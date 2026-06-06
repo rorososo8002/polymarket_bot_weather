@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 import inspect
 from datetime import datetime, timezone
+import math
 import threading
 import time
 from typing import Any
@@ -34,13 +36,66 @@ from .realtime_orderbook import OrderBookMarketStream
 from .risk import fractional_kelly_binary
 from .runner_status import update_runner_status_fields, utc_now_iso, write_runner_status
 from .stations import TRADING_READY_STATION_MAP
-from .weather_client import parse_weather_question
+from .weather_client import parse_weather_question, temperature_bucket_interval_bounds_f
 
 
 ENTRY_BANKROLL_FAIL_CLOSED_REASON = "기존 포지션을 안전하게 평가할 수 없어 신규 진입 차단"
 
 REALTIME_EVALUATION_QUEUE_MAX_EVENTS = 256
 REALTIME_EVALUATION_COALESCE_SECONDS = 0.25
+
+
+def _finite_float(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _nowcast_bucket_lock_exit_signal(side: str, signal: WeatherSignal) -> tuple[str, str] | None:
+    parsed = signal.parsed
+    if side != "NO" or parsed is None or signal.nowcast is None:
+        return None
+    if parsed.variable != "temperature" or parsed.temperature_bucket not in {"exact", "range"}:
+        return None
+
+    bounds = temperature_bucket_interval_bounds_f(parsed)
+    if bounds is None:
+        return None
+
+    if parsed.temperature_metric == "min":
+        observed_f = _finite_float(signal.nowcast.get("observed_low_f"))
+        observed_c = signal.nowcast.get("observed_low_c")
+        observed_label = "observed_low_c"
+    else:
+        observed_f = _finite_float(signal.nowcast.get("observed_high_f"))
+        observed_c = signal.nowcast.get("observed_high_c")
+        observed_label = "observed_high_c"
+
+    if observed_f is None or not bounds.contains_f(observed_f):
+        return None
+
+    return (
+        "nowcast_bucket_lock_risk",
+        (
+            f"nowcast bucket lock risk: NO held while {observed_label}={observed_c} "
+            f"is inside {parsed.temperature_bucket} bucket; p_true={signal.p_true:.3f}"
+        ),
+    )
+
+
+def _with_exit_signal(side: str, signal: WeatherSignal, result: EdgeResult) -> EdgeResult:
+    risk = _nowcast_bucket_lock_exit_signal(side, signal)
+    if risk is None:
+        return result
+    exit_signal, exit_signal_reason = risk
+    return replace(
+        result,
+        reason=f"{result.reason}; exit_signal={exit_signal}; {exit_signal_reason}",
+        exit_signal=exit_signal,
+        exit_signal_reason=exit_signal_reason,
+    )
 
 
 def _call_probability_estimator(
@@ -617,7 +672,7 @@ def evaluate_market(
     sum_reason = _yes_no_sum_reason(books, market_type)
     if sum_reason:
         result = EdgeResult("SKIP", signal.p_true, None, -999.0, 0.0, 0.0, sum_reason)
-        return result, {side: result for side in books}
+        return result, {side: _with_exit_signal(side, signal, result) for side in books}
 
     best_result = EdgeResult("SKIP", signal.p_true, None, -999.0, 0.0, 0.0, "No valid side evaluated.")
     per_side: dict[str, EdgeResult] = {}
@@ -632,6 +687,7 @@ def evaluate_market(
             entry_fraction_override,
             market_type,
         )
+        result = _with_exit_signal(side, signal, result)
         per_side[side] = result
         if result.net_edge > best_result.net_edge:
             best_result = result
@@ -702,6 +758,7 @@ def _refresh_held_exit_edges_from_signal(
             0.0,
             reason,
         )
+        edge = _with_exit_signal(pos.side, signal, edge)
         latest_edges[(pos.market_id, pos.side)] = edge
         refreshed[pos.side] = edge
     return refreshed

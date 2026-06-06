@@ -162,6 +162,17 @@ def assess_exit(
         )
     )
     probability_drop = entry_side_probability - current_side_probability
+    if latest_edge is not None and latest_edge.exit_signal == "nowcast_bucket_lock_risk":
+        reason = latest_edge.exit_signal_reason or latest_edge.reason
+        return ExitAssessment(
+            True,
+            reason,
+            fair,
+            target,
+            heat,
+            "nowcast_bucket_lock_risk",
+        )
+
     if current_side_probability <= stop_threshold:
         return ExitAssessment(
             True,

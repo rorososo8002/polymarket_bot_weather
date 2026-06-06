@@ -108,6 +108,8 @@ class EdgeResult:
     size_shares: float
     reason: str
     expected_net_profit_usd: float = 0.0
+    exit_signal: str = ""
+    exit_signal_reason: str = ""
 
 
 @dataclass(frozen=True)

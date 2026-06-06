@@ -1063,6 +1063,87 @@ def test_temperature_nowcast_can_confirm_threshold_crossing_without_city_fallbac
     assert "evidence=forecast-plus-nowcast" in signal.note
 
 
+def test_exact_bucket_nowcast_above_bucket_keeps_yes_probability_zero():
+    target = _today_for_timezone("Asia/Hong_Kong")
+    member_values_f = [85.8, 86.0, 86.2, 86.4]
+
+    class FakeEnsembleClient:
+        models = "fake"
+
+        def forecast_daily_ensemble(self, *_args, **_kwargs):
+            daily = {"time": [target.isoformat()], "temperature_2m_max": [member_values_f[0]]}
+            daily.update(
+                {
+                    f"temperature_2m_max_member{idx:02d}": [value]
+                    for idx, value in enumerate(member_values_f[1:], start=1)
+                }
+            )
+            return {"daily": daily}
+
+    class FreshHkoNowcastProvider:
+        def observed_temperature_extremes_so_far(self, station, *, target_date, now=None):
+            assert station.station_id == "HKO"
+            assert target_date == target
+            return StationNowcastObservation(
+                station_id="HKO",
+                station_name=station.station_name,
+                observed_high_c=31.0,
+                observed_at=datetime(2026, 6, 2, 8, 0, tzinfo=timezone.utc),
+                high_observed_at=datetime(2026, 6, 2, 8, 0, tzinfo=timezone.utc),
+                source="hko-maxmin-since-midnight",
+                source_url="https://www.hko.gov.hk/",
+                settlement_source_url="https://www.hko.gov.hk/",
+                freshness_seconds=1800,
+                unavailable_reason="",
+                raw_observation_count=4,
+                update_cadence="fixture",
+            )
+
+    signal = estimate_weather_probability(
+        "Will the highest temperature in Hong Kong be 30C today?",
+        settings=Settings(),
+        ensemble_client=FakeEnsembleClient(),
+        observation_provider=FreshHkoNowcastProvider(),
+    )
+
+    assert signal.p_true == 0.0
+    assert "observed-high-above-exact-bucket" in signal.note
+
+
+def test_exact_daily_low_bucket_does_not_use_observed_high_nowcast():
+    target = _today_for_timezone("Asia/Hong_Kong")
+    member_values_f = [85.8, 86.0, 86.2, 86.4]
+
+    class FakeEnsembleClient:
+        models = "fake"
+
+        def forecast_daily_ensemble(self, *_args, **_kwargs):
+            daily = {"time": [target.isoformat()], "temperature_2m_min": [member_values_f[0]]}
+            daily.update(
+                {
+                    f"temperature_2m_min_member{idx:02d}": [value]
+                    for idx, value in enumerate(member_values_f[1:], start=1)
+                }
+            )
+            return {"daily": daily}
+
+    class FreshHighOnlyNowcastProvider:
+        def observed_high_so_far(self, station, *, target_date, now=None):
+            raise AssertionError("daily-low exact buckets must not request observed_high_so_far")
+
+    signal = estimate_weather_probability(
+        "Will the lowest temperature in Hong Kong be 30C today?",
+        settings=Settings(),
+        ensemble_client=FakeEnsembleClient(),
+        observation_provider=FreshHighOnlyNowcastProvider(),
+    )
+
+    assert signal.source == "open-meteo-ensemble-station"
+    assert signal.p_true > 0.0
+    assert "evidence=forecast-only" in signal.note
+    assert "nowcast_unavailable=observed-low-provider-not-supplied" in signal.note
+
+
 def test_lowest_temperature_ignores_observed_high_nowcast():
     target = _today_for_timezone("Asia/Seoul")
     member_values_f = [56.0, 57.0, 58.0, 59.0]

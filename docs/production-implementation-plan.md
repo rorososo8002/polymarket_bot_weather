@@ -310,6 +310,11 @@ object when present.
   one station-date response when the source provides enough observations. Use
   observed high only for daily-high markets and observed low only for daily-low
   markets; do not cross-apply one metric to the other.
+- For exact/range temperature buckets, same-station nowcast inside the bucket
+  is exit-only risk evidence for held NO positions. If observed high/low fully
+  moves outside the exact/range bucket so YES is impossible, preserve the
+  existing probability adjustment to `p_true=0.0`. Do not use this rule to make
+  new entries more aggressive.
 - Real AWC METAR and HKO max/min HTTP attempts are counted in
   `station_nowcast_request_log.jsonl`. Cache hits do not write rows, so the log
   measures external observation usage rather than in-memory reuse. AWC rows use
@@ -430,6 +435,7 @@ Open positions close only through:
 - model-target take profit
 - overheated take profit
 - valid edge-faded exit
+- nowcast bucket lock risk for held NO exact/range buckets
 - max holding time
 - resolved settlement
 
@@ -448,6 +454,10 @@ risk exemption.
 
 Evaluation failure sentinels such as `net_edge=-999` with no executable
 `p_exec` are not exit signals.
+An explicit `nowcast_bucket_lock_risk` exit signal is different: it is attached
+only when same-station observed high/low is inside an exact/range bucket held
+against by a NO position. It is exit evidence for an existing position, not a
+new-entry signal.
 When an actual exit assessment fires but the close cannot execute, the broker
 must keep the paper-only blocker action instead of pretending to sell. No
 executable bid depth logs `HOLD_NO_LIQUIDITY`, stale executable WebSocket depth
