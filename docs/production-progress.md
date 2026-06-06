@@ -31,6 +31,9 @@
 - Temperature nowcast uses same-station observed extrema: observed high-so-far
   for daily-high markets and observed low-so-far for daily-low markets. METAR
   and HKO providers derive high/low from one station-date response and cache it.
+  A just-ended local-yesterday target date may use fresh same-station extrema
+  during the post-close freshness window for paper exit and settlement-risk
+  evidence only.
 - Realtime paper evaluation now refreshes same-station nowcast-backed
   `WeatherSignal` values on the station nowcast cache TTL inside the larger
   stream cycle, while real Open-Meteo forecast HTTP calls still go through the
@@ -474,6 +477,15 @@
   verification: focused new tests passed with `4 passed`, related
   probability/exit/hardening/parser/portfolio pytest passed with `185 passed`,
   and full `pytest -q` passed with `448 passed`.
+- Fresh local-yesterday station nowcast is complete locally and remains
+  paper-only. AWC METAR and HKO nowcast can use the target date when it is the
+  station's local yesterday and the post-close freshness window is still open;
+  older dates, expired windows, future observations, stale rows, missing values,
+  and wrong-station rows remain unusable. AWC bulk cache reuse now requires the
+  cached `hoursBeforeNow` lookback to cover the requested target date. Local
+  verification: focused `tests/test_nowcast_provider.py` passed with
+  `21 passed`, related nowcast/probability/realtime pytest passed with
+  `89 passed`, and full `pytest -q` passed with `454 passed`.
 
 ## Next Work
 

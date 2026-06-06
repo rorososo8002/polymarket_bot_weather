@@ -101,6 +101,7 @@ class _MetarBulkCacheEntry:
     cached_at: datetime
     payload: Any | None
     unavailable_reason: str = ""
+    hours_before_now: int = 0
 
 
 def _default_nowcast_sources() -> dict[str, StationNowcastSource]:
@@ -294,8 +295,14 @@ class AviationWeatherMetarNowcastProvider:
         if source is None:
             return self._unavailable(station, "nowcast-source-unmapped")
 
-        if target_date != _local_date(station.timezone, current):
-            return self._unavailable(station, "target-date-not-today", source)
+        target_date_blocker = _target_date_unavailable_reason(
+            station.timezone,
+            target_date,
+            current,
+            freshness_seconds=self.freshness_seconds,
+        )
+        if target_date_blocker:
+            return self._unavailable(station, target_date_blocker, source)
 
         cache_key = (station.station_id, target_date.isoformat())
         cached = self._cache.get(cache_key)
@@ -360,11 +367,16 @@ class AviationWeatherMetarNowcastProvider:
         *,
         cache_miss_reason: str,
     ) -> _MetarBulkCacheEntry:
-        cached = self._fresh_awc_metar_bulk_cache(now)
+        station_ids = self._awc_metar_bulk_station_ids()
+        hours_before_now = self._awc_metar_bulk_hours_before_now(
+            now,
+            fallback_station=station,
+            target_date=target_date,
+        )
+        cached = self._fresh_awc_metar_bulk_cache(now, min_hours_before_now=hours_before_now)
         if cached is not None:
             return cached
 
-        station_ids = self._awc_metar_bulk_station_ids()
         response: Any | None = None
         try:
             response = self.http_get(
@@ -372,7 +384,7 @@ class AviationWeatherMetarNowcastProvider:
                 params={
                     "ids": ",".join(station_ids),
                     "format": "json",
-                    "hoursBeforeNow": self._awc_metar_bulk_hours_before_now(now, fallback_station=station),
+                    "hoursBeforeNow": hours_before_now,
                 },
                 timeout=self.timeout,
                 headers={"User-Agent": "polymarket-weather-bot/nowcast"},
@@ -382,6 +394,7 @@ class AviationWeatherMetarNowcastProvider:
                     cached_at=now,
                     payload=None,
                     unavailable_reason="no-observations-returned",
+                    hours_before_now=hours_before_now,
                 )
                 self._awc_metar_bulk_cache = entry
                 self._append_request_log(
@@ -399,7 +412,7 @@ class AviationWeatherMetarNowcastProvider:
                 return entry
             response.raise_for_status()
             payload = response.json()
-            entry = _MetarBulkCacheEntry(cached_at=now, payload=payload)
+            entry = _MetarBulkCacheEntry(cached_at=now, payload=payload, hours_before_now=hours_before_now)
             self._awc_metar_bulk_cache = entry
             self._append_request_log(
                 self._request_log_bulk_row(
@@ -419,6 +432,7 @@ class AviationWeatherMetarNowcastProvider:
                 cached_at=now,
                 payload=None,
                 unavailable_reason=f"nowcast-fetch-error:{type(exc).__name__}",
+                hours_before_now=hours_before_now,
             )
             self._awc_metar_bulk_cache = entry
             self._append_request_log(
@@ -436,12 +450,13 @@ class AviationWeatherMetarNowcastProvider:
             )
             return entry
 
-    def _fresh_awc_metar_bulk_cache(self, now: datetime) -> _MetarBulkCacheEntry | None:
+    def _fresh_awc_metar_bulk_cache(self, now: datetime, *, min_hours_before_now: int) -> _MetarBulkCacheEntry | None:
         cached = self._awc_metar_bulk_cache
         if cached is None or self.cache_ttl_seconds <= 0:
             return None
         if (now - cached.cached_at).total_seconds() <= self.cache_ttl_seconds:
-            return cached
+            if cached.hours_before_now >= min_hours_before_now:
+                return cached
         return None
 
     def _awc_metar_bulk_station_ids(self) -> list[str]:
@@ -452,15 +467,22 @@ class AviationWeatherMetarNowcastProvider:
         }
         return sorted(station_ids)
 
-    def _awc_metar_bulk_hours_before_now(self, now: datetime, *, fallback_station: StationMeta) -> int:
+    def _awc_metar_bulk_hours_before_now(
+        self,
+        now: datetime,
+        *,
+        fallback_station: StationMeta,
+        target_date: date,
+    ) -> int:
         station_ids = set(self._awc_metar_bulk_station_ids())
         hours = [
             _hours_since_local_midnight(station.timezone, now)
             for station in STATION_MAP.values()
             if station.station_id.upper() in station_ids
         ]
+        hours.append(_hours_since_local_date_start(fallback_station.timezone, target_date, now))
         if not hours:
-            return _hours_since_local_midnight(fallback_station.timezone, now)
+            return _hours_since_local_date_start(fallback_station.timezone, target_date, now)
         return max(hours)
 
     def _fetch_hko_maxmin(
@@ -629,6 +651,9 @@ class AviationWeatherMetarNowcastProvider:
         if not observations:
             return self._unavailable(station, "malformed-observation-payload", source, raw_count=len(payload))
 
+        if any(observed_at > now for observed_at, _temp in observations):
+            return self._unavailable(station, "future-observation", source, raw_count=len(payload))
+
         latest_at = max(observed_at for observed_at, _temp in observations)
         high_at, high_c = max(observations, key=lambda item: item[1])
         low_at, low_c = min(observations, key=lambda item: item[1])
@@ -674,6 +699,9 @@ class AviationWeatherMetarNowcastProvider:
             low_c = _parse_hko_temperature_c(row.get("Minimum Air Temperature Since Midnight(degree Celsius)"))
             if observed_at is None or high_c is None or low_c is None:
                 return self._unavailable(station, "malformed-observation-payload", source, raw_count=len(rows))
+
+            if observed_at > now:
+                return self._unavailable(station, "future-observation", source, raw_count=len(rows))
 
             freshness_seconds = max(0, int((now - observed_at).total_seconds()))
             reason = "stale-observation" if (
@@ -731,9 +759,33 @@ def _local_date(timezone_name: str, now: datetime) -> date:
     return now.astimezone(_zone(timezone_name)).date()
 
 
-def _hours_since_local_midnight(timezone_name: str, now: datetime) -> int:
+def _target_date_unavailable_reason(
+    timezone_name: str,
+    target_date: date,
+    now: datetime,
+    *,
+    freshness_seconds: int,
+) -> str:
     zone = _zone(timezone_name)
     local_now = now.astimezone(zone)
-    local_midnight = datetime.combine(local_now.date(), time.min, tzinfo=zone)
+    local_today = local_now.date()
+    if target_date == local_today:
+        return ""
+    if target_date == local_today - timedelta(days=1):
+        target_end = datetime.combine(target_date + timedelta(days=1), time.min, tzinfo=zone)
+        if (local_now - target_end).total_seconds() <= freshness_seconds:
+            return ""
+        return "target-date-post-close-window-expired"
+    return "target-date-not-today"
+
+
+def _hours_since_local_midnight(timezone_name: str, now: datetime) -> int:
+    return _hours_since_local_date_start(timezone_name, _local_date(timezone_name, now), now)
+
+
+def _hours_since_local_date_start(timezone_name: str, target_date: date, now: datetime) -> int:
+    zone = _zone(timezone_name)
+    local_now = now.astimezone(zone)
+    local_midnight = datetime.combine(target_date, time.min, tzinfo=zone)
     elapsed = local_now - local_midnight
     return max(2, min(36, int(math.ceil(elapsed / timedelta(hours=1))) + 1))

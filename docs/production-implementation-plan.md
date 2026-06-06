@@ -296,16 +296,26 @@ object when present.
   `86.0 <= temperature_f <= 87.0`. Do not apply exact-bucket half-step
   expansion to range markets. Existing exact buckets such as `87F` still use
   the legacy rounded-cell behavior pending a separate settlement-rule review.
-- Same-day nowcast may adjust probability only when the provider is explicitly
-  mapped to the same settlement station. Current trading-ready sources: AWC
-  METAR for 39 ICAO stations and HKO max/min CSV for Hong Kong. Karachi/OPMR
-  remains registered metadata only and is excluded from paper trading until its
-  `OPMR`/`OPKC` rule-evidence conflict is resolved.
+- Same-station nowcast may adjust probability only when the provider is
+  explicitly mapped to the same settlement station. Current trading-ready
+  sources: AWC METAR for 39 ICAO stations and HKO max/min CSV for Hong Kong.
+  Karachi/OPMR remains registered metadata only and is excluded from paper
+  trading until its `OPMR`/`OPKC` rule-evidence conflict is resolved.
+- Nowcast target-date access is narrow. The target date may be the station's
+  local today, or the station's local yesterday only during the post-close
+  freshness window controlled by `STATION_NOWCAST_FRESHNESS_SECONDS`. That
+  yesterday path is for already-held paper exits and settlement-risk evidence,
+  not for making new entries more aggressive. Older target dates, future
+  observations, stale observations, missing values, and wrong-station rows fail
+  closed.
 - AWC METAR nowcast uses bulk prefetch for the enabled ICAO set. One AWC JSON
   response is shared across METAR stations in the same cache refresh, and each
-  city filters its own station-date rows from that response. This preserves
-  high/low derivation from one response without sending one HTTP request per
-  station. HKO remains a single official max/min CSV request.
+  city filters its own station-date rows from that response. Yesterday
+  post-close requests expand `hoursBeforeNow` far enough to include the target
+  local day, and the bulk cache is reused only when it covers at least the
+  needed lookback. This preserves high/low derivation from one response without
+  sending one HTTP request per station. HKO remains a single official max/min
+  CSV request.
 - Temperature nowcast derives observed high-so-far and observed low-so-far from
   one station-date response when the source provides enough observations. Use
   observed high only for daily-high markets and observed low only for daily-low

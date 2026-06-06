@@ -119,11 +119,18 @@ specialized reference docs.
   `0/1` are accepted. Ambiguous closed-market prices are not guessed. The
   realtime WebSocket runner applies this settlement check before starting each
   stream cycle so old resolved markets do not stay subscribed as open risk.
-- Same-day nowcast is allowed only from explicitly mapped same-station official
-  sources. Observed high-so-far is evidence only for daily-high markets, and
-  observed low-so-far is evidence only for daily-low markets. Providers should
-  derive both extrema from one station-date response and cache it. No
-  nearby-station or city-center substitutions.
+- Same-station nowcast is allowed only from explicitly mapped official sources.
+  Observed high-so-far is evidence only for daily-high markets, and observed
+  low-so-far is evidence only for daily-low markets. Providers should derive
+  both extrema from one station-date response and cache it. No nearby-station
+  or city-center substitutions.
+- Nowcast may use the station's local yesterday only during the post-close
+  freshness window, and only as paper exit or settlement-risk evidence for the
+  just-ended target date. Why: immediately after local midnight, final observed
+  high/low can be the best evidence for a still-open paper position. Consequence:
+  older target dates, expired post-close windows, future observations, stale
+  observations, missing extrema, and wrong-station rows fail closed instead of
+  weakening the same-station rule.
 - Exact/range bucket nowcast inside the bucket is an exit-only risk signal for
   held NO positions. Why: a NO position can become dangerous before the
   probability-stop threshold fires. Consequence:
@@ -998,3 +1005,21 @@ rule is not a new-entry booster. If observed high/low fully exits the bucket so
 YES is impossible, the existing probability adjustment to `p_true=0.0` remains
 the authority; daily-low markets still use observed low rather than observed
 high.
+
+### 2026-06-07: Allow Fresh Local-Yesterday Nowcast For Post-Close Paper Exits
+
+Decision: A station nowcast target date may be the station's local today, or
+the station's local yesterday only while the post-close freshness window is
+still open. AWC METAR post-close requests expand `hoursBeforeNow` to include
+the target local day and reuse the bulk cache only when the cached lookback is
+large enough; HKO still uses its official max/min row and must report the target
+date itself.
+Why: Tokyo/Hong Kong-style markets can cross local midnight while paper
+positions still need final same-station observed high/low for exit and
+settlement-risk judgment. Treating the just-ended target date as
+`target-date-not-today` turns the bot forecast-only exactly when observation
+evidence matters most.
+Consequence: Fresh same-station yesterday extrema can refresh held-position
+evidence, but old target dates, expired post-close windows, future rows, stale
+rows, missing values, and wrong-station data remain unusable. This is not a
+new-entry booster and does not change the paper-only boundary.

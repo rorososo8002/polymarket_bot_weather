@@ -263,6 +263,29 @@ def test_aviationweather_provider_marks_malformed_payload_unusable():
     assert observation.unavailable_reason == "malformed-observation-payload"
 
 
+def test_aviationweather_provider_fails_closed_on_future_observation():
+    payload = [
+        {
+            "icaoId": "RJTT",
+            "obsTime": "2026-06-06T15:40:00.000Z",
+            "temp": 31.0,
+            "rawOb": "RJTT 061540Z 19008KT 9999 FEW025 31/20 Q1008",
+        }
+    ]
+    provider, _calls = provider_for(payload)
+
+    observation = provider.observed_temperature_extremes_so_far(
+        STATION_MAP["tokyo"],
+        target_date=date(2026, 6, 7),
+        now=datetime(2026, 6, 6, 15, 30, tzinfo=timezone.utc),
+    )
+
+    assert observation.usable is False
+    assert observation.observed_high_c is None
+    assert observation.observed_low_c is None
+    assert observation.unavailable_reason == "future-observation"
+
+
 def test_aviationweather_provider_fails_closed_when_target_date_is_not_today():
     provider, calls = provider_for(load_fixture("aviationweather_rksi_fresh.json"))
 
@@ -275,6 +298,107 @@ def test_aviationweather_provider_fails_closed_when_target_date_is_not_today():
     assert observation.usable is False
     assert observation.observed_high_c is None
     assert observation.unavailable_reason == "target-date-not-today"
+    assert calls == []
+
+
+def test_aviationweather_provider_uses_fresh_yesterday_extremes_after_local_midnight():
+    payload = [
+        {
+            "icaoId": "RJTT",
+            "obsTime": "2026-06-05T15:10:00.000Z",
+            "temp": 20.0,
+            "rawOb": "RJTT 051510Z 18005KT 9999 FEW020 20/16 Q1010",
+        },
+        {
+            "icaoId": "RJTT",
+            "obsTime": "2026-06-06T06:00:00.000Z",
+            "temp": 31.0,
+            "rawOb": "RJTT 060600Z 19008KT 9999 FEW025 31/20 Q1008",
+        },
+        {
+            "icaoId": "RJTT",
+            "obsTime": "2026-06-06T14:50:00.000Z",
+            "temp": 26.0,
+            "rawOb": "RJTT 061450Z 16005KT 9999 FEW020 26/19 Q1009",
+        },
+    ]
+    provider, calls = provider_for(payload, freshness_seconds=5400)
+
+    observation = provider.observed_temperature_extremes_so_far(
+        STATION_MAP["tokyo"],
+        target_date=date(2026, 6, 6),
+        now=datetime(2026, 6, 6, 15, 30, tzinfo=timezone.utc),
+    )
+
+    assert observation.usable is True
+    assert observation.station_id == "RJTT"
+    assert observation.observed_high_c == 31.0
+    assert observation.observed_low_c == 20.0
+    assert observation.observed_at.isoformat() == "2026-06-06T14:50:00+00:00"
+    assert observation.freshness_seconds == 2400
+    assert observation.unavailable_reason == ""
+    assert calls[0]["params"]["hoursBeforeNow"] >= 25
+
+
+def test_aviationweather_bulk_cache_refetches_when_yesterday_needs_longer_lookback():
+    yesterday_payload = [
+        {
+            "icaoId": "RJTT",
+            "obsTime": "2026-06-06T06:00:00.000Z",
+            "temp": 31.0,
+            "rawOb": "RJTT 060600Z 19008KT 9999 FEW025 31/20 Q1008",
+        },
+        {
+            "icaoId": "RJTT",
+            "obsTime": "2026-06-06T14:50:00.000Z",
+            "temp": 26.0,
+            "rawOb": "RJTT 061450Z 16005KT 9999 FEW020 26/19 Q1009",
+        },
+    ]
+    calls = []
+    payloads = [[], yesterday_payload]
+
+    def fake_get(url, *, params, timeout, headers):
+        calls.append({"url": url, "params": params, "timeout": timeout, "headers": headers})
+        return FakeResponse(payloads.pop(0))
+
+    provider = AviationWeatherMetarNowcastProvider(
+        http_get=fake_get,
+        freshness_seconds=5400,
+        cache_ttl_seconds=900,
+    )
+
+    first = provider.observed_temperature_extremes_so_far(
+        STATION_MAP["tokyo"],
+        target_date=date(2026, 6, 7),
+        now=datetime(2026, 6, 6, 15, 5, tzinfo=timezone.utc),
+    )
+    second = provider.observed_temperature_extremes_so_far(
+        STATION_MAP["tokyo"],
+        target_date=date(2026, 6, 6),
+        now=datetime(2026, 6, 6, 15, 6, tzinfo=timezone.utc),
+    )
+
+    assert first.usable is False
+    assert second.usable is True
+    assert second.observed_high_c == 31.0
+    assert len(calls) == 2
+    assert calls[1]["params"]["hoursBeforeNow"] > calls[0]["params"]["hoursBeforeNow"]
+
+
+def test_aviationweather_provider_fails_closed_when_yesterday_window_expired():
+    provider, calls = provider_for([], freshness_seconds=3600)
+
+    observation = provider.observed_temperature_extremes_so_far(
+        STATION_MAP["tokyo"],
+        target_date=date(2026, 6, 6),
+        now=datetime(2026, 6, 6, 16, 30, tzinfo=timezone.utc),
+    )
+
+    assert observation.usable is False
+    assert observation.observed_high_c is None
+    assert observation.observed_low_c is None
+    assert observation.unavailable_reason == "target-date-post-close-window-expired"
     assert calls == []
 
 
@@ -335,6 +459,28 @@ def test_hko_provider_returns_max_temperature_since_midnight_from_fixture():
     assert "latest_since_midnight_maxmin.csv" in calls[0]["url"]
 
 
+def test_hko_provider_uses_fresh_yesterday_extremes_after_local_midnight():
+    payload = """Date time,Automatic Weather Station,Maximum Air Temperature Since Midnight(degree Celsius),Minimum Air Temperature Since Midnight(degree Celsius)
+202606062350,HK Observatory,30.2,27.1
+"""
+    provider, calls = hko_provider_for(payload, freshness_seconds=5400)
+
+    observation = provider.observed_temperature_extremes_so_far(
+        STATION_MAP["hong kong"],
+        target_date=date(2026, 6, 6),
+        now=datetime(2026, 6, 6, 16, 20, tzinfo=timezone.utc),
+    )
+
+    assert observation.usable is True
+    assert observation.station_id == "HKO"
+    assert observation.observed_high_c == 30.2
+    assert observation.observed_low_c == 27.1
+    assert observation.observed_at.isoformat() == "2026-06-06T15:50:00+00:00"
+    assert observation.freshness_seconds == 1800
+    assert observation.unavailable_reason == ""
+    assert len(calls) == 1
+
+
 def test_hko_request_log_records_external_fetch_not_cache_hit(tmp_path):
     request_log_path = tmp_path / "station_nowcast_request_log.jsonl"
     provider, calls = hko_provider_for(
@@ -379,6 +525,24 @@ def test_hko_provider_marks_malformed_csv_unusable():
     assert observation.usable is False
     assert observation.observed_high_c is None
     assert observation.unavailable_reason == "malformed-observation-payload"
+
+
+def test_hko_provider_fails_closed_on_future_observation():
+    payload = """Date time,Automatic Weather Station,Maximum Air Temperature Since Midnight(degree Celsius),Minimum Air Temperature Since Midnight(degree Celsius)
+202606062350,HK Observatory,30.2,27.1
+"""
+    provider, _calls = hko_provider_for(payload)
+
+    observation = provider.observed_temperature_extremes_so_far(
+        STATION_MAP["hong kong"],
+        target_date=date(2026, 6, 6),
+        now=datetime(2026, 6, 6, 15, 20, tzinfo=timezone.utc),
+    )
+
+    assert observation.usable is False
+    assert observation.observed_high_c is None
+    assert observation.observed_low_c is None
+    assert observation.unavailable_reason == "future-observation"
 
 
 def test_station_nowcast_audit_marks_enabled_and_skipped_sources():
