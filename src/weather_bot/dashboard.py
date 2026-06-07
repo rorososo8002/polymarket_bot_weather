@@ -214,7 +214,7 @@ def _count_decision_row(totals: dict[str, int], row: dict[str, str]) -> None:
         return
     side = (row.get("side") or "").upper()
     totals["decisions"] += 1
-    if side == "SKIP":
+    if side.startswith("SKIP"):
         totals["skips"] += 1
     elif side in {"YES", "NO"}:
         totals["entries"] += 1
@@ -908,7 +908,7 @@ def _events(trades: list[dict[str, str]], decisions: list[dict[str, str]]) -> li
         })
     for row in decisions[-80:]:
         side = row.get("side", "")
-        tone = "warn" if side == "SKIP" else "good"
+        tone = "warn" if side.startswith("SKIP") else "good"
         events.append({
             "ts": row.get("ts", ""),
             "label": f"DECISION {side}",

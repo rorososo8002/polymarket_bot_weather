@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-Side = Literal["YES", "NO", "SKIP"]
+Side = Literal["YES", "NO", "SKIP", "SKIP_ERROR"]
 
 
 @dataclass(frozen=True)

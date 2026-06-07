@@ -34,7 +34,7 @@ from .portfolio import (
 from .probability import OpenMeteoEnsembleClient, estimate_weather_probability
 from .realtime_orderbook import OrderBookMarketStream
 from .risk import fractional_kelly_binary
-from .runner_status import update_runner_status_fields, utc_now_iso, write_runner_status
+from .runner_status import read_runner_status, update_runner_status_fields, utc_now_iso, write_runner_status
 from .stations import TRADING_READY_STATION_MAP
 from .weather_client import parse_weather_question, temperature_bucket_interval_bounds_f
 
@@ -115,6 +115,108 @@ def _call_probability_estimator(
         if accepts_kwargs or "observation_provider" in signature.parameters:
             kwargs["observation_provider"] = observation_provider
     return probability_estimator(question, **kwargs)
+
+
+def _compact_status_text(value: Any, max_chars: int = 240) -> str:
+    text = " ".join(str(value or "").split())
+    return text[:max_chars]
+
+
+def _safe_error_text(exc: BaseException) -> str:
+    return _compact_status_text(str(exc) or exc.__class__.__name__)
+
+
+def _status_int(value: Any) -> int:
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _market_error_status(settings: Settings) -> tuple[int, dict[str, Any] | None]:
+    status = read_runner_status(settings)
+    last_error = status.get("last_market_error")
+    return _status_int(status.get("market_error_count")), last_error if isinstance(last_error, dict) else None
+
+
+def _market_error_status_fields(count: int, last_error: dict[str, Any] | None) -> dict[str, Any]:
+    fields: dict[str, Any] = {"market_error_count": count}
+    if last_error is not None:
+        fields["last_market_error"] = last_error
+    return fields
+
+
+def _fallback_error_signal(market: RawMarket, error_message: str) -> WeatherSignal:
+    try:
+        parsed = parse_weather_question(market.question)
+    except Exception:  # noqa: BLE001
+        parsed = None
+    return WeatherSignal(
+        p_true=0.5,
+        confidence=0.0,
+        source="market-evaluation-error",
+        note=f"SKIP_ERROR: market evaluation failed; {error_message}",
+        parsed=parsed,
+    )
+
+
+def _record_market_evaluation_error(
+    broker: PaperBroker,
+    market: RawMarket,
+    exc: BaseException,
+    market_type: str,
+    *,
+    signal: WeatherSignal | None = None,
+    context: str,
+) -> tuple[WeatherSignal, EdgeResult, dict[str, Any], int]:
+    error_message = _safe_error_text(exc)
+    signal = signal or _fallback_error_signal(market, error_message)
+    result = EdgeResult(
+        "SKIP_ERROR",
+        signal.p_true,
+        None,
+        -999.0,
+        0.0,
+        0.0,
+        f"SKIP_ERROR: market evaluation failed during {context}: {exc.__class__.__name__}: {error_message}",
+    )
+    current_count, _last_error = _market_error_status(broker.settings)
+    error_count = current_count + 1
+    error_info = {
+        "at": utc_now_iso(),
+        "count": error_count,
+        "context": context,
+        "market_id": market.market_id,
+        "slug": market.slug or "",
+        "question": _compact_status_text(market.question, 240),
+        "error_type": exc.__class__.__name__,
+        "message": error_message,
+    }
+    broker.log_decision(market, result, signal.note, market_type)
+    broker.log_raw_snapshot(
+        "market_evaluation_error",
+        market,
+        {
+            "status": "error",
+            "context": context,
+            "error_type": exc.__class__.__name__,
+            "error": error_message,
+            "market_raw": market.raw,
+            "signal": {
+                "p_true": signal.p_true,
+                "confidence": signal.confidence,
+                "source": signal.source,
+                "note": signal.note,
+                "nowcast": signal.nowcast,
+            },
+        },
+    )
+    update_runner_status_fields(
+        broker.settings,
+        market_error_count=error_count,
+        last_market_error=error_info,
+    )
+    return signal, result, error_info, error_count
 
 
 class StreamBackedPolymarketClient(PolymarketClient):
@@ -902,19 +1004,39 @@ def _discovery_coverage(markets: list[RawMarket]) -> dict[str, int]:
 def run_cycle(settings: Settings | None = None) -> list[MarketDecision]:
     settings = settings or load_settings()
     cycle_started_at = utc_now_iso()
-    write_runner_status(settings, "starting", message="starting cycle", cycle_started_at=cycle_started_at)
+    market_error_count = 0
+    last_market_error: dict[str, Any] | None = None
+    write_runner_status(
+        settings,
+        "starting",
+        message="starting cycle",
+        cycle_started_at=cycle_started_at,
+        **_market_error_status_fields(market_error_count, last_market_error),
+    )
     client = PolymarketClient(settings.gamma_base, settings.clob_base)
     ensemble_client = OpenMeteoEnsembleClient.from_settings(settings)
     observation_provider = AviationWeatherMetarNowcastProvider.from_settings(settings)
     broker = PaperBroker(settings)
     try:
-        write_runner_status(settings, "discovering", message="discovering markets", cycle_started_at=cycle_started_at)
+        write_runner_status(
+            settings,
+            "discovering",
+            message="discovering markets",
+            cycle_started_at=cycle_started_at,
+            **_market_error_status_fields(market_error_count, last_market_error),
+        )
         discovered_markets = client.discover_weather_markets(
             max_pages=settings.discovery_max_pages,
             page_size=settings.discovery_page_size,
         )
     except Exception as exc:  # noqa: BLE001
-        write_runner_status(settings, "error", message=f"market discovery failed: {exc}", cycle_started_at=cycle_started_at)
+        write_runner_status(
+            settings,
+            "error",
+            message=f"market discovery failed: {exc}",
+            cycle_started_at=cycle_started_at,
+            **_market_error_status_fields(market_error_count, last_market_error),
+        )
         print(f"DATA ERROR: could not fetch live Polymarket markets: {exc}")
         print("Check internet/DNS/VPN, then run live-paper-bot again.")
         return []
@@ -945,6 +1067,7 @@ def run_cycle(settings: Settings | None = None) -> list[MarketDecision]:
         cash_usd=round(broker.state.cash_usd, 2),
         exposure_usd=round(broker.total_exposure(), 2),
         open_positions=len(broker.state.positions),
+        **_market_error_status_fields(market_error_count, last_market_error),
     )
     markets_done = 0
     for event_markets in event_groups:
@@ -1002,6 +1125,15 @@ def run_cycle(settings: Settings | None = None) -> list[MarketDecision]:
                 print(f"Reason: {result.reason}")
                 print(f"Note: {signal.note}")
             except Exception as exc:  # noqa: BLE001
+                signal, result, last_market_error, market_error_count = _record_market_evaluation_error(
+                    broker,
+                    market,
+                    exc,
+                    "temperature",
+                    context="cycle",
+                )
+                decisions.append(MarketDecision(market=market, signal=signal, result=result))
+                candidates.extend(_event_portfolio_candidates(market, signal, result, {}, "temperature"))
                 print("-" * 100)
                 print(f"Q: {market.question}")
                 print(f"ERROR: {exc}")
@@ -1018,6 +1150,7 @@ def run_cycle(settings: Settings | None = None) -> list[MarketDecision]:
                 cash_usd=round(broker.state.cash_usd, 2),
                 exposure_usd=round(broker.total_exposure(), 2),
                 open_positions=len(broker.state.positions),
+                **_market_error_status_fields(market_error_count, last_market_error),
             )
         portfolio = _apply_event_portfolio(broker, candidates, entry_bankroll)
         print(
@@ -1035,6 +1168,7 @@ def run_cycle(settings: Settings | None = None) -> list[MarketDecision]:
         markets_total=len(markets),
         events_total=coverage["events"],
         cities_total=coverage["cities"],
+        **_market_error_status_fields(market_error_count, last_market_error),
     )
     _hydrate_open_position_markets(client, broker, market_by_id)
     settlement_msgs = maybe_settle_resolved_positions(broker, market_by_id)
@@ -1070,6 +1204,7 @@ def run_cycle(settings: Settings | None = None) -> list[MarketDecision]:
         cash_usd=round(broker.state.cash_usd, 2),
         exposure_usd=round(broker.total_exposure(), 2),
         open_positions=len(broker.state.positions),
+        **_market_error_status_fields(market_error_count, last_market_error),
     )
     return decisions
 
@@ -1169,58 +1304,69 @@ def _evaluate_realtime_update(
         entry_bankroll = available_entry_bankroll(broker, client)
         candidates: list[PortfolioCandidate] = []
         for market in event_groups[event_key]:
-            _refresh_realtime_signal_if_needed(
-                market,
-                settings,
-                signals_by_market,
-                signal_refreshed_at_by_market,
-                probability_estimator=probability_estimator,
-                ensemble_client=ensemble_client,
-                observation_provider=observation_provider,
-                now=current,
-            )
-            signal = signals_by_market[market.market_id]
-            market_type = market_types[market.market_id]
-            result, per_side = evaluate_market(
-                market,
-                signal,
-                client,
-                settings,
-                entry_bankroll.entry_bankroll,
-                market_type,
-                entry_bankroll.reason,
-            )
-            for side, edge_result in per_side.items():
-                latest_edges[(market.market_id, side)] = edge_result
-            held_exit_edges: dict[str, EdgeResult] = {}
-            if not per_side and "entry_bankroll=$" in result.reason:
-                held_exit_edges = _refresh_held_exit_edges_from_signal(
-                    broker,
+            market_type = market_types.get(market.market_id, "temperature")
+            try:
+                _refresh_realtime_signal_if_needed(
+                    market,
+                    settings,
+                    signals_by_market,
+                    signal_refreshed_at_by_market,
+                    probability_estimator=probability_estimator,
+                    ensemble_client=ensemble_client,
+                    observation_provider=observation_provider,
+                    now=current,
+                )
+                signal = signals_by_market[market.market_id]
+                result, per_side = evaluate_market(
                     market,
                     signal,
-                    latest_edges,
+                    client,
+                    settings,
+                    entry_bankroll.entry_bankroll,
+                    market_type,
                     entry_bankroll.reason,
                 )
-            decision_ts = broker.log_decision(market, result, signal.note, market_type)
-            candidates.extend(_event_portfolio_candidates(market, signal, result, per_side, market_type, decision_ts))
-            broker.log_raw_snapshot(
-                "realtime_decision",
-                market,
-                {
-                    "updated_token_ids": sorted(updated_token_ids),
-                    "signal": {
-                        "p_true": signal.p_true,
-                        "confidence": signal.confidence,
-                        "source": signal.source,
-                        "note": signal.note,
-                        "nowcast": signal.nowcast,
+                for side, edge_result in per_side.items():
+                    latest_edges[(market.market_id, side)] = edge_result
+                held_exit_edges: dict[str, EdgeResult] = {}
+                if not per_side and "entry_bankroll=$" in result.reason:
+                    held_exit_edges = _refresh_held_exit_edges_from_signal(
+                        broker,
+                        market,
+                        signal,
+                        latest_edges,
+                        entry_bankroll.reason,
+                    )
+                decision_ts = broker.log_decision(market, result, signal.note, market_type)
+                candidates.extend(_event_portfolio_candidates(market, signal, result, per_side, market_type, decision_ts))
+                broker.log_raw_snapshot(
+                    "realtime_decision",
+                    market,
+                    {
+                        "updated_token_ids": sorted(updated_token_ids),
+                        "signal": {
+                            "p_true": signal.p_true,
+                            "confidence": signal.confidence,
+                            "source": signal.source,
+                            "note": signal.note,
+                            "nowcast": signal.nowcast,
+                        },
+                        "entry_bankroll": entry_bankroll.__dict__,
+                        "websocket": websocket_health,
+                        "per_side": {side: edge.__dict__ for side, edge in per_side.items()},
+                        "held_exit_edges": {side: edge.__dict__ for side, edge in held_exit_edges.items()},
                     },
-                    "entry_bankroll": entry_bankroll.__dict__,
-                    "websocket": websocket_health,
-                    "per_side": {side: edge.__dict__ for side, edge in per_side.items()},
-                    "held_exit_edges": {side: edge.__dict__ for side, edge in held_exit_edges.items()},
-                },
-            )
+                )
+            except Exception as exc:  # noqa: BLE001
+                signal, result, _last_market_error, _market_error_count = _record_market_evaluation_error(
+                    broker,
+                    market,
+                    exc,
+                    market_type,
+                    signal=signals_by_market.get(market.market_id),
+                    context="realtime_update",
+                )
+                candidates.extend(_event_portfolio_candidates(market, signal, result, {}, market_type))
         _apply_event_portfolio(broker, candidates, entry_bankroll)
     for message in maybe_close_positions(broker, client, market_by_id, latest_edges):
         print(message)
@@ -1312,6 +1458,7 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
                 "discovering",
                 message="discovering markets for websocket stream",
                 cycle_started_at=cycle_started_at,
+                **_market_error_status_fields(0, None),
             )
             discovered_markets = discovery_client.discover_weather_markets(
                 max_pages=settings.discovery_max_pages,
@@ -1433,6 +1580,7 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
 
             def write_stream_status(websocket_health: dict[str, object] | None = None) -> None:
                 websocket_health = websocket_health or stream.health_snapshot()
+                market_error_count, last_market_error = _market_error_status(settings)
                 phase, message = _stream_status_phase(
                     websocket_health,
                     token_count=len(market_by_token),
@@ -1455,6 +1603,7 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
                     forecast=ensemble_client.health_snapshot(),
                     websocket=websocket_health,
                     realtime_evaluator=evaluator_worker.status_snapshot() if evaluator_worker is not None else None,
+                    **_market_error_status_fields(market_error_count, last_market_error),
                 )
 
             failed_phase = "runner_status_update"
@@ -1518,6 +1667,7 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
                     print(f"STREAM STOP ERROR after realtime failure: {stop_exc}")
                 stream = None
             message = f"realtime refresh cycle failed during {failed_phase}: {exc}"
+            market_error_count, last_market_error = _market_error_status(settings)
             write_runner_status(
                 settings,
                 "error",
@@ -1531,6 +1681,7 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
                 forecast=ensemble_client.health_snapshot() if ensemble_client is not None else None,
                 websocket=websocket_health,
                 realtime_evaluator=evaluator_status,
+                **_market_error_status_fields(market_error_count, last_market_error),
             )
             print(f"REALTIME ERROR: {message}")
             backoff_seconds = _realtime_error_backoff_seconds(settings)

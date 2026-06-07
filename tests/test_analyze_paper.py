@@ -17,7 +17,7 @@ def test_build_report_summarizes_decisions_edge_buckets_and_resolved_brier(tmp_p
             [
                 "ts,market_id,slug,question,market_type,side,p_true,p_exec,net_edge,size_usd,size_shares,entry_fraction,probability_stop_threshold,model_fair_price,target_exit_price,market_heat_score,reason,note",
                 "2026-01-01T00:00:00+00:00,m1,s,q1,temperature,YES,0.700000,0.500000,0.120000,50,100,,,,,,YES edge,",
-                "2026-01-01T00:01:00+00:00,m2,s,q2,temperature,SKIP,0.520000,,0.010000,0,0,,,,,,confidence too low,",
+                "2026-01-01T00:01:00+00:00,m2,s,q2,temperature,SKIP_ERROR,0.520000,,0.010000,0,0,,,,,,SKIP_ERROR: market evaluation failed,",
             ]
         )
         + "\n",
@@ -36,9 +36,33 @@ def test_build_report_summarizes_decisions_edge_buckets_and_resolved_brier(tmp_p
     report = build_report(decisions, trades)
 
     assert "decisions=2 entries=1 skips=1" in report
-    assert "confidence too low: 1" in report
+    assert "SKIP_ERROR: 1" in report
     assert "edge >= 10%: count=1 avg_p_true=0.700" in report
     assert "resolved_brier=0.0900 n=1" in report
+
+
+def test_build_report_tolerates_missing_side_column(tmp_path):
+    decisions = tmp_path / "paper_decisions.csv"
+    trades = tmp_path / "paper_trades.csv"
+    write(
+        decisions,
+        "\n".join(
+            [
+                "ts,market_id,slug,question,market_type,p_true,p_exec,net_edge,size_usd,size_shares,entry_fraction,probability_stop_threshold,model_fair_price,target_exit_price,market_heat_score,reason,note",
+                "2026-01-01T00:00:00+00:00,m1,s,q1,temperature,0.520000,,-999,0,0,,,,,,legacy row without side,",
+                "2026-01-01T00:01:00+00:00,m2,s,q2,temperature,0.500000,,-999,0,0,,,,,,legacy row without side 2,",
+            ]
+        )
+        + "\n",
+    )
+    write(
+        trades,
+        "ts,action,market_id,slug,question,market_type,side,token_id,shares,price,cash_delta_or_pnl,reason\n",
+    )
+
+    report = build_report(decisions, trades)
+
+    assert "decisions=2 entries=0 skips=0" in report
 
 
 def test_resolved_brier_prefers_open_entry_probability_over_later_decision(tmp_path):

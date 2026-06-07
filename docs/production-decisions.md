@@ -159,6 +159,11 @@ durable prevention lessons belong in `docs/solutions/`.
   Normal raw snapshots are disabled by default, error/debug snapshots rotate,
   and disk pressure may suspend raw writes. Do not apply raw-snapshot cleanup to
   `paper_state.json`, `paper_trades.csv`, or `paper_decisions.csv`.
+- Individual market evaluation exceptions must fail closed as observable
+  diagnostics: write a `SKIP_ERROR` row to `paper_decisions.csv`, write a
+  `market_evaluation_error` raw snapshot, and preserve
+  `market_error_count` / `last_market_error` in `paper_runner_status.json`.
+  Never infer a trade from a partially failed market evaluation.
 - Dashboard trade-history panels treat SKIP rows as diagnostics, not executed
   trades. Dashboard scanner totals must disclose whether counts are exact full
   ledger totals or bounded recent-tail totals.

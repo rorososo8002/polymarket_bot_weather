@@ -8,12 +8,15 @@ Status: none
 
 ## Last Verified State
 
-- Paper ledger replay hardening was completed for the local paper broker and
-  analysis report.
-- Focused ledger/report tests passed:
-  `55 passed`.
+- Per-market evaluation exceptions now fail closed into observable
+  `SKIP_ERROR` decision rows, `market_evaluation_error` raw snapshots, and
+  runner-status `market_error_count` / `last_market_error` fields.
+- Focused runner hardening tests passed:
+  `86 passed`.
+- Dashboard/analyze regression tests passed:
+  `50 passed`.
 - Full pytest passed:
-  `464 passed`.
+  `467 passed`.
 
 ## Next Action
 

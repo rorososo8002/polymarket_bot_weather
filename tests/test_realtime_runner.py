@@ -702,6 +702,58 @@ def test_realtime_update_refreshes_held_exit_edge_when_entry_bankroll_is_unusabl
     assert "exit evidence" in held_edge.reason
 
 
+def test_realtime_update_logs_market_exception_as_skip_error(tmp_path):
+    question = "Will the highest temperature in Seoul be 27C or higher today?"
+    market = RawMarket("seoul-error", question, "seoul-error", True, False, "yes", "no", event_id="seoul-today")
+
+    class FakeClient:
+        def get_order_book(self, token_id):
+            raise AssertionError("evaluation should fail before trading on guessed books")
+
+    settings = Settings(
+        state_path=str(tmp_path / "state.json"),
+        trades_csv_path=str(tmp_path / "trades.csv"),
+        decisions_csv_path=str(tmp_path / "decisions.csv"),
+        raw_snapshots_path=str(tmp_path / "raw.jsonl"),
+        portfolio_decisions_jsonl_path=str(tmp_path / "portfolio.jsonl"),
+        station_nowcast_cache_ttl_seconds=1,
+    )
+    broker = runner_module.PaperBroker(settings)
+    parsed = parse_weather_question(question)
+    signals_by_market = {market.market_id: WeatherSignal(0.50, 0.90, "stale", "stale signal", parsed)}
+
+    def failing_estimator(*_args, **_kwargs):
+        raise RuntimeError("nowcast refresh exploded")
+
+    runner_module._evaluate_realtime_update(
+        {"yes"},
+        FakeClient(),
+        broker,
+        settings,
+        {"yes": market, "no": market},
+        signals_by_market,
+        {market.market_id: "temperature"},
+        {},
+        signal_refreshed_at_by_market={market.market_id: datetime(2026, 6, 2, 0, 0, tzinfo=timezone.utc)},
+        probability_estimator=failing_estimator,
+        now=datetime(2026, 6, 2, 0, 0, 2, tzinfo=timezone.utc),
+    )
+
+    with (tmp_path / "decisions.csv").open(newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    assert rows[0]["side"] == "SKIP_ERROR"
+    assert "nowcast refresh exploded" in rows[0]["reason"]
+
+    status = json.loads((tmp_path / "paper_runner_status.json").read_text(encoding="utf-8"))
+    assert status["market_error_count"] == 1
+    assert status["last_market_error"]["market_id"] == market.market_id
+    assert "nowcast refresh exploded" in status["last_market_error"]["message"]
+
+    raw_payload = json.loads((tmp_path / "raw.jsonl").read_text(encoding="utf-8").splitlines()[0])
+    assert raw_payload["event"] == "market_evaluation_error"
+    assert raw_payload["payload"]["context"] == "realtime_update"
+
+
 def test_open_position_if_needed_blocks_inactive_or_closed_markets():
     question = "Will NYC reach 90 F on May 25?"
     result = runner_module.EdgeResult("YES", 0.70, 0.50, 0.20, 10.0, 20.0, "entry")

@@ -1442,6 +1442,66 @@ def test_run_cycle_reuses_one_ensemble_client_for_all_markets(monkeypatch, tmp_p
     assert len(set(ensemble_ids)) == 1
 
 
+def test_run_cycle_logs_market_evaluation_exception_as_skip_error(monkeypatch, tmp_path):
+    settings = Settings(
+        state_path=str(tmp_path / "state.json"),
+        trades_csv_path=str(tmp_path / "trades.csv"),
+        decisions_csv_path=str(tmp_path / "decisions.csv"),
+        raw_snapshots_path=str(tmp_path / "raw.jsonl"),
+        portfolio_decisions_jsonl_path=str(tmp_path / "portfolio.jsonl"),
+        require_date_hint_for_trade=False,
+    )
+    market = RawMarket(
+        "boom",
+        "Will the highest temperature in Seoul be 27C or higher on May 25?",
+        "boom",
+        True,
+        False,
+        "boom-yes",
+        "boom-no",
+    )
+
+    class FakeClient:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def discover_weather_markets(self, max_pages: int, page_size: int):
+            return [market]
+
+        def get_order_book(self, token_id: str) -> OrderBook:
+            raise AssertionError("evaluation should fail before trading on guessed books")
+
+        def get_market(self, market_id: str) -> RawMarket:
+            assert market_id == market.market_id
+            return market
+
+    def failing_estimator(*_args, **_kwargs):
+        raise RuntimeError("forecast decoder exploded")
+
+    monkeypatch.setattr("weather_bot.live_paper_runner.PolymarketClient", FakeClient)
+    monkeypatch.setattr("weather_bot.live_paper_runner.estimate_weather_probability", failing_estimator)
+
+    decisions = run_cycle(settings)
+
+    with (tmp_path / "decisions.csv").open(newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    assert len(rows) == 1
+    assert rows[0]["side"] == "SKIP_ERROR"
+    assert "forecast decoder exploded" in rows[0]["reason"]
+    assert decisions[0].result.side == "SKIP_ERROR"
+
+    raw_rows = (tmp_path / "raw.jsonl").read_text(encoding="utf-8").splitlines()
+    raw_payload = json.loads(raw_rows[0])
+    assert raw_payload["event"] == "market_evaluation_error"
+    assert raw_payload["payload"]["status"] == "error"
+    assert raw_payload["payload"]["error_type"] == "RuntimeError"
+
+    status = json.loads(runner_status_path(settings).read_text(encoding="utf-8"))
+    assert status["market_error_count"] == 1
+    assert status["last_market_error"]["market_id"] == market.market_id
+    assert "forecast decoder exploded" in status["last_market_error"]["message"]
+
+
 def test_paper_round_trip_cash_and_pnl_include_taker_fees(tmp_path):
     settings = Settings(
         bankroll_usd=100.0,

@@ -113,8 +113,8 @@ def _summarize_decisions(decisions_path: Path) -> _DecisionSummary:
         return summary
     for row in _iter_csv_rows(decisions_path):
         summary.decisions_count += 1
-        side = row.get("side")
-        if side == "SKIP":
+        side = (row.get("side") or "").upper()
+        if side.startswith("SKIP"):
             summary.skips_count += 1
             summary.skip_reasons[_skip_label(row.get("reason", ""))] += 1
             continue
