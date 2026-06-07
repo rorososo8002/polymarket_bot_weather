@@ -32,5 +32,5 @@ request and read only the conditional documents needed for that task.
 - Replace fields in `current-task.md`; do not append a work diary.
 - Use `Status: active` only for real unfinished work.
 - When work is complete, set `Status: none`.
-- Put completion history in git commits, tests, `docs/archive/`, or
-  `docs/solutions/`, not in the active task card.
+- Put completion evidence in git commits, tests, or reusable
+  `docs/solutions/` notes, not in the active task card.

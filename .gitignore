@@ -27,12 +27,11 @@ paper_decisions.csv
 paper_event_portfolios.jsonl
 paper_raw_snapshots.jsonl
 paper_runner_status.json
-shadow_external_signals.jsonl
-shadow_public_notes.jsonl
-shadow_signal_report.md
 forecast_cache.json
 forecast_request_log.jsonl
 runtime/
 
 .antigravitycli/
 .vscode/
+.investigate_tmp/
+.deploy_tmp/

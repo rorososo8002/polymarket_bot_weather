@@ -2,7 +2,7 @@
 
 ## Goal
 
-Run a conservative paper-trading bot for Polymarket weather markets using only
+Run a conservative paper-trading bot for Polymarket temperature markets using
 verified settlement stations, realtime executable order books, and reproducible
 paper accounting.
 
@@ -10,9 +10,8 @@ paper accounting.
 
 - Keep execution paper-only unless live trading is explicitly approved through
   `docs/live-trading-safety-plan.md`.
-- Execute the paper strategy only on temperature markets for the 40
-  `TRADING_READY_STATION_MAP` cities. `STATION_MAP` is the registry; it is not
-  proof that a city may trade.
+- Execute only temperature markets for the 40 `TRADING_READY_STATION_MAP`
+  cities. `STATION_MAP` is the registry; it is not proof that a city may trade.
 - Skip unsupported cities, unsupported question shapes, stale data, missing
   order books, suspicious values, invalid parsed data, inactive markets, closed
   new-entry candidates, and unprovable YES/NO token mappings.
@@ -28,8 +27,9 @@ paper accounting.
 - Keep held-position token IDs subscribed until the position closes or settles.
 - WebSocket receiver callbacks must stay lightweight: update cache, enqueue
   event work, and leave strategy evaluation to the bounded worker.
-- `paper_state.json`, `paper_trades.csv`, and `paper_decisions.csv` are
-  evidence ledgers. Do not delete, truncate, or rotate them for token savings.
+- Treat `paper_state.json`, `paper_trades.csv`, and `paper_decisions.csv` as
+  runtime evidence ledgers. They are not committed to git, and they should be
+  reset only for an intentional fresh experiment window.
 
 ## Architecture
 
@@ -42,19 +42,8 @@ weather event discovery
   -> fee-aware YES/NO VWAP edge and expected net-return filter
   -> city-date portfolio selector
   -> PaperBroker risk checks, opens, exits, settlements, and ledgers
-  -> dashboard, runner status, reports, and shadow research artifacts
+  -> dashboard, runner status, and paper report
 ```
-
-Shadow research is separate:
-
-```text
-supported weather markets -> bounded public Data API rows
-  -> shadow_external_signals.jsonl
-  -> paired timing/side/outcome comparison with paper_decisions.csv
-  -> shadow_signal_report.md
-```
-
-Shadow data is never an execution input by default.
 
 ## Code Map
 
@@ -72,7 +61,6 @@ src/weather_bot/paper.py              paper broker, accounting, atomic state, ex
 src/weather_bot/exit_policy.py        close/hold trigger rules
 src/weather_bot/live_paper_runner.py  main paper loop and realtime orchestration
 src/weather_bot/dashboard.py          read-only operator dashboard
-src/weather_bot/shadow_signals.py     public external-signal research only
 src/weather_bot/analyze_paper.py      paper performance report
 ```
 
@@ -125,13 +113,12 @@ exposure caps leave at least `MIN_ORDER_USD`.
 - Same-station nowcast may adjust probability only when the provider is
   explicitly mapped to the same settlement station. Current trading-ready
   sources are AWC METAR for ICAO stations and HKO max/min CSV for Hong Kong.
-- Nowcast target-date access is narrow: station local today, or station local
+- Nowcast target-date access is narrow: station-local today, or station-local
   yesterday only during the post-close freshness window for held-position exit
   and settlement-risk evidence.
 - AWC METAR nowcast uses one bulk request for the enabled ICAO set, then each
   city filters its own station-date rows. HKO remains one official CSV request.
-- Daily-high markets use observed high; daily-low markets use observed low. Do
-  not cross-apply one metric to the other.
+- Daily-high markets use observed high; daily-low markets use observed low.
 - Real observation HTTP attempts are counted in
   `station_nowcast_request_log.jsonl`; cache hits do not write rows.
 - Missing, stale, malformed, future-date, unmapped, unsupported, or wrong
@@ -170,10 +157,6 @@ MAX_CITY_EXPOSURE_FRACTION=0.20
 MAX_TOTAL_EXPOSURE_FRACTION=0.90
 ```
 
-The active Oracle VPS experiment was reset on 2026-06-05 UTC with an operator
-override of `BANKROLL_USD=200`, fresh `paper_state.json`, and empty paper
-ledgers. Treat post-reset results as a new performance window.
-
 For one city-date event, the selector compares one-leg and at-most-two-leg
 `YES+YES`, `YES+NO`, and `NO+NO` combinations across non-overlapping buckets.
 Same-market `YES+NO`, overlapping threshold positions, and third legs are
@@ -183,8 +166,8 @@ the minimum order, allowed maximum, and any affordable preferred size.
 ## Accounting And Exit Contract
 
 `paper_state.json` is the paper account book. It is saved by complete temp-file
-write followed by atomic replacement. Bad existing state fails closed instead of
-starting a fresh guessed account.
+write followed by atomic replacement. Bad existing state fails closed instead
+of starting a fresh guessed account.
 
 Executed account changes are paired with `paper_trades.csv`. `OPEN`, `ADD`,
 `CLOSE`, and `PARTIAL_CLOSE` write `paper_state.json.journal` before mutation
@@ -219,13 +202,13 @@ exactly `1/0` or `0/1`.
 
 Paper-report readers treat `paper_decisions.csv` and `paper_trades.csv` as
 source ledgers. Full-history reports may scan every row, but they must stream
-rows and keep only aggregates, market-level lookup state, or bounded research
-samples in memory.
+rows and keep only aggregates, market-level lookup state, or bounded samples in
+memory.
 
 `paper_raw_snapshots.jsonl` is high-volume diagnostic evidence, not a source
 ledger. Normal snapshots default to error-only, debug mode is bounded, active
-raw snapshots rotate over 100MB into compressed `data/archive/`, and disk
-pressure may suspend raw writes with a runner-status warning.
+raw snapshots rotate over 100MB into compressed `archive/`, and disk pressure
+may suspend raw writes with a runner-status warning.
 
 Dashboard scanner totals expose their counting scope:
 `decision_totals_exact=true` means full-ledger totals, and
@@ -243,25 +226,6 @@ Use `docs/codex/skip-diagnostics.md` to separate:
 - market-liquidity SKIPs
 - weather-data or parser SKIPs
 - strategy-threshold SKIPs
-
-A future paper-only SKIP diagnosis report may aggregate `paper_decisions.csv`,
-`paper_event_portfolios.jsonl`, runner status, and order-book health. It must
-not feed live orders or automatic threshold changes.
-
-## Shadow Research Contract
-
-Shadow research studies public external signals without copy trading. It may
-read bounded public Polymarket Data API rows and manually classified public
-notes, but it does not connect wallets, sign orders, submit orders, alter
-positions, or feed signals into `live_paper_runner.py`.
-
-Promotion requires:
-
-```text
-at least 20 paired resolved external-signal and bot-entry rows
-external signal win rate >= matched bot entry win rate + 5 percentage points
-next step is paper-only A/B experiment, never automatic copy trading
-```
 
 ## Runtime Defaults
 
@@ -293,11 +257,6 @@ ENTRY_MIN_EXPECTED_NET_RETURN_PCT=0.06
 SETTLEMENT_RUNNER_ENABLED=true
 SETTLEMENT_RUNNER_MAX_FRACTION=0.25
 SETTLEMENT_RUNNER_MIN_EV_MARGIN_USD=0.00
-SHADOW_MAX_MARKETS=100
-SHADOW_MAX_TRADES_PER_MARKET=100
-SHADOW_MAX_ROWS=1000
-SHADOW_MIN_TRADE_USDC=100.0
-SHADOW_COMPARE_WINDOW_SECONDS=86400
 REQUIRE_DATE_HINT_FOR_TRADE=true
 DASHBOARD_HOST=127.0.0.1
 DASHBOARD_PORT=8787
@@ -316,16 +275,5 @@ Use the known-good local command before inventing variants:
 & 'C:\Users\wpdla\Python312\python.exe' -m pytest -q
 ```
 
-The root `conftest.py` keeps pytest temp files under `.pytest-tmp/`. Routine
-local, VPS, SSH, and dashboard commands live in
+Routine local, VPS, SSH, and dashboard commands live in
 `docs/codex/known-good-commands.md`.
-
-## Reference Docs
-
-- Dashboard detail: `docs/dashboard-build-spec.md`
-- Station audit: `docs/station-registry-audit.md`
-- Shadow research detail: `docs/shadow-signal-research.md`
-- Live trading safety: `docs/live-trading-safety-plan.md`
-- Historical handoff archive:
-  `docs/archive/production-handoff-history-2026-06-07.md`
-- Durable mistakes and prevention rules: `docs/solutions/`

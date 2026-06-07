@@ -3,7 +3,7 @@ title: Avoid full decision-log scans in runtime readers
 date: 2026-05-28
 last_updated: 2026-06-05
 category: performance-issues
-module: weather_bot.dashboard, weather_bot.analyze_paper, weather_bot.shadow_signals
+module: weather_bot.dashboard, weather_bot.analyze_paper
 problem_type: performance_issue
 component: tooling
 severity: medium
@@ -11,7 +11,7 @@ symptoms:
   - "The dashboard root page returned HTTP 200, but `/api/status` timed out."
   - "The dashboard service was active while the browser looked disconnected."
   - "The decision CSV had grown large enough that first-request aggregation stalled the API."
-  - "Paper analysis or shadow reports could materialize growing paper CSV ledgers in memory."
+  - "Paper analysis reports could materialize growing paper CSV ledgers in memory."
 root_cause: missing_workflow_step
 resolution_type: code_fix
 tags: [dashboard, runtime-data, csv, performance, oracle]
@@ -55,7 +55,6 @@ Keep paper reports memory-bounded:
 
 - Stream `paper_decisions.csv` and `paper_trades.csv` rows instead of calling `list(csv.DictReader(...))`.
 - For `analyze_paper.py`, keep aggregate counts, edge-bucket sums, and one latest entry probability per market for resolved Brier scoring.
-- For `shadow_signals.py`, keep the bounded signal set, then stream bot decisions and trades while retaining only matched comparisons and resolved outcome lookups.
 - Preserve full-history report semantics by default. Add explicit `--since` or `--max-rows` style options before changing report scope.
 
 ## Why This Works

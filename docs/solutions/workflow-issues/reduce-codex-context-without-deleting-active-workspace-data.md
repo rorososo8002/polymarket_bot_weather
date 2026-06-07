@@ -21,15 +21,8 @@ needed for the current task."
 to safer inspection methods: file sizes, counts, tails, filters, summaries, and
 small samples.
 
-Progress docs are kept short and current with these sections:
-
-- `Completed`
-- `In Progress`
-- `Next Work`
-- `For The Next AI`
-
-Older chronological details should move to `docs/archive/`, while durable
-lessons should move to `docs/solutions/`.
+Progress docs are kept short and current. Older chronological details stay out
+of the default read set, while durable lessons move to `docs/solutions/`.
 
 On 2026-06-07, the handoff files were compacted into distinct roles:
 
@@ -40,9 +33,7 @@ On 2026-06-07, the handoff files were compacted into distinct roles:
   when the task touches strategy, risk, forecast, order books, portfolio,
   accounting, settlement, or runner behavior.
 
-Historical completion and deployment process detail moved to
-`docs/archive/production-handoff-history-2026-06-07.md`. The default fresh-chat
-read set should not be used as a chronological diary.
+The default fresh-chat read set should not be used as a chronological diary.
 
 ## 4. What To Check Next Time
 
@@ -54,8 +45,8 @@ read set should not be used as a chronological diary.
   returns to `Status: none` when work is complete.
 - Check that `docs/production-decisions.md` contains active rules, not a second
   chronological ledger.
-- Keep old process history in `docs/archive/` unless every future agent truly
-  needs it during startup.
+- Keep old process history out of active handoff docs unless every future agent
+  truly needs it during startup.
 - Inspect large files with bounded reads.
 - Do not delete `.git/`, `runtime/`, or `.antigravitycli/` for token savings.
 

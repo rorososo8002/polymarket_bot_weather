@@ -6,16 +6,6 @@ Status: none
 
 - No unfinished work is currently recorded for fresh-chat continuation.
 
-## Last Verified State
-
-- Undated temperature markets now fail closed before forecast or trade in the
-  paper runner, even when `REQUIRE_DATE_HINT_FOR_TRADE=false`.
-- Date-bearing temperature markets still evaluate normally in runner tests.
-- Focused verification passed:
-  `135 passed` for `tests/test_hardening.py tests/test_config.py`.
-- Full pytest passed:
-  `469 passed`.
-
 ## Next Action
 
 - If the user asks to continue work, follow the user's latest request.
@@ -31,7 +21,8 @@ Status: none
 
 - Preserve paper-only execution unless the user explicitly approves a separate
   live-trading safety pass.
-- Do not delete or truncate runtime ledgers for token savings.
+- Runtime ledgers are generated experiment evidence. Delete or reset them only
+  when the user intentionally asks for a fresh paper-experiment window.
 - Keep this card replace-only. Do not append completed work history here.
 
 ## New Chat Prompt

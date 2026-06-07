@@ -11,11 +11,10 @@ symptoms:
   - "WEATHER_TAKER_FEE_RATE could be negative or above 1 without startup rejection."
   - "MAX_TOTAL_EXPOSURE_FRACTION could be above 1 without startup rejection."
   - "DASHBOARD_PORT could be 0 or above 65535 without startup rejection."
-  - "Shadow research integer limits could be negative without startup rejection."
 root_cause: missing_validation
 resolution_type: code_fix
 severity: high
-tags: [config, settings, validation, fail-closed, paper-trading, risk, dashboard, shadow]
+tags: [config, settings, validation, fail-closed, paper-trading, risk, dashboard]
 ---
 
 # Numeric Settings Must Fail Closed
@@ -25,8 +24,7 @@ tags: [config, settings, validation, fail-closed, paper-trading, risk, dashboard
 The paper bot could start with unsafe numeric configuration values. Examples
 include a negative minimum order, a negative or above-1 fee rate, an exposure
 fraction above 1, zero bankroll, zero forecast cache TTL, zero stream-cycle
-interval, zero WebSocket stale window, an invalid dashboard port, or negative
-shadow research collection limits.
+interval, zero WebSocket stale window, or an invalid dashboard port.
 
 ## Why It Was A Problem
 
@@ -51,13 +49,9 @@ The validation rules are:
   interval must be greater than 0.
 - Risk fractions must stay between 0 and 1.
 - `WEATHER_TAKER_FEE_RATE` must stay between 0 and 1.
-- Non-negative knobs such as `SETTLEMENT_RUNNER_MIN_EV_MARGIN_USD` and
-  `SHADOW_MIN_TRADE_USDC` must be at least 0.
+- Non-negative knobs such as `SETTLEMENT_RUNNER_MIN_EV_MARGIN_USD` must be at
+  least 0.
 - `DASHBOARD_PORT` must be an integer from 1 to 65535.
-- Shadow research integer limits must match their meaning:
-  `SHADOW_MAX_MARKETS`, `SHADOW_MAX_TRADES_PER_MARKET`, and
-  `SHADOW_COMPARE_WINDOW_SECONDS` must be positive integers, while
-  `SHADOW_MAX_ROWS` may be 0 to intentionally keep no shadow rows.
 - Non-numeric env values now raise `ValueError` with the setting name.
 
 Focused tests cover direct `Settings(...)` construction and env-loaded
@@ -69,8 +63,6 @@ Focused tests cover direct `Settings(...)` construction and env-loaded
 - `MAX_TOTAL_EXPOSURE_FRACTION=2.0`
 - zero bankroll, refresh, TTL, and stale-window values
 - `DASHBOARD_PORT=0` and `DASHBOARD_PORT=70000`
-- negative shadow research integer limits, while preserving
-  `SHADOW_MAX_ROWS=0`
 
 ## What To Check Next Time
 
@@ -91,8 +83,8 @@ Focused tests cover direct `Settings(...)` construction and env-loaded
 This project uses paper trading to evaluate money and risk decisions. Settings
 such as `MIN_ORDER_USD`, `MAX_TOTAL_EXPOSURE_FRACTION`, and
 `WEATHER_TAKER_FEE_RATE` are not cosmetic defaults. `DASHBOARD_PORT` controls
-whether the operator dashboard can start correctly, and shadow research limits
-control which public samples are studied. They define the measuring instrument.
+whether the operator dashboard can start correctly. These settings define the
+measuring instrument.
 If the measuring instrument is wrong, the reported profit or loss cannot be
 trusted.
 

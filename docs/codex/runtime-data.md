@@ -86,4 +86,3 @@ Read this file only for runtime logs, paper-trading data, dashboard readers, or 
   counts/samples, and worst scenario PnL rather than full candidate maps.
 - Full-history reports may still scan every row when their meaning depends on all rows, but they should stream rows and keep only aggregate counters, market-level lookups, or bounded result sets in memory.
 - `analyze_paper.py` keeps the existing full-history report meaning by streaming decision and trade rows instead of materializing whole CSV files.
-- `shadow_signals.py` keeps shadow research separate from execution and streams bot decision/trade CSV rows while comparing only the bounded signal set loaded from `shadow_external_signals.jsonl`.

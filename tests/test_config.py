@@ -43,18 +43,6 @@ def test_default_settlement_runner_is_bounded_and_enabled():
     assert Settings.settlement_runner_min_ev_margin_usd == 0.0
 
 
-def test_default_shadow_signal_research_is_bounded_and_public_only():
-    assert Settings.polymarket_data_base == "https://data-api.polymarket.com"
-    assert Settings.shadow_signals_jsonl_path == "shadow_external_signals.jsonl"
-    assert Settings.shadow_public_notes_jsonl_path == "shadow_public_notes.jsonl"
-    assert Settings.shadow_report_path == "shadow_signal_report.md"
-    assert Settings.shadow_max_markets == 100
-    assert Settings.shadow_max_trades_per_market == 100
-    assert Settings.shadow_max_rows == 1000
-    assert Settings.shadow_min_trade_usdc == 100.0
-    assert Settings.shadow_compare_window_seconds == 86400
-
-
 def test_default_city_date_portfolio_caps_shrink_after_one_thousand_dollars():
     assert Settings.bankroll_usd == 100.0
     assert Settings.entry_fraction == 0.10
@@ -105,28 +93,6 @@ def test_settings_rejects_dashboard_port_outside_tcp_range(dashboard_port):
         Settings(dashboard_port=dashboard_port)
 
     assert "between 1 and 65535" in str(exc_info.value)
-
-
-@pytest.mark.parametrize(
-    ("override", "expected_name", "expected_reason"),
-    [
-        ({"shadow_max_markets": -1}, "SHADOW_MAX_MARKETS", "greater than 0"),
-        ({"shadow_max_trades_per_market": -1}, "SHADOW_MAX_TRADES_PER_MARKET", "greater than 0"),
-        ({"shadow_compare_window_seconds": -1}, "SHADOW_COMPARE_WINDOW_SECONDS", "greater than 0"),
-        ({"shadow_max_rows": -1}, "SHADOW_MAX_ROWS", "at least 0"),
-    ],
-)
-def test_settings_rejects_invalid_shadow_integer_controls(override, expected_name, expected_reason):
-    with pytest.raises(ValueError, match=expected_name) as exc_info:
-        Settings(**override)
-
-    assert expected_reason in str(exc_info.value)
-
-
-def test_settings_allows_zero_shadow_max_rows_as_empty_research_limit():
-    settings = Settings(shadow_max_rows=0)
-
-    assert settings.shadow_max_rows == 0
 
 
 def test_settings_defaults_to_one_forecast_http_request_per_minute():
@@ -386,53 +352,3 @@ def test_load_settings_rejects_unknown_size_mode(monkeypatch):
 
     assert "fixed_fraction" in str(exc_info.value)
     assert "kelly" in str(exc_info.value)
-
-
-def test_load_settings_reads_shadow_signal_research_controls(monkeypatch):
-    monkeypatch.setenv("POLYMARKET_DATA_BASE", "https://example.test")
-    monkeypatch.setenv("SHADOW_SIGNALS_JSONL_PATH", "data/shadow.jsonl")
-    monkeypatch.setenv("SHADOW_PUBLIC_NOTES_JSONL_PATH", "data/notes.jsonl")
-    monkeypatch.setenv("SHADOW_REPORT_PATH", "reports/shadow.md")
-    monkeypatch.setenv("SHADOW_MAX_MARKETS", "12")
-    monkeypatch.setenv("SHADOW_MAX_TRADES_PER_MARKET", "34")
-    monkeypatch.setenv("SHADOW_MAX_ROWS", "56")
-    monkeypatch.setenv("SHADOW_MIN_TRADE_USDC", "789.5")
-    monkeypatch.setenv("SHADOW_COMPARE_WINDOW_SECONDS", "3600")
-
-    settings = load_settings()
-
-    assert settings.polymarket_data_base == "https://example.test"
-    assert settings.shadow_signals_jsonl_path == "data/shadow.jsonl"
-    assert settings.shadow_public_notes_jsonl_path == "data/notes.jsonl"
-    assert settings.shadow_report_path == "reports/shadow.md"
-    assert settings.shadow_max_markets == 12
-    assert settings.shadow_max_trades_per_market == 34
-    assert settings.shadow_max_rows == 56
-    assert settings.shadow_min_trade_usdc == 789.5
-    assert settings.shadow_compare_window_seconds == 3600
-
-
-@pytest.mark.parametrize(
-    ("env_name", "expected_reason"),
-    [
-        ("SHADOW_MAX_MARKETS", "greater than 0"),
-        ("SHADOW_MAX_TRADES_PER_MARKET", "greater than 0"),
-        ("SHADOW_COMPARE_WINDOW_SECONDS", "greater than 0"),
-        ("SHADOW_MAX_ROWS", "at least 0"),
-    ],
-)
-def test_load_settings_rejects_negative_shadow_integer_controls(monkeypatch, env_name, expected_reason):
-    monkeypatch.setenv(env_name, "-1")
-
-    with pytest.raises(ValueError, match=env_name) as exc_info:
-        load_settings()
-
-    assert expected_reason in str(exc_info.value)
-
-
-def test_load_settings_allows_zero_shadow_max_rows_as_empty_research_limit(monkeypatch):
-    monkeypatch.setenv("SHADOW_MAX_ROWS", "0")
-
-    settings = load_settings()
-
-    assert settings.shadow_max_rows == 0

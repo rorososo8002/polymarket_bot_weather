@@ -33,16 +33,6 @@ _POSITIVE_INTEGER_SETTINGS = (
     "raw_snapshots_min_free_bytes",
 )
 
-_SHADOW_POSITIVE_INTEGER_SETTINGS = (
-    "shadow_max_markets",
-    "shadow_max_trades_per_market",
-    "shadow_compare_window_seconds",
-)
-
-_NON_NEGATIVE_INTEGER_SETTINGS = (
-    "shadow_max_rows",
-)
-
 _MINIMUM_INTEGER_SETTINGS = (
     ("forecast_request_min_interval_seconds", 60),
 )
@@ -77,7 +67,6 @@ _RATIO_SETTINGS = (
 
 _NON_NEGATIVE_NUMBER_SETTINGS = (
     "settlement_runner_min_ev_margin_usd",
-    "shadow_min_trade_usdc",
 )
 
 _RATE_SETTINGS = (
@@ -92,7 +81,6 @@ _SIZE_MODES = ("fixed_fraction", "kelly")
 class Settings:
     # Public data endpoints
     gamma_base: str = "https://gamma-api.polymarket.com"
-    polymarket_data_base: str = "https://data-api.polymarket.com"
     clob_base: str = "https://clob.polymarket.com"
 
     # Paper-trading loop
@@ -115,14 +103,6 @@ class Settings:
     raw_snapshots_retention_days: int = 7
     raw_snapshots_min_free_bytes: int = 1024 * 1024 * 1024
     raw_snapshots_max_disk_usage_pct: float = 0.90
-    shadow_signals_jsonl_path: str = "shadow_external_signals.jsonl"
-    shadow_public_notes_jsonl_path: str = "shadow_public_notes.jsonl"
-    shadow_report_path: str = "shadow_signal_report.md"
-    shadow_max_markets: int = 100
-    shadow_max_trades_per_market: int = 100
-    shadow_max_rows: int = 1000
-    shadow_min_trade_usdc: float = 100.0
-    shadow_compare_window_seconds: int = 86400
     forecast_cache_path: str = ""
     forecast_cache_ttl_seconds: int = 2400
     forecast_request_min_interval_seconds: int = 60
@@ -197,8 +177,6 @@ class Settings:
     def __post_init__(self) -> None:
         _validate_positive_numbers(self, _POSITIVE_NUMBER_SETTINGS)
         _validate_positive_integers(self, _POSITIVE_INTEGER_SETTINGS)
-        _validate_positive_integers(self, _SHADOW_POSITIVE_INTEGER_SETTINGS)
-        _validate_non_negative_integers(self, _NON_NEGATIVE_INTEGER_SETTINGS)
         _validate_minimum_integers(self, _MINIMUM_INTEGER_SETTINGS)
         _validate_tcp_ports(self, _TCP_PORT_SETTINGS)
         _validate_ratios(self, _RATIO_SETTINGS)
@@ -239,15 +217,6 @@ def _validate_positive_integers(settings: Settings, field_names: tuple[str, ...]
             raise ValueError(f"{_setting_display_name(field_name)} must be a positive integer; got {value!r}")
         if value <= 0:
             raise ValueError(f"{_setting_display_name(field_name)} must be greater than 0; got {value!r}")
-
-
-def _validate_non_negative_integers(settings: Settings, field_names: tuple[str, ...]) -> None:
-    for field_name in field_names:
-        value = getattr(settings, field_name)
-        if isinstance(value, bool) or not isinstance(value, int):
-            raise ValueError(f"{_setting_display_name(field_name)} must be a non-negative integer; got {value!r}")
-        if value < 0:
-            raise ValueError(f"{_setting_display_name(field_name)} must be at least 0; got {value!r}")
 
 
 def _validate_minimum_integers(settings: Settings, field_specs: tuple[tuple[str, int], ...]) -> None:
@@ -344,7 +313,6 @@ def load_settings() -> Settings:
     load_dotenv()
     return Settings(
         gamma_base=os.getenv("POLYMARKET_GAMMA_BASE", Settings.gamma_base),
-        polymarket_data_base=os.getenv("POLYMARKET_DATA_BASE", Settings.polymarket_data_base),
         clob_base=os.getenv("POLYMARKET_CLOB_BASE", Settings.clob_base),
         orderbook_stream_enabled=_bool_env("ORDERBOOK_STREAM_ENABLED", Settings.orderbook_stream_enabled),
         orderbook_stream_url=os.getenv("ORDERBOOK_STREAM_URL", Settings.orderbook_stream_url),
@@ -376,23 +344,6 @@ def load_settings() -> Settings:
         raw_snapshots_max_disk_usage_pct=_float_env(
             "RAW_SNAPSHOTS_MAX_DISK_USAGE_PCT",
             Settings.raw_snapshots_max_disk_usage_pct,
-        ),
-        shadow_signals_jsonl_path=os.getenv("SHADOW_SIGNALS_JSONL_PATH", Settings.shadow_signals_jsonl_path),
-        shadow_public_notes_jsonl_path=os.getenv(
-            "SHADOW_PUBLIC_NOTES_JSONL_PATH",
-            Settings.shadow_public_notes_jsonl_path,
-        ),
-        shadow_report_path=os.getenv("SHADOW_REPORT_PATH", Settings.shadow_report_path),
-        shadow_max_markets=_int_env("SHADOW_MAX_MARKETS", Settings.shadow_max_markets),
-        shadow_max_trades_per_market=_int_env(
-            "SHADOW_MAX_TRADES_PER_MARKET",
-            Settings.shadow_max_trades_per_market,
-        ),
-        shadow_max_rows=_int_env("SHADOW_MAX_ROWS", Settings.shadow_max_rows),
-        shadow_min_trade_usdc=_float_env("SHADOW_MIN_TRADE_USDC", Settings.shadow_min_trade_usdc),
-        shadow_compare_window_seconds=_int_env(
-            "SHADOW_COMPARE_WINDOW_SECONDS",
-            Settings.shadow_compare_window_seconds,
         ),
         forecast_cache_path=os.getenv("FORECAST_CACHE_PATH", Settings.forecast_cache_path),
         forecast_cache_ttl_seconds=_int_env("FORECAST_CACHE_TTL_SECONDS", Settings.forecast_cache_ttl_seconds),
