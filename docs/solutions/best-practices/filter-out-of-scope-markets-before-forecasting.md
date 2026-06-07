@@ -1,7 +1,7 @@
 ---
 title: Filter Out-Of-Scope Markets Before Forecasting
 date: 2026-06-04
-last_updated: 2026-06-04
+last_updated: 2026-06-07
 category: docs/solutions/best-practices
 module: Weather paper strategy
 problem_type: best_practice
@@ -23,9 +23,10 @@ That is like accepting a test sheet, grading every question, and only then
 throwing the sheet away because the subject was not in scope.
 
 The same leak can happen with temperature markets that are missing required
-date evidence. If `REQUIRE_DATE_HINT_FOR_TRADE=true`, `evaluate_market()` will
-eventually block `date_hint=None`, but the forecast call may already have been
-made unless the runner checks tradeability before probability estimation.
+date evidence. If the runner lets `REQUIRE_DATE_HINT_FOR_TRADE=false` weaken
+the pre-forecast gate, `date_hint=None` can reach probability estimation and
+fall back to today's date. The forecast call may already have been made unless
+the runner checks tradeability before probability estimation.
 
 ## Why it was a problem
 Forecast calls are external work. They consume API request budget, write noisy
@@ -48,6 +49,9 @@ probability estimation:
   city support, and required `date_hint` evidence before Open-Meteo fetching.
   A market that fails the gate records a SKIP diagnostic instead of spending a
   forecast request.
+- Operational runner paths reject `date_hint=None` before forecast or trade
+  even when `REQUIRE_DATE_HINT_FOR_TRADE=false`, so test convenience settings
+  cannot turn an undated market into a guessed today-date market.
 - Example environment files no longer expose removed precipitation toggles.
   A setting that runtime code does not read is an operator trap, not a useful
   switch.
@@ -61,6 +65,8 @@ When removing or disabling a market type, check the earliest boundary first:
 - Can the runner still subscribe its tokens or log late SKIPs for it?
 - Can a missing `date_hint` or missing rule-evidence city still reach
   `estimate_weather_probability()` and therefore Open-Meteo?
+- Does a test or env convenience setting accidentally weaken an operational
+  fail-closed guard?
 - Do copied operator env examples still mention removed market-type switches
   such as `ENABLE_PRECIPITATION_MARKETS` or `PRECIP_*`?
 

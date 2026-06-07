@@ -188,9 +188,8 @@ class Settings:
     probability_shrink_gamma: float = 0.65
     default_temperature_sigma_f: float = 4.5
     require_parse_for_trade: bool = True
-    # Skip markets whose date cannot be parsed. If date_hint=None fell back to
-    # today, the bot could enter an expired or wrong-date market by accident.
-    # The safe default is True, which enables this skip.
+    # Compatibility switch for older tests/env files. The paper runner still
+    # requires an explicit date before forecast or trade, even when this is False.
     require_date_hint_for_trade: bool = True
     # Probability stop compares the current side probability with the entry-side
     # probability. YES uses p_true; NO uses 1 - p_true.

@@ -35,8 +35,9 @@ durable prevention lessons belong in `docs/solutions/`.
   dates are not substitutes and produce `forecast-unavailable`.
 - `pre_forecast_tradeability_gate` rejects markets before Open-Meteo when they
   are not temperature-shaped, not trading-ready, or missing required
-  `date_hint` evidence. SKIP diagnostics are recorded without spending forecast
-  API budget.
+  `date_hint` evidence. Undated markets always fail closed before forecast or
+  trade, even when `REQUIRE_DATE_HINT_FOR_TRADE=false`; SKIP diagnostics are
+  recorded without spending forecast API budget.
 - `WEATHER_BIAS_JSON` is optional calibration evidence. Empty means neutral
   defaults; an explicit missing, unreadable, invalid, malformed, or non-numeric
   file produces `forecast-unavailable` with zero confidence.

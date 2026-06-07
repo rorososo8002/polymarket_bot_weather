@@ -724,7 +724,7 @@ def pre_forecast_tradeability_gate(
             f"unsupported-station: refusing market before forecast [{market_type}]",
         )
 
-    if settings.require_date_hint_for_trade and parsed.date_hint is None:
+    if parsed.date_hint is None:
         return skip(
             "pre-forecast-skip",
             f"date_hint=None: Open-Meteo forecast skipped before request. {parsed.note}",
@@ -750,7 +750,7 @@ def evaluate_market(
         result = EdgeResult("SKIP", signal.p_true, None, -999.0, 0.0, 0.0, f"confidence too low: {signal.confidence:.2f} < {min_confidence:.2f} [{market_type}]")
         return result, {}
 
-    if settings.require_date_hint_for_trade and signal.parsed is not None and signal.parsed.date_hint is None:
+    if signal.parsed is not None and signal.parsed.date_hint is None:
         result = EdgeResult("SKIP", signal.p_true, None, -999.0, 0.0, 0.0, f"date_hint=None: refusing undated market [{market_type}]")
         return result, {}
 

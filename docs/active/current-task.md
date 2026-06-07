@@ -8,15 +8,13 @@ Status: none
 
 ## Last Verified State
 
-- Per-market evaluation exceptions now fail closed into observable
-  `SKIP_ERROR` decision rows, `market_evaluation_error` raw snapshots, and
-  runner-status `market_error_count` / `last_market_error` fields.
-- Focused runner hardening tests passed:
-  `86 passed`.
-- Dashboard/analyze regression tests passed:
-  `50 passed`.
+- Undated temperature markets now fail closed before forecast or trade in the
+  paper runner, even when `REQUIRE_DATE_HINT_FOR_TRADE=false`.
+- Date-bearing temperature markets still evaluate normally in runner tests.
+- Focused verification passed:
+  `135 passed` for `tests/test_hardening.py tests/test_config.py`.
 - Full pytest passed:
-  `467 passed`.
+  `469 passed`.
 
 ## Next Action
 

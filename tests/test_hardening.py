@@ -556,6 +556,39 @@ def test_entry_does_not_use_fixed_price_drop_guard():
     assert "YES edge=" in per_side["YES"].reason
 
 
+def test_evaluate_market_refuses_undated_signal_even_when_date_hint_requirement_disabled():
+    settings = Settings(
+        min_net_edge=0.01,
+        min_order_usd=1.0,
+        weather_taker_fee_rate=0.0,
+        model_error_margin=0.0,
+        resolution_error_margin=0.0,
+        require_date_hint_for_trade=False,
+    )
+    market = RawMarket(
+        market_id="undated",
+        question="Will NYC reach 90 F?",
+        slug="undated",
+        active=True,
+        closed=False,
+        yes_token_id="yes",
+        no_token_id="no",
+    )
+    signal = WeatherSignal(0.95, 0.95, "test", "test", parse_weather_question(market.question))
+    client = FakePolymarketClient(
+        books={
+            "yes": book("yes", bid=0.10, ask=0.11, bid_size=1000.0, ask_size=1000.0),
+            "no": book("no", bid=0.88, ask=0.89, bid_size=1000.0, ask_size=1000.0),
+        }
+    )
+
+    result, per_side = evaluate_market(market, signal, client, settings, 1000.0, "temperature")
+
+    assert result.side == "SKIP"
+    assert per_side == {}
+    assert "date_hint=None" in result.reason
+
+
 def test_entry_net_return_filter_rejects_thin_high_price_trade(tmp_path):
     settings = Settings(
         state_path=str(tmp_path / "state.json"),
@@ -1440,6 +1473,56 @@ def test_run_cycle_reuses_one_ensemble_client_for_all_markets(monkeypatch, tmp_p
 
     assert len(ensemble_ids) == 2
     assert len(set(ensemble_ids)) == 1
+
+
+def test_run_cycle_skips_undated_market_before_forecast_when_date_hint_requirement_disabled(monkeypatch, tmp_path):
+    settings = Settings(
+        state_path=str(tmp_path / "state.json"),
+        trades_csv_path=str(tmp_path / "trades.csv"),
+        decisions_csv_path=str(tmp_path / "decisions.csv"),
+        raw_snapshots_path=str(tmp_path / "raw.jsonl"),
+        portfolio_decisions_jsonl_path=str(tmp_path / "portfolio.jsonl"),
+        require_date_hint_for_trade=False,
+    )
+    market = RawMarket(
+        "undated-temperature",
+        "Will NYC reach 90 F?",
+        "undated-temperature",
+        True,
+        False,
+        "undated-yes",
+        "undated-no",
+    )
+    forecast_calls: list[str] = []
+
+    class FakeClient:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def discover_weather_markets(self, max_pages: int, page_size: int):
+            return [market]
+
+        def get_order_book(self, token_id: str) -> OrderBook:
+            raise AssertionError("undated markets must skip before order-book fetch")
+
+        def get_market(self, market_id: str) -> RawMarket:
+            assert market_id == market.market_id
+            return market
+
+    def forbidden_estimator(question, **_kwargs):
+        forecast_calls.append(question)
+        raise AssertionError("undated markets must skip before forecast estimation")
+
+    monkeypatch.setattr("weather_bot.live_paper_runner.PolymarketClient", FakeClient)
+    monkeypatch.setattr("weather_bot.live_paper_runner.estimate_weather_probability", forbidden_estimator)
+
+    decisions = run_cycle(settings)
+
+    assert forecast_calls == []
+    assert len(decisions) == 1
+    assert decisions[0].market.market_id == market.market_id
+    assert decisions[0].result.side == "SKIP"
+    assert "date_hint=None" in decisions[0].result.reason
 
 
 def test_run_cycle_logs_market_evaluation_exception_as_skip_error(monkeypatch, tmp_path):
