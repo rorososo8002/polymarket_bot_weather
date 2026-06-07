@@ -8,10 +8,12 @@ Status: none
 
 ## Last Verified State
 
-- WebSocket dependency hardening was completed for the paper runner.
-- Local `websocket` import check passed with version `1.9.0`.
-- Focused realtime tests passed: `37 passed`.
-- Full pytest passed: `459 passed`.
+- Paper ledger replay hardening was completed for the local paper broker and
+  analysis report.
+- Focused ledger/report tests passed:
+  `55 passed`.
+- Full pytest passed:
+  `464 passed`.
 
 ## Next Action
 

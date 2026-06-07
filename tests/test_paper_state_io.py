@@ -136,8 +136,8 @@ def test_corrupt_paper_state_fails_closed_instead_of_starting_new_book(tmp_path)
 
 def valid_position_state() -> dict:
     return {
-        "cash_usd": 90.0,
-        "realized_pnl_usd": 1.25,
+        "cash_usd": 94.75,
+        "realized_pnl_usd": 0.0,
         "positions": [
             {
                 "position_id": "pos-1",
@@ -154,7 +154,7 @@ def valid_position_state() -> dict:
                 "metadata": {"city": "NYC", "date_hint": "jun 3"},
             }
         ],
-        "stats": {"temperature": {"wins": 1, "losses": 0, "pnl": 1.25}},
+        "stats": {"temperature": {"wins": 0, "losses": 0, "pnl": 0.0}},
     }
 
 
@@ -169,8 +169,8 @@ def test_valid_paper_state_with_position_still_loads(tmp_path):
 
     broker = PaperBroker(settings)
 
-    assert broker.state.cash_usd == 90.0
-    assert broker.state.realized_pnl_usd == 1.25
+    assert broker.state.cash_usd == 94.75
+    assert broker.state.realized_pnl_usd == 0.0
     assert len(broker.state.positions) == 1
     position = broker.state.positions[0]
     assert position.market_id == "market-1"
@@ -180,7 +180,7 @@ def test_valid_paper_state_with_position_still_loads(tmp_path):
     assert position.entry_price == pytest.approx(0.42)
     assert position.cost_usd == pytest.approx(5.25)
     assert position.metadata == {"city": "NYC", "date_hint": "jun 3"}
-    assert broker.state.stats == {"temperature": {"wins": 1, "losses": 0, "pnl": 1.25}}
+    assert broker.state.stats == {"temperature": {"wins": 0, "losses": 0, "pnl": 0.0}}
 
 
 def test_state_with_open_positions_and_missing_trade_ledger_fails_closed(tmp_path):
@@ -233,6 +233,82 @@ def test_open_position_without_matching_open_trade_fails_closed(tmp_path):
     )
 
     with pytest.raises(PaperStateLoadError, match="no matching OPEN trade"):
+        PaperBroker(settings)
+
+
+def test_partial_close_share_mismatch_fails_closed(tmp_path):
+    settings = settings_for(tmp_path)
+    state = valid_position_state()
+    state["cash_usd"] = 97.35
+    state["realized_pnl_usd"] = 0.5
+    state["positions"][0]["shares"] = 8.5
+    state["positions"][0]["cost_usd"] = 3.15
+    write_state(Path(settings.state_path), state)
+    write_trade_rows(
+        settings,
+        [
+            {
+                "ts": "2026-06-03T00:00:00+00:00",
+                "action": "OPEN",
+                "market_id": "market-1",
+                "side": "YES",
+                "token_id": "token-yes-1",
+                "shares": "12.500000",
+                "price": "0.420000",
+                "cash_delta_or_pnl": "-5.250000",
+            },
+            {
+                "ts": "2026-06-03T01:00:00+00:00",
+                "action": "PARTIAL_CLOSE",
+                "market_id": "market-1",
+                "side": "YES",
+                "token_id": "token-yes-1",
+                "shares": "5.000000",
+                "price": "0.520000",
+                "cash_delta_or_pnl": "0.500000",
+            },
+        ],
+    )
+
+    with pytest.raises(PaperStateLoadError, match="shares"):
+        PaperBroker(settings)
+
+
+def test_add_cost_mismatch_fails_closed(tmp_path):
+    settings = settings_for(tmp_path)
+    state = valid_position_state()
+    state["cash_usd"] = 92.65
+    state["positions"][0]["shares"] = 17.5
+    state["positions"][0]["entry_price"] = 0.414286
+    state["positions"][0]["cost_usd"] = 8.0
+    write_state(Path(settings.state_path), state)
+    write_trade_rows(
+        settings,
+        [
+            {
+                "ts": "2026-06-03T00:00:00+00:00",
+                "action": "OPEN",
+                "market_id": "market-1",
+                "side": "YES",
+                "token_id": "token-yes-1",
+                "shares": "12.500000",
+                "price": "0.420000",
+                "cash_delta_or_pnl": "-5.250000",
+            },
+            {
+                "ts": "2026-06-03T01:00:00+00:00",
+                "action": "ADD",
+                "market_id": "market-1",
+                "side": "YES",
+                "token_id": "token-yes-1",
+                "shares": "5.000000",
+                "price": "0.400000",
+                "cash_delta_or_pnl": "-2.100000",
+            },
+        ],
+    )
+
+    with pytest.raises(PaperStateLoadError, match="cost_usd"):
         PaperBroker(settings)
 
 
@@ -360,7 +436,7 @@ def test_log_trade_appends_to_legacy_trade_csv_without_rewriting_header(tmp_path
     Path(settings.trades_csv_path).write_text(
         legacy_header
         + "\n"
-        + "2026-01-01T00:00:00+00:00,OPEN,old,old,q,temperature,YES,yes,1.000000,0.500000,-0.500000,legacy\n",
+        + "2026-01-01T00:00:00+00:00,SKIP_TEST,old,old,q,temperature,YES,yes,1.000000,0.500000,0.000000,legacy\n",
         encoding="utf-8",
     )
     broker = PaperBroker(settings)

@@ -1277,8 +1277,13 @@ def test_weekday_date_hint_is_parsed():
     assert parsed.date_hint == "friday"
 
 
-def test_held_positions_are_re_evaluated_even_when_not_in_scan_results():
+def test_held_positions_are_re_evaluated_even_when_not_in_scan_results(tmp_path):
     settings = Settings(
+        state_path=str(tmp_path / "state.json"),
+        trades_csv_path=str(tmp_path / "trades.csv"),
+        decisions_csv_path=str(tmp_path / "decisions.csv"),
+        portfolio_decisions_jsonl_path=str(tmp_path / "paper_event_portfolios.jsonl"),
+        raw_snapshots_path=str(tmp_path / "paper_raw_snapshots.jsonl"),
         min_net_edge=0.01,
         weather_taker_fee_rate=0.0,
         model_error_margin=0.0,

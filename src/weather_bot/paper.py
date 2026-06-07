@@ -86,6 +86,7 @@ TRADE_CSV_FIELDNAMES = [
 
 ACCOUNTING_TRADE_ACTIONS = {"OPEN", "ADD", "CLOSE", "PARTIAL_CLOSE", "SETTLED"}
 OPEN_POSITION_TRADE_ACTION = "OPEN"
+LEDGER_AMOUNT_TOLERANCE = 1e-5
 
 DECISION_CSV_FIELDNAMES = [
     "ts",
@@ -120,6 +121,16 @@ class PaperStateLoadError(RuntimeError):
 
 class PaperAccountingTransactionError(RuntimeError):
     """Raised when a state/trade ledger update cannot finish safely."""
+
+
+@dataclass
+class _ReplayedLedgerPosition:
+    market_id: str
+    side: str
+    token_id: str
+    shares: float
+    cost_usd: float
+    entry_price: float
 
 
 _MISSING = object()
@@ -322,6 +333,15 @@ def _state_position_key(pos: PaperPosition) -> tuple[str, str, str]:
     )
 
 
+def _ledger_key_text(key: tuple[str, str, str]) -> str:
+    market_id, side, token_id = key
+    return f"market_id={market_id} side={side} token_id={token_id}"
+
+
+def _ledger_amounts_match(left: float, right: float) -> bool:
+    return abs(left - right) <= LEDGER_AMOUNT_TOLERANCE
+
+
 def _position_from_state(raw: dict[str, Any], index: int) -> PaperPosition:
     item = dict(raw)
 
@@ -422,54 +442,207 @@ class PaperBroker:
             "refusing to start a fresh account over an existing execution ledger"
         )
 
-    def _validate_trade_state_consistency(self) -> None:
-        """Catch obvious startup mismatches by streaming only the trade ledger rows."""
-        if not self.state.positions:
-            return
+    def _trade_ledger_float(self, row: dict[str, Any], field: str, action: str, row_number: int) -> float:
         try:
-            if not self.trades_csv_path.exists() or self.trades_csv_path.stat().st_size <= 0:
-                raise PaperStateLoadError(
-                    f"paper_state.json has open positions but paper_trades.csv is missing or empty at "
-                    f"{self.trades_csv_path}; refusing to start paper trading"
-                )
+            value = float(row.get(field) or "")
+        except (TypeError, ValueError) as exc:
+            raise PaperStateLoadError(
+                f"paper_trades.csv row {row_number} {action} has invalid {field}; "
+                "refusing to start paper trading"
+            ) from exc
+        if not isfinite(value):
+            raise PaperStateLoadError(
+                f"paper_trades.csv row {row_number} {action} has non-finite {field}; "
+                "refusing to start paper trading"
+            )
+        return value
+
+    def _trade_ledger_key(
+        self,
+        row: dict[str, Any],
+        action: str,
+        row_number: int,
+    ) -> tuple[str, str, str]:
+        key = _trade_position_key(row)
+        market_id, side, token_id = key
+        if not market_id or side not in {"YES", "NO"} or not token_id:
+            raise PaperStateLoadError(
+                f"paper_trades.csv row {row_number} {action} has invalid market_id/side/token_id; "
+                "refusing to start paper trading"
+            )
+        return key
+
+    def _trade_ledger_positive_shares(self, row: dict[str, Any], action: str, row_number: int) -> float:
+        shares = self._trade_ledger_float(row, "shares", action, row_number)
+        if shares <= 0:
+            raise PaperStateLoadError(
+                f"paper_trades.csv row {row_number} {action} has non-positive shares; "
+                "refusing to start paper trading"
+            )
+        return shares
+
+    def _trade_ledger_price(self, row: dict[str, Any], action: str, row_number: int) -> float:
+        price = self._trade_ledger_float(row, "price", action, row_number)
+        if not 0.0 <= price <= 1.0:
+            raise PaperStateLoadError(
+                f"paper_trades.csv row {row_number} {action} has price outside 0..1; "
+                "refusing to start paper trading"
+            )
+        return price
+
+    def _replay_trade_ledger(
+        self,
+    ) -> tuple[float, float, dict[tuple[str, str, str], _ReplayedLedgerPosition]]:
+        positions: dict[tuple[str, str, str], _ReplayedLedgerPosition] = {}
+        cash_usd = float(self.settings.bankroll_usd)
+        realized_pnl_usd = 0.0
+        try:
+            has_trade_rows = self.trades_csv_path.exists() and self.trades_csv_path.stat().st_size > 0
         except OSError as exc:
             raise PaperStateLoadError(
                 f"cannot inspect paper_trades.csv at {self.trades_csv_path}; refusing to start paper trading"
             ) from exc
+        if not has_trade_rows:
+            return cash_usd, realized_pnl_usd, positions
+
         header = _csv_header(self.trades_csv_path)
-        required = {"action", "market_id", "side", "token_id"}
-        missing = sorted(required.difference(header))
-        if missing:
+        if "action" not in header:
             raise PaperStateLoadError(
-                f"paper_state.json has open positions but paper_trades.csv is missing required columns "
-                f"{missing}; refusing to start paper trading"
+                f"paper_trades.csv at {self.trades_csv_path} is non-empty and missing the action column; "
+                "refusing to start paper trading"
             )
-        expected_open_positions = {_state_position_key(pos) for pos in self.state.positions}
-        found_open_positions: set[tuple[str, str, str]] = set()
+
         try:
             with self.trades_csv_path.open("r", newline="", encoding="utf-8") as f:
-                for row in csv.DictReader(f):
-                    if _trade_action(row.get("action")) != OPEN_POSITION_TRADE_ACTION:
+                for row_number, row in enumerate(csv.DictReader(f), start=2):
+                    action = _trade_action(row.get("action"))
+                    if action not in ACCOUNTING_TRADE_ACTIONS:
                         continue
-                    key = _trade_position_key(row)
-                    if key in expected_open_positions:
-                        found_open_positions.add(key)
-                        if found_open_positions == expected_open_positions:
-                            return
+                    key = self._trade_ledger_key(row, action, row_number)
+                    shares = self._trade_ledger_positive_shares(row, action, row_number)
+                    price = self._trade_ledger_price(row, action, row_number)
+                    cash_delta_or_pnl = self._trade_ledger_float(row, "cash_delta_or_pnl", action, row_number)
+
+                    if action == "OPEN":
+                        if key in positions:
+                            raise PaperStateLoadError(
+                                f"paper_trades.csv row {row_number} has duplicate OPEN for "
+                                f"{_ledger_key_text(key)}; refusing to start paper trading"
+                            )
+                        if cash_delta_or_pnl >= 0:
+                            raise PaperStateLoadError(
+                                f"paper_trades.csv row {row_number} OPEN must spend cash; "
+                                "refusing to start paper trading"
+                            )
+                        cost_usd = -cash_delta_or_pnl
+                        cash_usd += cash_delta_or_pnl
+                        positions[key] = _ReplayedLedgerPosition(
+                            market_id=key[0],
+                            side=key[1],
+                            token_id=key[2],
+                            shares=shares,
+                            cost_usd=cost_usd,
+                            entry_price=price,
+                        )
+                        continue
+
+                    pos = positions.get(key)
+                    if pos is None:
+                        raise PaperStateLoadError(
+                            f"paper_trades.csv row {row_number} has {action} without an open position for "
+                            f"{_ledger_key_text(key)}; refusing to start paper trading"
+                        )
+
+                    if action == "ADD":
+                        if cash_delta_or_pnl >= 0:
+                            raise PaperStateLoadError(
+                                f"paper_trades.csv row {row_number} ADD must spend cash; "
+                                "refusing to start paper trading"
+                            )
+                        old_shares = pos.shares
+                        new_shares = old_shares + shares
+                        pos.entry_price = ((pos.entry_price * old_shares) + (price * shares)) / new_shares
+                        pos.shares = new_shares
+                        pos.cost_usd += -cash_delta_or_pnl
+                        cash_usd += cash_delta_or_pnl
+                        continue
+
+                    if action == "PARTIAL_CLOSE":
+                        if shares - pos.shares > LEDGER_AMOUNT_TOLERANCE:
+                            raise PaperStateLoadError(
+                                f"paper_trades.csv row {row_number} PARTIAL_CLOSE closes more shares than open for "
+                                f"{_ledger_key_text(key)}; refusing to start paper trading"
+                            )
+                        fraction = min(1.0, shares / pos.shares)
+                        cost_basis_closed = pos.cost_usd * fraction
+                        cash_usd += cost_basis_closed + cash_delta_or_pnl
+                        realized_pnl_usd += cash_delta_or_pnl
+                        pos.shares = round(pos.shares - shares, 6)
+                        pos.cost_usd = round(pos.cost_usd - cost_basis_closed, 6)
+                        if pos.shares <= LEDGER_AMOUNT_TOLERANCE:
+                            positions.pop(key, None)
+                        continue
+
+                    if not _ledger_amounts_match(shares, pos.shares):
+                        raise PaperStateLoadError(
+                            f"paper_trades.csv row {row_number} {action} shares do not match open position for "
+                            f"{_ledger_key_text(key)}; refusing to start paper trading"
+                        )
+                    cash_usd += pos.cost_usd + cash_delta_or_pnl
+                    realized_pnl_usd += cash_delta_or_pnl
+                    positions.pop(key, None)
         except (OSError, csv.Error) as exc:
             raise PaperStateLoadError(
                 f"cannot read paper_trades.csv at {self.trades_csv_path}; refusing to start paper trading"
             ) from exc
-        missing_open_positions = sorted(expected_open_positions.difference(found_open_positions))
+        return cash_usd, realized_pnl_usd, positions
+
+    def _fail_on_amount_mismatch(self, field: str, state_value: float, replayed_value: float) -> None:
+        if _ledger_amounts_match(state_value, replayed_value):
+            return
+        raise PaperStateLoadError(
+            f"paper_state.json {field}={state_value:.6f} does not match paper_trades.csv replay "
+            f"{field}={replayed_value:.6f}; refusing to start paper trading"
+        )
+
+    def _validate_trade_state_consistency(self) -> None:
+        """Replay paper_trades.csv and fail closed when it disagrees with state."""
+        replayed_cash, replayed_realized, replayed_positions = self._replay_trade_ledger()
+        self._fail_on_amount_mismatch("cash_usd", self.state.cash_usd, replayed_cash)
+        self._fail_on_amount_mismatch("realized_pnl_usd", self.state.realized_pnl_usd, replayed_realized)
+
+        expected_open_positions: dict[tuple[str, str, str], PaperPosition] = {}
+        for pos in self.state.positions:
+            key = _state_position_key(pos)
+            if key in expected_open_positions:
+                raise PaperStateLoadError(
+                    f"paper_state.json has duplicate open position for {_ledger_key_text(key)}; "
+                    "refusing to start paper trading"
+                )
+            expected_open_positions[key] = pos
+
+        missing_open_positions = sorted(expected_open_positions.keys() - replayed_positions.keys())
         if missing_open_positions:
             sample = ", ".join(
-                f"market_id={market_id} side={side} token_id={token_id}"
-                for market_id, side, token_id in missing_open_positions[:3]
+                _ledger_key_text(key)
+                for key in missing_open_positions[:3]
             )
             raise PaperStateLoadError(
                 "paper_state.json has open positions with no matching OPEN trade in paper_trades.csv "
                 f"({sample}); refusing to start paper trading"
             )
+        extra_open_positions = sorted(replayed_positions.keys() - expected_open_positions.keys())
+        if extra_open_positions:
+            sample = ", ".join(_ledger_key_text(key) for key in extra_open_positions[:3])
+            raise PaperStateLoadError(
+                "paper_trades.csv replays open positions missing from paper_state.json "
+                f"({sample}); refusing to start paper trading"
+            )
+        for key, state_pos in expected_open_positions.items():
+            replayed_pos = replayed_positions[key]
+            self._fail_on_amount_mismatch("shares", state_pos.shares, replayed_pos.shares)
+            self._fail_on_amount_mismatch("cost_usd", state_pos.cost_usd, replayed_pos.cost_usd)
+            self._fail_on_amount_mismatch("entry_price", state_pos.entry_price, replayed_pos.entry_price)
 
     def _ensure_accounting_open(self) -> None:
         if self._accounting_halted_reason:

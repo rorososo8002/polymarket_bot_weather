@@ -19,6 +19,7 @@ class _DecisionSummary:
     bucket_counts: dict[str, int] = field(default_factory=lambda: defaultdict(int))
     bucket_p_true_sums: dict[str, float] = field(default_factory=lambda: defaultdict(float))
     latest_entry_p_yes_by_market: dict[str, float] = field(default_factory=dict)
+    warnings: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -26,6 +27,7 @@ class _TradeSummary:
     trades_count: int = 0
     brier_error_sum: float = 0.0
     brier_count: int = 0
+    warnings: list[str] = field(default_factory=list)
 
 
 def _iter_csv_rows(path: Path) -> Iterable[dict[str, str]]:
@@ -73,6 +75,19 @@ def _resolved_winner(reason: str) -> str | None:
     return match.group(1).upper() if match else None
 
 
+def _trade_position_key(trade: dict[str, str]) -> tuple[str, str, str]:
+    return (
+        (trade.get("market_id") or "").strip(),
+        (trade.get("side") or "").strip().upper(),
+        (trade.get("token_id") or "").strip(),
+    )
+
+
+def _trade_position_text(key: tuple[str, str, str]) -> str:
+    market_id, side, token_id = key
+    return f"market_id={market_id} side={side} token_id={token_id}"
+
+
 def _entry_p_yes_from_open_trade(trade: dict[str, str]) -> float | None:
     p_true = _probability(trade.get("entry_p_true"))
     if p_true is not None:
@@ -93,6 +108,9 @@ def _entry_p_yes_from_open_trade(trade: dict[str, str]) -> float | None:
 
 def _summarize_decisions(decisions_path: Path) -> _DecisionSummary:
     summary = _DecisionSummary()
+    if not decisions_path.exists():
+        summary.warnings.append(f"paper_decisions.csv is missing at {decisions_path}; decision checks unavailable")
+        return summary
     for row in _iter_csv_rows(decisions_path):
         summary.decisions_count += 1
         side = row.get("side")
@@ -115,15 +133,37 @@ def _summarize_decisions(decisions_path: Path) -> _DecisionSummary:
 def _summarize_trades(trades_path: Path, latest_entry_p_yes_by_market: dict[str, float]) -> _TradeSummary:
     summary = _TradeSummary()
     open_entry_p_yes_by_market: dict[str, float] = {}
+    open_shares_by_position: dict[tuple[str, str, str], float] = {}
     for trade in _iter_csv_rows(trades_path):
         summary.trades_count += 1
         market_id = trade.get("market_id", "")
         action = (trade.get("action") or "").upper()
+        key = _trade_position_key(trade)
         if action == "OPEN" and market_id:
+            if key in open_shares_by_position:
+                summary.warnings.append(f"duplicate OPEN {_trade_position_text(key)}")
+            open_shares_by_position[key] = open_shares_by_position.get(key, 0.0) + _float(trade.get("shares"))
             entry_p_yes = _entry_p_yes_from_open_trade(trade)
             if entry_p_yes is not None:
                 open_entry_p_yes_by_market[market_id] = entry_p_yes
             continue
+        if action == "ADD":
+            if key not in open_shares_by_position:
+                summary.warnings.append(f"ADD without OPEN {_trade_position_text(key)}")
+            else:
+                open_shares_by_position[key] += _float(trade.get("shares"))
+            continue
+        if action == "PARTIAL_CLOSE":
+            if key not in open_shares_by_position:
+                summary.warnings.append(f"PARTIAL_CLOSE without OPEN {_trade_position_text(key)}")
+            else:
+                open_shares_by_position[key] = max(0.0, open_shares_by_position[key] - _float(trade.get("shares")))
+            continue
+        if action in {"CLOSE", "SETTLED"}:
+            if key not in open_shares_by_position:
+                summary.warnings.append(f"{action} without OPEN {_trade_position_text(key)}")
+            else:
+                open_shares_by_position.pop(key, None)
         winner = _resolved_winner(trade.get("reason", ""))
         if winner is None:
             continue
@@ -156,8 +196,18 @@ def build_report(decisions_path: Path, trades_path: Path) -> str:
             f"trades={trade_summary.trades_count}"
         ),
         "",
-        "skip_reasons:",
+        "warnings:",
     ]
+    warnings = decision_summary.warnings + trade_summary.warnings
+    if warnings:
+        lines.extend(f"- {warning}" for warning in warnings)
+    else:
+        lines.append("- none")
+
+    lines.extend([
+        "",
+        "skip_reasons:",
+    ])
     for reason, count in decision_summary.skip_reasons.most_common():
         lines.append(f"- {reason}: {count}")
 

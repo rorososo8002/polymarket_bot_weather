@@ -374,6 +374,7 @@ def test_realtime_forever_settles_resolved_open_positions_before_streaming(tmp_p
         decisions_csv_path=str(decisions_path),
         raw_snapshots_path=str(raw_path),
         portfolio_decisions_jsonl_path=str(portfolio_path),
+        bankroll_usd=1000.0,
     )
 
     with pytest.raises(RuntimeError, match="stop after error backoff"):

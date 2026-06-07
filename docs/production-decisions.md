@@ -117,9 +117,13 @@ durable prevention lessons belong in `docs/solutions/`.
 - `paper_state.json` is the account book, not a disposable cache. Existing
   corrupt, structurally invalid, or unsafe state fails closed instead of
   resetting.
-- `paper_state.json` and `paper_trades.csv` are paired ledgers. `OPEN`, `ADD`,
-  `CLOSE`, and `PARTIAL_CLOSE` use `paper_state.json.journal` and must fail
-  closed if state and trade rows may disagree.
+- `paper_state.json` and `paper_trades.csv` are paired ledgers. Startup replays
+  `OPEN`, `ADD`, `PARTIAL_CLOSE`, `CLOSE`, and `SETTLED` rows from
+  `paper_trades.csv` against `BANKROLL_USD`, then fails closed if replayed
+  cash, realized PnL, open-position identity, shares, cost basis, or average
+  entry price disagree with `paper_state.json`. These accounting actions use
+  `paper_state.json.journal`; an unresolved journal still stops startup for
+  operator reconciliation.
 
 ## Nowcast And Research
 
