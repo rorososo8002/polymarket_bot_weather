@@ -159,7 +159,9 @@ exposure caps leave at least `MIN_ORDER_USD`.
 - Open-Meteo forecast HTTP calls use batch mode. Within a batch, cities are fetched
   sequentially with `FORECAST_REQUEST_MIN_INTERVAL_SECONDS=15` gaps. After all
   active-market cities in the batch are processed, the bot waits until
-  `FORECAST_CACHE_TTL_SECONDS=5400` (90 min) expires before the next batch.
+  `FORECAST_CACHE_TTL_SECONDS=10800` (3 h) expires before the next batch.
+  GFS updates every 6 h and takes 3-4 h to process; a 3-h cache captures each
+  new model run. Budget: 39 cities × 8 batches/day × 31 units ≈ 9 672 < 10 000.
 - On a non-rate-limit failure, skip that city and move to the next. Do not retry
   within the same batch. The failure cooldown equals the cache TTL.
 - On a 429 rate-limit response, stop the entire batch and wait for the rate-limit
@@ -289,7 +291,7 @@ ORDERBOOK_STREAM_URL=wss://ws-subscriptions-clob.polymarket.com/ws/market
 ORDERBOOK_STREAM_STALE_SECONDS=60
 RUNNER_HEALTH_STATUS_INTERVAL_SECONDS=5
 STREAM_CYCLE_INTERVAL_SECONDS=2400
-FORECAST_CACHE_TTL_SECONDS=5400
+FORECAST_CACHE_TTL_SECONDS=10800
 FORECAST_REQUEST_MIN_INTERVAL_SECONDS=15
 FORECAST_RATE_LIMIT_STATE_PATH=forecast_rate_limit_state.json
 WEATHER_BIAS_JSON=

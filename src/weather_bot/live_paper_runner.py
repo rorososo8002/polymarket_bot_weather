@@ -135,7 +135,7 @@ class ForecastSignalScheduler:
         general_ttl_seconds: int = GENERAL_FORECAST_REFRESH_SECONDS,
         held_ttl_seconds: int = HELD_POSITION_FORECAST_REFRESH_SECONDS,
         priority_ttl_seconds: int = PRIORITY_FORECAST_REFRESH_SECONDS,
-        failure_cooldown_seconds: int = 5400,  # default matches forecast_cache_ttl_seconds; overridden at runtime
+        failure_cooldown_seconds: int = 10800,  # default matches forecast_cache_ttl_seconds; overridden at runtime
     ) -> None:
         self.open_market_ids = set(open_market_ids or set())
         self.general_ttl_seconds = max(0, int(general_ttl_seconds))

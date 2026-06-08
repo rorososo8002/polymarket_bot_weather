@@ -71,8 +71,10 @@ before continuing.
   conflictful data means skip, not guess.
 - Open-Meteo forecast HTTP calls use **batch mode**: cities are fetched sequentially
   with `FORECAST_REQUEST_MIN_INTERVAL_SECONDS=15` gaps within a batch, then the bot
-  waits until `FORECAST_CACHE_TTL_SECONDS=5400` (90 min) expires before the next
-  batch. This keeps daily API units well under the 10 000 free limit.
+  waits until `FORECAST_CACHE_TTL_SECONDS=10800` (3 h) expires before the next
+  batch. GFS updates every 6 h and takes 3-4 h to process, so a 3-h cache captures
+  each new model run without wasting API units on unchanged data.
+  Budget: 39 active cities × 8 batches/day × 31 units ≈ 9 672 units/day < 10 000 limit.
 - On a non-rate-limit forecast failure, skip that city and move to the next one.
   Do not retry the same city within the same batch. The failure cooldown equals the
   cache TTL so the city is only retried in the next batch (~90 min later).

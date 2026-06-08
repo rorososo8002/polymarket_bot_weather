@@ -38,9 +38,10 @@ while changing or operating the project.
   file produces `forecast-unavailable` with zero confidence.
 - Open-Meteo forecast HTTP calls use batch mode. Within a batch, requests are
   serialized with `FORECAST_REQUEST_MIN_INTERVAL_SECONDS=15` gaps. After a batch
-  completes, the bot waits until `FORECAST_CACHE_TTL_SECONDS=5400` (90 min) expires
-  before starting the next batch. Typical budget: 15 active cities × 16 batches/day
-  × 31 units = ~7 440 units/day, well under the 10 000 daily free limit.
+  completes, the bot waits until `FORECAST_CACHE_TTL_SECONDS=10800` (3 h) expires
+  before starting the next batch. GFS updates every 6 h (processed in 3-4 h), so
+  a 3-h cache captures each new model run without redundant calls.
+  Budget: 39 active cities × 8 batches/day × 31 units ≈ 9 672 units/day < 10 000.
 - On a non-rate-limit forecast failure, skip that city and move to the next one in
   the batch. Do not retry within the same batch. Failure cooldown equals the cache
   TTL so the city is only retried at the next batch (~90 min later).

@@ -12,10 +12,11 @@ def test_supported_city_allowlist_is_not_used_as_discovery_event_cap():
 
 
 def test_default_forecast_budget_batch_mode():
-    # Batch mode: 15 s within-batch gap, 5400 s (90 min) cache TTL between batches.
-    # Budget: 15 active cities x 16 batches/day x 31 units = ~7 440 units/day < 10 000 limit.
+    # Batch mode: 15 s within-batch gap, 10800 s (3 h) cache TTL between batches.
+    # GFS updates every 6 h (processed in 3-4 h); 3 h cache captures each new run.
+    # Budget: 39 active cities x 8 batches/day x 31 units = 9 672 units/day < 10 000 limit.
     assert Settings.stream_cycle_interval_seconds == 2400
-    assert Settings.forecast_cache_ttl_seconds == 5400
+    assert Settings.forecast_cache_ttl_seconds == 10800
     assert Settings.forecast_rate_limit_state_path == ""
 
 
