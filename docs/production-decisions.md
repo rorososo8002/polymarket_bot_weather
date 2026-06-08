@@ -36,13 +36,16 @@ while changing or operating the project.
 - `WEATHER_BIAS_JSON` is optional calibration evidence. Empty means neutral
   defaults; an explicit missing, unreadable, invalid, malformed, or non-numeric
   file produces `forecast-unavailable` with zero confidence.
-- Real Open-Meteo forecast HTTP calls are one-at-a-time. While one request is
-  in flight, the bot must not start duplicate or parallel forecast requests.
-- After a successful real Open-Meteo request, wait
-  `FORECAST_REQUEST_MIN_INTERVAL_SECONDS=120` before starting the next real
-  request. Cache hits do not count as calls. (120 s = 41 cities in 82 min/cycle;
-  Open-Meteo ensemble counts 60-70 units per city, so 41 × 70 = 2 870 units/cycle;
-  10 000 / 2 870 ≈ 3.5 cycles at 60 s, 17+ cycles at 120 s with one model.)
+- Open-Meteo forecast HTTP calls use batch mode. Within a batch, requests are
+  serialized with `FORECAST_REQUEST_MIN_INTERVAL_SECONDS=15` gaps. After a batch
+  completes, the bot waits until `FORECAST_CACHE_TTL_SECONDS=5400` (90 min) expires
+  before starting the next batch. Typical budget: 15 active cities × 16 batches/day
+  × 31 units = ~7 440 units/day, well under the 10 000 daily free limit.
+- On a non-rate-limit forecast failure, skip that city and move to the next one in
+  the batch. Do not retry within the same batch. Failure cooldown equals the cache
+  TTL so the city is only retried at the next batch (~90 min later).
+- On a 429 rate-limit response, stop the entire batch and wait for the rate-limit
+  cooldown before resuming. Do not hammer failed cities.
 - If a real Open-Meteo request does not succeed within the configured request
   budget, treat it as timeout/cancelled failure, record the reason, avoid
   immediate retry pressure on the same key, and continue to the next eligible

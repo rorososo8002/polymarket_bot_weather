@@ -11,9 +11,11 @@ def test_supported_city_allowlist_is_not_used_as_discovery_event_cap():
     assert Settings.discovery_page_size == 100
 
 
-def test_default_forecast_budget_drip_feeds_city_requests():
+def test_default_forecast_budget_batch_mode():
+    # Batch mode: 15 s within-batch gap, 5400 s (90 min) cache TTL between batches.
+    # Budget: 15 active cities x 16 batches/day x 31 units = ~7 440 units/day < 10 000 limit.
     assert Settings.stream_cycle_interval_seconds == 2400
-    assert Settings.forecast_cache_ttl_seconds == 2400
+    assert Settings.forecast_cache_ttl_seconds == 5400
     assert Settings.forecast_rate_limit_state_path == ""
 
 
@@ -95,20 +97,19 @@ def test_settings_rejects_dashboard_port_outside_tcp_range(dashboard_port):
     assert "between 1 and 65535" in str(exc_info.value)
 
 
-def test_settings_defaults_to_two_minute_forecast_request_interval():
-    # Default is 120 s (raised from 60 s) to keep 41-city ensemble calls
-    # well within the Open-Meteo 10 000 daily free unit limit.
+def test_settings_defaults_to_batch_mode_forecast_interval():
+    # Within-batch gap is 15 s; between-batch gap is controlled by cache TTL (5400 s).
     settings = Settings()
 
-    assert settings.forecast_request_min_interval_seconds == 120
+    assert settings.forecast_request_min_interval_seconds == 15
 
 
-@pytest.mark.parametrize("interval_seconds", [0, 30, 59])
-def test_settings_rejects_forecast_request_spacing_below_one_minute(interval_seconds):
+@pytest.mark.parametrize("interval_seconds", [0, 5, 9])
+def test_settings_rejects_forecast_request_spacing_below_ten_seconds(interval_seconds):
     with pytest.raises(ValueError, match="FORECAST_REQUEST_MIN_INTERVAL_SECONDS") as exc_info:
         Settings(forecast_request_min_interval_seconds=interval_seconds)
 
-    assert "at least 60" in str(exc_info.value)
+    assert "at least 10" in str(exc_info.value)
 
 
 @pytest.mark.parametrize(
@@ -219,14 +220,14 @@ def test_load_settings_reads_forecast_cache_controls(monkeypatch):
     assert settings.forecast_rate_limit_state_path == "data/custom_forecast_rate_limit_state.json"
 
 
-@pytest.mark.parametrize("raw", ["0", "30", "59"])
-def test_load_settings_rejects_forecast_request_spacing_below_one_minute(monkeypatch, raw):
+@pytest.mark.parametrize("raw", ["0", "5", "9"])
+def test_load_settings_rejects_forecast_request_spacing_below_ten_seconds(monkeypatch, raw):
     monkeypatch.setenv("FORECAST_REQUEST_MIN_INTERVAL_SECONDS", raw)
 
     with pytest.raises(ValueError, match="FORECAST_REQUEST_MIN_INTERVAL_SECONDS") as exc_info:
         load_settings()
 
-    assert "at least 60" in str(exc_info.value)
+    assert "at least 10" in str(exc_info.value)
 
 
 def test_load_settings_reads_station_nowcast_controls(monkeypatch):

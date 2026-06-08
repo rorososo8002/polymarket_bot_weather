@@ -156,16 +156,14 @@ exposure caps leave at least `MIN_ORDER_USD`.
 - Real Open-Meteo HTTP calls are globally serialized. Run at most one real
   request at a time; while one is in flight, do not start a duplicate request or
   another city's real request.
-- After a successful real Open-Meteo request, wait
-  `FORECAST_REQUEST_MIN_INTERVAL_SECONDS=120` before starting the next real
-  request. Cache hits are local reads and do not require this delay.
-  (120 s recommended: 41 cities × 120 s = 82-min cycle, ~17 cycles/day well
-  within the 10 000 daily free unit limit. Ensemble calls count 60-70 units
-  each.)
-- If a real Open-Meteo request exceeds the configured request budget without
-  success, record an observable timeout/cancelled failure, avoid immediate
-  retry pressure on the same key, and move to the next eligible city or
-  forecast key.
+- Open-Meteo forecast HTTP calls use batch mode. Within a batch, cities are fetched
+  sequentially with `FORECAST_REQUEST_MIN_INTERVAL_SECONDS=15` gaps. After all
+  active-market cities in the batch are processed, the bot waits until
+  `FORECAST_CACHE_TTL_SECONDS=5400` (90 min) expires before the next batch.
+- On a non-rate-limit failure, skip that city and move to the next. Do not retry
+  within the same batch. The failure cooldown equals the cache TTL.
+- On a 429 rate-limit response, stop the entire batch and wait for the rate-limit
+  cooldown to expire. Do not start a new batch or hammer failed cities.
 - Runner status must expose the forecast worker separately from the raw
   Open-Meteo client health: pending key/city, in-flight key/city, queue depth,
   priority reason, last success, last failure, and next eligible request time.
@@ -291,8 +289,8 @@ ORDERBOOK_STREAM_URL=wss://ws-subscriptions-clob.polymarket.com/ws/market
 ORDERBOOK_STREAM_STALE_SECONDS=60
 RUNNER_HEALTH_STATUS_INTERVAL_SECONDS=5
 STREAM_CYCLE_INTERVAL_SECONDS=2400
-FORECAST_CACHE_TTL_SECONDS=2400
-FORECAST_REQUEST_MIN_INTERVAL_SECONDS=120
+FORECAST_CACHE_TTL_SECONDS=5400
+FORECAST_REQUEST_MIN_INTERVAL_SECONDS=15
 FORECAST_RATE_LIMIT_STATE_PATH=forecast_rate_limit_state.json
 WEATHER_BIAS_JSON=
 STATION_NOWCAST_ENABLED=true

@@ -69,14 +69,18 @@ before continuing.
   execution universe.
 - Unknown, missing, stale, malformed, unsupported, suspicious, invalid, or
   conflictful data means skip, not guess.
-- Open-Meteo forecast HTTP calls must be globally serialized and drip-fed by
-  `FORECAST_REQUEST_MIN_INTERVAL_SECONDS=120` by default (raised from 60 to
-  reduce daily API count; Open-Meteo ensemble counts 60-70 units per city
-  request, so 41 cities × 120 s = 82-min cycle, well within 10 000 daily free
-  limit). Cache hits do not count as real calls.
-- `FORECAST_CACHE_TTL_SECONDS=2400` is the default forecast answer freshness
-  window. `STREAM_CYCLE_INTERVAL_SECONDS=2400` is the market-discovery and
-  WebSocket rebuild interval, not the Open-Meteo call spacing.
+- Open-Meteo forecast HTTP calls use **batch mode**: cities are fetched sequentially
+  with `FORECAST_REQUEST_MIN_INTERVAL_SECONDS=15` gaps within a batch, then the bot
+  waits until `FORECAST_CACHE_TTL_SECONDS=5400` (90 min) expires before the next
+  batch. This keeps daily API units well under the 10 000 free limit.
+- On a non-rate-limit forecast failure, skip that city and move to the next one.
+  Do not retry the same city within the same batch. The failure cooldown equals the
+  cache TTL so the city is only retried in the next batch (~90 min later).
+- On a 429 rate-limit response, stop the entire batch immediately and wait for the
+  rate-limit cooldown to expire before resuming. Do not hammer failed cities.
+- `FORECAST_CACHE_TTL_SECONDS=5400` is the forecast answer freshness window and
+  the effective between-batch interval. `STREAM_CYCLE_INTERVAL_SECONDS=2400` is the
+  market-discovery and WebSocket rebuild interval, not the forecast spacing.
 - `STATION_NOWCAST_CACHE_TTL_SECONDS=300` (5 min) is the recommended nowcast
   cache TTL. The AWC METAR provider floor is also 5 min, so this keeps
   observation data fresh enough for timely exit decisions without hammering

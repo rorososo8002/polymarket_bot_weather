@@ -34,7 +34,7 @@ _POSITIVE_INTEGER_SETTINGS = (
 )
 
 _MINIMUM_INTEGER_SETTINGS = (
-    ("forecast_request_min_interval_seconds", 60),  # hard floor; recommended default is 120
+    ("forecast_request_min_interval_seconds", 10),  # hard floor; batch mode uses 15 s within-batch
 )
 
 _TCP_PORT_SETTINGS = (
@@ -104,8 +104,8 @@ class Settings:
     raw_snapshots_min_free_bytes: int = 1024 * 1024 * 1024
     raw_snapshots_max_disk_usage_pct: float = 0.90
     forecast_cache_path: str = ""
-    forecast_cache_ttl_seconds: int = 2400
-    forecast_request_min_interval_seconds: int = 120  # raised from 60: ensemble counts 60-70 units/city
+    forecast_cache_ttl_seconds: int = 5400  # 90 min: between-batch wait; 16 batches/day * 15 cities * 31 units = ~7 440
+    forecast_request_min_interval_seconds: int = 15  # within-batch gap; cache TTL controls between-batch wait
     forecast_request_log_path: str = ""
     forecast_rate_limit_state_path: str = ""
     station_nowcast_enabled: bool = True

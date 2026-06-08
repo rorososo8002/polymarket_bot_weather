@@ -47,7 +47,10 @@ GENERAL_FORECAST_REFRESH_SECONDS = 40 * 60
 HELD_POSITION_FORECAST_REFRESH_SECONDS = 30 * 60
 PRIORITY_FORECAST_REFRESH_SECONDS = 20 * 60
 FORECAST_WORKER_IDLE_SLEEP_SECONDS = 1.0
-FORECAST_WORKER_FAILURE_COOLDOWN_SECONDS = 5 * 60
+# Failure cooldown is intentionally equal to the cache TTL so that a city that
+# fails mid-batch is skipped for the rest of the current batch and retried only
+# at the next batch (when its cache entry also expires).  The actual value is
+# taken from settings.forecast_cache_ttl_seconds at runtime.
 
 
 @dataclass(frozen=True)
@@ -132,7 +135,7 @@ class ForecastSignalScheduler:
         general_ttl_seconds: int = GENERAL_FORECAST_REFRESH_SECONDS,
         held_ttl_seconds: int = HELD_POSITION_FORECAST_REFRESH_SECONDS,
         priority_ttl_seconds: int = PRIORITY_FORECAST_REFRESH_SECONDS,
-        failure_cooldown_seconds: int = FORECAST_WORKER_FAILURE_COOLDOWN_SECONDS,
+        failure_cooldown_seconds: int = 5400,  # default matches forecast_cache_ttl_seconds; overridden at runtime
     ) -> None:
         self.open_market_ids = set(open_market_ids or set())
         self.general_ttl_seconds = max(0, int(general_ttl_seconds))
@@ -2006,7 +2009,11 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
                     signal_refreshed_at_by_market[market.market_id] = datetime.now(timezone.utc)
                 market_types[market.market_id] = "temperature"
             forecast_markets = [market for market in stream_markets if market.market_id not in signals_by_market]
-            forecast_scheduler = ForecastSignalScheduler(forecast_markets, open_market_ids=open_market_ids)
+            forecast_scheduler = ForecastSignalScheduler(
+                forecast_markets,
+                open_market_ids=open_market_ids,
+                failure_cooldown_seconds=settings.forecast_cache_ttl_seconds,
+            )
 
             latest_edges: dict[tuple[str, str], EdgeResult] = {}
             update_lock = threading.RLock()
