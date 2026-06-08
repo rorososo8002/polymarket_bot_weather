@@ -216,6 +216,37 @@ def test_aviationweather_request_log_records_external_fetch_not_cache_hit(tmp_pa
     assert rows[0]["requested_at"] == "2026-06-02T08:30:00+00:00"
 
 
+def test_aviationweather_bulk_request_floor_is_five_minutes_even_when_station_cache_is_short(tmp_path):
+    request_log_path = tmp_path / "station_nowcast_request_log.jsonl"
+    provider, calls = provider_for(
+        load_fixture("aviationweather_rksi_fresh.json"),
+        cache_ttl_seconds=60,
+        request_log_path=request_log_path,
+    )
+
+    provider.observed_high_so_far(
+        STATION_MAP["seoul"],
+        target_date=date(2026, 6, 2),
+        now=datetime(2026, 6, 2, 8, 30, tzinfo=timezone.utc),
+    )
+    provider.observed_high_so_far(
+        STATION_MAP["seoul"],
+        target_date=date(2026, 6, 2),
+        now=datetime(2026, 6, 2, 8, 32, tzinfo=timezone.utc),
+    )
+    provider.observed_high_so_far(
+        STATION_MAP["seoul"],
+        target_date=date(2026, 6, 2),
+        now=datetime(2026, 6, 2, 8, 36, tzinfo=timezone.utc),
+    )
+
+    rows = read_jsonl(request_log_path)
+    assert len(calls) == 2
+    assert len(rows) == 2
+    assert rows[0]["requested_at"] == "2026-06-02T08:30:00+00:00"
+    assert rows[1]["requested_at"] == "2026-06-02T08:36:00+00:00"
+
+
 def test_aviationweather_provider_supports_verified_icao_station_beyond_seoul():
     provider, calls = provider_for(load_fixture("aviationweather_klga_fresh.json"))
 
@@ -511,6 +542,37 @@ def test_hko_request_log_records_external_fetch_not_cache_hit(tmp_path):
     assert rows[0]["status_code"] == 200
     assert rows[0]["cache_miss_reason"] == "empty-cache"
     assert rows[0]["requested_at"] == "2026-06-02T03:45:00+00:00"
+
+
+def test_hko_request_floor_is_ten_minutes_even_when_station_cache_is_short(tmp_path):
+    request_log_path = tmp_path / "station_nowcast_request_log.jsonl"
+    provider, calls = hko_provider_for(
+        load_text_fixture("hko_maxmin_fresh.csv"),
+        cache_ttl_seconds=60,
+        request_log_path=request_log_path,
+    )
+
+    provider.observed_high_so_far(
+        STATION_MAP["hong kong"],
+        target_date=date(2026, 6, 2),
+        now=datetime(2026, 6, 2, 3, 45, tzinfo=timezone.utc),
+    )
+    provider.observed_high_so_far(
+        STATION_MAP["hong kong"],
+        target_date=date(2026, 6, 2),
+        now=datetime(2026, 6, 2, 3, 50, tzinfo=timezone.utc),
+    )
+    provider.observed_high_so_far(
+        STATION_MAP["hong kong"],
+        target_date=date(2026, 6, 2),
+        now=datetime(2026, 6, 2, 3, 56, tzinfo=timezone.utc),
+    )
+
+    rows = read_jsonl(request_log_path)
+    assert len(calls) == 2
+    assert len(rows) == 2
+    assert rows[0]["requested_at"] == "2026-06-02T03:45:00+00:00"
+    assert rows[1]["requested_at"] == "2026-06-02T03:56:00+00:00"
 
 
 def test_hko_provider_marks_malformed_csv_unusable():

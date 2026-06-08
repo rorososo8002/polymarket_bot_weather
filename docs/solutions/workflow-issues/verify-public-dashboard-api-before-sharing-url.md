@@ -1,6 +1,7 @@
 ---
 title: Verify public dashboard API access before sharing the URL
 date: 2026-05-29
+last_updated: 2026-06-08
 category: workflow-issues
 module: weather_bot.dashboard
 problem_type: workflow_issue
@@ -42,6 +43,20 @@ Interpret the result plainly:
   requires `DASHBOARD_TOKEN`; do not claim the bare URL works.
 - `127.0.0.1:8787` fails: the local tunnel is absent; do not suggest it unless
   the user explicitly wants a tunnel.
+
+If the public page is alive but the API is token-protected and the operator
+needs a working browser address immediately, prefer a private localhost proxy
+that injects `X-Dashboard-Token` for `/api/status`. The proxy must bind only to
+`127.0.0.1`, read the token without printing it, and be verified with both:
+
+```powershell
+curl.exe -i http://127.0.0.1:<proxy-port>/
+curl.exe -i http://127.0.0.1:<proxy-port>/api/status
+```
+
+Only give the localhost proxy URL after `/api/status` returns 200 through that
+proxy. This gives the operator a simple browser address without leaking the
+dashboard token in chat, browser history, public URLs, or server request logs.
 
 If the user explicitly wants the public dashboard to work without a token, first
 state the tradeoff: the read-only dashboard becomes visible on the public

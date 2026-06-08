@@ -45,6 +45,11 @@ Conditional reads:
 - Repeated bug, workflow correction, or prevention-rule work:
   relevant entries under `docs/solutions/`
 
+Do not bulk-read `docs/solutions/`. Search or list only enough to identify a
+matching lesson, then open the specific relevant entry. If no relevant repeated
+bug, workflow correction, or prevention-rule issue is present, skip
+`docs/solutions/` entirely.
+
 Do not redesign from scratch unless the user explicitly asks for a redesign.
 Do not reimplement completed work. If code and docs disagree, record the drift
 before continuing.
@@ -65,11 +70,17 @@ before continuing.
 - Unknown, missing, stale, malformed, unsupported, suspicious, invalid, or
   conflictful data means skip, not guess.
 - Open-Meteo forecast HTTP calls must be globally serialized and drip-fed by
-  `FORECAST_REQUEST_MIN_INTERVAL_SECONDS=60` by default. Cache hits do not
-  count as real calls.
+  `FORECAST_REQUEST_MIN_INTERVAL_SECONDS=120` by default (raised from 60 to
+  reduce daily API count; Open-Meteo ensemble counts 60-70 units per city
+  request, so 41 cities × 120 s = 82-min cycle, well within 10 000 daily free
+  limit). Cache hits do not count as real calls.
 - `FORECAST_CACHE_TTL_SECONDS=2400` is the default forecast answer freshness
   window. `STREAM_CYCLE_INTERVAL_SECONDS=2400` is the market-discovery and
   WebSocket rebuild interval, not the Open-Meteo call spacing.
+- `STATION_NOWCAST_CACHE_TTL_SECONDS=300` (5 min) is the recommended nowcast
+  cache TTL. The AWC METAR provider floor is also 5 min, so this keeps
+  observation data fresh enough for timely exit decisions without hammering
+  the source.
 - Use the Polymarket CLOB WebSocket market stream for executable order books by
   default. Do not silently replace realtime streaming with polling.
 - A WebSocket `price_change` delta must not create executable depth for a token
@@ -108,6 +119,9 @@ before continuing.
 ## Workflow
 
 - Think before coding. State assumptions when they affect the result.
+- **Before changing any code, update the relevant documentation first.**
+  Code and docs must stay in sync. A future AI reading only the docs must
+  reach the same behavior as the code.
 - Touch only files needed for the task.
 - Preserve user changes. Never reset, overwrite, or revert unrelated work.
 - For behavior changes, add or update focused tests and verify the behavior.

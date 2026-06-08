@@ -4,14 +4,12 @@ Status: none
 
 ## Objective
 
-- No unfinished work is currently recorded for fresh-chat continuation.
+- No active handoff task.
 
 ## Next Action
 
-- If the user asks to continue work, follow the user's latest request.
-- If the request touches strategy, trading-risk, forecast, order books,
-  portfolio, paper accounting, settlement, or runner behavior, read
-  `docs/production-implementation-plan.md` before changing behavior.
+- Use the user's latest request and read only the conditional documents needed
+  for that task.
 
 ## Files In Play
 

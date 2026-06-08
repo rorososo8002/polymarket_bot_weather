@@ -33,6 +33,30 @@ def test_pytest_defaults_to_process_specific_workspace_temp_dir():
     assert Path(config.option.basetemp) == ROOT / ".pytest-tmp" / f"pytest-{os.getpid()}"
 
 
+def test_pytest_configure_creates_workspace_temp_parent(tmp_path):
+    module = _load_root_conftest()
+    clean_root = tmp_path / "repo"
+    clean_root.mkdir()
+
+    original_file = module.__file__
+    module.__file__ = str(clean_root / "conftest.py")
+    try:
+        class Option:
+            basetemp = None
+
+        class Config:
+            option = Option()
+
+        config = Config()
+        module.pytest_configure(config)
+
+        expected_parent = clean_root / ".pytest-tmp"
+        assert expected_parent.is_dir()
+        assert Path(config.option.basetemp) == expected_parent / f"pytest-{os.getpid()}"
+    finally:
+        module.__file__ = original_file
+
+
 def test_running_pytest_uses_process_specific_workspace_temp_dir(tmp_path_factory):
     assert tmp_path_factory.getbasetemp() == ROOT / ".pytest-tmp" / f"pytest-{os.getpid()}"
 

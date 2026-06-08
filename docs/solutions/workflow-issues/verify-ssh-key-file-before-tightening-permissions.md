@@ -1,7 +1,7 @@
 ---
 title: Verify SSH key file before tightening permissions
 date: 2026-05-26
-last_updated: 2026-06-06
+last_updated: 2026-06-08
 category: workflow-issues
 module: vps_operations
 problem_type: workflow_issue
@@ -13,7 +13,8 @@ applies_when:
   - "The Oracle SSH directory has Korean characters or appears mojibaked in logs"
   - "The sandbox cannot read the local SSH key directory without escalation"
   - "Several SSH checks need to use the same private key"
-tags: [ssh, powershell, vps, oracle, private-key, workflow, unicode-path]
+  - "SSH connects at TCP level but times out during banner exchange"
+tags: [ssh, powershell, vps, oracle, private-key, workflow, unicode-path, banner-timeout]
 ---
 
 # Verify SSH Key File Before Tightening Permissions
@@ -39,6 +40,15 @@ errors. The fix was to discover the directory object under `Documents` by name
 pattern, then join the known key filename. When sandbox permissions blocked the
 key directory, the correct next step was a single escalated `scp` or `ssh`
 request that did not print or open the key.
+
+A fourth version appeared during live VPS operations: one harmless SSH command
+returned `date`, but follow-up SSH checks hung and then failed with
+`Connection timed out during banner exchange`. That message happens after TCP
+connect and before key authentication, so it is not evidence that the private
+key path is wrong. In that case, stop re-litigating the key location, clean up
+local stuck `ssh` processes created by timed-out attempts, wait briefly for
+remote unauthenticated connection slots to clear, and retry one short command
+with the already-known key path.
 
 ## 2. Why It Mattered
 
@@ -93,6 +103,20 @@ key. One clean SSH command that returns `date`, `systemctl`, or `ps` is more
 useful than several parallel checks that race on key access and make the server
 look broken.
 
+If `ssh` reports `Connection timed out during banner exchange` after a previous
+successful command, treat it as a connection-handshake or server-load symptom,
+not a key-discovery problem. Remove only the local stuck SSH processes from the
+timed-out attempts, wait about a minute, then retry a short command:
+
+```powershell
+Get-Process | Where-Object { $_.ProcessName -like '*ssh*' } |
+  Select-Object Id,ProcessName,StartTime
+
+Stop-Process -Id <timed-out-ssh-process-id> -Force
+Start-Sleep -Seconds 75
+ssh -T -o BatchMode=yes -o ConnectTimeout=10 -i $key ubuntu@140.245.69.242 date
+```
+
 ## 4. What To Check Next Time
 
 - Confirm the path is a file before applying key-file permissions.
@@ -105,6 +129,8 @@ look broken.
   `scp` or `ssh` command instead of repeating failed local path probes.
 - Validate access with a harmless remote command before doing operational work.
 - Avoid parallel SSH probes that reuse the same local identity file.
+- After `banner exchange` timeouts, do not keep rediscovering the key. Clean up
+  local timed-out SSH processes, wait briefly, and retry one bounded command.
 
 ## 5. Project-Specific Caution
 

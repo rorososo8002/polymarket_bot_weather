@@ -9,6 +9,7 @@ import pytest
 from weather_bot import live_paper_runner as runner_module
 from weather_bot.config import Settings
 from weather_bot.live_paper_runner import (
+    ForecastSignalScheduler,
     RealtimeEvaluationCoalescer,
     StreamBackedPolymarketClient,
     _stream_market_registry,
@@ -457,8 +458,149 @@ def test_realtime_forever_filters_non_temperature_before_probability_estimator(t
     assert status["phase"] == "error"
     assert status["failed_phase"] == "websocket_start"
     assert "stop after stream setup" in status["message"]
-    assert probability_calls == [temperature_question]
+    assert probability_calls == []
     assert set(stream_tokens) == {"temp-yes", "temp-no"}
+
+
+def test_realtime_forever_starts_websocket_before_forecast_signal_warmup(tmp_path, monkeypatch):
+    questions = [
+        "Will the highest temperature in Seoul be 27C or higher today?",
+        "Will the highest temperature in Tokyo be 31C or higher today?",
+    ]
+    markets = [
+        RawMarket("seoul", questions[0], "seoul", True, False, "seoul-yes", "seoul-no"),
+        RawMarket("tokyo", questions[1], "tokyo", True, False, "tokyo-yes", "tokyo-no"),
+    ]
+    probability_calls: list[str] = []
+    forecast_calls_seen_by_stream: list[str] = []
+
+    class FakeClient:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def discover_weather_markets(self, *, max_pages, page_size):
+            return markets
+
+        def get_market(self, market_id):
+            return next(market for market in markets if market.market_id == market_id)
+
+    class StopStream:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def start(self, token_ids):
+            forecast_calls_seen_by_stream.extend(probability_calls)
+            assert set(token_ids) == {"seoul-yes", "seoul-no", "tokyo-yes", "tokyo-no"}
+            raise RuntimeError("stop after early stream start")
+
+        def stop(self):
+            return None
+
+        def health_snapshot(self):
+            return {"thread_alive": True, "stale": False}
+
+    def estimate(question, **_kwargs):
+        probability_calls.append(question)
+        return WeatherSignal(0.5, 0.9, "test", "test", parse_weather_question(question))
+
+    monkeypatch.setattr(runner_module, "PolymarketClient", FakeClient)
+    monkeypatch.setattr(runner_module, "OrderBookMarketStream", StopStream)
+    monkeypatch.setattr(runner_module, "estimate_weather_probability", estimate)
+
+    def stop_after_error_backoff(_seconds):
+        raise RuntimeError("stop after error backoff")
+
+    monkeypatch.setattr(runner_module.time, "sleep", stop_after_error_backoff)
+
+    settings = Settings(
+        state_path=str(tmp_path / "state.json"),
+        trades_csv_path=str(tmp_path / "trades.csv"),
+        decisions_csv_path=str(tmp_path / "decisions.csv"),
+        raw_snapshots_path=str(tmp_path / "raw.jsonl"),
+        portfolio_decisions_jsonl_path=str(tmp_path / "portfolio.jsonl"),
+    )
+
+    with pytest.raises(RuntimeError, match="stop after error backoff"):
+        runner_module.run_realtime_forever(settings)
+
+    assert forecast_calls_seen_by_stream == []
+    assert probability_calls == []
+
+
+def test_realtime_update_without_signal_fails_closed_without_order_book_lookup(tmp_path):
+    question = "Will the highest temperature in Seoul be 27C or higher today?"
+    market = RawMarket("seoul-pending", question, "seoul-pending", True, False, "yes", "no", event_id="seoul-today")
+
+    class FakeClient:
+        def get_order_book(self, token_id):
+            raise AssertionError(f"forecast-pending market must not read order book for {token_id}")
+
+    settings = Settings(
+        state_path=str(tmp_path / "state.json"),
+        trades_csv_path=str(tmp_path / "trades.csv"),
+        decisions_csv_path=str(tmp_path / "decisions.csv"),
+        raw_snapshots_path=str(tmp_path / "raw.jsonl"),
+        portfolio_decisions_jsonl_path=str(tmp_path / "portfolio.jsonl"),
+    )
+    broker = runner_module.PaperBroker(settings)
+
+    runner_module._evaluate_realtime_update(
+        {"yes"},
+        FakeClient(),
+        broker,
+        settings,
+        {"yes": market, "no": market},
+        {},
+        {market.market_id: "temperature"},
+        {},
+        signal_refreshed_at_by_market={},
+    )
+
+    with (tmp_path / "decisions.csv").open(newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    assert rows[0]["side"] == "SKIP"
+    assert "forecast signal pending" in rows[0]["reason"]
+    assert broker.state.positions == []
+
+
+def test_forecast_signal_scheduler_uses_priority_then_resumes_round_robin():
+    seoul = RawMarket(
+        "seoul",
+        "Will the highest temperature in Seoul be 27C or higher today?",
+        "seoul",
+        True,
+        False,
+        "seoul-yes",
+        "seoul-no",
+    )
+    tokyo = RawMarket(
+        "tokyo",
+        "Will the highest temperature in Tokyo be 31C or higher today?",
+        "tokyo",
+        True,
+        False,
+        "tokyo-yes",
+        "tokyo-no",
+    )
+    now = datetime(2026, 6, 2, 12, 0, tzinfo=timezone.utc)
+    scheduler = ForecastSignalScheduler([seoul, tokyo], open_market_ids={"seoul"})
+    scheduler.mark_success(tokyo, now - timedelta(minutes=41))
+    scheduler.mark_success(seoul, now - timedelta(minutes=31))
+    scheduler.enqueue_priority(seoul, "HELD_POSITION", now=now)
+    scheduler.enqueue_priority(seoul, "ACTIVE_EVALUATION_STALE_SIGNAL", now=now)
+
+    first = scheduler.next_task(now)
+    assert first is not None
+    assert first.lane == "priority"
+    assert first.market_ids == ["seoul"]
+    assert first.priority_reason == "HELD_POSITION,ACTIVE_EVALUATION_STALE_SIGNAL"
+
+    scheduler.mark_success(seoul, now)
+    second = scheduler.next_task(now)
+
+    assert second is not None
+    assert second.lane == "round_robin"
+    assert second.market_ids == ["tokyo"]
 
 
 def test_realtime_forever_records_missing_websocket_dependency_in_status(tmp_path, monkeypatch):

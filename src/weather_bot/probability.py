@@ -31,9 +31,12 @@ from .weather_client import parse_weather_question, temperature_bucket_interval_
 # cities from the current weather resolution rules.
 
 
-# Default model set.  If Open-Meteo changes a model id, override with:
-# OPEN_METEO_ENSEMBLE_MODELS=gfs_seamless,ecmwf_ifs025,gem_global
-DEFAULT_ENSEMBLE_MODELS = "gfs_seamless,ecmwf_ifs025"
+# Default model set uses one model to stay well within the Open-Meteo free
+# daily limit (each city request counts 60-70 units; 41 cities × 60 = 2460 units
+# at 120 s intervals = ~4 cycles on gfs alone vs ~2 on gfs+ecmwf).
+# To add ECMWF for higher ensemble accuracy at the cost of API budget, set:
+# OPEN_METEO_ENSEMBLE_MODELS=gfs_seamless,ecmwf_ifs025
+DEFAULT_ENSEMBLE_MODELS = "gfs_seamless"
 CONCURRENT_RATE_LIMIT_BACKOFF_SECONDS = 15 * 60
 FORECAST_READ_TIMEOUT_BACKOFF_SECONDS = 30 * 60
 

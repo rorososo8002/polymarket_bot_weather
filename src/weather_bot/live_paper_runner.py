@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import replace
+from dataclasses import dataclass, replace
 import inspect
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import math
 import threading
 import time
@@ -43,6 +43,273 @@ ENTRY_BANKROLL_FAIL_CLOSED_REASON = "기존 포지션을 안전하게 평가할 
 
 REALTIME_EVALUATION_QUEUE_MAX_EVENTS = 256
 REALTIME_EVALUATION_COALESCE_SECONDS = 0.25
+GENERAL_FORECAST_REFRESH_SECONDS = 40 * 60
+HELD_POSITION_FORECAST_REFRESH_SECONDS = 30 * 60
+PRIORITY_FORECAST_REFRESH_SECONDS = 20 * 60
+FORECAST_WORKER_IDLE_SLEEP_SECONDS = 1.0
+FORECAST_WORKER_FAILURE_COOLDOWN_SECONDS = 5 * 60
+
+
+@dataclass(frozen=True)
+class ForecastSignalTask:
+    forecast_key: str
+    market_ids: list[str]
+    markets: tuple[RawMarket, ...]
+    lane: str
+    priority_reason: str
+    next_eligible_at: datetime
+    city: str = ""
+
+
+@dataclass(frozen=True)
+class ForecastTaskResult:
+    touched_tokens: set[str]
+    success_at: datetime
+    has_supported_signal: bool
+
+
+def _utc_datetime(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _forecast_key_for_market(market: RawMarket) -> str:
+    try:
+        parsed = parse_weather_question(market.question)
+    except Exception:  # noqa: BLE001
+        return f"market:{market.market_id}"
+    return "|".join([
+        parsed.city or f"market:{market.market_id}",
+        parsed.date_hint or "unknown-date",
+        parsed.variable,
+        parsed.temperature_metric,
+    ])
+
+
+def _parsed_city_for_market(market: RawMarket) -> str:
+    try:
+        return parse_weather_question(market.question).city or ""
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _iso_datetime(value: datetime | None) -> str:
+    return value.astimezone(timezone.utc).replace(microsecond=0).isoformat() if value is not None else ""
+
+
+def _parse_status_datetime(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return _utc_datetime(parsed)
+
+
+def _ensemble_last_success_at(
+    ensemble_client: OpenMeteoEnsembleClient | None,
+    fallback: datetime,
+) -> datetime:
+    if ensemble_client is None:
+        return fallback
+    try:
+        health = ensemble_client.health_snapshot()
+    except Exception:  # noqa: BLE001
+        return fallback
+    return _parse_status_datetime(health.get("last_success_at")) or fallback
+
+
+class ForecastSignalScheduler:
+    """Choose one forecast key at a time without losing the normal city rotation."""
+
+    def __init__(
+        self,
+        markets: list[RawMarket],
+        *,
+        open_market_ids: set[str] | None = None,
+        general_ttl_seconds: int = GENERAL_FORECAST_REFRESH_SECONDS,
+        held_ttl_seconds: int = HELD_POSITION_FORECAST_REFRESH_SECONDS,
+        priority_ttl_seconds: int = PRIORITY_FORECAST_REFRESH_SECONDS,
+        failure_cooldown_seconds: int = FORECAST_WORKER_FAILURE_COOLDOWN_SECONDS,
+    ) -> None:
+        self.open_market_ids = set(open_market_ids or set())
+        self.general_ttl_seconds = max(0, int(general_ttl_seconds))
+        self.held_ttl_seconds = max(0, int(held_ttl_seconds))
+        self.priority_ttl_seconds = max(0, int(priority_ttl_seconds))
+        self.failure_cooldown_seconds = max(0, int(failure_cooldown_seconds))
+        self._markets_by_key: dict[str, list[RawMarket]] = {}
+        self._key_order: list[str] = []
+        for market in markets:
+            key = _forecast_key_for_market(market)
+            if key not in self._markets_by_key:
+                self._markets_by_key[key] = []
+                self._key_order.append(key)
+            if all(existing.market_id != market.market_id for existing in self._markets_by_key[key]):
+                self._markets_by_key[key].append(market)
+        self._round_robin_index = 0
+        self._priority_reasons_by_key: dict[str, list[str]] = {}
+        self._last_success_at_by_key: dict[str, datetime] = {}
+        self._cooldown_until_by_key: dict[str, datetime] = {}
+        self._inflight_task: ForecastSignalTask | None = None
+        self._last_failure: dict[str, str] | None = None
+        self._lock = threading.RLock()
+
+    def enqueue_priority(self, market: RawMarket, reason: str, *, now: datetime | None = None) -> None:
+        with self._lock:
+            key = _forecast_key_for_market(market)
+            if key not in self._markets_by_key:
+                self._markets_by_key[key] = [market]
+                self._key_order.append(key)
+            reasons = self._priority_reasons_by_key.setdefault(key, [])
+            clean_reason = str(reason or "PRIORITY").strip() or "PRIORITY"
+            if clean_reason not in reasons:
+                reasons.append(clean_reason)
+
+    def mark_success(self, market_or_task: RawMarket | ForecastSignalTask, when: datetime | None = None) -> None:
+        with self._lock:
+            key = (
+                market_or_task.forecast_key
+                if isinstance(market_or_task, ForecastSignalTask)
+                else _forecast_key_for_market(market_or_task)
+            )
+            self._last_success_at_by_key[key] = _utc_datetime(when or datetime.now(timezone.utc))
+            self._priority_reasons_by_key.pop(key, None)
+            self._cooldown_until_by_key.pop(key, None)
+            if self._inflight_task is not None and self._inflight_task.forecast_key == key:
+                self._inflight_task = None
+
+    def mark_failure(self, task: ForecastSignalTask, reason: str, when: datetime | None = None) -> None:
+        with self._lock:
+            current = _utc_datetime(when or datetime.now(timezone.utc))
+            if self.failure_cooldown_seconds > 0:
+                self._cooldown_until_by_key[task.forecast_key] = current + timedelta(seconds=self.failure_cooldown_seconds)
+            self._last_failure = {
+                "forecast_key": task.forecast_key,
+                "city": task.city,
+                "reason": _compact_status_text(reason, 240),
+                "at": _iso_datetime(current),
+            }
+            if self._inflight_task is not None and self._inflight_task.forecast_key == task.forecast_key:
+                self._inflight_task = None
+
+    def next_task(self, now: datetime | None = None) -> ForecastSignalTask | None:
+        with self._lock:
+            current = _utc_datetime(now or datetime.now(timezone.utc))
+            for key, reasons in list(self._priority_reasons_by_key.items()):
+                if self._key_available_at(key) > current:
+                    continue
+                if not self._is_due(key, current, priority=True):
+                    continue
+                task = self._task_for_key(key, "priority", ",".join(reasons), current)
+                self._inflight_task = task
+                return task
+            if not self._key_order:
+                return None
+            for _ in range(len(self._key_order)):
+                key = self._key_order[self._round_robin_index % len(self._key_order)]
+                self._round_robin_index = (self._round_robin_index + 1) % len(self._key_order)
+                if self._key_available_at(key) > current:
+                    continue
+                if not self._is_due(key, current, priority=False):
+                    continue
+                task = self._task_for_key(key, "round_robin", "", current)
+                self._inflight_task = task
+                return task
+        return None
+
+    def seconds_until_next_task(self, now: datetime | None = None) -> float:
+        with self._lock:
+            current = _utc_datetime(now or datetime.now(timezone.utc))
+            next_at = self._next_eligible_at(current)
+            if next_at is None:
+                return FORECAST_WORKER_IDLE_SLEEP_SECONDS
+            return max(0.0, (next_at - current).total_seconds())
+
+    def status_snapshot(self, now: datetime | None = None) -> dict[str, object]:
+        with self._lock:
+            current = _utc_datetime(now or datetime.now(timezone.utc))
+            pending_key = ""
+            pending_city = ""
+            pending_reason = ""
+            for key, reasons in self._priority_reasons_by_key.items():
+                pending_key = key
+                pending_city = self._city_for_key(key)
+                pending_reason = ",".join(reasons)
+                break
+            next_at = self._next_eligible_at(current)
+            last_success_at = max(self._last_success_at_by_key.values(), default=None)
+            return {
+                "pending_key": pending_key,
+                "pending_city": pending_city,
+                "inflight_key": self._inflight_task.forecast_key if self._inflight_task else "",
+                "inflight_city": self._inflight_task.city if self._inflight_task else "",
+                "last_success_at": _iso_datetime(last_success_at),
+                "last_failure": self._last_failure,
+                "queue_depth": len(self._priority_reasons_by_key),
+                "priority_reason": pending_reason,
+                "next_eligible_request_time": _iso_datetime(next_at),
+                "general_ttl_seconds": self.general_ttl_seconds,
+                "held_ttl_seconds": self.held_ttl_seconds,
+                "priority_ttl_seconds": self.priority_ttl_seconds,
+            }
+
+    def _task_for_key(self, key: str, lane: str, priority_reason: str, current: datetime) -> ForecastSignalTask:
+        markets = tuple(self._markets_by_key.get(key, []))
+        return ForecastSignalTask(
+            forecast_key=key,
+            market_ids=[market.market_id for market in markets],
+            markets=markets,
+            lane=lane,
+            priority_reason=priority_reason,
+            next_eligible_at=self._next_due_at_for_key(key, priority=lane == "priority") or current,
+            city=self._city_for_key(key),
+        )
+
+    def _city_for_key(self, key: str) -> str:
+        markets = self._markets_by_key.get(key) or []
+        return _parsed_city_for_market(markets[0]) if markets else ""
+
+    def _key_available_at(self, key: str) -> datetime:
+        return self._cooldown_until_by_key.get(key, datetime.min.replace(tzinfo=timezone.utc))
+
+    def _ttl_for_key(self, key: str, *, priority: bool) -> int:
+        if priority:
+            reasons = set(self._priority_reasons_by_key.get(key, []))
+            if reasons & {
+                "NEAR_CLOSE",
+                "LIVE_PRICE_OPPORTUNITY",
+                "NOWCAST_NEAR_THRESHOLD",
+                "ACTIVE_EVALUATION_STALE_SIGNAL",
+            }:
+                return self.priority_ttl_seconds
+        markets = self._markets_by_key.get(key) or []
+        if any(market.market_id in self.open_market_ids for market in markets):
+            return self.held_ttl_seconds
+        return self.general_ttl_seconds
+
+    def _next_due_at_for_key(self, key: str, *, priority: bool) -> datetime | None:
+        last_success_at = self._last_success_at_by_key.get(key)
+        if last_success_at is None:
+            return self._key_available_at(key)
+        due_at = last_success_at + timedelta(seconds=self._ttl_for_key(key, priority=priority))
+        return max(due_at, self._key_available_at(key))
+
+    def _is_due(self, key: str, current: datetime, *, priority: bool) -> bool:
+        due_at = self._next_due_at_for_key(key, priority=priority)
+        return due_at is None or due_at <= current
+
+    def _next_eligible_at(self, current: datetime) -> datetime | None:
+        candidates: list[datetime] = []
+        for key in self._key_order:
+            priority = key in self._priority_reasons_by_key
+            due_at = self._next_due_at_for_key(key, priority=priority)
+            if due_at is not None:
+                candidates.append(due_at)
+        if not candidates:
+            return None
+        return min(candidates)
 
 
 def _finite_float(value: Any) -> float | None:
@@ -388,6 +655,144 @@ class RealtimeEvaluationCoalescer:
                 self.status_update(snapshot)
             except Exception:
                 pass
+
+
+class RealtimeForecastSignalWorker:
+    """Attach forecast signals after streaming has already started."""
+
+    def __init__(
+        self,
+        *,
+        scheduler: ForecastSignalScheduler,
+        settings: Settings,
+        signals_by_market: dict[str, WeatherSignal],
+        signal_refreshed_at_by_market: dict[str, datetime],
+        market_types: dict[str, str],
+        enqueue_tokens: Callable[[set[str]], None],
+        probability_estimator: Any = estimate_weather_probability,
+        ensemble_client: OpenMeteoEnsembleClient | None = None,
+        observation_provider: Any | None = None,
+        status_update: Callable[[dict[str, object]], None] | None = None,
+        sleep: Callable[[float], None] | None = None,
+    ) -> None:
+        self.scheduler = scheduler
+        self.settings = settings
+        self.signals_by_market = signals_by_market
+        self.signal_refreshed_at_by_market = signal_refreshed_at_by_market
+        self.market_types = market_types
+        self.enqueue_tokens = enqueue_tokens
+        self.probability_estimator = probability_estimator
+        self.ensemble_client = ensemble_client
+        self.observation_provider = observation_provider
+        self.status_update = status_update
+        self._sleep = sleep or time.sleep
+        self._stop_event = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._lock = threading.RLock()
+        self._processed_task_count = 0
+        self._error_count = 0
+        self._last_error = ""
+
+    def start(self) -> None:
+        with self._lock:
+            if self._thread is not None and self._thread.is_alive():
+                return
+            self._stop_event.clear()
+            self._thread = threading.Thread(
+                target=self._run,
+                name="polymarket-forecast-signal-worker",
+                daemon=True,
+            )
+            self._thread.start()
+
+    def stop(self, *, timeout: float = 5.0) -> None:
+        self._stop_event.set()
+        thread = self._thread
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=max(0.0, float(timeout)))
+
+    def status_snapshot(self) -> dict[str, object]:
+        scheduler_status = self.scheduler.status_snapshot()
+        with self._lock:
+            scheduler_status.update(
+                {
+                    "thread_alive": bool(self._thread is not None and self._thread.is_alive()),
+                    "processed_task_count": self._processed_task_count,
+                    "error_count": self._error_count,
+                    "last_error": self._last_error,
+                }
+            )
+        return scheduler_status
+
+    def _run(self) -> None:
+        while not self._stop_event.is_set():
+            task = self.scheduler.next_task()
+            if task is None:
+                self._publish_status()
+                self._sleep_for_idle_window()
+                continue
+            try:
+                result = self._process_task(task)
+                if result.has_supported_signal:
+                    self.scheduler.mark_success(task, result.success_at)
+                else:
+                    self.scheduler.mark_failure(task, "forecast signal unavailable")
+                with self._lock:
+                    self._processed_task_count += 1
+                    self._last_error = ""
+                if result.touched_tokens:
+                    self.enqueue_tokens(result.touched_tokens)
+            except Exception as exc:  # noqa: BLE001
+                safe_error = _safe_error_text(exc)
+                self.scheduler.mark_failure(task, f"{exc.__class__.__name__}: {safe_error}")
+                with self._lock:
+                    self._error_count += 1
+                    self._last_error = f"{exc.__class__.__name__}: {safe_error}"
+            self._publish_status()
+
+    def _sleep_for_idle_window(self) -> None:
+        sleep_seconds = min(
+            FORECAST_WORKER_IDLE_SLEEP_SECONDS,
+            max(0.0, self.scheduler.seconds_until_next_task()),
+        )
+        if sleep_seconds > 0:
+            self._sleep(sleep_seconds)
+
+    def _process_task(self, task: ForecastSignalTask) -> ForecastTaskResult:
+        touched_tokens: set[str] = set()
+        refreshed_at = datetime.now(timezone.utc)
+        has_supported_signal = False
+        for market in task.markets:
+            gated = pre_forecast_tradeability_gate(market, self.settings, "temperature")
+            if gated is not None:
+                signal, _result = gated
+            else:
+                signal = _call_probability_estimator(
+                    self.probability_estimator,
+                    market.question,
+                    settings=self.settings,
+                    ensemble_client=self.ensemble_client,
+                    observation_provider=self.observation_provider,
+                )
+            if signal.source != "forecast-unavailable" and signal.confidence > 0:
+                has_supported_signal = True
+            self.signals_by_market[market.market_id] = signal
+            self.signal_refreshed_at_by_market[market.market_id] = refreshed_at
+            self.market_types[market.market_id] = "temperature"
+            touched_tokens.update(_market_token_ids(market))
+        return ForecastTaskResult(
+            touched_tokens=touched_tokens,
+            success_at=_ensemble_last_success_at(self.ensemble_client, refreshed_at),
+            has_supported_signal=has_supported_signal,
+        )
+
+    def _publish_status(self) -> None:
+        if self.status_update is None:
+            return
+        try:
+            self.status_update(self.status_snapshot())
+        except Exception:
+            pass
 
 
 def position_size_usd(
@@ -1270,6 +1675,64 @@ def _apply_event_portfolio(
     return decision
 
 
+def _realtime_signal_is_stale(
+    market: RawMarket,
+    settings: Settings,
+    signal_refreshed_at_by_market: dict[str, datetime] | None,
+    *,
+    now: datetime,
+) -> bool:
+    if signal_refreshed_at_by_market is None:
+        return False
+    last_refreshed_at = signal_refreshed_at_by_market.get(market.market_id)
+    if last_refreshed_at is None:
+        return True
+    return (now - last_refreshed_at.astimezone(timezone.utc)).total_seconds() >= settings.station_nowcast_cache_ttl_seconds
+
+
+def _record_forecast_signal_pending(
+    broker: PaperBroker,
+    market: RawMarket,
+    market_type: str,
+    reason: str,
+) -> None:
+    try:
+        parsed = parse_weather_question(market.question)
+    except Exception:  # noqa: BLE001
+        parsed = None
+    signal = WeatherSignal(
+        p_true=0.5,
+        confidence=0.0,
+        source="forecast-pending",
+        note=reason,
+        parsed=parsed,
+    )
+    result = EdgeResult(
+        "SKIP",
+        signal.p_true,
+        None,
+        -999.0,
+        0.0,
+        0.0,
+        reason,
+    )
+    broker.log_decision(market, result, signal.note, market_type)
+    broker.log_raw_snapshot(
+        "forecast_signal_pending",
+        market,
+        {
+            "status": "pending",
+            "reason": reason,
+            "signal": {
+                "p_true": signal.p_true,
+                "confidence": signal.confidence,
+                "source": signal.source,
+                "note": signal.note,
+            },
+        },
+    )
+
+
 def _evaluate_realtime_update(
     updated_token_ids: set[str],
     client: StreamBackedPolymarketClient,
@@ -1284,6 +1747,7 @@ def _evaluate_realtime_update(
     probability_estimator: Any = estimate_weather_probability,
     ensemble_client: OpenMeteoEnsembleClient | None = None,
     observation_provider: Any | None = None,
+    forecast_scheduler: ForecastSignalScheduler | None = None,
     now: datetime | None = None,
 ) -> None:
     current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
@@ -1306,6 +1770,30 @@ def _evaluate_realtime_update(
         for market in event_groups[event_key]:
             market_type = market_types.get(market.market_id, "temperature")
             try:
+                if market.market_id not in signals_by_market:
+                    if forecast_scheduler is not None:
+                        forecast_scheduler.enqueue_priority(market, "ACTIVE_EVALUATION_STALE_SIGNAL", now=current)
+                    _record_forecast_signal_pending(
+                        broker,
+                        market,
+                        market_type,
+                        "forecast signal pending; new entry blocked until forecast worker attaches a fresh signal",
+                    )
+                    continue
+                if forecast_scheduler is not None and _realtime_signal_is_stale(
+                    market,
+                    settings,
+                    signal_refreshed_at_by_market,
+                    now=current,
+                ):
+                    forecast_scheduler.enqueue_priority(market, "ACTIVE_EVALUATION_STALE_SIGNAL", now=current)
+                    _record_forecast_signal_pending(
+                        broker,
+                        market,
+                        market_type,
+                        "forecast signal stale; active evaluation queued priority refresh before trading",
+                    )
+                    continue
                 _refresh_realtime_signal_if_needed(
                     market,
                     settings,
@@ -1447,6 +1935,7 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
         ensemble_client: OpenMeteoEnsembleClient | None = None
         stream: OrderBookMarketStream | None = None
         evaluator_worker: RealtimeEvaluationCoalescer | None = None
+        forecast_worker: RealtimeForecastSignalWorker | None = None
         try:
             discovery_client = PolymarketClient(settings.gamma_base, settings.clob_base)
             ensemble_client = OpenMeteoEnsembleClient.from_settings(settings)
@@ -1510,20 +1999,14 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
             signals_by_market: dict[str, WeatherSignal] = {}
             signal_refreshed_at_by_market: dict[str, datetime] = {}
             market_types: dict[str, str] = {}
-            failed_phase = "forecast_preparation"
             for market in stream_markets:
                 signal = precomputed_signals.get(market.market_id)
-                if signal is None:
-                    signal = _call_probability_estimator(
-                        estimate_weather_probability,
-                        market.question,
-                        settings=settings,
-                        ensemble_client=ensemble_client,
-                        observation_provider=observation_provider,
-                    )
-                signals_by_market[market.market_id] = signal
-                signal_refreshed_at_by_market[market.market_id] = datetime.now(timezone.utc)
+                if signal is not None:
+                    signals_by_market[market.market_id] = signal
+                    signal_refreshed_at_by_market[market.market_id] = datetime.now(timezone.utc)
                 market_types[market.market_id] = "temperature"
+            forecast_markets = [market for market in stream_markets if market.market_id not in signals_by_market]
+            forecast_scheduler = ForecastSignalScheduler(forecast_markets, open_market_ids=open_market_ids)
 
             latest_edges: dict[tuple[str, str], EdgeResult] = {}
             update_lock = threading.RLock()
@@ -1549,10 +2032,14 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
                             signal_refreshed_at_by_market=signal_refreshed_at_by_market,
                             ensemble_client=ensemble_client,
                             observation_provider=observation_provider,
+                            forecast_scheduler=forecast_scheduler,
                         )
 
             def update_evaluator_status(status: dict[str, object]) -> None:
                 update_runner_status_fields(settings, realtime_evaluator=status)
+
+            def update_forecast_worker_status(status: dict[str, object]) -> None:
+                update_runner_status_fields(settings, forecast_worker=status)
 
             evaluator_worker = RealtimeEvaluationCoalescer(
                 event_key_by_token=event_key_by_token,
@@ -1577,6 +2064,19 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
             stream = build_stream()
             stream_holder["client"] = StreamBackedPolymarketClient(settings.gamma_base, settings.clob_base, stream)
             stream.start(market_by_token.keys())
+            forecast_worker = RealtimeForecastSignalWorker(
+                scheduler=forecast_scheduler,
+                settings=settings,
+                signals_by_market=signals_by_market,
+                signal_refreshed_at_by_market=signal_refreshed_at_by_market,
+                market_types=market_types,
+                enqueue_tokens=evaluator_worker.enqueue_tokens,
+                ensemble_client=ensemble_client,
+                observation_provider=observation_provider,
+                status_update=update_forecast_worker_status,
+            )
+            failed_phase = "forecast_worker_start"
+            forecast_worker.start()
 
             def write_stream_status(websocket_health: dict[str, object] | None = None) -> None:
                 websocket_health = websocket_health or stream.health_snapshot()
@@ -1601,6 +2101,7 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
                     exposure_usd=round(broker.total_exposure(), 2),
                     open_positions=len(broker.state.positions),
                     forecast=ensemble_client.health_snapshot(),
+                    forecast_worker=forecast_worker.status_snapshot() if forecast_worker is not None else forecast_scheduler.status_snapshot(),
                     websocket=websocket_health,
                     realtime_evaluator=evaluator_worker.status_snapshot() if evaluator_worker is not None else None,
                     **_market_error_status_fields(market_error_count, last_market_error),
@@ -1641,11 +2142,15 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
                     failed_phase = "websocket_stop"
                     raise
                 stream = None
+                if forecast_worker is not None:
+                    forecast_worker.stop()
+                    forecast_worker = None
                 if evaluator_worker is not None:
                     evaluator_worker.stop()
                     evaluator_worker = None
         except Exception as exc:  # noqa: BLE001
             evaluator_status = evaluator_worker.status_snapshot() if evaluator_worker is not None else None
+            forecast_worker_status = forecast_worker.status_snapshot() if forecast_worker is not None else None
             websocket_health = None
             if stream is not None and hasattr(stream, "health_snapshot"):
                 try:
@@ -1660,6 +2165,9 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
             if evaluator_worker is not None:
                 evaluator_worker.stop(drain=False)
                 evaluator_worker = None
+            if forecast_worker is not None:
+                forecast_worker.stop()
+                forecast_worker = None
             if stream is not None:
                 try:
                     stream.stop()
@@ -1679,6 +2187,7 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
                 exposure_usd=round(broker.total_exposure(), 2) if broker is not None else None,
                 open_positions=len(broker.state.positions) if broker is not None else None,
                 forecast=ensemble_client.health_snapshot() if ensemble_client is not None else None,
+                forecast_worker=forecast_worker_status,
                 websocket=websocket_health,
                 realtime_evaluator=evaluator_status,
                 **_market_error_status_fields(market_error_count, last_market_error),

@@ -25,6 +25,8 @@ AWC_METAR_UPDATE_CADENCE = (
 HKO_MAXMIN_UPDATE_CADENCE = (
     "Hong Kong Observatory regional maximum/minimum air temperature since midnight updates every 10 minutes."
 )
+AWC_METAR_MIN_REAL_REQUEST_INTERVAL_SECONDS = 5 * 60
+HKO_MAXMIN_MIN_REAL_REQUEST_INTERVAL_SECONDS = 10 * 60
 
 
 @dataclass(frozen=True)
@@ -307,12 +309,17 @@ class AviationWeatherMetarNowcastProvider:
         cache_key = (station.station_id, target_date.isoformat())
         cached = self._cache.get(cache_key)
         cache_miss_reason = "empty-cache"
+        provider_floor_seconds = self._source_min_real_request_interval_seconds(source)
+        effective_cache_ttl_seconds = max(self.cache_ttl_seconds, provider_floor_seconds)
         if cached is not None and self.cache_ttl_seconds > 0:
             cached_at, observation = cached
-            if (current - cached_at).total_seconds() <= self.cache_ttl_seconds:
+            if (current - cached_at).total_seconds() <= effective_cache_ttl_seconds:
                 return observation
             cache_miss_reason = "expired-cache"
         elif cached is not None:
+            cached_at, observation = cached
+            if provider_floor_seconds > 0 and (current - cached_at).total_seconds() <= provider_floor_seconds:
+                return observation
             cache_miss_reason = "cache-disabled"
 
         if source.source == "aviationweather-metar":
@@ -452,12 +459,21 @@ class AviationWeatherMetarNowcastProvider:
 
     def _fresh_awc_metar_bulk_cache(self, now: datetime, *, min_hours_before_now: int) -> _MetarBulkCacheEntry | None:
         cached = self._awc_metar_bulk_cache
-        if cached is None or self.cache_ttl_seconds <= 0:
+        effective_cache_ttl_seconds = max(self.cache_ttl_seconds, AWC_METAR_MIN_REAL_REQUEST_INTERVAL_SECONDS)
+        if cached is None or effective_cache_ttl_seconds <= 0:
             return None
-        if (now - cached.cached_at).total_seconds() <= self.cache_ttl_seconds:
+        if (now - cached.cached_at).total_seconds() <= effective_cache_ttl_seconds:
             if cached.hours_before_now >= min_hours_before_now:
                 return cached
         return None
+
+    @staticmethod
+    def _source_min_real_request_interval_seconds(source: StationNowcastSource) -> int:
+        if source.source == "aviationweather-metar":
+            return AWC_METAR_MIN_REAL_REQUEST_INTERVAL_SECONDS
+        if source.source == "hko-maxmin-since-midnight":
+            return HKO_MAXMIN_MIN_REAL_REQUEST_INTERVAL_SECONDS
+        return 0
 
     def _awc_metar_bulk_station_ids(self) -> list[str]:
         station_ids = {

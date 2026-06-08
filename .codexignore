@@ -37,3 +37,8 @@ station_nowcast_request_log.jsonl
 shadow_external_signals.jsonl
 shadow_public_notes.jsonl
 shadow_signal_report.md
+
+# Durable lessons are useful only for matching repeated issues. Keep them out of
+# normal context scans; read a specific file only when AGENTS.md conditions say
+# it is relevant.
+docs/solutions/

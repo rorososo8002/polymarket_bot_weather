@@ -34,7 +34,7 @@ _POSITIVE_INTEGER_SETTINGS = (
 )
 
 _MINIMUM_INTEGER_SETTINGS = (
-    ("forecast_request_min_interval_seconds", 60),
+    ("forecast_request_min_interval_seconds", 60),  # hard floor; recommended default is 120
 )
 
 _TCP_PORT_SETTINGS = (
@@ -105,11 +105,11 @@ class Settings:
     raw_snapshots_max_disk_usage_pct: float = 0.90
     forecast_cache_path: str = ""
     forecast_cache_ttl_seconds: int = 2400
-    forecast_request_min_interval_seconds: int = 60
+    forecast_request_min_interval_seconds: int = 120  # raised from 60: ensemble counts 60-70 units/city
     forecast_request_log_path: str = ""
     forecast_rate_limit_state_path: str = ""
     station_nowcast_enabled: bool = True
-    station_nowcast_cache_ttl_seconds: int = 900
+    station_nowcast_cache_ttl_seconds: int = 300  # 5 min: matches AWC METAR floor for timely exit signals
     station_nowcast_freshness_seconds: int = 5400
     station_nowcast_request_log_path: str = ""
     dashboard_host: str = "127.0.0.1"

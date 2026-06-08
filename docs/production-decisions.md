@@ -36,8 +36,17 @@ while changing or operating the project.
 - `WEATHER_BIAS_JSON` is optional calibration evidence. Empty means neutral
   defaults; an explicit missing, unreadable, invalid, malformed, or non-numeric
   file produces `forecast-unavailable` with zero confidence.
-- Real Open-Meteo forecast HTTP calls are globally drip-fed by
-  `FORECAST_REQUEST_MIN_INTERVAL_SECONDS=60`. Cache hits do not count as calls.
+- Real Open-Meteo forecast HTTP calls are one-at-a-time. While one request is
+  in flight, the bot must not start duplicate or parallel forecast requests.
+- After a successful real Open-Meteo request, wait
+  `FORECAST_REQUEST_MIN_INTERVAL_SECONDS=120` before starting the next real
+  request. Cache hits do not count as calls. (120 s = 41 cities in 82 min/cycle;
+  Open-Meteo ensemble counts 60-70 units per city, so 41 × 70 = 2 870 units/cycle;
+  10 000 / 2 870 ≈ 3.5 cycles at 60 s, 17+ cycles at 120 s with one model.)
+- If a real Open-Meteo request does not succeed within the configured request
+  budget, treat it as timeout/cancelled failure, record the reason, avoid
+  immediate retry pressure on the same key, and continue to the next eligible
+  city or forecast key.
 - `forecast_cache.json` is an answer cache, not the call ledger. Real attempts
   are recorded in `forecast_request_log.jsonl`.
 
@@ -45,6 +54,28 @@ while changing or operating the project.
 
 - Use the Polymarket CLOB WebSocket market stream by default. Do not silently
   replace realtime streaming with polling.
+- Realtime startup must not wait for every supported market forecast before
+  starting the CLOB WebSocket stream. Start streaming once the temperature token
+  subscription set is known, then attach forecast/nowcast signals as they become
+  ready.
+- Early WebSocket streaming does not permit forecast-free entries. Markets
+  without a fresh supported signal must not open new positions.
+- Realtime forecast signals are maintained as a fill-as-ready registry. Missing
+  or stale signals must be logged as blocked evaluation and queued for refresh,
+  not treated as executable entry evidence.
+- Forecast refresh uses a two-lane scheduler: a priority lane for held
+  positions, near-close markets, nowcast-near-threshold markets, and live-price
+  opportunity markets; plus a normal round-robin lane for the trading-ready city
+  universe.
+- The priority lane changes which eligible city gets the next single request
+  slot. It must not create duplicate, parallel, or burst Open-Meteo calls.
+- Forecast scheduling targets are 40 minutes for general cities, 30 minutes for
+  held-position cities, and 20 minutes for near-close, nowcast-near-threshold,
+  or live-price opportunity cities. These are based on last successful real
+  forecast time, not city-count position.
+- Runner status must show forecast-worker pending key/city, in-flight key/city,
+  queue depth, priority reason, last success, last failure, and next eligible
+  request time so cold-start and refresh gaps are observable.
 - `websocket-client` must be importable before the paper runner starts a market
   stream. Missing WebSocket support fails closed and is written to runner
   status.
@@ -58,6 +89,7 @@ while changing or operating the project.
   comes from `book` snapshots and valid `price_change` updates.
 - A `price_change` may update executable depth only after that token already
   received an initial `book` snapshot in the current WebSocket cache.
+- WebSocket callbacks must not make forecast HTTP calls.
 - Stale or dead executable depth blocks new entries and pauses held-position
   exits with observable reasons.
 
@@ -97,9 +129,20 @@ while changing or operating the project.
   AWC METAR covers ICAO stations; HKO covers Hong Kong.
 - Nowcast derives observed high-so-far and low-so-far from the same station-date
   response when possible.
+- Real AWC METAR bulk nowcast requests must be at least 5 minutes apart. Real
+  HKO max/min nowcast requests must be at least 10 minutes apart. Cache hits do
+  not write request-log rows.
+- `STATION_NOWCAST_CACHE_TTL_SECONDS=300` (5 min) is the recommended cache TTL.
+  Keeping it equal to the AWC METAR provider floor (5 min) means held-position
+  observations are fresh enough for timely exit signals. The old 900-s (15-min)
+  default created up to 10-minute blind spots after a sudden threshold breach.
 - The target date may be station-local today, or station-local yesterday only
   during the post-close freshness window for already-held paper exit and
   settlement-risk evidence.
+- For daily-high threshold markets, `observed_high_c >= threshold_c` makes held
+  YES favorable evidence and held NO a `nowcast_bucket_lock_risk` exit attempt.
+  Exact and range buckets must use parsed bucket boundaries before choosing the
+  held-side exit-risk treatment.
 - Repeated SKIPs are research signals. Diagnose categories before changing
   thresholds, risk caps, or data-source assumptions.
 

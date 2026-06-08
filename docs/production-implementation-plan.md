@@ -128,6 +128,62 @@ exposure caps leave at least `MIN_ORDER_USD`.
 - `ReadTimeout` creates one logged real attempt and a temporary per-key miss; do
   not hammer the same key immediately.
 
+## Realtime Forecast-Orchestration Contract
+
+- Start the CLOB WebSocket stream as soon as the temperature token subscription
+  set is known, including held-position tokens. Do not wait for every market's
+  forecast signal before streaming.
+- Early streaming is not forecast-free trading. A market may open a new
+  position only when it has both a fresh supported forecast/nowcast signal and
+  executable WebSocket order-book depth.
+- Realtime signals are a registry that fills as each forecast key becomes
+  ready. Missing or stale registry entries are explicit SKIPs for new entries,
+  not permission to fall back to guessed prices or forecast-free trading.
+- Forecast refresh uses two lanes. The priority lane is checked first and
+  includes held-position cities, near-close or settlement-sensitive cities,
+  nowcast-near-threshold cities, live-price opportunity cities, and stale
+  signals needed for active evaluation. The round-robin lane covers the normal
+  trading-ready city universe.
+- Priority only chooses which eligible city or forecast key gets the next
+  single real request slot. It must not create duplicate, parallel, or burst
+  Open-Meteo calls.
+- Target freshness for scheduling: general cities 40 minutes, held-position
+  cities 30 minutes, near-close or opportunity cities 20 minutes. These are
+  scheduling priorities, not parallel-call permissions.
+- Forecast freshness targets are based on last successful real forecast time,
+  not "after N cities." A priority refresh resumes the normal round-robin lane
+  from its previous position after the priority key is handled.
+- Real Open-Meteo HTTP calls are globally serialized. Run at most one real
+  request at a time; while one is in flight, do not start a duplicate request or
+  another city's real request.
+- After a successful real Open-Meteo request, wait
+  `FORECAST_REQUEST_MIN_INTERVAL_SECONDS=120` before starting the next real
+  request. Cache hits are local reads and do not require this delay.
+  (120 s recommended: 41 cities × 120 s = 82-min cycle, ~17 cycles/day well
+  within the 10 000 daily free unit limit. Ensemble calls count 60-70 units
+  each.)
+- If a real Open-Meteo request exceeds the configured request budget without
+  success, record an observable timeout/cancelled failure, avoid immediate
+  retry pressure on the same key, and move to the next eligible city or
+  forecast key.
+- Runner status must expose the forecast worker separately from the raw
+  Open-Meteo client health: pending key/city, in-flight key/city, queue depth,
+  priority reason, last success, last failure, and next eligible request time.
+- Nowcast refresh may be more frequent than forecast refresh, but provider
+  request floors still apply: AWC METAR bulk fetches for enabled ICAO stations
+  must be at least 5 minutes apart, and HKO max/min requests must be at least
+  10 minutes apart. Cache hits are local reads and do not write request-log
+  rows.
+- For daily-high threshold markets, `observed_high_c >= threshold_c` makes held
+  YES favorable evidence and held NO a `nowcast_bucket_lock_risk` exit attempt.
+  Exact and range buckets must use parsed bucket boundaries; a held side that
+  nowcast shows is losing gets the same exit-risk treatment.
+- Forecast warmup must not run inside WebSocket receiver callbacks. Callbacks
+  update the order-book cache and enqueue bounded evaluation work only.
+- `STREAM_CYCLE_INTERVAL_SECONDS=2400` is the market-discovery and WebSocket
+  subscription rebuild interval. It should represent the intended streaming
+  window, not be consumed by a long pre-stream forecast warmup.
+
 ## Portfolio And Risk Contract
 
 Before new entries, calculate:
@@ -236,11 +292,11 @@ ORDERBOOK_STREAM_STALE_SECONDS=60
 RUNNER_HEALTH_STATUS_INTERVAL_SECONDS=5
 STREAM_CYCLE_INTERVAL_SECONDS=2400
 FORECAST_CACHE_TTL_SECONDS=2400
-FORECAST_REQUEST_MIN_INTERVAL_SECONDS=60
+FORECAST_REQUEST_MIN_INTERVAL_SECONDS=120
 FORECAST_RATE_LIMIT_STATE_PATH=forecast_rate_limit_state.json
 WEATHER_BIAS_JSON=
 STATION_NOWCAST_ENABLED=true
-STATION_NOWCAST_CACHE_TTL_SECONDS=900
+STATION_NOWCAST_CACHE_TTL_SECONDS=300
 STATION_NOWCAST_FRESHNESS_SECONDS=5400
 STATION_NOWCAST_REQUEST_LOG_PATH=station_nowcast_request_log.jsonl
 RAW_SNAPSHOTS_MODE=error

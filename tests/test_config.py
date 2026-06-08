@@ -19,7 +19,7 @@ def test_default_forecast_budget_drip_feeds_city_requests():
 
 def test_default_station_nowcast_is_pilot_cached_and_freshness_bounded():
     assert Settings.station_nowcast_enabled is True
-    assert Settings.station_nowcast_cache_ttl_seconds == 900
+    assert Settings.station_nowcast_cache_ttl_seconds == 300  # 5 min: matches AWC METAR floor
     assert Settings.station_nowcast_freshness_seconds == 5400
     assert Settings.station_nowcast_request_log_path == ""
 
@@ -95,10 +95,12 @@ def test_settings_rejects_dashboard_port_outside_tcp_range(dashboard_port):
     assert "between 1 and 65535" in str(exc_info.value)
 
 
-def test_settings_defaults_to_one_forecast_http_request_per_minute():
+def test_settings_defaults_to_two_minute_forecast_request_interval():
+    # Default is 120 s (raised from 60 s) to keep 41-city ensemble calls
+    # well within the Open-Meteo 10 000 daily free unit limit.
     settings = Settings()
 
-    assert settings.forecast_request_min_interval_seconds == 60
+    assert settings.forecast_request_min_interval_seconds == 120
 
 
 @pytest.mark.parametrize("interval_seconds", [0, 30, 59])

@@ -48,6 +48,16 @@ code. In this project the VPS source still requested precipitation and snowfall
 variables after the local temperature-only fix existed. That increased
 Open-Meteo equivalent-call cost and made the limit problem look mysterious.
 
+A third trap is treating one `forecast_request_log.jsonl` row as exactly one
+Open-Meteo billing/quota call. On 2026-06-07 UTC, the VPS logged only 156
+forecast HTTP attempts for the day: 155 successes and then one `429` with
+`Daily API request limit exceeded`. The active request shape was still
+`daily=temperature_2m_max,temperature_2m_min`, but it used the ensemble endpoint
+with `models=gfs_seamless,ecmwf_ifs025`. Open-Meteo's quota accounting can
+count one HTTP request as multiple equivalent calls when models, variables,
+locations, or time range increase server work. In that incident, the observed
+threshold implied roughly 64 equivalent calls per raw HTTP request.
+
 ## 3. How It Was Fixed
 
 The Open-Meteo ensemble client now writes a separate
@@ -109,7 +119,8 @@ external request was made.
 - Separate successful calls from `429` rate-limit rows when diagnosing quota
   exhaustion.
 - Remember that Open-Meteo may calculate official usage differently from raw
-  HTTP attempt count for large requests.
+  HTTP attempt count for large requests, especially ensemble requests with
+  multiple model families.
 - Verify the running VPS source and env values before assuming a local API
   budget fix is live.
 - Confirm Open-Meteo requests include only the temperature variables needed by

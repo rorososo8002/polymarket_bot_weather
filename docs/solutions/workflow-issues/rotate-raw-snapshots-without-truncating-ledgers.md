@@ -1,7 +1,7 @@
 ---
 title: Rotate raw snapshots without truncating paper ledgers
 date: 2026-06-04
-last_updated: 2026-06-05
+last_updated: 2026-06-08
 category: workflow-issues
 module: vps_runtime_data
 problem_type: workflow_issue
@@ -129,10 +129,29 @@ emergency cleanup. The safe reset order was:
 That reset reduced root disk use from 100% to 14%. After restart, the bot was
 paper-only and began trading from the fresh 200 USD bankroll.
 
+On 2026-06-08, the operator again explicitly asked to remove previous
+paper-trading data from the Oracle VPS before starting over. A reused dashboard
+diagnostic script was the wrong first tool because it streamed large ledgers to
+summarize them; the SSH command timed out while `paper_decisions.csv` was about
+4.5GB and `paper_event_portfolios.jsonl` was about 868MB. The correction was to
+kill the remote diagnostic process, switch to metadata-only discovery, and
+delete only `paper*` files under `/opt/polymarket-weather-bot/data` after
+stopping both services. The reset removed six files, restarted
+`polymarket-weather-bot` and `polymarket-weather-dashboard`, verified the
+dashboard page returned 200, verified bare `/api/status` returned the expected
+403 with token protection, and verified header-authenticated `/api/status`
+returned 200 with zero open positions.
+
 ## 4. What To Check Next Time
 
 - Check disk pressure with `df -h /` before and after cleanup.
 - Check runtime file sizes with a size summary, not full file reads.
+- Do not reuse diagnostic scripts that parse full `paper_decisions.csv`,
+  `paper_trades.csv`, or `paper_event_portfolios.jsonl` when the task is only a
+  reset or cleanup. Use `find`/`stat` metadata, bounded tails, or small samples.
+- If a remote diagnostic script times out, check for the still-running process
+  with `pgrep -af`, stop that process, and switch to a bounded command shape
+  before continuing.
 - If the disk is already at 100%, a remote script upload can fail. Free a small,
   safe target first, such as oversized system logs, then use the remote-script
   pattern for the larger operation.
@@ -150,6 +169,9 @@ paper-only and began trading from the fresh 200 USD bankroll.
 - If the operator requests a fresh bankroll reset, document the reset boundary
   in the handoff docs and never mix pre-reset and post-reset performance
   results.
+- When a public dashboard has `DASHBOARD_TOKEN` set, a bare `/api/status` 403 is
+  expected protection, not an SSH or operator-permission failure. Verify `/`
+  separately from authenticated `/api/status` before explaining the URL.
 
 ## 5. What This Project Must Be Especially Careful About
 
