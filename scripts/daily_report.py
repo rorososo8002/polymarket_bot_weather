@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-weekly_report.py — 페이퍼 트레이딩 주간 성과 리포트
-매주 월요일 00:00 UTC 자동 실행 (cron).
-결과를 /opt/polymarket-weather-bot/data/weekly_report_YYYYMMDD.txt 에 저장.
+daily_report.py — 페이퍼 트레이딩 일간 성과 리포트
+매일 00:00 UTC 자동 실행 (cron).
+결과를 /opt/polymarket-weather-bot/data/daily_report_YYYYMMDD.txt 에 저장.
 """
 from __future__ import annotations
 
@@ -200,23 +200,23 @@ def build_report(week_start: datetime, week_end: datetime) -> str:
 
 def main() -> None:
     now = _utc_now()
-    # 지난 7일 = 이번 주 리포트
-    week_end = now
-    week_start = now - timedelta(days=7)
+    # 지난 1일 = 오늘 일간 리포트
+    day_end = now
+    day_start = now - timedelta(days=1)
 
-    report = build_report(week_start, week_end)
+    report = build_report(day_start, day_end)
     print(report)
 
     # 파일 저장
-    fname = REPORT_DIR / f"weekly_report_{now.strftime('%Y%m%d')}.txt"
+    fname = REPORT_DIR / f"daily_report_{now.strftime('%Y%m%d')}.txt"
     fname.write_text(report, encoding="utf-8")
     print(f"리포트 저장: {fname}", file=sys.stderr)
 
-    # 오래된 리포트 삭제 (30일 이상)
-    for old in REPORT_DIR.glob("weekly_report_*.txt"):
+    # 오래된 리포트 삭제 (14일 이상)
+    for old in REPORT_DIR.glob("daily_report_*.txt"):
         try:
             age = now - datetime.fromtimestamp(old.stat().st_mtime, tz=timezone.utc)
-            if age.days > 30:
+            if age.days > 14:
                 old.unlink()
         except Exception:
             pass

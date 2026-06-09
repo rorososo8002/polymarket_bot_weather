@@ -112,9 +112,9 @@ before continuing.
   only when at least one trade is selected (`PORTFOLIO_LOG_SKIP_ENABLED=false`).
 - `paper_raw_snapshots.jsonl` is diagnostic evidence, not an account book.
   Normal raw snapshots are disabled by default except for errors.
-- `weekly_report_YYYYMMDD.txt` is the weekly performance report generated every
-  Monday 00:00 UTC. It shows P&L, win rate, city breakdown, and bucket breakdown.
-  Kept for 30 days, then auto-deleted.
+- `daily_report_YYYYMMDD.txt` is the daily performance report generated every
+  day at 00:00 UTC. It shows P&L, win rate, city breakdown, and bucket breakdown.
+  Kept for 14 days, then auto-deleted.
 - Do not open large runtime files in full. Use file sizes, counts, tails,
   filters, summaries, or small samples.
 

@@ -57,11 +57,11 @@ SystemMaxUse=50M
 
 Reload: `sudo systemctl restart systemd-journald`
 
-## Weekly Performance Report
+## Daily Performance Report
 
-A cron script runs every Monday 00:00 UTC
-(`/etc/cron.d/polymarket-weekly-report`) and writes to
-`/opt/polymarket-weather-bot/data/weekly_report_YYYYMMDD.txt`.
+A cron script runs every day at 00:00 UTC
+(`/etc/cron.d/polymarket-daily-report`) and writes to
+`/opt/polymarket-weather-bot/data/daily_report_YYYYMMDD.txt`.
 
 Report sections:
 - Bankroll delta and total P&L
