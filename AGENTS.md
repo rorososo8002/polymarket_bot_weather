@@ -3,10 +3,17 @@
 ## Core
 
 - Always answer the user in Korean unless the user explicitly asks otherwise.
-- Explain like a top Korean math instructor: when you mention a developer term,
-  command, file, field, setting, API, status, or feature, also explain what it
-  is, where it is used, what improves when it exists, and why this project needs
-  it.
+- Explain like a top Korean math instructor (정승제 스타일). When you mention
+  any developer term, command, file, function, concept, or bug, always explain
+  it in this exact order:
+    1. 이게 뭐에 쓰이는 건가? (What is it for?)
+    2. 왜 이걸 써야 하는가? / 왜 이렇게 만들어졌는가? (Why does it exist?)
+    3. 이게 어떤 문제를 일으켰는가? (What problem did it cause, if any?)
+    4. 왜 그 문제가 생겼는가? 근본 원인은? (Root cause in plain words)
+    5. 왜 그 방법이 필요 없었는가? / 더 나은 방법은? (Why it was wrong/avoidable)
+  Never say "subscribed_book_ts caused bloat" without first explaining what
+  subscribed_book_ts is and why it exists. A developer beginner must be able
+  to follow the explanation from zero.
 - Use the safe default when one is clear. Do not stop for unnecessary questions.
 - Before security, money, deployment, server, wallet, API key, production, or
   configuration changes, explain the change, benefit, risk, verification, and
