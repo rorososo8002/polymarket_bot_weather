@@ -1252,6 +1252,8 @@ def test_run_cycle_logs_skip_when_entry_bankroll_cannot_price_held_position(monk
         weather_taker_fee_rate=0.0,
         model_error_margin=0.0,
         resolution_error_margin=0.0,
+        # This test explicitly asserts on SKIP portfolio log content.
+        portfolio_log_skip_enabled=True,
     )
     (tmp_path / "state.json").write_text(
         json.dumps(

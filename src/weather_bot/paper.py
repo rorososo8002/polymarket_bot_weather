@@ -1175,6 +1175,11 @@ class PaperBroker:
         )
 
     def log_decision(self, market: RawMarket, result: EdgeResult, note: str, market_type: str = "temperature") -> str:
+        # Suppress SKIP rows by default — they are 95%+ of all writes and carry
+        # no analytical value.  Set DECISIONS_LOG_SKIP_ENABLED=true only for
+        # short debugging sessions.
+        if result.side == "SKIP" and not self.settings.decisions_log_skip_enabled:
+            return utc_now_iso()
         exists = self.decisions_csv_path.exists() and self.decisions_csv_path.stat().st_size > 0
         ts = utc_now_iso()
         with self.decisions_csv_path.open("a", newline="", encoding="utf-8") as f:
@@ -1292,7 +1297,11 @@ class PaperBroker:
             f.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
         _rotate_raw_snapshot_if_needed(self.raw_snapshots_path, self.settings.raw_snapshots_max_bytes)
 
-    def log_event_portfolio_decision(self, payload: dict[str, Any]) -> None:
+    def log_event_portfolio_decision(self, payload: dict[str, Any], has_selected: bool = True) -> None:
+        # Suppress writes when no trade was actually selected (default behaviour).
+        # Writing on every SKIP evaluation caused ~1.2 GB/9 h growth.
+        if not has_selected and not self.settings.portfolio_log_skip_enabled:
+            return
         row = {"ts": utc_now_iso(), **payload}
         with self.portfolio_decisions_jsonl_path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")

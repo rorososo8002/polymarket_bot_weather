@@ -601,6 +601,8 @@ def test_entry_net_return_filter_rejects_thin_high_price_trade(tmp_path):
         model_error_margin=0.0,
         resolution_error_margin=0.0,
         require_date_hint_for_trade=True,
+        # This test explicitly asserts on SKIP log content.
+        decisions_log_skip_enabled=True,
     )
     client = FakePolymarketClient(
         books={
@@ -1879,6 +1881,8 @@ def test_decision_log_writes_header_when_existing_file_is_empty(tmp_path):
         trades_csv_path=str(tmp_path / "trades.csv"),
         decisions_csv_path=str(decisions_path),
         raw_snapshots_path=str(tmp_path / "snapshots.jsonl"),
+        # This test explicitly asserts on SKIP log header/content.
+        decisions_log_skip_enabled=True,
     )
     broker = PaperBroker(settings)
     result = EdgeResult(
@@ -1924,6 +1928,8 @@ def test_decision_log_compacts_verbose_text_fields(tmp_path):
         trades_csv_path=str(tmp_path / "trades.csv"),
         decisions_csv_path=str(tmp_path / "decisions.csv"),
         raw_snapshots_path=str(tmp_path / "snapshots.jsonl"),
+        # This test explicitly asserts on SKIP log field compaction.
+        decisions_log_skip_enabled=True,
     )
     broker = PaperBroker(settings)
     market = RawMarket(

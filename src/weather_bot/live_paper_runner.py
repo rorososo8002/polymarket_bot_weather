@@ -1679,7 +1679,9 @@ def _apply_event_portfolio(
     entry_bankroll: EntryBankrollSnapshot,
 ) -> EventPortfolioDecision:
     decision = select_event_portfolio(broker, candidates, entry_bankroll)
-    broker.log_event_portfolio_decision(decision.to_log_payload())
+    broker.log_event_portfolio_decision(
+        decision.to_log_payload(), has_selected=bool(decision.selected)
+    )
     for candidate in decision.selected:
         _open_position_if_needed(
             broker,

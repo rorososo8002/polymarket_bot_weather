@@ -541,6 +541,8 @@ def test_realtime_update_without_signal_fails_closed_without_order_book_lookup(t
         decisions_csv_path=str(tmp_path / "decisions.csv"),
         raw_snapshots_path=str(tmp_path / "raw.jsonl"),
         portfolio_decisions_jsonl_path=str(tmp_path / "portfolio.jsonl"),
+        # This test explicitly asserts on SKIP log content.
+        decisions_log_skip_enabled=True,
     )
     broker = runner_module.PaperBroker(settings)
 

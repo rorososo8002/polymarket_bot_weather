@@ -99,16 +99,32 @@ before continuing.
 
 - Runtime files are generated evidence, not source code. They are ignored by
   git and may be deleted only for an intentional fresh paper-experiment reset.
+- **All runtime files live under `data/`, not the app root.**
+  Correct path: `/opt/polymarket-weather-bot/data/<filename>`
 - `paper_state.json` is the paper account book. It stores cash, realized PnL,
   and open positions.
 - `paper_trades.csv` is the execution receipt ledger. It records paper `OPEN`,
   `ADD`, `PARTIAL_CLOSE`, `CLOSE`, and `SETTLED` actions.
-- `paper_decisions.csv` is the strategy-decision evidence ledger. It records
-  YES/NO/SKIP judgments, including why the bot did or did not act.
+- `paper_decisions.csv` records YES/NO/HOLD actions. **SKIP rows are suppressed
+  by default** (`DECISIONS_LOG_SKIP_ENABLED=false`). SKIP rows were ~95% of all
+  writes (6 GB per 9 h) with zero analytical value. Enable only for debugging.
+- `paper_event_portfolios.jsonl` records event-portfolio selections. Written
+  only when at least one trade is selected (`PORTFOLIO_LOG_SKIP_ENABLED=false`).
 - `paper_raw_snapshots.jsonl` is diagnostic evidence, not an account book.
   Normal raw snapshots are disabled by default except for errors.
+- `weekly_report_YYYYMMDD.txt` is the weekly performance report generated every
+  Monday 00:00 UTC. It shows P&L, win rate, city breakdown, and bucket breakdown.
+  Kept for 30 days, then auto-deleted.
 - Do not open large runtime files in full. Use file sizes, counts, tails,
   filters, summaries, or small samples.
+
+## Disk Management
+
+- Logrotate compresses any file over 100 MB in `data/` hourly, keeping 5
+  archives in `data/archive/`. Config: `/etc/logrotate.d/polymarket-weather-bot`
+- journald is capped at 50 MB. Config: `/etc/systemd/journald.conf.d/polymarket.conf`
+- See `docs/codex/data-and-disk.md` for the full disk risk table and reset procedure.
+
 
 ## Oracle VPS
 

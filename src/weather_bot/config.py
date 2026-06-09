@@ -96,7 +96,14 @@ class Settings:
     state_path: str = "paper_state.json"
     trades_csv_path: str = "paper_trades.csv"
     decisions_csv_path: str = "paper_decisions.csv"
+    # When False (default), SKIP rows are NOT written to paper_decisions.csv.
+    # SKIP rows are 95%+ of all writes and have zero analytical value.
+    # Set DECISIONS_LOG_SKIP_ENABLED=true only for short debugging sessions.
+    decisions_log_skip_enabled: bool = False
     portfolio_decisions_jsonl_path: str = "paper_event_portfolios.jsonl"
+    # When False (default), paper_event_portfolios.jsonl is only written when
+    # at least one trade is actually selected (not on every SKIP evaluation).
+    portfolio_log_skip_enabled: bool = False
     raw_snapshots_path: str = "paper_raw_snapshots.jsonl"
     raw_snapshots_mode: str = "error"
     raw_snapshots_max_bytes: int = 100 * 1024 * 1024
@@ -326,9 +333,15 @@ def load_settings() -> Settings:
         state_path=os.getenv("STATE_PATH", Settings.state_path),
         trades_csv_path=os.getenv("TRADES_CSV_PATH", Settings.trades_csv_path),
         decisions_csv_path=os.getenv("DECISIONS_CSV_PATH", Settings.decisions_csv_path),
+        decisions_log_skip_enabled=_bool_env(
+            "DECISIONS_LOG_SKIP_ENABLED", Settings.decisions_log_skip_enabled
+        ),
         portfolio_decisions_jsonl_path=os.getenv(
             "PORTFOLIO_DECISIONS_JSONL_PATH",
             Settings.portfolio_decisions_jsonl_path,
+        ),
+        portfolio_log_skip_enabled=_bool_env(
+            "PORTFOLIO_LOG_SKIP_ENABLED", Settings.portfolio_log_skip_enabled
         ),
         raw_snapshots_path=os.getenv("RAW_SNAPSHOTS_PATH", Settings.raw_snapshots_path),
         raw_snapshots_mode=os.getenv("RAW_SNAPSHOTS_MODE", Settings.raw_snapshots_mode),
