@@ -113,6 +113,10 @@ while changing or operating the project.
 - Exit decisions use after-fee liquidation PnL, not raw token-price movement.
   Probability stop, take profit, overheated profit, edge-faded exit, max hold,
   settlement, and nowcast bucket-lock risk are the allowed exit paths.
+- Nowcast bucket-lock risk blocks **new entry** as well as triggering exit.
+  If `_nowcast_bucket_lock_exit_signal` fires for the candidate side before
+  an order is placed, the result must be converted to SKIP so that no position
+  is opened. Enter-then-immediately-exit is forbidden.
 - If an exit signal fires but the close cannot execute, the broker logs the
   blocker and preserves the original `exit_trigger`; it must not pretend to
   sell.

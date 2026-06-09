@@ -1198,6 +1198,22 @@ def evaluate_market(
             market_type,
         )
         result = _with_exit_signal(side, signal, result)
+        # Pre-entry nowcast gate: if the exit signal would fire immediately after
+        # entry (e.g. nowcast bucket-lock risk), block the entry entirely rather
+        # than opening and closing in the same cycle.
+        if result.exit_signal and result.side != "SKIP":
+            result = EdgeResult(
+                side="SKIP",
+                p_true=result.p_true,
+                p_exec=result.p_exec,
+                net_edge=result.net_edge,
+                size_usd=0.0,
+                size_shares=0.0,
+                reason=(
+                    f"pre-entry nowcast block: {result.exit_signal_reason}; "
+                    f"entry blocked to prevent immediate exit [{market_type}]"
+                ),
+            )
         per_side[side] = result
         if result.net_edge > best_result.net_edge:
             best_result = result
