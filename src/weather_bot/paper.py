@@ -771,10 +771,21 @@ class PaperBroker:
 
     def save_state(self) -> None:
         self._ensure_accounting_open()
+        # Websocket health keys are diagnostic-only (contain subscribed_book_ts
+        # with hundreds of token-ID timestamps).  They must NOT be persisted to
+        # paper_state.json; omitting them prevents unbounded file growth.
+        _TRANSIENT_METADATA_KEYS = {"last_websocket_health", "last_websocket_token_health"}
+
+        def _clean_metadata(meta: dict) -> dict:
+            return {k: v for k, v in meta.items() if k not in _TRANSIENT_METADATA_KEYS}
+
         payload = {
             "cash_usd": self.state.cash_usd,
             "realized_pnl_usd": self.state.realized_pnl_usd,
-            "positions": [asdict(p) for p in self.state.positions],
+            "positions": [
+                {**asdict(p), "metadata": _clean_metadata(p.metadata)}
+                for p in self.state.positions
+            ],
             "stats": self.state.stats,
         }
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
@@ -785,6 +796,7 @@ class PaperBroker:
         finally:
             if tmp_path.exists():
                 tmp_path.unlink()
+
 
     def total_exposure(self) -> float:
         return sum(p.cost_usd for p in self.state.positions)

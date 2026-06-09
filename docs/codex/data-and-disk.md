@@ -8,6 +8,11 @@ Everything else is noise that wastes disk and makes analysis harder.
 ### Keep (forever, compressed monthly)
 - `paper_trades.csv` — every OPEN / CLOSE / PARTIAL_CLOSE / SETTLED action
 - `paper_state.json` — current account book (overwritten, not appended)
+  **Rule:** websocket health keys (`last_websocket_health`,
+  `last_websocket_token_health`) are excluded from position metadata when
+  saving. They are diagnostic-only and must not persist to disk. Storing a
+  health snapshot that includes `subscribed_book_ts` (hundreds of token IDs)
+  caused paper_state.json to grow unboundedly each cycle.
 
 ### Keep (7 days rolling)
 - `forecast_request_log.jsonl` — Open-Meteo call receipts; useful for rate-limit audits
