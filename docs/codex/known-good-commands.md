@@ -151,6 +151,49 @@ curl.exe -i http://140.245.69.242:8787/api/status
 The second request may correctly return `403` when token protection is enabled.
 Do not print the real dashboard token in logs, docs, commits, or final answers.
 
+## Paper Runtime Files
+
+All paper runtime files live under `data/`, **not** the app root:
+
+```
+/opt/polymarket-weather-bot/data/paper_state.json
+/opt/polymarket-weather-bot/data/paper_trades.csv
+/opt/polymarket-weather-bot/data/paper_decisions.csv
+/opt/polymarket-weather-bot/data/paper_raw_snapshots.jsonl
+/opt/polymarket-weather-bot/data/forecast_rate_limit_state.json
+/opt/polymarket-weather-bot/data/forecast_cache.json
+/opt/polymarket-weather-bot/data/paper_event_portfolios.jsonl
+```
+
+To reset the paper account (stop bot first, then delete from `data/`, then restart):
+
+```bash
+sudo systemctl stop polymarket-weather-bot
+cd /opt/polymarket-weather-bot/data
+sudo rm -f paper_state.json paper_trades.csv paper_decisions.csv \
+           paper_raw_snapshots.jsonl forecast_rate_limit_state.json \
+           forecast_cache.json paper_event_portfolios.jsonl
+sudo systemctl start polymarket-weather-bot
+```
+
+Archived (compressed) old files are stored under `data/archive/`.
+
+## Disk and Log Rotation
+
+Logrotate is configured to auto-compress files over 100 MB hourly:
+
+```
+/etc/logrotate.d/polymarket-weather-bot   ← config
+/etc/cron.d/polymarket-logrotate          ← hourly cron
+```
+
+To check current disk usage:
+
+```powershell
+ssh -i $key $oracle df -h /opt/polymarket-weather-bot
+ssh -i $key $oracle "ls -lh /opt/polymarket-weather-bot/data/"
+```
+
 ## Related Detail
 
 - `docs/codex/ssh-powershell.md`
