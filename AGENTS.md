@@ -14,6 +14,35 @@
   Never say "subscribed_book_ts caused bloat" without first explaining what
   subscribed_book_ts is and why it exists. A developer beginner must be able
   to follow the explanation from zero.
+
+  REQUIRED DEPTH — read this example and match this level every time:
+
+  Bad (too shallow, DO NOT do this):
+    "subscribed_book_ts가 paper_state.json을 비대하게 만들었습니다. 수정했습니다."
+
+  Good (this is the required level):
+    "stream.health_snapshot()이 뭐냐면 — 봇은 Polymarket에서 실시간 호가를
+    받기 위해 WebSocket(웹소켓)으로 서버와 연결을 유지합니다. 웹소켓은 전화선
+    같은 개념으로, 가격이 바뀔 때마다 봇에게 밀어줍니다. health_snapshot()은
+    이 전화선이 살아있는지 체크하는 함수입니다.
+
+    이 함수가 반환하는 데이터 안에는 subscribed_book_ts라는 항목이 있습니다.
+    이게 뭐냐면 — 봇이 39개 도시 × 2개 토큰(YES/NO) = 수백 개의 토큰을
+    구독하고 있는데, 토큰마다 '마지막으로 데이터가 언제 왔나'를 기록한
+    타임스탬프 목록입니다. 쓰임새는 '60초 이상 데이터가 안 오면 웹소켓이
+    죽었다고 판단해서 청산을 보류'하는 데 씁니다.
+
+    왜 문제가 됐냐면 — 코드에서 웹소켓이 불안정할 때마다 이 수백 개짜리
+    타임스탬프 목록 전체를 포지션의 metadata에 저장하고 바로 디스크에
+    기록했습니다. 매 40초마다 수백 개 데이터가 통장 수첩(paper_state.json)에
+    덮어쓰였고, 파일이 무한정 커졌습니다.
+
+    왜 저장할 필요가 없냐면 — 이 타임스탬프는 '지금 이 순간' 연결이 살아있나
+    확인하는 임시 데이터입니다. 10분 뒤엔 이미 쓸모없는 과거 기록입니다.
+    paper_state.json의 목적은 현금 잔고와 오픈 포지션 기록이지, 웹소켓 로그가
+    아닙니다. 메모리에만 두고 디스크에는 쓰지 않으면 됩니다."
+
+
 - Use the safe default when one is clear. Do not stop for unnecessary questions.
 - Before security, money, deployment, server, wallet, API key, production, or
   configuration changes, explain the change, benefit, risk, verification, and
