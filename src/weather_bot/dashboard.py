@@ -611,6 +611,14 @@ def _position_payload(
         "target_exit_price": _float(metadata.get("last_target_exit_price"), _float(metadata.get("target_exit_price"))),
         "probability_stop_threshold": _float(metadata.get("probability_stop_threshold")),
         "reason": metadata.get("reason", ""),
+        # --- extra fields for richer dashboard display ---
+        "p_true": _optional_float(latest_decision.get("p_true")),
+        "net_edge": _optional_float(latest_decision.get("net_edge")),
+        "entry_fraction": _optional_float(metadata.get("entry_fraction")) or _optional_float(latest_decision.get("entry_fraction")),
+        "entry_fee_usdc": _optional_float(metadata.get("entry_fee_usdc")),
+        "market_heat_score": _optional_float(metadata.get("market_heat_score")),
+        "model_fair_price": _optional_float(metadata.get("model_fair_price")),
+        "market_type": metadata.get("market_type", "temperature"),
     }
 
 
@@ -802,6 +810,7 @@ def _realized_results(
                 "market_id": market_id,
                 "question": question,
                 "side": trade.get("side", ""),
+                "action": action,
                 "city": summary["city"],
                 "date_hint": summary["date_hint"],
                 "forecast_c": round(_value_or_zero(forecast_c), 1),
@@ -813,6 +822,8 @@ def _realized_results(
                 "pnl": round(pnl, 4),
                 "roi": round(pnl / entry_cost, 6) if entry_cost > 0 else 0.0,
                 "reason": trade.get("reason", ""),
+                "p_true": _optional_float(decision.get("p_true")),
+                "net_edge": _optional_float(decision.get("net_edge")),
             }
         )
     return _sorted_recent(rows, limit)
@@ -983,6 +994,30 @@ def _bot_status(
     }
 
 
+def _per_city_forecast_status(settings: Settings, limit: int = 300) -> list[dict[str, Any]]:
+    """Latest Open-Meteo forecast call status per city (from request log)."""
+    path = Path(settings.forecast_request_log_path) if settings.forecast_request_log_path else Path(settings.state_path).with_name("forecast_request_log.jsonl")
+    rows = _read_jsonl(path, limit)
+    latest: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        city = str(row.get("city") or "")
+        if city and city not in ("", "bulk-metar"):
+            latest[city] = row
+    return sorted(latest.values(), key=lambda r: str(r.get("city") or ""))
+
+
+def _per_city_nowcast_status(settings: Settings, limit: int = 300) -> list[dict[str, Any]]:
+    """Latest METAR nowcast call status per city (from request log)."""
+    path_str = getattr(settings, "station_nowcast_request_log_path", "") or str(Path(settings.state_path).with_name("station_nowcast_request_log.jsonl"))
+    rows = _read_jsonl(Path(path_str), limit)
+    latest: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        city = str(row.get("city") or "")
+        if city and city != "bulk-metar":
+            latest[city] = row
+    return sorted(latest.values(), key=lambda r: str(r.get("city") or ""))
+
+
 def build_dashboard_payload(settings: Settings | None = None, auth_required: bool = False) -> dict[str, Any]:
     settings = settings or load_settings()
     state = _read_json(Path(settings.state_path))
@@ -1063,7 +1098,8 @@ def build_dashboard_payload(settings: Settings | None = None, auth_required: boo
             "actual_opens": int(trade_totals["opens"]),
             "actual_closes": int(trade_totals["closes"]),
             "latest_forecast_at": _latest_forecast_cache_at(settings),
-            "latest_event_portfolio": event_portfolios[-1] if event_portfolios else {},
+            "per_city_forecast": _per_city_forecast_status(settings),
+            "per_city_nowcast": _per_city_nowcast_status(settings),
         },
         "equity_points": _equity_points(
             settings,
