@@ -1007,15 +1007,27 @@ def _per_city_forecast_status(settings: Settings, limit: int = 300) -> list[dict
 
 
 def _per_city_nowcast_status(settings: Settings, limit: int = 300) -> list[dict[str, Any]]:
-    """Latest METAR nowcast call status per city (from request log)."""
+    """Latest METAR nowcast call status per city (from request log).
+
+    AWC METAR fetches all 38 METAR stations in a single bulk HTTP request and
+    logs it as city='bulk-metar'. Only Hong Kong uses a separate per-city API
+    (HKO maxmin). This function now includes the latest bulk-metar entry so
+    the dashboard can show when all 38 stations were last queried.
+    """
     path_str = getattr(settings, "station_nowcast_request_log_path", "") or str(Path(settings.state_path).with_name("station_nowcast_request_log.jsonl"))
     rows = _read_jsonl(Path(path_str), limit)
     latest: dict[str, dict[str, Any]] = {}
+    latest_bulk: dict[str, Any] | None = None
     for row in rows:
         city = str(row.get("city") or "")
-        if city and city != "bulk-metar":
+        if city == "bulk-metar":
+            latest_bulk = row  # keep the most recent bulk entry
+        elif city:
             latest[city] = row
-    return sorted(latest.values(), key=lambda r: str(r.get("city") or ""))
+    result = sorted(latest.values(), key=lambda r: str(r.get("city") or ""))
+    if latest_bulk is not None:
+        result = [latest_bulk] + result  # show bulk entry first
+    return result
 
 
 def build_dashboard_payload(settings: Settings | None = None, auth_required: bool = False) -> dict[str, Any]:

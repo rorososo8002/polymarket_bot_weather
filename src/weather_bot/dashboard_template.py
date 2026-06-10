@@ -893,12 +893,25 @@ function cityNowcastCard(c) {
   const hiC = c.observed_high_c != null ? `<span style="color:var(--red)">최고기온 ${tempC(c.observed_high_c)}</span>` : "";
   const loC = c.observed_low_c != null ? `<span style="color:var(--blue)">최저기온 ${tempC(c.observed_low_c)}</span>` : "";
   const temps = [hiC, loC].filter(Boolean).join(" · ");
-  // bulk-metar: show trigger city
+  // bulk-metar: AWC METAR one-shot request covering all 38 METAR-source stations
   const isBulk = (c.city || "") === "bulk-metar" || String(c.request_mode || "").includes("bulk");
-  const cityLabel = isBulk ? `일괄 요청 (${c.trigger_city || "?"} 트리거)` : (c.city || c.station_id || "?");
+  if (isBulk) {
+    const stationCount = c.requested_station_count || 38;
+    const triggerCity = c.trigger_city ? ` · ${c.trigger_city} 트리거` : "";
+    return `<div class="city-card ${cls}">
+    <div class="city-card-row">
+      <span class="city-name">☁️ AWC METAR 일괄 (${stationCount}개 관측소)</span>
+      <span class="${ok ? 'city-status-ok' : 'city-status-fail'}">${statusText}</span>
+    </div>
+    <div class="city-card-detail" style="color:var(--muted)">홍콩 제외 전체 도시 1회 요청${triggerCity}</div>
+    <div class="city-card-detail">마지막 호출: ${ts}</div>
+    <div class="city-card-detail" style="color:var(--muted)">갱신 주기: 캐시 만료 시 (≥5분)</div>
+    ${err ? `<div class="city-card-detail" style="color:var(--red)">실패: ${esc(err.slice(0, 80))}</div>` : ""}
+  </div>`;
+  }
   return `<div class="city-card ${cls}">
     <div class="city-card-row">
-      <span class="city-name">${esc(cityLabel)}</span>
+      <span class="city-name">${esc(c.city || c.station_id || "?")}</span>
       <span class="${ok ? 'city-status-ok' : 'city-status-fail'}">${statusText}</span>
     </div>
     ${stn ? `<div class="city-card-detail">공식 관측소: ${esc(stn)}</div>` : ""}
