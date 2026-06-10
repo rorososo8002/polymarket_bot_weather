@@ -778,7 +778,14 @@ def test_realtime_update_refreshes_nowcast_signal_after_station_cache_ttl_withou
     assert "evidence=forecast-plus-nowcast" in signals_by_market[market.market_id].note
 
 
-def test_realtime_update_refreshes_held_exit_edge_when_entry_bankroll_is_unusable(tmp_path):
+def test_realtime_update_computes_held_exit_edge_with_fresh_signal(tmp_path):
+    """The realtime evaluator updates latest_edges for held positions using fresh signals.
+
+    Previously this test verified 'exit evidence' path (when entry_bankroll was unusable).
+    Now that available_entry_bankroll() treats settling positions as $0 (usable=True),
+    the evaluation follows the normal path and hits the liquidity filter for the held
+    position's small bid depth. p_true is still updated from the fresh signal.
+    """
     question = "Will the highest temperature in Seoul be 27C or higher today?"
     market = RawMarket("seoul-held", question, "seoul-held", True, False, "held-yes", "held-no", event_id="seoul-today")
 
@@ -841,9 +848,13 @@ def test_realtime_update_refreshes_held_exit_edge_when_entry_bankroll_is_unusabl
         latest_edges,
     )
 
+    # p_true is updated from fresh signal (was 0.80 entry, now 0.20 fresh)
     held_edge = latest_edges[(market.market_id, "YES")]
     assert held_edge.p_true == 0.20
-    assert "exit evidence" in held_edge.reason
+    # With usable bankroll (settling position treated as $0), the evaluation
+    # proceeds and hits the liquidity filter for the held-yes token (only 1.0 qty bid)
+    assert held_edge.side == "SKIP"
+    assert "liquidity filter" in held_edge.reason or "exit bid depth" in held_edge.reason
 
 
 def test_realtime_update_logs_market_exception_as_skip_error(tmp_path):

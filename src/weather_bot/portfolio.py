@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import logging
 from collections import Counter
 from dataclasses import dataclass, replace
 from itertools import combinations
 from math import ceil, floor, inf, isinf, log
 from typing import TYPE_CHECKING, Any
+
+_logger = logging.getLogger(__name__)
 
 from .config import Settings
 from .edge import clamp_probability, executable_sell_price, polymarket_taker_fee_usdc
@@ -182,21 +185,27 @@ def available_entry_bankroll(broker: PaperBroker, client: PolymarketClient) -> E
             book = client.get_order_book(pos.token_id)
             exit_price, _slippage = executable_sell_price(book, pos.shares)
         except Exception as exc:  # noqa: BLE001
-            return EntryBankrollSnapshot(
-                False,
-                cost_basis_bankroll,
-                0.0,
-                0.0,
-                f"cannot price held token {pos.token_id}: {type(exc).__name__}",
+            # Position orderbook unavailable (e.g. settling market or stream gap).
+            # Treat liquidation value as $0 (conservative) instead of blocking all
+            # new entries. The whole-stream block above already guards against
+            # genuine WebSocket outages.
+            _logger.warning(
+                "held position %s orderbook unavailable (%s: %s); "
+                "treating as worth $0 for bankroll calculation — new entries not blocked",
+                pos.token_id,
+                type(exc).__name__,
+                exc,
             )
+            continue
         if exit_price is None:
-            return EntryBankrollSnapshot(
-                False,
-                cost_basis_bankroll,
-                0.0,
-                0.0,
-                f"cannot price held token {pos.token_id}: insufficient executable bid depth",
+            # No executable bid depth — position is likely in settlement or illiquid.
+            # Use $0 liquidation value (conservative) rather than blocking all entries.
+            _logger.warning(
+                "held position %s has no executable bid depth; "
+                "treating as worth $0 for bankroll calculation — new entries not blocked",
+                pos.token_id,
             )
+            continue
         exit_fee_usdc = polymarket_taker_fee_usdc(pos.shares, exit_price, broker.settings.weather_taker_fee_rate)
         liquidation_bankroll += pos.shares * exit_price - exit_fee_usdc
 

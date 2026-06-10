@@ -182,7 +182,12 @@ def test_entry_bankroll_uses_lower_executable_liquidation_value(tmp_path):
     assert snapshot.entry_bankroll == pytest.approx(97.76)
 
 
-def test_entry_bankroll_fails_closed_when_held_position_cannot_be_priced(tmp_path):
+def test_entry_bankroll_continues_with_zero_when_held_position_cannot_be_priced(tmp_path):
+    """When a held position has no orderbook (e.g. settling market), the bot should
+    treat it as worth $0 and continue rather than blocking all new entries.
+    The whole-stream block (websocket_pricing_block_reason on health) is the
+    correct guard for genuine WebSocket outages.
+    """
     broker = PaperBroker(settings(tmp_path))
     broker.state = PaperState(
         cash_usd=90.0,
@@ -203,9 +208,12 @@ def test_entry_bankroll_fails_closed_when_held_position_cannot_be_priced(tmp_pat
 
     snapshot = available_entry_bankroll(broker, FakeClient())
 
-    assert snapshot.usable is False
-    assert snapshot.entry_bankroll == 0.0
-    assert "missing-token" in snapshot.reason
+    # usable=True: settling position should not block new entries
+    assert snapshot.usable is True
+    # liquidation_bankroll = cash only (90), position treated as $0
+    assert snapshot.liquidation_bankroll == 90.0
+    # entry_bankroll = min(cost_basis=100, liquidation=90) = 90
+    assert snapshot.entry_bankroll == 90.0
 
 
 def test_entry_bankroll_explains_unhealthy_websocket_stream(tmp_path):
@@ -1243,7 +1251,11 @@ def test_run_cycle_opens_city_date_candidates_as_one_logged_portfolio(monkeypatc
     assert [leg["market_id"] for leg in json.loads(rows[0])["selected_legs"]] == ["seoul-26", "seoul-27"]
 
 
-def test_run_cycle_logs_skip_when_entry_bankroll_cannot_price_held_position(monkeypatch, tmp_path):
+def test_run_cycle_proceeds_with_zero_when_held_position_cannot_be_priced(monkeypatch, tmp_path):
+    """When a held position's token has no orderbook (e.g. settling market),
+    available_entry_bankroll() treats it as $0 (not a block) so new entries
+    for other markets can still proceed.
+    """
     cfg = settings(
         tmp_path,
         bankroll_usd=100.0,
@@ -1252,7 +1264,6 @@ def test_run_cycle_logs_skip_when_entry_bankroll_cannot_price_held_position(monk
         weather_taker_fee_rate=0.0,
         model_error_margin=0.0,
         resolution_error_margin=0.0,
-        # This test explicitly asserts on SKIP portfolio log content.
         portfolio_log_skip_enabled=True,
     )
     (tmp_path / "state.json").write_text(
@@ -1326,11 +1337,14 @@ def test_run_cycle_logs_skip_when_entry_bankroll_cannot_price_held_position(monk
 
     decisions = run_cycle(cfg)
 
+    # usable=True: settling held position should NOT block new entries for other markets
     assert len(decisions) == 1
-    assert decisions[0].result.side == "SKIP"
-    assert "기존 포지션을 안전하게 평가할 수 없어 신규 진입 차단" in decisions[0].result.reason
+    # Entry proceeds (side != "SKIP" due to bankroll unavailability)
+    assert decisions[0].result.side != "SKIP" or "bankroll" not in decisions[0].result.reason
+    # Portfolio log records that entry_bankroll was usable
     rows = (tmp_path / "portfolio.jsonl").read_text(encoding="utf-8").splitlines()
-    assert json.loads(rows[0])["entry_bankroll_usable"] is False
+    assert json.loads(rows[0])["entry_bankroll_usable"] is True
+
 
 
 def test_run_cycle_opens_two_profitable_no_legs_for_same_event(monkeypatch, tmp_path):

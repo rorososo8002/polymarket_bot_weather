@@ -67,65 +67,24 @@ def test_read_csv_uses_tail_without_loading_entire_file(tmp_path):
     assert [row["note"] for row in tail] == ["117", "118", "119"]
 
 
-def test_dashboard_payload_exposes_latest_event_portfolio_explanation(tmp_path):
+def test_dashboard_payload_scanner_has_per_city_forecast(tmp_path):
+    """Scanner payload includes per_city_forecast list (event portfolio removed)."""
     state_path = tmp_path / "state.json"
-    portfolios_path = tmp_path / "portfolios.jsonl"
     state_path.write_text(json.dumps({"cash_usd": 100.0, "positions": []}), encoding="utf-8")
-    portfolios_path.write_text(
-        json.dumps(
-            {
-                "ts": "2026-06-01T01:00:00+00:00",
-                "event_key": "seoul-may-25",
-                "entry_bankroll_usd": 100.0,
-                "event_cap_fraction": 0.10,
-                "event_cap_usd": 10.0,
-                "existing_event_exposure_usd": 0.0,
-                "selected_exposure_usd": 10.0,
-                "expected_net_profit_usd": 2.0,
-                "selected_legs": [
-                    {"market_id": "seoul-26", "side": "YES", "size_usd": 5.0},
-                    {"market_id": "seoul-27", "side": "YES", "size_usd": 5.0},
-                ],
-                "rejected_legs_sample": [
-                    {"market_id": "seoul-28", "side": "NO", "reason": "same-direction concentration"}
-                ],
-                "rejected_reason_counts": {"same-direction concentration": 1},
-                "worst_scenario_pnl_usd": -10.0,
-            }
-        )
-        + "\n",
-        encoding="utf-8",
-    )
 
     payload = build_dashboard_payload(
         Settings(
             bankroll_usd=100.0,
             state_path=str(state_path),
-            portfolio_decisions_jsonl_path=str(portfolios_path),
         )
     )
 
-    latest = payload["scanner"]["latest_event_portfolio"]
-    assert latest["event_key"] == "seoul-may-25"
-    assert latest["entry_bankroll_usd"] == 100.0
-    assert latest["event_cap_fraction"] == 0.10
-    assert [leg["market_id"] for leg in latest["selected_legs"]] == ["seoul-26", "seoul-27"]
-    assert latest["rejected_legs_sample"][0]["market_id"] == "seoul-28"
-    assert latest["rejected_reason_counts"] == {"same-direction concentration": 1}
-    assert latest["worst_scenario_pnl_usd"] == -10.0
-
-
-def test_dashboard_html_explains_adaptive_event_portfolio_budget():
-    assert "이벤트 포트폴리오" in HTML
-    assert "기준 자금" in HTML
-    assert "$1,000" in HTML
-    assert "최대 2개" in HTML
-    assert "최소 $10" in HTML
-    assert "도시 전체 20%" in HTML
-    assert "전체 보유 90%" in HTML
-    assert "YES+NO" in HTML
-    assert "NO+NO" in HTML
-    assert "예상 로그 성장" in HTML
+    scanner = payload["scanner"]
+    # event portfolio is intentionally removed from the dashboard
+    assert "latest_event_portfolio" not in scanner
+    # per-city forecast/nowcast lists are present
+    assert "per_city_forecast" in scanner
+    assert "per_city_nowcast" in scanner
 
 
 def test_dashboard_refuses_public_host_with_empty_token(monkeypatch):
@@ -1122,7 +1081,7 @@ def test_dashboard_uses_korean_labels_and_tabbed_right_rail():
     assert "Scanner Intelligence" not in HTML
     assert "보유 포지션" in HTML
     assert "총 진입 비용" in HTML
-    assert "최근 Open-Meteo 예보" in HTML
+    assert "최근 예보 갱신" in HTML
     assert "총 이익" in HTML
     assert "총 손실" in HTML
     assert "예보" in HTML

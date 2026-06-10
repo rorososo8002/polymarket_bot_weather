@@ -4,42 +4,45 @@ Status: active
 
 ## Objective
 
-대시보드 UI 전면 개편:
-1. 이벤트 포트폴리오 섹션 제거
-2. 보유 포지션 카드 재설계 (영문 side/Long, 예보온도, 확률, 진입가, 현재가, 손익)
-3. 확정 손익(최근 체결) 테이블→카드 전환 (수익/손절 표시, 이유, 수수료)
-4. 도시별 예보 상태 카드 추가 (스크롤)
-5. 도시별 관측소 상태 카드 추가 (스크롤)
-6. entry: 파라미터 한글 라벨로 표시
+`available_entry_bankroll()` 버그 수정 — 정산 중인 보유 포지션 1개의 주문장이
+없다는 이유로 신규 진입 전체가 차단되는 문제 수정.
+
+## Root Cause
+
+`portfolio.py` `available_entry_bankroll()` 함수에서 held position의
+`get_order_book()` 결과가 exception이거나 exit_price=None이면
+`EntryBankrollSnapshot(usable=False)` 를 즉시 반환해 모든 신규 진입을 막았음.
+
+이는 June 10 시장처럼 정산 단계에 진입한 포지션에서 주문장이 사라지는 경우에도
+동일하게 적용돼 하루 종일 신규 진입을 차단함.
+
+## Fix Plan
+
+1. `available_entry_bankroll()` 예외 경로(L184-191): 주문장 스냅샷 없음/예외 시
+   블록 대신 liquidation value=$0으로 처리 후 계속 진행 + WARNING 로그
+2. `available_entry_bankroll()` no-bid 경로(L192-198): exit_price=None 시
+   블록 대신 liquidation value=$0으로 처리 후 계속 진행 + WARNING 로그
+
+안전성: liquidation_bankroll이 cash만으로 계산되므로 보수적.
+entry_bankroll = min(cost_basis_bankroll, liquidation_bankroll) = min($200, $190) = $190.
+정산 중인 포지션의 가치를 $0으로 가정하는 것이 차단보다 올바른 동작.
 
 ## Next Action
 
-dashboard.py:
-- _position_payload()에 p_true, net_edge, entry_fee_usdc, entry_fraction 추가
-- _realized_results()에 action, p_true 추가
-- _per_city_forecast_status(), _per_city_nowcast_status() 함수 추가
-- build_dashboard_payload()에 per_city_forecast, per_city_nowcast 포함
-
-dashboard_template.py:
-- CSS: city-card 스타일 추가
-- HTML: 이벤트 포트폴리오 제거, 도시별 카드 섹션 추가
-- JS: cardForPosition() 재설계
-- JS: realizedTable() → realizedCards() 전환
-- JS: render() 이벤트 포트폴리오 블록 제거/대체
+portfolio.py 수정 완료 후:
+- 로컬 pytest 실행
+- git commit
+- VPS 배포 (scp + systemctl restart polymarket-weather-bot)
 
 ## Files In Play
 
-- src/weather_bot/dashboard.py
-- src/weather_bot/dashboard_template.py
-
+- src/weather_bot/portfolio.py
 
 ## Non-Negotiables
 
-- Preserve paper-only execution unless the user explicitly approves a separate
-  live-trading safety pass.
-- Runtime ledgers are generated experiment evidence. Delete or reset them only
-  when the user intentionally asks for a fresh paper-experiment window.
-- Keep this card replace-only. Do not append completed work history here.
+- Preserve paper-only execution.
+- Runtime ledgers 변경 없음.
+- Keep this card replace-only.
 
 ## New Chat Prompt
 
