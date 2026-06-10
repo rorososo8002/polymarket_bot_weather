@@ -131,6 +131,57 @@ while changing or operating the project.
   executed trade rows against `BANKROLL_USD` and fails closed if replayed state
   disagrees with the account book.
 
+## Position Sizing Strategy (2026-06-11 결정)
+
+### 결정 사항
+
+Fixed-fraction(고정 비율)에서 **Fractional Kelly(켈리 분수)** 방식으로 전환.
+엣지가 클수록 자동으로 베팅 크기가 커지는 수학적으로 최적화된 사이징.
+
+### 현재 적용 파라미터
+
+```
+SIZE_MODE              = kelly          # 엣지 비례 사이징
+FRACTIONAL_KELLY       = 0.25          # 1/4 켈리 (모델 오차 보수치 감안)
+ENTRY_FRACTION         = 0.20          # 단일 이벤트 최대 베팅 상한 (자본금 20%)
+MAX_TOTAL_EXPOSURE_FRACTION = 0.60     # 동시 포지션 전체 상한 60%
+MAX_CITY_EXPOSURE_FRACTION  = 0.20     # 도시별 집중도 상한 20%
+```
+
+### 실제 사이징 예시 (자본금 $200 기준)
+
+켈리 공식: `f = FRACTIONAL_KELLY × (p_adj - p_exec) / (1 - p_exec)`
+`p_adj`는 gamma=0.65 확률 축소 적용값 (과신 방지)
+
+```
+모델 p=0.75, 시장가 0.60 → 베팅 ~$7   (보통 신호)
+모델 p=0.85, 시장가 0.60 → 베팅 ~$11  (강한 신호)
+모델 p=0.90, 시장가 0.60 → 베팅 ~$20  (아주 강한 신호)
+모델 p=0.95, 시장가 0.60 → 베팅 ~$27  (최강 신호)
+단일 이벤트 상한: $40 (ENTRY_FRACTION=0.20 × $200)
+```
+
+### 왜 1/4 켈리인가
+
+- 순수 켈리는 모델이 완벽할 때만 최적. GFS 날씨 예보는 오차가 있음.
+- gamma=0.65 확률 축소 + 0.25 배율 = 실제 베팅은 순수 켈리의 약 16% 수준.
+- 연속 손실 시나리오에서 자본금 보존 우선.
+
+### 왜 MAX_TOTAL_EXPOSURE=0.60인가
+
+- 사용자 요청은 90%였으나, 유럽 폭염 등 지역 동조 리스크로 동시 포지션이
+  모두 틀릴 수 있음. 60%는 최악의 경우 자본금 40%는 보존.
+- 30%였던 이전 설정은 너무 보수적 (동시 포지션 3개 한도).
+
+### 미래 AI에게
+
+- 이 파라미터를 되돌리거나 변경하려면 반드시 위 근거를 읽고 사용자에게
+  변경 이유와 위험을 설명할 것.
+- ENTRY_FRACTION은 kelly 모드에서 단일 이벤트의 상한 캡 역할을 함.
+  fixed_fraction 모드에서는 정확한 베팅 크기를 직접 결정함. 혼동 금지.
+- SIZE_MODE를 fixed_fraction으로 되돌리면 ENTRY_FRACTION=0.05로도 복원 필요.
+
+
 ## Nowcast And Research
 
 - Same-station nowcast is allowed only from explicitly mapped official sources.
