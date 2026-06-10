@@ -224,3 +224,28 @@ MAX_CITY_EXPOSURE_FRACTION  = 0.20     # 도시별 집중도 상한 20%
   trades.
 - `docs/codex/known-good-commands.md` is the command source for fresh local
   pytest, Oracle SSH, remote pytest, and dashboard checks.
+
+## Open-Meteo Rate Limit (2026-06-10 사건 기록)
+
+- 원인: `FORECAST_CACHE_TTL_SECONDS` 가 2400(40분)으로 잘못 설정되어 하루 36번 × 39도시
+  = 1,404 호출 × 31 units = **43,524 units/day** → 일일 한도(10,000) 4배 초과.
+- 수정: `FORECAST_CACHE_TTL_SECONDS=10800`(3시간)으로 정정. 이후 예상 호출량:
+  39 × 8 × 31 = 9,672 units/day < 10,000.
+- 함께 수정: `FORECAST_REQUEST_MIN_INTERVAL_SECONDS=60 → 15` (AGENTS.md 규칙 준수).
+- 재발 방지: AGENTS.md의 예산 공식(`39 cities × 8 batches/day × 31 units`)을 변경 전
+  계산기로 사용. TTL을 낮추면 batches/day가 증가한다.
+
+## 대시보드 UI 변경 (2026-06-11 적용)
+
+- **실패한 렌더링 버그**: `realizedTable()` 함수가 존재하지 않았음 → `realizedCards()`가 정답.
+  이 오류가 `render()` 중간에 크래시를 유발해 이후 최근 체결 카드도 전부 렌더링 실패했음.
+- **시간대**: `shortDateTime()` / `shortTime()` 에 `timeZone:'Asia/Seoul'` 적용 → KST 고정.
+- **손익 부호**: 포지션 카드 음수 손익에 `-` 부호 추가 (`-$0.84` 형태).
+- **현재가 색상**: `badge.current-price` (파란색) 적용.
+- **데이터 없음 표시**: 예보/확률 데이터 없는 포지션에 `예보 --`, `확률 --`, `관측소 --` badge 표시.
+- **스캐너 패널 레이블**: 총 이익 → 총 손익(net), 수익 현황, 손실 현황, 매매가능현금.
+- **3번째 탭 "예보&관측 호출"**: 도시별 예보/관측소 호출 기록을 스캐너 패널에서 분리,
+  좌우 분할 레이아웃으로 신설 탭에 배치.
+- **거래 카드**: 체결가 파란색, 진입/청산 상황별 한글 reason 파싱 (진입금액, 수수료, 엣지 등).
+- **도시 예보 카드**: 공식 관측소명, 성공 시간(KST), 실패 이유 표시.
+- **관측소 호출 카드**: 일괄(bulk-metar) 요청을 트리거 도시명으로 표시.
