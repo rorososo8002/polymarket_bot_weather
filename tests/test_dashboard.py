@@ -1082,8 +1082,9 @@ def test_dashboard_uses_korean_labels_and_tabbed_right_rail():
     assert "보유 포지션" in HTML
     assert "총 진입 비용" in HTML
     assert "최근 예보 갱신" in HTML
-    assert "총 이익" in HTML
-    assert "총 손실" in HTML
+    assert "총 손익" in HTML
+    assert "수익 현황" in HTML
+    assert "손실 현황" in HTML
     assert "예보" in HTML
     assert "스캐너 정보" in HTML
     assert "최근 체결" in HTML
@@ -1091,7 +1092,7 @@ def test_dashboard_uses_korean_labels_and_tabbed_right_rail():
     assert 'id="scanner-panel"' in HTML
     assert 'id="trades-panel"' in HTML
     assert "Cumulative skips" not in HTML
-    assert "남은 현금" in HTML
+    assert "매매가능현금" in HTML
     assert "NO FORECAST" not in HTML
     assert "Total Exposure" not in HTML
     assert "Recent Candidates" not in HTML

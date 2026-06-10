@@ -301,6 +301,12 @@ HTML = r"""<!doctype html>
     .badge.price { color: var(--yellow); border-color: rgba(245, 184, 61, .42); background: var(--yellow-soft); }
     .badge.neutral { color: var(--blue); border-color: rgba(46, 92, 255, .46); background: var(--blue-soft); }
     .badge.forecast { color: var(--text); border-color: rgba(46, 92, 255, .7); background: var(--blue); }
+    .badge.current-price { color: var(--blue); border-color: rgba(46,92,255,.46); background: var(--blue-soft); }
+    .badge.obs-temp { color: #5de0c0; border-color: rgba(93,224,192,.42); background: rgba(93,224,192,.12); }
+    .badge.muted-badge { color: var(--muted-2); border-color: var(--line); background: transparent; font-style: italic; }
+    .logs-panel-body { min-height: 0; overflow: hidden; display: grid; grid-template-columns: 1fr 1fr; gap: 10px; height: 100%; padding: 10px; }
+    .logs-col-title { font-size: 11px; font-weight: 700; color: var(--muted); letter-spacing: .03em; margin-bottom: 6px; padding: 0 2px; border-bottom: 1px solid var(--line); padding-bottom: 6px; }
+    .logs-col-list { overflow-y: auto; max-height: calc(100vh - 150px); display: grid; gap: 6px; align-content: start; }
     .muted { color: var(--muted); }
     .small { font-size: 11px; line-height: 1.45; overflow-wrap: anywhere; }
     .split-2 {
@@ -529,6 +535,7 @@ HTML = r"""<!doctype html>
       <div class="right-tabs" role="tablist" aria-label="오른쪽 정보">
         <button id="scanner-tab" class="tab-btn active" type="button" role="tab" aria-selected="true" aria-controls="scanner-panel" data-tab-target="scanner-panel">스캐너 정보</button>
         <button id="trades-tab" class="tab-btn" type="button" role="tab" aria-selected="false" aria-controls="trades-panel" data-tab-target="trades-panel">최근 체결 <span id="trade-count">0</span></button>
+        <button id="logs-tab" class="tab-btn" type="button" role="tab" aria-selected="false" aria-controls="logs-panel" data-tab-target="logs-panel">예보&amp;관측 호출</button>
       </div>
       <div class="right-panels">
         <div id="scanner-panel" class="tab-panel active" role="tabpanel" aria-labelledby="scanner-tab">
@@ -536,18 +543,15 @@ HTML = r"""<!doctype html>
         <div class="right-stat"><span>보유 포지션</span><strong id="r-open">0</strong></div>
         <div class="right-stat"><span>총 진입 비용</span><strong id="r-exposure">$0</strong></div>
         <div class="right-stat"><span>최근 예보 갱신</span><strong id="r-latest-forecast" class="neutral">--</strong></div>
-        <div class="right-stat"><span>총 이익</span><strong id="r-total-profit">$0</strong></div>
-        <div class="right-stat"><span>총 손실</span><strong id="r-total-loss" class="bad">$0</strong></div>
-        <div class="right-stat"><span>남은 현금</span><strong id="r-cash">$0</strong></div>
+        <div class="right-stat"><span>총 손익</span><strong id="r-net-profit">$0</strong></div>
+        <div class="right-stat"><span>수익 현황</span><strong id="r-total-profit" class="">$0</strong></div>
+        <div class="right-stat"><span>손실 현황</span><strong id="r-total-loss" class="bad">$0</strong></div>
+        <div class="right-stat"><span>매매가능현금</span><strong id="r-cash">$0</strong></div>
         <div class="health-box">
           <div class="health-title"><span>예보 상태 (Open-Meteo)</span><strong id="r-forecast-health">--</strong></div>
           <div id="r-forecast-success" class="health-detail">마지막 성공 --</div>
           <div id="r-forecast-age" class="health-detail">다음 갱신까지 --</div>
           <div id="r-forecast-error" class="health-detail">최근 실패 이유 --</div>
-        </div>
-        <div class="city-cards-section">
-          <div class="city-cards-title">🌤 도시별 예보 호출 기록</div>
-          <div id="r-forecast-cities" class="city-cards-list"><div class="small muted">로딩 중…</div></div>
         </div>
         <div class="health-box">
           <div class="health-title"><span>실시간 주문장 상태</span><strong id="r-websocket-health">--</strong></div>
@@ -557,15 +561,23 @@ HTML = r"""<!doctype html>
           <div id="r-websocket-book" class="health-detail">마지막 주문장 --</div>
           <div id="r-websocket-error" class="health-detail">최근 오류 --</div>
         </div>
-        <div class="city-cards-section">
-          <div class="city-cards-title">🛰 도시별 관측소 호출 기록</div>
-          <div id="r-nowcast-cities" class="city-cards-list"><div class="small muted">로딩 중…</div></div>
-        </div>
           </div>
         </div>
 
         <div id="trades-panel" class="tab-panel" role="tabpanel" aria-labelledby="trades-tab">
           <div class="panel-body recent-trades-body"><div id="recent-trades" class="trade-list"></div></div>
+        </div>
+        <div id="logs-panel" class="tab-panel" role="tabpanel" aria-labelledby="logs-tab">
+          <div class="logs-panel-body">
+            <div style="display:flex;flex-direction:column;min-height:0">
+              <div class="logs-col-title">🌤 도시별 예보 호출 기록</div>
+              <div id="r-forecast-cities" class="logs-col-list"><div class="small muted">로딩 중…</div></div>
+            </div>
+            <div style="display:flex;flex-direction:column;min-height:0">
+              <div class="logs-col-title">🛰 도시별 관측소 호출 기록</div>
+              <div id="r-nowcast-cities" class="logs-col-list"><div class="small muted">로딩 중…</div></div>
+            </div>
+          </div>
         </div>
       </div>
     </aside>
@@ -617,17 +629,18 @@ function duration(sec) {
   const rem = sec % 60;
   return rem ? min + "분 " + rem + "초" : min + "분";
 }
+const KST_OPTS = {timeZone: "Asia/Seoul"};
 function shortTime(ts) {
   if (!ts) return "--";
   const d = new Date(ts);
   if (Number.isNaN(d.getTime())) return String(ts).slice(11, 19);
-  return d.toLocaleTimeString("ko-KR", {hour12:false});
+  return d.toLocaleTimeString("ko-KR", {...KST_OPTS, hour12:false});
 }
 function shortDateTime(ts) {
   if (!ts) return "--";
   const d = new Date(ts);
   if (Number.isNaN(d.getTime())) return String(ts);
-  return d.toLocaleString("ko-KR", {month:"short", day:"numeric", hour:"2-digit", minute:"2-digit", hour12:false});
+  return d.toLocaleString("ko-KR", {...KST_OPTS, month:"short", day:"numeric", hour:"2-digit", minute:"2-digit", hour12:false});
 }
 function esc(s) {
   return String(s ?? "").replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]));
@@ -693,28 +706,44 @@ function setHealthStatus(id, status) {
 function cardForPosition(p) {
   const pnl = p.unrealized_pnl || 0;
   const pnlClass = pnl >= 0 ? "win" : "loss";
-  const pnlSign = pnl >= 0 ? "+" : "";
+  const pnlSign = pnl >= 0 ? "+" : "-";
   const sideLabel = (p.side || "").toUpperCase() === "YES" ? "Yes" : "No";
   const qLower = (p.question || "").toLowerCase();
-  const isHighest = qLower.includes("highest");
-  // p_true = YES probability; side probability = what the bot is betting on
+  const isHighest = qLower.includes("highest") || qLower.includes("high");
   const sideProbPct = p.p_true != null
     ? ((p.side || "").toUpperCase() === "YES" ? p.p_true : (1 - p.p_true)) * 100
     : null;
   const titleHtml = p.market_url
     ? `<a class="market-title market-link" href="${esc(p.market_url)}" target="_blank" rel="noopener noreferrer">${esc(p.question)}</a>`
     : `<div class="market-title">${esc(p.question)}</div>`;
+  // Forecast badge
+  const forecastBadge = p.forecast_c != null
+    ? `<span class="badge forecast">예보 ${tempC(p.forecast_c)}</span>`
+    : `<span class="badge muted-badge">예보 --</span>`;
+  // Probability badge
+  const probBadge = sideProbPct != null
+    ? `<span class="badge neutral">확률 ${sideProbPct.toFixed(0)}%</span>`
+    : `<span class="badge muted-badge">확률 --</span>`;
+  // Nowcast badge: show observed high/low based on market type
+  const nowcastVal = isHighest
+    ? (p.nowcast_high_c != null ? p.nowcast_high_c : null)
+    : (p.nowcast_low_c != null ? p.nowcast_low_c : null);
+  const nowcastLabel = isHighest ? "관측 최고" : "관측 최저";
+  const nowcastBadge = nowcastVal != null
+    ? `<span class="badge obs-temp">${nowcastLabel} ${tempC(nowcastVal)}</span>`
+    : `<span class="badge muted-badge">관측소 --</span>`;
   return `<div class="card open">
     ${titleHtml}
     <div class="pos-row">
       <span class="badge ${(p.side||'').toUpperCase() === 'YES' ? 'yes' : 'no'}">${sideLabel}</span>
       <span class="badge long">Long</span>
-      ${p.forecast_c != null ? `<span class="badge forecast">예보 ${tempC(p.forecast_c)}</span>` : ''}
-      ${sideProbPct != null ? `<span class="badge neutral">확률 ${sideProbPct.toFixed(0)}%</span>` : ''}
+      ${forecastBadge}
+      ${probBadge}
+      ${nowcastBadge}
     </div>
     <div class="pos-row">
       <span class="badge price">진입 ${price(p.entry_price)}</span>
-      <span class="badge price">현재가 ${price(p.mark_price)}</span>
+      <span class="badge current-price">현재가 ${price(p.mark_price)}</span>
       <span class="badge ${pnlClass}">${pnlSign}${money(Math.abs(pnl))}</span>
     </div>
     <div class="small muted" style="margin-top:8px">
@@ -730,42 +759,64 @@ function cardForTrade(t) {
   const pnl = Number(t.cash_delta_or_pnl || 0);
   const sideLabel = (t.side || "").toUpperCase() === "YES" ? "Yes" : "No";
   const actionLabel = actionKo(action);
-  return `<div class="card ${isClose ? (pnl >= 0 ? 'profit' : 'loss') : 'open'}">
-    <div class="market-title">${esc(t.question)}</div>
+  const isProfit = pnl >= 0;
+  const pnlSign = isProfit ? "+" : "-";
+  const pnlClass = isProfit ? "win" : "loss";
+  const cardClass = isClose ? (isProfit ? "profit" : "loss") : "open";
+  const reasonKo = _buildReasonKo(t.reason || "");
+  const reasonParsed = _parseCloseReason(t.reason || "");
+  const ts = shortDateTime(t.ts || "");
+  // Entry cost from shares × price
+  const entryCost = (Number(t.shares || 0) * Number(t.price || 0));
+  return `<div class="card ${cardClass}">
+    <div class="market-title">${esc(t.question || "")}</div>
     <div class="pos-row">
-      <span class="badge neutral">${esc(actionLabel)}</span>
+      <span class="badge ${isClose ? (isProfit ? 'win' : 'loss') : 'neutral'}">${esc(actionLabel)}</span>
       <span class="badge ${(t.side||'').toUpperCase() === 'YES' ? 'yes' : 'no'}">${sideLabel}</span>
       <span class="badge long">Long</span>
-      <span class="badge price">${price(t.price)}</span>
-      <span class="badge ${pnl >= 0 ? 'win' : 'loss'}">${pnl >= 0 ? '+' : ''}${money(Math.abs(pnl))}</span>
+      <span class="badge current-price">체결가 ${price(t.price)}</span>
+      <span class="badge ${pnlClass}">${pnlSign}${money(Math.abs(pnl))}</span>
     </div>
-    <div class="small muted" style="margin-top:6px">${esc(t.reason || "")}</div>
+    ${reasonKo ? `<div class="small muted" style="margin-top:6px">${esc(reasonKo)}</div>` : ""}
+    ${reasonParsed ? `<div class="small muted" style="margin-top:4px">이유: ${esc(reasonParsed)}</div>` : ""}
+    <div class="small muted" style="margin-top:4px">${ts}</div>
   </div>`;
 }
 
 function _buildReasonKo(reason) {
-  // Parse entry: model_p=X, side=Y, p_exec=Z ... into Korean
   if (!reason) return "";
+  // Only parse the entry: section
+  const entryPart = (reason.match(/entry:([^;]*)/i) || [])[1] || reason;
   const lines = [];
-  const mp = reason.match(/model_p=([\d.]+)/);
-  const pe = reason.match(/p_exec=([\d.]+)/);
-  const ne = reason.match(/net_edge=([\d.]+)/);
-  const br = reason.match(/bankroll=\$([\d.]+)/);
-  const ef = reason.match(/entry_fraction=([\d.]+)%/);
-  const ps = reason.match(/probability_stop=([\d.]+)/);
-  const mf = reason.match(/model_fair=([\d.]+)/);
-  const te = reason.match(/target_exit=([\d.]+)/);
-  const fee = reason.match(/entry_fee=\$([\d.]+)/);
-  if (mp) lines.push(`YES 확률: ${(parseFloat(mp[1])*100).toFixed(1)}%`);
-  if (pe) lines.push(`체결가: ${(parseFloat(pe[1])*100).toFixed(1)}¢`);
-  if (mf) lines.push(`봇 공정가: ${(parseFloat(mf[1])*100).toFixed(1)}¢`);
-  if (ne) lines.push(`엣지(유리함): ${(parseFloat(ne[1])*100).toFixed(1)}%`);
-  if (te) lines.push(`목표 익절가: ${(parseFloat(te[1])*100).toFixed(1)}¢`);
-  if (ps) lines.push(`손절 트리거 확률: ${(parseFloat(ps[1])*100).toFixed(1)}%`);
-  if (ef) lines.push(`투자 비율: ${ef[1]}%`);
-  if (br) lines.push(`자본금: $${br[1]}`);
-  if (fee) lines.push(`수수료: $${fee[1]}`);
+  const mp = entryPart.match(/model_p=([\d.]+)/);
+  const pe = entryPart.match(/p_exec=([\d.]+)/);
+  const ne = entryPart.match(/net_edge=([\d.]+)/);
+  const br = entryPart.match(/bankroll=\$([\d.]+)/);
+  const ef = entryPart.match(/entry_fraction=([\d.]+)%/);
+  const ps = entryPart.match(/probability_stop=([\d.]+)/);
+  const mf = entryPart.match(/model_fair=([\d.]+)/);
+  const te = entryPart.match(/target_exit=([\d.]+)/);
+  const feeM = entryPart.match(/entry_fee=\$([\d.]+)/);
+  const heat = entryPart.match(/heat=([\d.\-]+)%/);
+  if (mp) lines.push(`YES확률 ${(parseFloat(mp[1])*100).toFixed(1)}%`);
+  if (pe) lines.push(`체결가 ${(parseFloat(pe[1])*100).toFixed(1)}¢`);
+  if (mf) lines.push(`봇공정가 ${(parseFloat(mf[1])*100).toFixed(1)}¢`);
+  if (ne) lines.push(`엣지 ${(parseFloat(ne[1])*100).toFixed(1)}%`);
+  if (te) lines.push(`목표익절 ${(parseFloat(te[1])*100).toFixed(1)}¢`);
+  if (ps) lines.push(`손절기준확률 ${(parseFloat(ps[1])*100).toFixed(1)}%`);
+  // 진입금액 계산: bankroll × fraction
+  if (br && ef) {
+    const amt = parseFloat(br[1]) * parseFloat(ef[1]) / 100;
+    lines.push(`진입금액 $${amt.toFixed(2)}`);
+  }
+  if (feeM) lines.push(`수수료 $${feeM[1]}`);
+  if (heat) lines.push(`시장과열 ${heat[1]}%`);
   return lines.join(" · ");
+}
+function _parseCloseReason(reason) {
+  if (!reason) return "";
+  // Strip the entry: prefix, show the close reason cleanly
+  return reason.replace(/^entry:[^;]*;?\s*/i, "").trim();
 }
 
 function realizedCards(rows) {
@@ -812,15 +863,23 @@ function realizedCards(rows) {
 function cityForecastCard(c) {
   const ok = (c.status || "").toUpperCase() === "SUCCESS" || (c.status || "").toUpperCase() === "HIT";
   const cls = ok ? "ok" : ((c.error || c.unavailable_reason) ? "fail" : "warn");
-  const statusText = ok ? "✓ 성공" : ("✗ 실패");
+  const statusText = ok ? "✓ 성공" : "✗ 실패";
   const ts = shortDateTime(c.attempted_at || "");
   const err = c.error || c.unavailable_reason || "";
+  const stn = c.station_name ? `공식 관측소: ${c.station_name}` : "";
+  const hiC = c.forecast_high_c != null ? `<span style="color:var(--red)">최고 ${tempC(c.forecast_high_c)}</span>` : "";
+  const loC = c.forecast_low_c != null ? `<span style="color:var(--blue)">최저 ${tempC(c.forecast_low_c)}</span>` : "";
+  const prob = c.probability != null ? `확률 ${(Number(c.probability)*100).toFixed(0)}%` : "";
+  const temps = [hiC, loC, prob].filter(Boolean).join(" · ");
   return `<div class="city-card ${cls}">
     <div class="city-card-row">
       <span class="city-name">${esc(c.city || c.station_id || "?")}</span>
       <span class="${ok ? 'city-status-ok' : 'city-status-fail'}">${statusText}</span>
     </div>
-    <div class="city-card-detail">${ts}${err ? " · " + esc(err.slice(0, 60)) : ""}</div>
+    ${stn ? `<div class="city-card-detail">${esc(stn)}</div>` : ""}
+    <div class="city-card-detail">호출 성공: ${ts}</div>
+    ${temps ? `<div class="city-card-detail">${temps}</div>` : ""}
+    ${err ? `<div class="city-card-detail" style="color:var(--red)">실패: ${esc(err.slice(0, 80))}</div>` : ""}
   </div>`;
 }
 
@@ -828,15 +887,24 @@ function cityNowcastCard(c) {
   const ok = (c.status || "").toUpperCase() === "SUCCESS" || (c.status || "").toUpperCase() === "HIT";
   const cls = ok ? "ok" : ((c.error || c.unavailable_reason) ? "fail" : "warn");
   const statusText = ok ? "✓ 성공" : "✗ 실패";
-  const ts = shortDateTime(c.requested_at || "");
+  const ts = shortDateTime(c.requested_at || c.attempted_at || "");
   const err = c.error || c.unavailable_reason || "";
-  const stn = c.station_name ? ` (${c.station_name})` : "";
+  const stn = c.station_name || "";
+  const hiC = c.observed_high_c != null ? `<span style="color:var(--red)">최고기온 ${tempC(c.observed_high_c)}</span>` : "";
+  const loC = c.observed_low_c != null ? `<span style="color:var(--blue)">최저기온 ${tempC(c.observed_low_c)}</span>` : "";
+  const temps = [hiC, loC].filter(Boolean).join(" · ");
+  // bulk-metar: show trigger city
+  const isBulk = (c.city || "") === "bulk-metar" || String(c.request_mode || "").includes("bulk");
+  const cityLabel = isBulk ? `일괄 요청 (${c.trigger_city || "?"} 트리거)` : (c.city || c.station_id || "?");
   return `<div class="city-card ${cls}">
     <div class="city-card-row">
-      <span class="city-name">${esc(c.city || c.station_id || "?")}</span>
+      <span class="city-name">${esc(cityLabel)}</span>
       <span class="${ok ? 'city-status-ok' : 'city-status-fail'}">${statusText}</span>
     </div>
-    <div class="city-card-detail">${ts}${esc(stn)}${err ? " · " + esc(err.slice(0, 60)) : ""}</div>
+    ${stn ? `<div class="city-card-detail">공식 관측소: ${esc(stn)}</div>` : ""}
+    <div class="city-card-detail">호출 성공: ${ts}</div>
+    ${temps ? `<div class="city-card-detail">${temps}</div>` : ""}
+    ${err ? `<div class="city-card-detail" style="color:var(--red)">실패: ${esc(err.slice(0, 80))}</div>` : ""}
   </div>`;
 }
 
@@ -956,13 +1024,19 @@ function render(payload) {
   setText("r-open", payload.summary.open_positions);
   setText("r-exposure", money(payload.summary.exposure));
   setText("r-latest-forecast", shortDateTime(payload.scanner.latest_forecast_at));
-  setText("r-total-profit", money(payload.summary.realized_profit_usd || 0));
-  setText("r-total-loss", money(payload.summary.realized_loss_usd || 0));
+  const profitUsd = payload.summary.realized_profit_usd || 0;
+  const lossUsd = payload.summary.realized_loss_usd || 0;
+  const netProfit = profitUsd - lossUsd;
+  const netEl = document.getElementById("r-net-profit");
+  netEl.textContent = (netProfit >= 0 ? "+" : "-") + money(Math.abs(netProfit)).slice(1);
+  netEl.className = netProfit >= 0 ? "" : "bad";
+  setText("r-total-profit", "+" + money(profitUsd));
+  setText("r-total-loss", "-" + money(lossUsd));
   setText("r-cash", money(payload.summary.cash));
   const forecastHealth = (payload.health || {}).forecast || {};
   setHealthStatus("r-forecast-health", forecastHealth.status);
   setText("r-forecast-success", "마지막 성공 " + shortDateTime(forecastHealth.last_success_at));
-  const ttl = 10800; // 3h forecast cache TTL
+  const ttl = 10800;
   const age = forecastHealth.cache_age_seconds;
   const remaining = age != null ? Math.max(0, ttl - age) : null;
   setText("r-forecast-age", "다음 갱신까지 " + (remaining != null ? duration(remaining) : "--"));
@@ -974,12 +1048,11 @@ function render(payload) {
   setText("r-websocket-message", "마지막 메시지 " + shortDateTime(websocketHealth.last_message_at));
   setText("r-websocket-book", "마지막 주문장 " + shortDateTime(websocketHealth.last_book_at) + " · 경과 " + (websocketHealth.stale_book_age_seconds == null ? "--" : duration(websocketHealth.stale_book_age_seconds)));
   setText("r-websocket-error", "최근 오류 " + (websocketHealth.last_error || "--"));
-  // Per-city forecast cards
+  // Per-city forecast/nowcast cards → logs panel (3rd tab)
   const forecastCities = (payload.scanner || {}).per_city_forecast || [];
   document.getElementById("r-forecast-cities").innerHTML = forecastCities.length
     ? forecastCities.map(cityForecastCard).join("")
     : `<div class="small muted">예보 호출 기록 없음</div>`;
-  // Per-city nowcast cards
   const nowcastCities = (payload.scanner || {}).per_city_nowcast || [];
   document.getElementById("r-nowcast-cities").innerHTML = nowcastCities.length
     ? nowcastCities.map(cityNowcastCard).join("")
@@ -989,7 +1062,7 @@ function render(payload) {
   const realizedRows = payload.realized_results || [];
   setText("realized-count", realizedRows.length);
   document.getElementById("open-positions").innerHTML = payload.positions.length ? payload.positions.map(cardForPosition).join("") : `<div class="small muted">보유 포지션이 없습니다</div>`;
-  document.getElementById("realized-results").innerHTML = realizedTable(realizedRows);
+  document.getElementById("realized-results").innerHTML = realizedCards(realizedRows);
   document.getElementById("recent-trades").innerHTML = payload.recent_trades.length ? payload.recent_trades.map(cardForTrade).join("") : `<div class="small muted">최근 체결 내역이 없습니다</div>`;
   drawChart(payload);
 }
