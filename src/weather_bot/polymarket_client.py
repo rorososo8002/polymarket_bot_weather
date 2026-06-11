@@ -16,6 +16,7 @@ from .weather_client import parse_weather_question
 
 TRUE_API_BOOL_VALUES = {"true", "1", "yes", "y", "on"}
 FALSE_API_BOOL_VALUES = {"false", "0", "no", "n", "off"}
+CATEGORY_SLUG_DISCOVERY_LIMIT = 80
 
 
 def parse_api_bool(value: Any, *, default: bool) -> bool | None:
@@ -49,12 +50,13 @@ class PolymarketClient:
 
     def discover_weather_markets(self, max_pages: int = 8, page_size: int = 100) -> list[RawMarket]:
         """Fetch weather events and expand every supported binary market found."""
-        markets, seen_event_ids = self._discover_weather_markets_from_category_pages()
+        page_size = max(1, int(page_size))
+        page_limit = max(0, int(max_pages))
+        category_slug_limit = min(CATEGORY_SLUG_DISCOVERY_LIMIT, page_size * page_limit)
+        markets, seen_event_ids = self._discover_weather_markets_from_category_pages(max_slugs=category_slug_limit)
 
         seen_market_ids = {market.market_id for market in markets}
         url = f"{self.gamma_base}/events"
-        page_size = max(1, int(page_size))
-        page_limit = max(0, int(max_pages))
         offset = 0
         pages_scanned = 0
 
@@ -95,7 +97,7 @@ class PolymarketClient:
             pages_scanned += 1
         return markets
 
-    def _discover_weather_markets_from_category_pages(self) -> tuple[list[RawMarket], set[str]]:
+    def _discover_weather_markets_from_category_pages(self, *, max_slugs: int | None = None) -> tuple[list[RawMarket], set[str]]:
         slugs: list[str] = []
         for path in ("/weather/temperature", "/weather/high-temperature", "/weather/low-temperature"):
             try:
@@ -106,7 +108,10 @@ class PolymarketClient:
         markets: list[RawMarket] = []
         seen_market_ids: set[str] = set()
         seen_event_ids: set[str] = set()
-        for slug in dict.fromkeys(slugs):
+        unique_slugs = list(dict.fromkeys(slugs))
+        if max_slugs is not None:
+            unique_slugs = unique_slugs[: max(0, int(max_slugs))]
+        for slug in unique_slugs:
             try:
                 event = self._get(f"{self.gamma_base}/events/slug/{quote(slug, safe='')}")
             except (requests.HTTPError, RetryError, requests.RequestException, ValueError):

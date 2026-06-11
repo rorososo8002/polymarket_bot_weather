@@ -262,6 +262,52 @@ def test_category_discovery_does_not_stop_after_supported_city_count():
     assert len(markets) == event_count
 
 
+def test_category_discovery_respects_explicit_page_budget_for_slug_fetches():
+    event_count = 120
+
+    class ManyCategoryEventsClient(FakePolymarketClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.slug_fetches: list[str] = []
+
+        def _get_web_text(self, path: str) -> str:
+            if path == "/weather/temperature":
+                return "".join(
+                    f'<a href="/event/highest-temperature-in-seoul-budget-{index}">Seoul</a>'
+                    for index in range(event_count)
+                )
+            return ""
+
+        def _get(self, url: str, params: dict | None = None):
+            if "/events/slug/" in url:
+                slug = url.rsplit("/", 1)[-1]
+                self.slug_fetches.append(slug)
+                return {
+                    "id": slug,
+                    "slug": slug,
+                    "markets": [
+                        {
+                            "id": f"market-{slug}",
+                            "question": "Will the highest temperature in Seoul be 26\u00b0C on May 25?",
+                            **binary_token_fields(f"yes-{slug}", f"no-{slug}"),
+                        }
+                    ],
+                }
+            return []
+
+    client = ManyCategoryEventsClient()
+    markets = client.discover_weather_markets(max_pages=1, page_size=5)
+
+    assert len(client.slug_fetches) == 5
+    assert len(markets) == 5
+
+    client = ManyCategoryEventsClient()
+    markets = client.discover_weather_markets(max_pages=8, page_size=100)
+
+    assert len(client.slug_fetches) == 80
+    assert len(markets) == 80
+
+
 def test_market_parser_maps_clob_tokens_by_outcomes_when_order_is_reversed():
     client = FakePolymarketClient()
 

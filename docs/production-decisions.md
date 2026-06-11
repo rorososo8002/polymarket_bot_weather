@@ -50,6 +50,9 @@ compact; historical notes belong in focused `docs/solutions/` entries.
 - Realtime startup must not wait for every market forecast. Start WebSocket once
   the temperature token subscription set is known, then attach forecast and
   nowcast signals as they become ready.
+- Polymarket category-page discovery may parse many event slugs, but detailed
+  `/events/slug/...` fetches are capped at 80 per discovery cycle and lower
+  explicit `max_pages * page_size` budgets must be honored.
 - Missing or stale forecast signals block new entries and queue a refresh; they
   are not executable entry evidence.
 - Forecast scheduling has two lanes: normal round-robin plus priority for held

@@ -110,8 +110,9 @@ exposure caps leave at least `MIN_ORDER_USD`.
 - A weather event is one city-date question; a market is one tradable binary
   result inside that event.
 - Discovery expands supported temperature binary markets inside trading-ready
-  weather-category events. It does not use the 41-city station registry as an
-  event-count cutoff.
+  weather-category events, not by stopping at the 41-city station count.
+- Category slug detail fetches are bounded at 80 per cycle and lower explicit
+  `max_pages * page_size` budgets, so discovery cannot delay WebSocket startup.
 - Temperature range buckets such as `86-87F` or `22-23C` preserve displayed
   inclusive endpoints exactly.
 - Same-station nowcast may adjust probability only when the provider is

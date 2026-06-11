@@ -130,6 +130,10 @@ before continuing.
   forecast signals stale.
 - Use the Polymarket CLOB WebSocket market stream for executable order books by
   default. Do not silently replace realtime streaming with polling.
+- Polymarket category-page discovery can expose hundreds of event slugs. Keep
+  detailed `/events/slug/...` fetches bounded: honor explicit
+  `max_pages * page_size` budgets and never exceed the hard discovery cap for
+  one cycle. Discovery must not hold the realtime stream startup hostage.
 - REST order-book snapshots are allowed only as a bounded verification/resync
   helper for the WebSocket cache. They must not replace WebSocket monitoring,
   must not write raw order books to disk, and must be rate-limited.
