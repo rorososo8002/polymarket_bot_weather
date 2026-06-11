@@ -333,7 +333,11 @@ def test_dashboard_payload_summarizes_state_trades_and_decisions(tmp_path):
                 "target_exit_price": "0.60",
                 "market_heat_score": "-0.1",
                 "reason": "edge ok",
-                "note": "station",
+                "note": (
+                    "Singapore Changi Airport Station [WSSS] target_date=2026-06-12; "
+                    "mean=83.7F; observed_high_c=29.0; "
+                    "observed_at=2026-06-11T18:30:00+00:00; nowcast_source=aviationweather-metar"
+                ),
             },
             {
                 "ts": "2026-05-24T10:01:00+00:00",
@@ -384,6 +388,9 @@ def test_dashboard_payload_summarizes_state_trades_and_decisions(tmp_path):
     assert payload["bot"]["scan_interval_seconds"] == 2400
     assert payload["bot"]["orderbook_mode"] == "websocket"
     assert payload["positions"][0]["unrealized_pnl"] == pytest.approx(8.8)
+    assert payload["positions"][0]["forecast_c"] == pytest.approx(28.7)
+    assert payload["positions"][0]["nowcast_high_c"] == pytest.approx(29.0)
+    assert payload["positions"][0]["nowcast_low_c"] is None
     assert "events" not in payload
     assert "recent_decisions" not in payload
     assert "pressure" not in payload

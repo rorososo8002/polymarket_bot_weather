@@ -125,6 +125,10 @@ compact; historical notes belong in focused `docs/solutions/` entries.
   matches the AWC METAR provider floor and keeps held-position exits timely.
 - Forecast freshness and nowcast freshness are separate. The 5-minute nowcast
   TTL must never be used to declare a forecast signal stale.
+- Dashboard open-position cards must surface the latest same-station nowcast
+  high/low value when the latest decision row contains observed station
+  evidence. A missing nowcast badge means no usable observed value was present
+  in the latest decision payload, not that the provider should be assumed idle.
 - The target date may be station-local today, or station-local yesterday only
   during the post-close freshness window for held-position exit and settlement
   evidence.

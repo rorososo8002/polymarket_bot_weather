@@ -1485,6 +1485,77 @@ def test_nowcast_inside_exact_or_range_bucket_flags_no_exit_risk(tmp_path, quest
     assert "observed_high_c=30.4" in rows[0]["reason"]
 
 
+def test_nowcast_above_exact_bucket_closes_held_yes_by_probability_stop(tmp_path):
+    settings = Settings(
+        state_path=str(tmp_path / "state.json"),
+        trades_csv_path=str(tmp_path / "trades.csv"),
+        decisions_csv_path=str(tmp_path / "decisions.csv"),
+        raw_snapshots_path=str(tmp_path / "raw.jsonl"),
+        portfolio_decisions_jsonl_path=str(tmp_path / "portfolios.jsonl"),
+        probability_stop_drop_threshold=0.20,
+        model_error_margin=0.0,
+        resolution_error_margin=0.0,
+        weather_taker_fee_rate=0.0,
+    )
+    question = "Will the highest temperature in Singapore be 29C on June 12?"
+    market = RawMarket(
+        market_id="sg-29c",
+        question=question,
+        slug="singapore-29c",
+        active=True,
+        closed=False,
+        yes_token_id="yes",
+        no_token_id="no",
+    )
+    broker = PaperBroker(settings)
+    broker.state = PaperState(
+        cash_usd=190.0,
+        positions=[
+            PaperPosition(
+                position_id="p1",
+                market_id=market.market_id,
+                question=question,
+                token_id="yes",
+                side="YES",
+                entry_price=0.50,
+                shares=20.0,
+                cost_usd=10.0,
+                opened_at=datetime.now(timezone.utc).isoformat(),
+                metadata={
+                    "entry_p_true": 0.30,
+                    "entry_side_probability": 0.30,
+                    "probability_stop_threshold": 0.20,
+                },
+            )
+        ],
+    )
+    parsed = parse_weather_question(question)
+    signal = WeatherSignal(
+        p_true=0.0,
+        confidence=0.95,
+        source="test+nowcast",
+        note="forecast-plus-nowcast; observed-high-above-exact-bucket; observed_high_c=29.6",
+        parsed=parsed,
+        nowcast={"observed_high_c": 29.6, "observed_high_f": 85.28},
+    )
+    latest_edges: dict[tuple[str, str], EdgeResult] = {}
+
+    _refresh_held_exit_edges_from_signal(broker, market, signal, latest_edges, None)
+    messages = maybe_close_positions(
+        broker,
+        FakePolymarketClient(books={"yes": book("yes", bid=0.50, ask=0.51)}),
+        {market.market_id: market},
+        latest_edges,
+    )
+
+    assert any(message.startswith("CLOSE YES") for message in messages)
+    assert any("probability stop" in message for message in messages)
+    assert broker.state.positions == []
+    rows = list(csv.DictReader((tmp_path / "trades.csv").open(encoding="utf-8")))
+    assert rows[0]["action"] == "CLOSE"
+    assert "probability stop" in rows[0]["reason"]
+
+
 def test_run_cycle_reuses_one_ensemble_client_for_all_markets(monkeypatch, tmp_path):
     settings = Settings(
         state_path=str(tmp_path / "state.json"),

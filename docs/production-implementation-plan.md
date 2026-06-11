@@ -180,8 +180,7 @@ exposure caps leave at least `MIN_ORDER_USD`.
   must be at least 5 minutes apart, and HKO max/min requests must be at least
   10 minutes apart. Cache hits are local reads and do not write request-log
   rows.
-- A 5-min nowcast refresh must not make a forecast signal stale. It should
-  refresh official station evidence around the cached forecast answer.
+- A 5-min nowcast refresh updates station evidence around cached forecasts, not forecast freshness; open-position dashboard payloads must include latest decision-note nowcast evidence when present.
 - For daily-high threshold markets, `observed_high_c >= threshold_c` makes held
   YES favorable evidence and held NO a `nowcast_bucket_lock_risk` exit attempt.
   Exact and range buckets must use parsed bucket boundaries; a held side that

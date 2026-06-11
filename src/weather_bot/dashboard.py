@@ -588,7 +588,8 @@ def _position_payload(
     value = shares * mark - exit_fee_usdc
     slug = metadata.get("slug") or latest_decision.get("slug") or ""
     event_slug = metadata.get("event_slug") or latest_decision.get("event_slug") or ""
-    forecast_c = _forecast_c_from_note(latest_decision.get("note", ""))
+    latest_note = latest_decision.get("note", "")
+    forecast_c = _forecast_c_from_note(latest_note)
     return {
         "position_id": pos.get("position_id", ""),
         "market_id": pos.get("market_id", ""),
@@ -605,6 +606,8 @@ def _position_payload(
         "market_value": value,
         "unrealized_pnl": value - cost,
         "forecast_c": forecast_c,
+        "nowcast_high_c": _nowcast_c_from_note(latest_note, "observed_high_c"),
+        "nowcast_low_c": _nowcast_c_from_note(latest_note, "observed_low_c"),
         "opened_at": pos.get("opened_at", ""),
         "city": metadata.get("city", ""),
         "date_hint": metadata.get("date_hint", ""),
@@ -648,6 +651,15 @@ def _forecast_c_from_note(note: str) -> float | None:
     if not match:
         return None
     return round(_f_to_c(float(match.group(1))), 1)
+
+
+def _nowcast_c_from_note(note: str, key: str) -> float | None:
+    if key not in {"observed_high_c", "observed_low_c"}:
+        return None
+    match = re.search(rf"\b{re.escape(key)}=([-+]?\d+(?:\.\d+)?)\b", note)
+    if not match:
+        return None
+    return round(float(match.group(1)), 3)
 
 
 def _target_exit_from_reason(reason: str) -> float | None:
