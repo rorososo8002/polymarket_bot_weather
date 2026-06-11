@@ -24,6 +24,10 @@ from weather_bot.nowcast import StationNowcastObservation
 from weather_bot.weather_client import c_to_f, parse_weather_question
 
 
+def test_open_meteo_client_default_cache_ttl_matches_api_budget():
+    assert OpenMeteoEnsembleClient().cache_ttl_seconds == 10800
+
+
 def test_extract_member_values_accepts_suffixed_keys_and_bias():
     daily = {
         "time": ["2026-05-23"],

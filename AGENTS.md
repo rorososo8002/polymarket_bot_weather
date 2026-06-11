@@ -105,29 +105,38 @@ before continuing.
   execution universe.
 - Unknown, missing, stale, malformed, unsupported, suspicious, invalid, or
   conflictful data means skip, not guess.
-- Open-Meteo forecast HTTP calls use **batch mode**: cities are fetched sequentially
-  with `FORECAST_REQUEST_MIN_INTERVAL_SECONDS=15` gaps within a batch, then the bot
-  waits until `FORECAST_CACHE_TTL_SECONDS=10800` (3 h) expires before the next
-  batch. GFS updates every 6 h and takes 3-4 h to process, so a 3-h cache captures
-  each new model run without wasting API units on unchanged data.
-  Budget: 39 active cities × 8 batches/day × 31 units ≈ 9 672 units/day < 10 000 limit.
+- Open-Meteo forecast HTTP calls use **cache-protected batch mode**:
+  trading-ready cities are evaluated one forecast key at a time with
+  `FORECAST_REQUEST_MIN_INTERVAL_SECONDS=15` gaps between real cache misses.
+  The answer cache must keep `FORECAST_CACHE_TTL_SECONDS=10800` (3 h), so a full
+  40-city execution universe costs at most 40 × 8 batches/day × 31 units =
+  9 920 units/day, just under the 10 000 unit limit. `STATION_MAP` has 41
+  registered cities, but Karachi is excluded from `TRADING_READY_STATION_MAP`.
 - On a non-rate-limit forecast failure, skip that city and move to the next one.
   Do not retry the same city within the same batch. The failure cooldown equals the
-  cache TTL so the city is only retried in the next batch (~90 min later).
+  cache TTL so the city is only retried in the next batch (~3 h later).
 - On a 429 rate-limit response, stop the entire batch immediately and wait for the
   rate-limit cooldown to expire before resuming. Do not hammer failed cities.
-- `FORECAST_CACHE_TTL_SECONDS=5400` is the forecast answer freshness window and
+- `FORECAST_CACHE_TTL_SECONDS=10800` is the forecast answer freshness window and
   the effective between-batch interval. `STREAM_CYCLE_INTERVAL_SECONDS=2400` is the
   market-discovery and WebSocket rebuild interval, not the forecast spacing.
 - `STATION_NOWCAST_CACHE_TTL_SECONDS=300` (5 min) is the recommended nowcast
   cache TTL. The AWC METAR provider floor is also 5 min, so this keeps
   observation data fresh enough for timely exit decisions without hammering
   the source.
+- Forecast freshness and nowcast freshness are different clocks. A forecast
+  signal may be refreshed from the 3-h Open-Meteo answer cache while nowcast is
+  refreshed every 5 min. Do not use `STATION_NOWCAST_CACHE_TTL_SECONDS` to mark
+  forecast signals stale.
 - Use the Polymarket CLOB WebSocket market stream for executable order books by
   default. Do not silently replace realtime streaming with polling.
+- REST order-book snapshots are allowed only as a bounded verification/resync
+  helper for the WebSocket cache. They must not replace WebSocket monitoring,
+  must not write raw order books to disk, and must be rate-limited.
 - A WebSocket `price_change` delta must not create executable depth for a token
-  until that token has received an initial `book` snapshot in the current
-  stream cache.
+  until that token has received an initial full-depth snapshot in the current
+  stream cache. The full-depth snapshot may come from WebSocket `book` or the
+  bounded REST `/book` verification/resync path.
 - Keep token IDs for open positions subscribed even when discovery moves to
   newer markets.
 
@@ -156,8 +165,10 @@ before continuing.
 
 ## Disk Management
 
-- Logrotate compresses any file over 100 MB in `data/` hourly, keeping 5
-  archives in `data/archive/`. Config: `/etc/logrotate.d/polymarket-weather-bot`
+- Logrotate compresses high-volume diagnostic/request files in `data/` hourly.
+  `paper_raw_snapshots.jsonl` rotates at 100 MB; request logs and portfolio
+  diagnostics rotate at 10 MB. Core account ledgers are not rotated until replay
+  is archive-aware. Config: `/etc/logrotate.d/polymarket-weather-bot`
 - journald is capped at 50 MB. Config: `/etc/systemd/journald.conf.d/polymarket.conf`
 - See `docs/codex/data-and-disk.md` for the full disk risk table and reset procedure.
 

@@ -18,11 +18,10 @@ Read this file only for strategy changes, probability modeling, trading behavior
 - Unknown markets and unknown stations are skips, not guesses or city-centroid fallbacks.
 - The current paper strategy is temperature-only. There is no environment
   switch that re-enables non-temperature weather markets.
-- Refresh forecast data through the Open-Meteo cache with a default
-  `FORECAST_CACHE_TTL_SECONDS=2400`. Real Open-Meteo forecast HTTP calls are
-  globally serialized by `FORECAST_REQUEST_MIN_INTERVAL_SECONDS=60`: one
-  request must finish or timeout, then at least 60 seconds pass before the next
-  real request starts.
+- Refresh forecast data through the Open-Meteo cache with
+  `FORECAST_CACHE_TTL_SECONDS=10800`. Real Open-Meteo forecast HTTP calls are
+  globally serialized by `FORECAST_REQUEST_MIN_INTERVAL_SECONDS=15`; cache hits
+  do not consume the Open-Meteo request budget.
 - Apply the forecast TTL to memory and disk cache entries alike. A reachable
   dashboard is not proof of fresh forecast data; inspect the last successful
   forecast time and cache age.
@@ -52,9 +51,8 @@ Read this file only for strategy changes, probability modeling, trading behavior
   non-overlapping temperature buckets. At `$1,000` or more, shrink that shared
   budget to 5%. Normalize event probabilities to 100%, then compare
   `YES+YES`, `YES+NO`, `NO+NO`, one-leg, and no-entry outcomes. Require each
-  opened leg to be at least `$10`, allow one strong leg to use the full event
-  budget, cap one city's different dates at 20%, and cap total paper exposure
-  at 90%.
+  opened leg to be at least `$10`, size entries with 1/4 fractional Kelly,
+  cap one city's different dates at 20%, and cap total paper exposure at 60%.
 - Size new entries from the smaller of cost-basis bankroll and executable
   liquidation bankroll. Do not let unrealized profits increase risk. If a
   held position cannot be valued from a usable order book, fail closed and

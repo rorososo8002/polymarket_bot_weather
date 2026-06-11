@@ -40,6 +40,8 @@ Routine local, VPS, SSH, and dashboard commands live in
   skip. The bot must not guess.
 - Use the Polymarket CLOB WebSocket market stream for executable order books.
   Do not silently replace realtime streaming with polling.
+- REST order-book snapshots are bounded verification for the WebSocket cache.
+  They are not the primary monitor and are not persisted as raw order books.
 
 ## Architecture
 
@@ -86,7 +88,7 @@ paper_raw_snapshots.jsonl     bounded error/debug evidence, not an account book
 forecast_cache.json           forecast answer cache, not an API call ledger
 forecast_request_log.jsonl    real Open-Meteo request ledger
 paper_runner_status.json      current runner heartbeat/status
-runtime/                      deployment/runtime data directory
+data/                         production runtime data directory
 ```
 
 For a fresh local experiment, delete ignored runtime ledgers only when you
@@ -110,20 +112,24 @@ docs/solutions/                       durable mistake-prevention notes
 
 ```text
 BANKROLL_USD=100
-ENTRY_FRACTION=0.10
+SIZE_MODE=kelly
+FRACTIONAL_KELLY=0.25
+ENTRY_FRACTION=0.20
 MIN_ORDER_USD=10.00
 MIN_NET_EDGE=0.05
 ENTRY_MIN_EXPECTED_NET_RETURN_PCT=0.06
 WEATHER_TAKER_FEE_RATE=0.05
-MAX_TOTAL_EXPOSURE_FRACTION=0.90
+MAX_TOTAL_EXPOSURE_FRACTION=0.60
 MAX_CITY_EXPOSURE_FRACTION=0.20
 MAX_EVENT_DATE_EXPOSURE_FRACTION=0.10
 LARGE_BANKROLL_EVENT_DATE_EXPOSURE_FRACTION=0.05
 MAX_EVENT_PORTFOLIO_LEGS=2
-FORECAST_REQUEST_MIN_INTERVAL_SECONDS=60
-FORECAST_CACHE_TTL_SECONDS=2400
+FORECAST_REQUEST_MIN_INTERVAL_SECONDS=15
+FORECAST_CACHE_TTL_SECONDS=10800
 STREAM_CYCLE_INTERVAL_SECONDS=2400
 ORDERBOOK_STREAM_ENABLED=true
+ORDERBOOK_REST_SNAPSHOT_ENABLED=true
+ORDERBOOK_REST_SNAPSHOT_INTERVAL_SECONDS=60
 RAW_SNAPSHOTS_MODE=error
 ```
 

@@ -29,10 +29,17 @@ def test_local_env_example_exposes_settlement_runner_defaults():
     assert "SETTLEMENT_RUNNER_ENABLED=true" in text
     assert "SETTLEMENT_RUNNER_MAX_FRACTION=0.25" in text
     assert "SETTLEMENT_RUNNER_MIN_EV_MARGIN_USD=0.00" in text
-    assert "FORECAST_REQUEST_LOG_PATH=runtime/forecast_request_log.jsonl" in text
-    assert "FORECAST_REQUEST_MIN_INTERVAL_SECONDS=60" in text
-    assert "FORECAST_RATE_LIMIT_STATE_PATH=runtime/forecast_rate_limit_state.json" in text
-    assert "STATION_NOWCAST_REQUEST_LOG_PATH=runtime/station_nowcast_request_log.jsonl" in text
+    assert "ORDERBOOK_REST_SNAPSHOT_ENABLED=true" in text
+    assert "ORDERBOOK_REST_SNAPSHOT_INTERVAL_SECONDS=60" in text
+    assert "FORECAST_CACHE_TTL_SECONDS=10800" in text
+    assert "FORECAST_REQUEST_LOG_PATH=forecast_request_log.jsonl" in text
+    assert "FORECAST_REQUEST_MIN_INTERVAL_SECONDS=15" in text
+    assert "FORECAST_RATE_LIMIT_STATE_PATH=forecast_rate_limit_state.json" in text
+    assert "STATION_NOWCAST_CACHE_TTL_SECONDS=300" in text
+    assert "STATION_NOWCAST_REQUEST_LOG_PATH=station_nowcast_request_log.jsonl" in text
+    assert "SIZE_MODE=kelly" in text
+    assert "FRACTIONAL_KELLY=0.25" in text
+    assert "MAX_TOTAL_EXPOSURE_FRACTION=0.60" in text
 
 
 def test_local_env_example_does_not_expose_removed_precipitation_settings():
@@ -62,21 +69,23 @@ def test_vps_env_example_keeps_runtime_state_under_data_dir():
     assert "PORTFOLIO_DECISIONS_JSONL_PATH=/opt/polymarket-weather-bot/data/paper_event_portfolios.jsonl" in text
     assert "RAW_SNAPSHOTS_PATH=/opt/polymarket-weather-bot/data/paper_raw_snapshots.jsonl" in text
     assert "FORECAST_REQUEST_LOG_PATH=/opt/polymarket-weather-bot/data/forecast_request_log.jsonl" in text
-    assert "FORECAST_REQUEST_MIN_INTERVAL_SECONDS=60" in text
+    assert "FORECAST_REQUEST_MIN_INTERVAL_SECONDS=15" in text
     assert "FORECAST_RATE_LIMIT_STATE_PATH=/opt/polymarket-weather-bot/data/forecast_rate_limit_state.json" in text
     assert (
         "STATION_NOWCAST_REQUEST_LOG_PATH=/opt/polymarket-weather-bot/data/station_nowcast_request_log.jsonl"
         in text
     )
     assert "STATION_NOWCAST_ENABLED=true" in text
-    assert "STATION_NOWCAST_CACHE_TTL_SECONDS=900" in text
+    assert "STATION_NOWCAST_CACHE_TTL_SECONDS=300" in text
     assert "STATION_NOWCAST_FRESHNESS_SECONDS=5400" in text
     assert "PORTFOLIO_DECISIONS_JSONL_PATH=/opt/polymarket-weather-bot/data/paper_event_portfolios.jsonl" in text
     assert "ORDERBOOK_STREAM_STALE_SECONDS=60" in text
     assert "RUNNER_HEALTH_STATUS_INTERVAL_SECONDS=5" in text
     assert "STREAM_CYCLE_INTERVAL_SECONDS=2400" in text
     assert ("FORECAST_" + "REFRESH_INTERVAL_SECONDS") not in text
-    assert "FORECAST_CACHE_TTL_SECONDS=2400" in text
+    assert "FORECAST_CACHE_TTL_SECONDS=10800" in text
+    assert "ORDERBOOK_REST_SNAPSHOT_ENABLED=true" in text
+    assert "ORDERBOOK_REST_SNAPSHOT_INTERVAL_SECONDS=60" in text
     assert "DISCOVERY_MAX_PAGES=8" in text
     assert "DISCOVERY_PAGE_SIZE=100" in text
     assert "MAX_EVENTS" not in text
@@ -87,9 +96,11 @@ def test_vps_env_example_keeps_runtime_state_under_data_dir():
     assert "SETTLEMENT_RUNNER_MAX_FRACTION=0.25" in text
     assert "SETTLEMENT_RUNNER_MIN_EV_MARGIN_USD=0.00" in text
     assert "BANKROLL_USD=100\n" in text
-    assert "ENTRY_FRACTION=0.10" in text
+    assert "SIZE_MODE=kelly" in text
+    assert "FRACTIONAL_KELLY=0.25" in text
+    assert "ENTRY_FRACTION=0.20" in text
     assert "MAX_SINGLE_MARKET_FRACTION=0.10" in text
-    assert "MAX_TOTAL_EXPOSURE_FRACTION=0.90" in text
+    assert "MAX_TOTAL_EXPOSURE_FRACTION=0.60" in text
     assert "MAX_CITY_EXPOSURE_FRACTION=0.20" in text
     assert "MAX_EVENT_DATE_EXPOSURE_FRACTION=0.10" in text
     assert "LARGE_BANKROLL_EVENT_DATE_EXPOSURE_FRACTION=0.05" in text
@@ -108,7 +119,7 @@ def test_vps_env_example_does_not_expose_removed_precipitation_settings():
     _assert_precipitation_settings_absent(text)
 
 
-def test_runtime_logrotate_rotates_raw_snapshots_and_request_logs_only():
+def test_runtime_logrotate_rotates_high_volume_diagnostics_only():
     logrotate = ROOT / "deploy" / "logrotate" / "polymarket-weather-bot-runtime"
 
     text = logrotate.read_text(encoding="utf-8")
@@ -116,8 +127,10 @@ def test_runtime_logrotate_rotates_raw_snapshots_and_request_logs_only():
     assert "/opt/polymarket-weather-bot/data/paper_raw_snapshots.jsonl" in text
     assert "/opt/polymarket-weather-bot/data/forecast_request_log.jsonl" in text
     assert "/opt/polymarket-weather-bot/data/station_nowcast_request_log.jsonl" in text
+    assert "/opt/polymarket-weather-bot/data/paper_event_portfolios.jsonl" in text
     assert "size 100M" in text
     assert "size 10M" in text
+    assert text.count("rotate 5") == 4
     assert "maxage 7" in text
     assert "compresscmd /usr/bin/zstd" in text
     assert "/opt/polymarket-weather-bot/data/paper_state.json" not in text
@@ -147,7 +160,7 @@ def test_dashboard_env_requires_token_and_data_paths():
     assert "refuses to start on public hosts" in text
     assert "long random token" in text
     assert "STATE_PATH=/opt/polymarket-weather-bot/data/paper_state.json" in text
-    assert "FORECAST_CACHE_TTL_SECONDS=2400" in text
+    assert "FORECAST_CACHE_TTL_SECONDS=10800" in text
     assert "ORDERBOOK_STREAM_STALE_SECONDS=60" in text
     assert "POLYMARKET_PRIVATE_KEY" not in text
 

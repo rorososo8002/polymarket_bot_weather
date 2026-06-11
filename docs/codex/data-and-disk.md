@@ -18,9 +18,11 @@ Everything else is noise that wastes disk and makes analysis harder.
 - `forecast_request_log.jsonl` — Open-Meteo call receipts; useful for rate-limit audits
 - `station_nowcast_request_log.jsonl` — METAR call receipts
 
-### Archive on rotation (logrotate 100 MB, keep 5 compressed)
-- `paper_decisions.csv` — OPEN / CLOSE / HOLD actions only (SKIP suppressed by default)
-- `paper_event_portfolios.jsonl` — event-portfolio selections (only when trades selected)
+### Archive on rotation
+- `paper_raw_snapshots.jsonl` — 100 MB internal cap plus logrotate
+- `forecast_request_log.jsonl` — 10 MB logrotate
+- `station_nowcast_request_log.jsonl` — 10 MB logrotate
+- `paper_event_portfolios.jsonl` — 10 MB logrotate, only selections by default
 
 ### Discard (never useful)
 - SKIP rows in `paper_decisions.csv` — "didn't trade because conditions not met";
@@ -31,9 +33,9 @@ Everything else is noise that wastes disk and makes analysis harder.
 
 | File | Growth rate (no guard) | Guard |
 |------|------------------------|-------|
-| `paper_decisions.csv` | ~6 GB / 9 h (with SKIP) | SKIP suppressed + logrotate 100 MB |
-| `paper_event_portfolios.jsonl` | ~1.2 GB / 9 h (all evals) | write-only-on-trade + logrotate 100 MB |
-| `paper_trades.csv` | ~50 MB / 9 h | logrotate 100 MB |
+| `paper_decisions.csv` | ~6 GB / 9 h (with SKIP) | SKIP suppressed by default |
+| `paper_event_portfolios.jsonl` | ~1.2 GB / 9 h (all evals) | write-only-on-trade + logrotate 10 MB |
+| `paper_trades.csv` | ~50 MB / 9 h | executed trades only; do not rotate until replay is archive-aware |
 | `paper_raw_snapshots.jsonl` | mode=error only | 100 MB internal cap |
 | journalctl | unbounded | `SystemMaxUse=50M` in journald.conf |
 | syslog | ~35 MB | standard logrotate (OS default) |
@@ -43,10 +45,9 @@ Everything else is noise that wastes disk and makes analysis harder.
 Applied at `/etc/logrotate.d/polymarket-weather-bot`:
 
 ```
-size 100M     # rotate when file exceeds 100 MB
-rotate 5      # keep 5 compressed archives
-compress      # gzip
-copytruncate  # truncate in-place (bot keeps file handle open)
+size 100M or 10M  # per-file risk
+rotate 5          # bounded compressed archives
+compress          # zstd
 olddir /opt/polymarket-weather-bot/data/archive
 ```
 
@@ -89,7 +90,10 @@ sudo rm -f paper_state.json paper_trades.csv paper_decisions.csv \
 sudo systemctl start polymarket-weather-bot
 ```
 
-Large files should be compressed to `data/archive/` before deletion.
+Large diagnostic files should be compressed to `data/archive/` before deletion.
+Do not manually delete or rotate `paper_state.json` or `paper_trades.csv`
+unless you are intentionally resetting the paper experiment with the bot
+stopped.
 
 ## Environment Variables
 

@@ -230,6 +230,15 @@ class ForecastSignalScheduler:
                 return FORECAST_WORKER_IDLE_SLEEP_SECONDS
             return max(0.0, (next_at - current).total_seconds())
 
+    def signal_ttl_seconds_for_market(self, market: RawMarket) -> int:
+        with self._lock:
+            key = _forecast_key_for_market(market)
+            if key in self._markets_by_key:
+                return self._ttl_for_key(key, priority=key in self._priority_reasons_by_key)
+            if market.market_id in self.open_market_ids:
+                return self.held_ttl_seconds
+            return self.general_ttl_seconds
+
     def status_snapshot(self, now: datetime | None = None) -> dict[str, object]:
         with self._lock:
             current = _utc_datetime(now or datetime.now(timezone.utc))
@@ -785,7 +794,7 @@ class RealtimeForecastSignalWorker:
             touched_tokens.update(_market_token_ids(market))
         return ForecastTaskResult(
             touched_tokens=touched_tokens,
-            success_at=_ensemble_last_success_at(self.ensemble_client, refreshed_at),
+            success_at=refreshed_at,
             has_supported_signal=has_supported_signal,
         )
 
@@ -1702,13 +1711,19 @@ def _realtime_signal_is_stale(
     signal_refreshed_at_by_market: dict[str, datetime] | None,
     *,
     now: datetime,
+    forecast_scheduler: ForecastSignalScheduler | None = None,
 ) -> bool:
     if signal_refreshed_at_by_market is None:
         return False
     last_refreshed_at = signal_refreshed_at_by_market.get(market.market_id)
     if last_refreshed_at is None:
         return True
-    return (now - last_refreshed_at.astimezone(timezone.utc)).total_seconds() >= settings.station_nowcast_cache_ttl_seconds
+    ttl_seconds = (
+        forecast_scheduler.signal_ttl_seconds_for_market(market)
+        if forecast_scheduler is not None
+        else settings.station_nowcast_cache_ttl_seconds
+    )
+    return (now - last_refreshed_at.astimezone(timezone.utc)).total_seconds() >= ttl_seconds
 
 
 def _record_forecast_signal_pending(
@@ -1806,6 +1821,7 @@ def _evaluate_realtime_update(
                     settings,
                     signal_refreshed_at_by_market,
                     now=current,
+                    forecast_scheduler=forecast_scheduler,
                 ):
                     forecast_scheduler.enqueue_priority(market, "ACTIVE_EVALUATION_STALE_SIGNAL", now=current)
                     _record_forecast_signal_pending(
@@ -2077,12 +2093,16 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
                 evaluator_worker.enqueue_tokens(updated_token_ids)
 
             def build_stream() -> OrderBookMarketStream:
+                rest_snapshot_fetcher = getattr(discovery_client, "get_order_book", None)
                 return OrderBookMarketStream(
                     settings.orderbook_stream_url,
                     on_update=on_update,
                     heartbeat_seconds=settings.orderbook_stream_heartbeat_seconds,
                     reconnect_seconds=settings.orderbook_stream_reconnect_seconds,
                     stale_seconds=settings.orderbook_stream_stale_seconds,
+                    rest_snapshot_fetcher=rest_snapshot_fetcher,
+                    rest_snapshot_enabled=settings.orderbook_rest_snapshot_enabled and callable(rest_snapshot_fetcher),
+                    rest_snapshot_interval_seconds=settings.orderbook_rest_snapshot_interval_seconds,
                 )
 
             failed_phase = "websocket_start"

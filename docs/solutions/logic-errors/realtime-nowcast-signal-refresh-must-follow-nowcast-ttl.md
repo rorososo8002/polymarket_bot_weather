@@ -98,9 +98,9 @@ Never fix this by making Open-Meteo requests bursty. Forecasts are API-budgeted
 evidence. The safer pattern is to separate the clocks:
 
 - Open-Meteo forecast HTTP calls stay globally serialized with
-  `FORECAST_REQUEST_MIN_INTERVAL_SECONDS=60`.
+  `FORECAST_REQUEST_MIN_INTERVAL_SECONDS=15`.
 - The forecast cache TTL is the forecast answer-sheet freshness window and
-  defaults to `FORECAST_CACHE_TTL_SECONDS=2400`.
+  defaults to `FORECAST_CACHE_TTL_SECONDS=10800`.
 - Same-station nowcast-backed signals may refresh on
   `STATION_NOWCAST_CACHE_TTL_SECONDS`.
 - Missing, stale, malformed, unsupported, or unmapped nowcast remains

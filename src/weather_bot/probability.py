@@ -347,7 +347,7 @@ class OpenMeteoEnsembleClient:
         self,
         timeout: float = 20.0,
         cache_path: str | Path | None = None,
-        cache_ttl_seconds: int = 2400,
+        cache_ttl_seconds: int = 10800,
         request_log_path: str | Path | None = None,
         rate_limit_state_path: str | Path | None = None,
         request_min_interval_seconds: int = 0,

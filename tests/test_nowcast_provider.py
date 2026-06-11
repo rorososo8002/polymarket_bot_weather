@@ -42,6 +42,12 @@ def read_jsonl(path: Path) -> list[dict[str, object]]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
 
 
+def test_aviationweather_provider_default_cache_ttl_matches_provider_floor():
+    provider = AviationWeatherMetarNowcastProvider(http_get=lambda *_args, **_kwargs: FakeResponse({}))
+
+    assert provider.cache_ttl_seconds == 300
+
+
 def provider_for(
     payload,
     *,

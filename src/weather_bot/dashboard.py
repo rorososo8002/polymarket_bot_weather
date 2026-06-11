@@ -727,6 +727,7 @@ def _forecast_health(settings: Settings, runner_status: dict[str, Any]) -> dict[
         "last_success_at": last_success_at,
         "last_failure_reason": last_failure_reason,
         "cache_age_seconds": cache_age_seconds,
+        "cache_ttl_seconds": settings.forecast_cache_ttl_seconds,
         "stale": stale,
         "persistence_error": persistence_error,
     }

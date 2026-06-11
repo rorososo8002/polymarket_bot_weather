@@ -18,12 +18,16 @@ paper accounting.
 - Forecast target dates must match exactly. Nearby Open-Meteo dates are not
   substitutes.
 - Real Open-Meteo forecast HTTP calls are globally serialized and drip-fed by
-  `FORECAST_REQUEST_MIN_INTERVAL_SECONDS=60`. Cache hits do not count as calls.
+  `FORECAST_REQUEST_MIN_INTERVAL_SECONDS=15`. Cache hits do not count as calls.
 - Use the Polymarket CLOB WebSocket stream for order books. Do not silently
   replace realtime streaming with polling.
 - Treat WebSocket `price_change` messages as deltas only. They may update
-  executable depth only after that token has received an initial `book`
-  snapshot in the current stream cache.
+  executable depth only after that token has received a full-depth snapshot in
+  the current stream cache. That snapshot may come from WebSocket `book` or
+  the bounded REST `/book` verification path.
+- REST order-book snapshots may be used only as bounded verification/resync
+  for the WebSocket cache. They must not replace WebSocket monitoring or write
+  raw order-book payloads to disk.
 - Keep held-position token IDs subscribed until the position closes or settles.
 - WebSocket receiver callbacks must stay lightweight: update cache, enqueue
   event work, and leave strategy evaluation to the bounded worker.
@@ -149,10 +153,10 @@ exposure caps leave at least `MIN_ORDER_USD`.
   Open-Meteo calls.
 - Target freshness for scheduling: general cities 40 minutes, held-position
   cities 30 minutes, near-close or opportunity cities 20 minutes. These are
-  scheduling priorities, not parallel-call permissions.
-- Forecast freshness targets are based on last successful real forecast time,
-  not "after N cities." A priority refresh resumes the normal round-robin lane
-  from its previous position after the priority key is handled.
+  signal refresh priorities, not permission to bypass the 3-h Open-Meteo cache.
+- Forecast signal freshness targets are based on the last successful signal
+  refresh. Real Open-Meteo request freshness is separately enforced by
+  `FORECAST_CACHE_TTL_SECONDS=10800`.
 - Real Open-Meteo HTTP calls are globally serialized. Run at most one real
   request at a time; while one is in flight, do not start a duplicate request or
   another city's real request.
@@ -161,7 +165,8 @@ exposure caps leave at least `MIN_ORDER_USD`.
   active-market cities in the batch are processed, the bot waits until
   `FORECAST_CACHE_TTL_SECONDS=10800` (3 h) expires before the next batch.
   GFS updates every 6 h and takes 3-4 h to process; a 3-h cache captures each
-  new model run. Budget: 39 cities × 8 batches/day × 31 units ≈ 9 672 < 10 000.
+  new model run. Budget: 40 trading-ready cities × 8 batches/day × 31 units =
+  9 920 < 10 000.
 - On a non-rate-limit failure, skip that city and move to the next. Do not retry
   within the same batch. The failure cooldown equals the cache TTL.
 - On a 429 rate-limit response, stop the entire batch and wait for the rate-limit
@@ -174,6 +179,8 @@ exposure caps leave at least `MIN_ORDER_USD`.
   must be at least 5 minutes apart, and HKO max/min requests must be at least
   10 minutes apart. Cache hits are local reads and do not write request-log
   rows.
+- A 5-min nowcast refresh must not make a forecast signal stale. It should
+  refresh official station evidence around the cached forecast answer.
 - For daily-high threshold markets, `observed_high_c >= threshold_c` makes held
   YES favorable evidence and held NO a `nowcast_bucket_lock_risk` exit attempt.
   Exact and range buckets must use parsed bucket boundaries; a held side that
@@ -202,7 +209,9 @@ Default portfolio limits:
 
 ```text
 BANKROLL_USD=100
-ENTRY_FRACTION=0.10
+SIZE_MODE=kelly
+FRACTIONAL_KELLY=0.25
+ENTRY_FRACTION=0.20
 MIN_ORDER_USD=10.00
 MAX_SINGLE_MARKET_FRACTION=0.10
 MAX_EVENT_DATE_EXPOSURE_FRACTION=0.10
@@ -210,7 +219,7 @@ LARGE_BANKROLL_EVENT_DATE_EXPOSURE_FRACTION=0.05
 EVENT_DATE_EXPOSURE_TRANSITION_USD=1000
 MAX_EVENT_PORTFOLIO_LEGS=2
 MAX_CITY_EXPOSURE_FRACTION=0.20
-MAX_TOTAL_EXPOSURE_FRACTION=0.90
+MAX_TOTAL_EXPOSURE_FRACTION=0.60
 ```
 
 For one city-date event, the selector compares one-leg and at-most-two-leg
@@ -289,6 +298,8 @@ Use `docs/codex/skip-diagnostics.md` to separate:
 ORDERBOOK_STREAM_ENABLED=true
 ORDERBOOK_STREAM_URL=wss://ws-subscriptions-clob.polymarket.com/ws/market
 ORDERBOOK_STREAM_STALE_SECONDS=60
+ORDERBOOK_REST_SNAPSHOT_ENABLED=true
+ORDERBOOK_REST_SNAPSHOT_INTERVAL_SECONDS=60
 RUNNER_HEALTH_STATUS_INTERVAL_SECONDS=5
 STREAM_CYCLE_INTERVAL_SECONDS=2400
 FORECAST_CACHE_TTL_SECONDS=10800
@@ -308,7 +319,10 @@ PORTFOLIO_DECISIONS_JSONL_PATH=paper_event_portfolios.jsonl
 DISCOVERY_MAX_PAGES=8
 DISCOVERY_PAGE_SIZE=100
 WEATHER_TAKER_FEE_RATE=0.05
-SIZE_MODE=fixed_fraction
+SIZE_MODE=kelly
+FRACTIONAL_KELLY=0.25
+ENTRY_FRACTION=0.20
+MAX_TOTAL_EXPOSURE_FRACTION=0.60
 ENTRY_MIN_EXPECTED_NET_RETURN_PCT=0.06
 SETTLEMENT_RUNNER_ENABLED=true
 SETTLEMENT_RUNNER_MAX_FRACTION=0.25

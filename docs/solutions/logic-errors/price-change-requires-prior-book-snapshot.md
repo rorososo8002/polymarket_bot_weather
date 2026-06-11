@@ -1,5 +1,5 @@
 ---
-title: Price-change deltas require a prior book snapshot
+title: Price-change deltas require a prior full-depth snapshot
 date: 2026-06-07
 category: logic-errors
 module: weather_bot.realtime_orderbook
@@ -15,7 +15,7 @@ severity: high
 tags: [paper-trading, websocket, orderbook, price-change, book-snapshot, liquidity, fail-closed]
 ---
 
-# Price-change deltas require a prior book snapshot
+# Price-change deltas require a prior full-depth snapshot
 
 ## 1. What The Problem Was
 
@@ -24,10 +24,11 @@ when that token had never received a `book` snapshot in the current stream
 cache. That allowed one changed bid or ask level to create a new executable
 `OrderBook`.
 
-A `book` snapshot is the full photo of the current order book. A `price_change`
-is only a correction note written on top of that photo. If there is no photo
-yet, the correction note is not enough evidence to know the full executable
-market depth.
+A full-depth snapshot is the full photo of the current order book. It may come
+from WebSocket `book` or the bounded REST `/book` verification/resync path. A
+`price_change` is only a correction note written on top of that photo. If there
+is no photo yet, the correction note is not enough evidence to know the full
+executable market depth.
 
 ## 2. Why It Was A Problem
 
@@ -48,9 +49,10 @@ must mean skip, not guess.
 self._snapshot_token_ids: set[str] = set()
 ```
 
-When `_apply_book()` stores a valid snapshot, it marks the token as snapshot
-backed. When `_apply_price_change()` sees a token without that mark, it ignores
-the delta and returns no executable update.
+When `_apply_book()` or `apply_rest_snapshot()` stores a valid full-depth
+snapshot, it marks the token as snapshot backed. When `_apply_price_change()`
+sees a token without that mark, it ignores the delta and returns no executable
+update.
 
 A regression test covers the rule:
 
@@ -77,8 +79,10 @@ This weather bot is paper-only, but paper results are the evidence for whether
 the strategy deserves more work. Incomplete order-book evidence can make a
 strategy look safer or more profitable than it is.
 
-For this project, executable liquidity must come from a full `book` snapshot
-plus later valid deltas. A delta cannot be the starting point.
+For this project, executable liquidity must come from a full-depth snapshot
+plus later valid deltas. A delta cannot be the starting point. REST snapshots
+may seed/resync the cache, but they must not enqueue realtime evaluation by
+themselves.
 
 ## Related Issues
 

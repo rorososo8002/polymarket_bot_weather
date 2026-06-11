@@ -1049,7 +1049,7 @@ function render(payload) {
   const forecastHealth = (payload.health || {}).forecast || {};
   setHealthStatus("r-forecast-health", forecastHealth.status);
   setText("r-forecast-success", "마지막 성공 " + shortDateTime(forecastHealth.last_success_at));
-  const ttl = 10800;
+  const ttl = Number(forecastHealth.cache_ttl_seconds || 10800);
   const age = forecastHealth.cache_age_seconds;
   const remaining = age != null ? Math.max(0, ttl - age) : null;
   setText("r-forecast-age", "다음 갱신까지 " + (remaining != null ? duration(remaining) : "--"));

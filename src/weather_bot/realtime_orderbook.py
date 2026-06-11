@@ -110,6 +110,10 @@ def _set_level(levels: list[OrderLevel], price: float, size: float, *, reverse: 
     return sorted(kept, key=lambda level: level.price, reverse=reverse)
 
 
+def _has_executable_depth(book: OrderBook) -> bool:
+    return book.best_bid is not None and book.best_ask is not None
+
+
 class OrderBookStreamCache:
     def __init__(self) -> None:
         self._books: dict[str, OrderBook] = {}
@@ -148,6 +152,15 @@ class OrderBookStreamCache:
         if event_type == "tick_size_change":
             return self._apply_tick_size(message)
         return set()
+
+    def replace_order_book(self, book: OrderBook) -> set[str]:
+        token_id = str(book.token_id or "")
+        if not token_id or not _has_executable_depth(book):
+            return set()
+        with self._lock:
+            self._books[token_id] = book
+            self._snapshot_token_ids.add(token_id)
+        return {token_id}
 
     def _apply_book(self, message: dict[str, Any]) -> set[str]:
         token_id = str(message.get("asset_id") or "")
@@ -307,6 +320,9 @@ class OrderBookMarketStream:
         heartbeat_seconds: int = 10,
         reconnect_seconds: int = 2,
         stale_seconds: int = 60,
+        rest_snapshot_fetcher: Callable[[str], OrderBook] | None = None,
+        rest_snapshot_enabled: bool = True,
+        rest_snapshot_interval_seconds: int = 60,
     ) -> None:
         self.url = url
         self.cache = OrderBookStreamCache()
@@ -314,9 +330,13 @@ class OrderBookMarketStream:
         self.heartbeat_seconds = heartbeat_seconds
         self.reconnect_seconds = reconnect_seconds
         self.stale_seconds = max(1, int(stale_seconds))
+        self.rest_snapshot_fetcher = rest_snapshot_fetcher
+        self.rest_snapshot_enabled = bool(rest_snapshot_enabled)
+        self.rest_snapshot_interval_seconds = max(1, int(rest_snapshot_interval_seconds))
         self._asset_ids: list[str] = []
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._rest_snapshot_thread: threading.Thread | None = None
         self._ws: Any = None
         self._health_lock = threading.Lock()
         self._started_at: datetime | None = None
@@ -325,6 +345,11 @@ class OrderBookMarketStream:
         self._last_book_at_by_token: dict[str, datetime] = {}
         self._reconnect_count = 0
         self._last_error = ""
+        self._last_rest_snapshot_at: datetime | None = None
+        self._last_rest_snapshot_token_id = ""
+        self._rest_snapshot_count = 0
+        self._rest_snapshot_error_count = 0
+        self._last_rest_snapshot_error = ""
 
     def get_order_book(self, token_id: str) -> OrderBook:
         return self.cache.get_order_book(token_id)
@@ -347,6 +372,17 @@ class OrderBookMarketStream:
             self._started_at = _utc_now()
         self._thread = threading.Thread(target=self._run_forever, name="polymarket-orderbook-ws", daemon=True)
         self._thread.start()
+        if (
+            self.rest_snapshot_enabled
+            and self.rest_snapshot_fetcher is not None
+            and (self._rest_snapshot_thread is None or not self._rest_snapshot_thread.is_alive())
+        ):
+            self._rest_snapshot_thread = threading.Thread(
+                target=self._run_rest_snapshot_loop,
+                name="polymarket-orderbook-rest-snapshot",
+                daemon=True,
+            )
+            self._rest_snapshot_thread.start()
 
     def stop(self) -> None:
         self._stop.set()
@@ -357,6 +393,8 @@ class OrderBookMarketStream:
                 pass
         if self._thread is not None:
             self._thread.join(timeout=2)
+        if self._rest_snapshot_thread is not None:
+            self._rest_snapshot_thread.join(timeout=2)
 
     def apply_message(self, message: str | dict[str, Any] | list[dict[str, Any]]) -> set[str]:
         now = _utc_now()
@@ -373,11 +411,28 @@ class OrderBookMarketStream:
             self.on_update(executable_updated)
         return updated
 
+    def apply_rest_snapshot(self, book: OrderBook) -> set[str]:
+        updated = self.cache.replace_order_book(book)
+        if updated:
+            now = _utc_now()
+            token_id = next(iter(updated))
+            with self._health_lock:
+                self._last_rest_snapshot_at = now
+                self._last_rest_snapshot_token_id = token_id
+                self._rest_snapshot_count += 1
+                self._last_rest_snapshot_error = ""
+        return updated
+
     def _record_reconnect(self, exc: BaseException | None = None) -> None:
         with self._health_lock:
             self._reconnect_count += 1
             if exc is not None:
                 self._last_error = _safe_error(exc)
+
+    def _record_rest_snapshot_error(self, exc: BaseException) -> None:
+        with self._health_lock:
+            self._rest_snapshot_error_count += 1
+            self._last_rest_snapshot_error = _safe_error(exc)
 
     def health_snapshot(self, *, now: datetime | None = None) -> dict[str, object]:
         current_time = now or _utc_now()
@@ -389,6 +444,11 @@ class OrderBookMarketStream:
             last_book_at_by_token = dict(self._last_book_at_by_token)
             reconnect_count = self._reconnect_count
             last_error = self._last_error
+            last_rest_snapshot_at = self._last_rest_snapshot_at
+            last_rest_snapshot_token_id = self._last_rest_snapshot_token_id
+            rest_snapshot_count = self._rest_snapshot_count
+            rest_snapshot_error_count = self._rest_snapshot_error_count
+            last_rest_snapshot_error = self._last_rest_snapshot_error
 
         stale_book_age_seconds: int | None = None
         if last_book_at is not None:
@@ -442,6 +502,11 @@ class OrderBookMarketStream:
             "stale_book_age_seconds": stale_book_age_seconds,
             "stale": stale,
             "last_error": last_error,
+            "last_rest_snapshot_at": _utc_iso(last_rest_snapshot_at) if last_rest_snapshot_at else None,
+            "last_rest_snapshot_token_id": last_rest_snapshot_token_id,
+            "rest_snapshot_count": rest_snapshot_count,
+            "rest_snapshot_error_count": rest_snapshot_error_count,
+            "last_rest_snapshot_error": last_rest_snapshot_error,
             "status_reason": status_reason,
         }
 
@@ -533,6 +598,25 @@ class OrderBookMarketStream:
                 self._record_reconnect(exc)
             if not self._stop.is_set():
                 time.sleep(max(0, self.reconnect_seconds))
+
+    def _run_rest_snapshot_loop(self) -> None:
+        fetcher = self.rest_snapshot_fetcher
+        if fetcher is None:
+            return
+        while not self._stop.is_set():
+            asset_ids = list(self._asset_ids)
+            if not asset_ids:
+                if self._stop.wait(self.rest_snapshot_interval_seconds):
+                    return
+                continue
+            delay_seconds = max(0.1, self.rest_snapshot_interval_seconds / len(asset_ids))
+            for token_id in asset_ids:
+                if self._stop.wait(delay_seconds):
+                    return
+                try:
+                    self.apply_rest_snapshot(fetcher(token_id))
+                except Exception as exc:  # pragma: no cover - depends on remote REST behavior
+                    self._record_rest_snapshot_error(exc)
 
     def _on_open(self, ws: Any) -> None:
         with self._health_lock:

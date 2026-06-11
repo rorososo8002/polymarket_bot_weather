@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import importlib.util
-import os
 from pathlib import Path
 
 
@@ -18,7 +17,7 @@ def _load_root_conftest():
     return module
 
 
-def test_pytest_defaults_to_process_specific_workspace_temp_dir():
+def test_pytest_defaults_to_stable_workspace_temp_dir():
     module = _load_root_conftest()
 
     class Option:
@@ -30,7 +29,8 @@ def test_pytest_defaults_to_process_specific_workspace_temp_dir():
     config = Config()
     module.pytest_configure(config)
 
-    assert Path(config.option.basetemp) == ROOT / ".pytest-tmp" / f"pytest-{os.getpid()}"
+    assert Path(config.option.basetemp) == ROOT / ".pytest-tmp" / "current"
+    assert Path(config.option.basetemp).is_dir()
 
 
 def test_pytest_configure_creates_workspace_temp_parent(tmp_path):
@@ -52,13 +52,14 @@ def test_pytest_configure_creates_workspace_temp_parent(tmp_path):
 
         expected_parent = clean_root / ".pytest-tmp"
         assert expected_parent.is_dir()
-        assert Path(config.option.basetemp) == expected_parent / f"pytest-{os.getpid()}"
+        assert Path(config.option.basetemp) == expected_parent / "current"
+        assert Path(config.option.basetemp).is_dir()
     finally:
         module.__file__ = original_file
 
 
-def test_running_pytest_uses_process_specific_workspace_temp_dir(tmp_path_factory):
-    assert tmp_path_factory.getbasetemp() == ROOT / ".pytest-tmp" / f"pytest-{os.getpid()}"
+def test_running_pytest_uses_stable_workspace_temp_dir(tmp_path_factory):
+    assert tmp_path_factory.getbasetemp() == ROOT / ".pytest-tmp" / "current"
 
 
 def test_pytest_preserves_explicit_basetemp_override():

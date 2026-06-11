@@ -54,14 +54,14 @@ An active service can still be running old code or safely skipping all entries d
 Healthy latest deployment indicators:
 
 ```text
-station_count=41
-loaded_max=41
+station_count=40
+loaded_max=40
 ORDERBOOK_STREAM_ENABLED=true
-FORECAST_CACHE_TTL_SECONDS=2400
-FORECAST_REQUEST_MIN_INTERVAL_SECONDS=60
+FORECAST_CACHE_TTL_SECONDS=10800
+FORECAST_REQUEST_MIN_INTERVAL_SECONDS=15
 FORECAST_RATE_LIMIT_STATE_PATH=/opt/polymarket-weather-bot/data/forecast_rate_limit_state.json
 phase=streaming
-message=websocket streaming 82 tokens across 41 markets
+message=websocket streaming 80 tokens across 40 markets
 ```
 
 External API blocked indicator:

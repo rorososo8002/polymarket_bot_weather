@@ -75,6 +75,19 @@ def _parse_bucket_type(question: str) -> str:
     return "exact"
 
 
+def _trade_pnl(row: dict) -> float:
+    """Return realized PnL from the current ledger column, with old fallbacks."""
+    for field in ("cash_delta_or_pnl", "realized_pnl_usd", "net_pnl_usd"):
+        raw_value = row.get(field)
+        if raw_value in (None, ""):
+            continue
+        try:
+            return float(raw_value)
+        except (ValueError, TypeError):
+            continue
+    return 0.0
+
+
 def build_report(week_start: datetime, week_end: datetime) -> str:
     trades = _load_trades(since=week_start)
     state = _load_state()
@@ -92,10 +105,7 @@ def build_report(week_start: datetime, week_end: datetime) -> str:
     worst_trade = {"pnl": float("inf"), "question": ""}
 
     for t in closed_trades:
-        try:
-            pnl = float(t.get("realized_pnl_usd") or t.get("net_pnl_usd") or 0)
-        except (ValueError, TypeError):
-            pnl = 0.0
+        pnl = _trade_pnl(t)
 
         total_pnl += pnl
         question = t.get("question", "")

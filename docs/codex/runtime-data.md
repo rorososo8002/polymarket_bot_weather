@@ -5,7 +5,8 @@ Read this file only for runtime logs, paper-trading data, dashboard readers, or 
 ## Safe Reading
 
 - Runtime outputs such as `paper_raw_snapshots.jsonl`, `paper_decisions.csv`, `paper_trades.csv`, `forecast_cache.json`, `forecast_request_log.jsonl`, `paper_state.json`, and `paper_runner_status.json` can become very large.
-- Treat `runtime/live-paper-bot.restart.out.log`, `paper_raw_snapshots.jsonl`, and `paper_decisions.csv` as token-dangerous.
+- Treat service logs, `data/paper_raw_snapshots.jsonl`, and
+  `data/paper_decisions.csv` as token-dangerous.
 - Do not run bare `Get-Content`, `cat`, `type`, `more`, or unrestricted `python read_text()` against token-dangerous files.
 - For normal health checks, recent errors, or "why is it not trading now" questions, inspect only the latest 100 lines by default.
 - Increase the window only when needed, and state why.

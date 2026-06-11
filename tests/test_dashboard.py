@@ -1219,6 +1219,7 @@ def test_dashboard_payload_surfaces_forecast_and_websocket_health(tmp_path):
 
     assert payload["health"]["forecast"]["status"] == "STALE"
     assert payload["health"]["forecast"]["cache_age_seconds"] >= 1801
+    assert payload["health"]["forecast"]["cache_ttl_seconds"] == Settings.forecast_cache_ttl_seconds
     assert payload["health"]["forecast"]["persistence_error"] == "OSError: disk full"
     assert payload["health"]["websocket"]["status"] == "FAILED"
     assert payload["health"]["websocket"]["thread_alive"] is False
@@ -1232,3 +1233,8 @@ def test_dashboard_html_explains_health_warnings():
     assert "실시간 주문장 상태" in HTML
     assert "재연결" in HTML
     assert "마지막 주문장" in HTML
+
+
+def test_dashboard_html_uses_forecast_ttl_from_api_payload():
+    assert "const ttl = 10800;" not in HTML
+    assert "forecastHealth.cache_ttl_seconds" in HTML

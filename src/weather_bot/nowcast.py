@@ -242,7 +242,7 @@ class AviationWeatherMetarNowcastProvider:
         http_get: Callable[..., Any] = requests.get,
         timeout: float = 20.0,
         freshness_seconds: int = 5400,
-        cache_ttl_seconds: int = 900,
+        cache_ttl_seconds: int = 300,
         request_log_path: str | Path | None = None,
         sources: dict[str, StationNowcastSource] | None = None,
     ) -> None:

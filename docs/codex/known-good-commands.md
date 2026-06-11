@@ -19,10 +19,12 @@ Run one focused file:
 & 'C:\Users\wpdla\Python312\python.exe' -m pytest -q tests/test_hardening.py
 ```
 
-The root `conftest.py` automatically sends pytest temporary files to a
-process-specific workspace folder such as `.pytest-tmp/pytest-12345`. This
-avoids the Windows user-temp permission error without requiring manual `TMP`
-or `TEMP` setup. A caller can still pass `--basetemp` explicitly when needed.
+The root `conftest.py` automatically sends pytest temporary files to
+`.pytest-tmp/current`, best-effort deletes older `.pytest-tmp/pytest-*` folders,
+and removes `.pytest_cache` because test cache state is not needed for this
+project. This avoids Windows user-temp permission errors and prevents local test
+trash from accumulating. A caller can still pass `--basetemp` explicitly when
+needed.
 
 ## Local Python Check
 
@@ -180,7 +182,10 @@ Archived (compressed) old files are stored under `data/archive/`.
 
 ## Disk and Log Rotation
 
-Logrotate is configured to auto-compress files over 100 MB hourly:
+Logrotate is configured to auto-compress high-volume diagnostic/request files
+hourly. `paper_raw_snapshots.jsonl` rotates at 100 MB; request logs and
+`paper_event_portfolios.jsonl` rotate at 10 MB. Core account ledgers are not
+rotated until replay is archive-aware.
 
 ```
 /etc/logrotate.d/polymarket-weather-bot   ← config

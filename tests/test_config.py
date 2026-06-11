@@ -14,10 +14,17 @@ def test_supported_city_allowlist_is_not_used_as_discovery_event_cap():
 def test_default_forecast_budget_batch_mode():
     # Batch mode: 15 s within-batch gap, 10800 s (3 h) cache TTL between batches.
     # GFS updates every 6 h (processed in 3-4 h); 3 h cache captures each new run.
-    # Budget: 39 active cities x 8 batches/day x 31 units = 9 672 units/day < 10 000 limit.
+    # Budget: 40 trading-ready cities x 8 batches/day x 31 units = 9 920 units/day < 10 000 limit.
     assert Settings.stream_cycle_interval_seconds == 2400
     assert Settings.forecast_cache_ttl_seconds == 10800
+    assert Settings.forecast_request_min_interval_seconds == 15
     assert Settings.forecast_rate_limit_state_path == ""
+
+
+def test_default_realtime_orderbook_rest_snapshot_is_bounded_verification():
+    assert Settings.orderbook_stream_enabled is True
+    assert Settings.orderbook_rest_snapshot_enabled is True
+    assert Settings.orderbook_rest_snapshot_interval_seconds == 60
 
 
 def test_default_station_nowcast_is_pilot_cached_and_freshness_bounded():
@@ -48,7 +55,9 @@ def test_default_settlement_runner_is_bounded_and_enabled():
 
 def test_default_city_date_portfolio_caps_shrink_after_one_thousand_dollars():
     assert Settings.bankroll_usd == 100.0
-    assert Settings.entry_fraction == 0.10
+    assert Settings.size_mode == "kelly"
+    assert Settings.entry_fraction == 0.20
+    assert Settings.fractional_kelly == 0.25
     assert Settings.max_single_market_fraction == 0.10
     assert Settings.add_to_position_drop_pct == 0.10
     assert Settings.max_city_exposure_fraction == 0.20
@@ -56,7 +65,7 @@ def test_default_city_date_portfolio_caps_shrink_after_one_thousand_dollars():
     assert Settings.large_bankroll_event_date_exposure_fraction == 0.05
     assert Settings.event_date_exposure_transition_usd == 1000.0
     assert Settings.max_event_portfolio_legs == 2
-    assert Settings.max_total_exposure_fraction == 0.90
+    assert Settings.max_total_exposure_fraction == 0.60
     assert Settings.min_order_usd == 10.0
 
 
@@ -65,7 +74,7 @@ def test_default_settings_pass_numeric_range_validation():
 
     assert settings.bankroll_usd == 100.0
     assert settings.min_order_usd == 10.0
-    assert settings.max_total_exposure_fraction == 0.90
+    assert settings.max_total_exposure_fraction == 0.60
 
 
 @pytest.mark.parametrize(
@@ -99,7 +108,7 @@ def test_settings_rejects_dashboard_port_outside_tcp_range(dashboard_port):
 
 
 def test_settings_defaults_to_batch_mode_forecast_interval():
-    # Within-batch gap is 15 s; between-batch gap is controlled by cache TTL (5400 s).
+    # Within-batch gap is 15 s; between-batch gap is controlled by cache TTL (10800 s).
     settings = Settings()
 
     assert settings.forecast_request_min_interval_seconds == 15
@@ -249,6 +258,8 @@ def test_load_settings_reads_realtime_orderbook_stream(monkeypatch):
     monkeypatch.setenv("ORDERBOOK_STREAM_ENABLED", "true")
     monkeypatch.setenv("ORDERBOOK_STREAM_HEARTBEAT_SECONDS", "10")
     monkeypatch.setenv("ORDERBOOK_STREAM_STALE_SECONDS", "45")
+    monkeypatch.setenv("ORDERBOOK_REST_SNAPSHOT_ENABLED", "false")
+    monkeypatch.setenv("ORDERBOOK_REST_SNAPSHOT_INTERVAL_SECONDS", "120")
     monkeypatch.setenv("RUNNER_HEALTH_STATUS_INTERVAL_SECONDS", "7")
     monkeypatch.setenv("STREAM_CYCLE_INTERVAL_SECONDS", "600")
 
@@ -257,6 +268,8 @@ def test_load_settings_reads_realtime_orderbook_stream(monkeypatch):
     assert settings.orderbook_stream_enabled is True
     assert settings.orderbook_stream_heartbeat_seconds == 10
     assert settings.orderbook_stream_stale_seconds == 45
+    assert settings.orderbook_rest_snapshot_enabled is False
+    assert settings.orderbook_rest_snapshot_interval_seconds == 120
     assert settings.runner_health_status_interval_seconds == 7
     assert settings.stream_cycle_interval_seconds == 600
 

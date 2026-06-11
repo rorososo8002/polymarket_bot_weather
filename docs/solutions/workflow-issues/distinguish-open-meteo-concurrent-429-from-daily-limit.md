@@ -118,7 +118,7 @@ The client also handles repeated `ReadTimeout` rows before they become a 429:
   `temporary_failure_kind=read_timeout` and
   `temporary_failure_blocked_until`.
 - Real Open-Meteo forecast HTTP calls are globally drip-fed: one request must
-  finish or timeout, then at least `FORECAST_REQUEST_MIN_INTERVAL_SECONDS=60`
+  finish or timeout, then at least `FORECAST_REQUEST_MIN_INTERVAL_SECONDS=15`
   passes before the next real request starts. Cache hits do not wait because
   they are not external calls.
 

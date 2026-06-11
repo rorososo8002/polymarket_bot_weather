@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from weather_bot.edge import executable_buy_price, executable_sell_price
-from weather_bot.models import OrderBook
+from weather_bot.models import OrderBook, OrderLevel
 from weather_bot.realtime_orderbook import OrderBookMarketStream, OrderBookStreamCache, market_subscription_message
 
 
@@ -78,6 +78,74 @@ def test_stream_cache_applies_book_snapshot_and_price_changes():
     book = cache.get_order_book("yes")
     assert book.best_bid == 0.50
     assert book.best_ask == 0.53
+
+
+def test_rest_snapshot_replaces_cache_without_triggering_realtime_evaluation():
+    calls: list[set[str]] = []
+    stream = OrderBookMarketStream(on_update=lambda token_ids: calls.append(set(token_ids)))
+
+    updated = stream.apply_rest_snapshot(
+        OrderBook(
+            "yes",
+            bids=[],
+            asks=[],
+        )
+    )
+    assert updated == set()
+
+    updated = stream.apply_rest_snapshot(
+        OrderBook(
+            "yes",
+            bids=[],
+            asks=[],
+        )
+    )
+    assert updated == set()
+
+    updated = stream.apply_rest_snapshot(
+        OrderBook(
+            "yes",
+            bids=[],
+            asks=[],
+        )
+    )
+    assert updated == set()
+
+
+def test_rest_snapshot_can_seed_executable_depth_as_verification_cache(monkeypatch):
+    now = datetime(2026, 6, 1, 0, 0, tzinfo=timezone.utc)
+    calls: list[set[str]] = []
+    monkeypatch.setattr("weather_bot.realtime_orderbook._utc_now", lambda: now)
+    stream = OrderBookMarketStream(on_update=lambda token_ids: calls.append(set(token_ids)))
+
+    updated = stream.apply_rest_snapshot(
+        OrderBook(
+            "yes",
+            bids=[OrderLevel(0.49, 10)],
+            asks=[OrderLevel(0.52, 20)],
+            book_hash="rest-hash",
+        )
+    )
+
+    assert updated == {"yes"}
+    assert calls == []
+    book = stream.get_order_book("yes")
+    assert book.best_bid == 0.49
+    assert book.best_ask == 0.52
+    health = stream.health_snapshot(now=now)
+    assert health["last_rest_snapshot_at"] == "2026-06-01T00:00:00+00:00"
+    assert health["last_rest_snapshot_token_id"] == "yes"
+    assert health["rest_snapshot_count"] == 1
+
+    assert stream.apply_message(
+        {
+            "event_type": "price_change",
+            "price_changes": [
+                {"asset_id": "yes", "side": "SELL", "price": "0.51", "size": "25"},
+            ],
+        }
+    ) == {"yes"}
+    assert calls == [{"yes"}]
 
 
 def test_price_change_without_prior_book_snapshot_does_not_create_executable_depth():

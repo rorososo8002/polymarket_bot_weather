@@ -30,15 +30,16 @@ Run pytest normally from the repository root:
 & 'C:\Users\wpdla\Python312\python.exe' -m pytest -q
 ```
 
-At startup, pytest automatically uses a process-specific path such as:
+At startup, pytest automatically uses a stable workspace path:
 
 ```text
-.pytest-tmp/pytest-12345
+.pytest-tmp/current
 ```
 
-The number is the pytest process ID. Separate processes therefore do not share
-one temp directory. A caller can still pass `--basetemp` explicitly when a
-special run needs a different location.
+The repository config disables pytest's cache provider, best-effort deletes older
+`.pytest-tmp/pytest-*` folders, and removes `.pytest_cache` so local test runs
+do not keep accumulating workspace trash. A caller can still pass `--basetemp`
+explicitly when a special run needs a different location.
 
 ## Why This Matters
 

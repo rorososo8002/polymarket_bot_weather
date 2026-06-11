@@ -12,6 +12,7 @@ _POSITIVE_NUMBER_SETTINGS = (
     "orderbook_stream_heartbeat_seconds",
     "orderbook_stream_reconnect_seconds",
     "orderbook_stream_stale_seconds",
+    "orderbook_rest_snapshot_interval_seconds",
     "runner_health_status_interval_seconds",
     "stream_cycle_interval_seconds",
     "forecast_cache_ttl_seconds",
@@ -89,6 +90,8 @@ class Settings:
     orderbook_stream_heartbeat_seconds: int = 10
     orderbook_stream_reconnect_seconds: int = 2
     orderbook_stream_stale_seconds: int = 60
+    orderbook_rest_snapshot_enabled: bool = True
+    orderbook_rest_snapshot_interval_seconds: int = 60
     runner_health_status_interval_seconds: int = 5
     stream_cycle_interval_seconds: int = 2400
     discovery_max_pages: int = 8
@@ -111,7 +114,7 @@ class Settings:
     raw_snapshots_min_free_bytes: int = 1024 * 1024 * 1024
     raw_snapshots_max_disk_usage_pct: float = 0.90
     forecast_cache_path: str = ""
-    forecast_cache_ttl_seconds: int = 10800  # 3 h: GFS updates every 6 h (processed in 3-4 h); 39 cities x 8 batches/day x 31 units = 9 672 < 10 000
+    forecast_cache_ttl_seconds: int = 10800  # 3 h: 40 trading-ready cities x 8 batches/day x 31 units = 9 920 < 10 000
     forecast_request_min_interval_seconds: int = 15  # within-batch gap; cache TTL controls between-batch wait
     forecast_request_log_path: str = ""
     forecast_rate_limit_state_path: str = ""
@@ -135,15 +138,13 @@ class Settings:
     add_to_position_drop_pct: float = 0.10
     max_holding_hours: float = 96.0
 
-    # Risk / sizing. A small paper account can put its full 10% city-date budget
-    # into one strong leg. The event optimizer may split larger budgets across
-    # at most two legs, but every opened leg must still meet MIN_ORDER_USD.
-    # Set SIZE_MODE=kelly if you want pure fractional-Kelly sizing.
-    size_mode: str = "fixed_fraction"
-    entry_fraction: float = 0.10
-    fractional_kelly: float = 0.10
+    # Risk / sizing. Fractional-Kelly lets high-confidence edges scale up while
+    # the city/date and total-exposure caps keep paper risk bounded.
+    size_mode: str = "kelly"
+    entry_fraction: float = 0.20
+    fractional_kelly: float = 0.25
     max_single_market_fraction: float = 0.10
-    max_total_exposure_fraction: float = 0.90
+    max_total_exposure_fraction: float = 0.60
     bankroll_usd: float = 100.0
     min_order_usd: float = 10.0
 
@@ -326,6 +327,14 @@ def load_settings() -> Settings:
         orderbook_stream_heartbeat_seconds=_int_env("ORDERBOOK_STREAM_HEARTBEAT_SECONDS", Settings.orderbook_stream_heartbeat_seconds),
         orderbook_stream_reconnect_seconds=_int_env("ORDERBOOK_STREAM_RECONNECT_SECONDS", Settings.orderbook_stream_reconnect_seconds),
         orderbook_stream_stale_seconds=_int_env("ORDERBOOK_STREAM_STALE_SECONDS", Settings.orderbook_stream_stale_seconds),
+        orderbook_rest_snapshot_enabled=_bool_env(
+            "ORDERBOOK_REST_SNAPSHOT_ENABLED",
+            Settings.orderbook_rest_snapshot_enabled,
+        ),
+        orderbook_rest_snapshot_interval_seconds=_int_env(
+            "ORDERBOOK_REST_SNAPSHOT_INTERVAL_SECONDS",
+            Settings.orderbook_rest_snapshot_interval_seconds,
+        ),
         runner_health_status_interval_seconds=_int_env("RUNNER_HEALTH_STATUS_INTERVAL_SECONDS", Settings.runner_health_status_interval_seconds),
         stream_cycle_interval_seconds=_int_env("STREAM_CYCLE_INTERVAL_SECONDS", Settings.stream_cycle_interval_seconds),
         discovery_max_pages=_int_env("DISCOVERY_MAX_PAGES", Settings.discovery_max_pages),

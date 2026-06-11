@@ -66,19 +66,19 @@ next city request starts
 Production defaults:
 
 ```text
-FORECAST_CACHE_TTL_SECONDS=2400
-FORECAST_REQUEST_MIN_INTERVAL_SECONDS=60
+FORECAST_CACHE_TTL_SECONDS=10800
+FORECAST_REQUEST_MIN_INTERVAL_SECONDS=15
 STREAM_CYCLE_INTERVAL_SECONDS=2400
 ```
 
-`FORECAST_CACHE_TTL_SECONDS=2400` means a successful forecast answer sheet is
-fresh for 40 minutes. With roughly 40 trading-ready cities, this lets the bot
-rotate one city at a time instead of keeping every successful city forecast
-valid through a long multi-market window.
+`FORECAST_CACHE_TTL_SECONDS=10800` means a successful forecast answer sheet is
+fresh for 3 hours. With 40 trading-ready cities, this keeps the daily Open-Meteo
+budget under 10,000 units while still allowing in-memory signal refreshes to
+reuse the cached answer.
 
-`FORECAST_REQUEST_MIN_INTERVAL_SECONDS=60` means the next real Open-Meteo HTTP
+`FORECAST_REQUEST_MIN_INTERVAL_SECONDS=15` means the next real Open-Meteo HTTP
 call cannot start until the previous real request has finished or timed out and
-at least 60 seconds have passed.
+at least 15 seconds have passed.
 
 `STREAM_CYCLE_INTERVAL_SECONDS=2400` is the market-discovery and WebSocket
 rebuild interval. It is not permission to burst forecast HTTP calls.

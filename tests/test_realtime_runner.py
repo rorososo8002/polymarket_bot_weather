@@ -605,6 +605,79 @@ def test_forecast_signal_scheduler_uses_priority_then_resumes_round_robin():
     assert second.market_ids == ["tokyo"]
 
 
+def test_realtime_signal_stale_uses_forecast_scheduler_ttl_not_nowcast_cache_ttl():
+    market = RawMarket(
+        "seoul",
+        "Will the highest temperature in Seoul be 27C or higher today?",
+        "seoul",
+        True,
+        False,
+        "seoul-yes",
+        "seoul-no",
+    )
+    now = datetime(2026, 6, 2, 12, 0, tzinfo=timezone.utc)
+    scheduler = ForecastSignalScheduler(
+        [market],
+        general_ttl_seconds=40 * 60,
+        held_ttl_seconds=30 * 60,
+        priority_ttl_seconds=20 * 60,
+    )
+    scheduler.mark_success(market, now - timedelta(minutes=6))
+    settings = Settings(station_nowcast_cache_ttl_seconds=300)
+
+    stale = runner_module._realtime_signal_is_stale(
+        market,
+        settings,
+        {market.market_id: now - timedelta(minutes=6)},
+        forecast_scheduler=scheduler,
+        now=now,
+    )
+
+    assert stale is False
+
+
+def test_forecast_worker_marks_signal_refresh_time_not_cached_forecast_time():
+    market = RawMarket(
+        "seoul",
+        "Will the highest temperature in Seoul be 27C or higher today?",
+        "seoul",
+        True,
+        False,
+        "seoul-yes",
+        "seoul-no",
+    )
+    scheduler = ForecastSignalScheduler([market])
+    task = scheduler.next_task(datetime(2026, 6, 2, 12, 0, tzinfo=timezone.utc))
+    assert task is not None
+    cached_forecast_at = datetime(2026, 6, 2, 9, 0, tzinfo=timezone.utc)
+
+    class CachedForecastClient:
+        def health_snapshot(self):
+            return {"last_success_at": cached_forecast_at.isoformat()}
+
+    worker = runner_module.RealtimeForecastSignalWorker(
+        scheduler=scheduler,
+        settings=Settings(),
+        signals_by_market={},
+        signal_refreshed_at_by_market={},
+        market_types={},
+        enqueue_tokens=lambda _tokens: None,
+        probability_estimator=lambda question, **_kwargs: WeatherSignal(
+            0.70,
+            0.90,
+            "cached-forecast+fresh-nowcast",
+            "fresh signal from cached forecast answer",
+            parse_weather_question(question),
+        ),
+        ensemble_client=CachedForecastClient(),
+    )
+
+    result = worker._process_task(task)
+
+    assert result.success_at > cached_forecast_at
+    assert (datetime.now(timezone.utc) - result.success_at).total_seconds() < 5
+
+
 def test_realtime_forever_records_missing_websocket_dependency_in_status(tmp_path, monkeypatch):
     question = "Will the highest temperature in Seoul be 27C or higher today?"
     market = RawMarket("seoul-27c", question, "seoul-27c", True, False, "yes", "no")

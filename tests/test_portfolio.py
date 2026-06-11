@@ -335,6 +335,7 @@ def test_evaluate_market_scales_final_order_down_to_available_depth(tmp_path):
         bankroll_usd=1000.0,
         min_net_edge=0.01,
         min_order_usd=10.0,
+        size_mode="fixed_fraction",
         entry_fraction=0.02,
         max_single_market_fraction=0.10,
         entry_min_expected_net_return_pct=0.01,
@@ -366,6 +367,7 @@ def test_evaluate_market_still_skips_when_available_depth_is_below_minimum_order
         bankroll_usd=1000.0,
         min_net_edge=0.01,
         min_order_usd=10.0,
+        size_mode="fixed_fraction",
         entry_fraction=0.02,
         max_single_market_fraction=0.10,
         entry_min_expected_net_return_pct=0.01,
@@ -396,6 +398,7 @@ def test_evaluate_market_reprices_edge_when_final_order_walks_the_book(tmp_path)
         bankroll_usd=1000.0,
         min_net_edge=0.01,
         min_order_usd=10.0,
+        size_mode="fixed_fraction",
         entry_fraction=0.02,
         max_single_market_fraction=0.10,
         entry_min_expected_net_return_pct=0.01,
@@ -1107,10 +1110,10 @@ def test_broker_city_cap_allows_two_dates_but_blocks_third(tmp_path):
     assert broker.city_exposure("seoul") == 20.0
 
 
-def test_broker_total_open_exposure_cap_is_ninety_percent(tmp_path):
+def test_broker_total_open_exposure_cap_is_sixty_percent(tmp_path):
     broker = PaperBroker(settings(tmp_path))
     positions = []
-    for idx in range(10):
+    for idx in range(7):
         item = candidate(f"city-{idx}", f"{20 + idx}°C")
         positions.append(
             broker.open_position(
@@ -1123,9 +1126,9 @@ def test_broker_total_open_exposure_cap_is_ninety_percent(tmp_path):
             )
         )
 
-    assert all(pos is not None for pos in positions[:9])
-    assert positions[9] is None
-    assert broker.total_exposure() == 90.0
+    assert all(pos is not None for pos in positions[:6])
+    assert positions[6] is None
+    assert broker.total_exposure() == 60.0
 
 
 def test_runner_applies_selected_event_portfolio_and_writes_one_event_log(tmp_path):
@@ -1209,6 +1212,8 @@ def test_run_cycle_opens_city_date_candidates_as_one_logged_portfolio(monkeypatc
         tmp_path,
         bankroll_usd=200.0,
         min_net_edge=0.01,
+        size_mode="fixed_fraction",
+        entry_fraction=0.10,
         entry_min_expected_net_return_pct=0.01,
         weather_taker_fee_rate=0.0,
         model_error_margin=0.0,
@@ -1401,6 +1406,8 @@ def test_realtime_update_reselects_the_whole_city_date_event(monkeypatch, tmp_pa
         tmp_path,
         bankroll_usd=200.0,
         min_net_edge=0.01,
+        size_mode="fixed_fraction",
+        entry_fraction=0.10,
         entry_min_expected_net_return_pct=0.01,
         weather_taker_fee_rate=0.0,
         model_error_margin=0.0,

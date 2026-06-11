@@ -600,6 +600,8 @@ def test_entry_net_return_filter_rejects_thin_high_price_trade(tmp_path):
         weather_taker_fee_rate=0.05,
         model_error_margin=0.0,
         resolution_error_margin=0.0,
+        size_mode="fixed_fraction",
+        entry_fraction=0.10,
         require_date_hint_for_trade=True,
         # This test explicitly asserts on SKIP log content.
         decisions_log_skip_enabled=True,
@@ -630,6 +632,8 @@ def test_entry_net_return_filter_allows_high_price_settlement_candidate():
         weather_taker_fee_rate=0.05,
         model_error_margin=0.0,
         resolution_error_margin=0.0,
+        size_mode="fixed_fraction",
+        entry_fraction=0.10,
         require_date_hint_for_trade=True,
     )
     client = FakePolymarketClient(
