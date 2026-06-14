@@ -1,4 +1,11 @@
-from weather_bot.weather_client import parse_weather_question, rounded_temperature_bucket_interval_f
+import weather_bot.weather_client as weather_client
+
+from weather_bot.weather_client import (
+    c_to_f,
+    parse_weather_question,
+    rounded_temperature_bucket_interval_f,
+    temperature_bucket_interval_bounds_f,
+)
 
 
 def test_parse_temperature_market_fahrenheit():
@@ -72,11 +79,54 @@ def test_range_bucket_interval_preserves_exact_inclusive_settlement_endpoints():
     assert rounded_temperature_bucket_interval_f(parsed) == (86.0, 87.0)
 
 
-def test_exact_temperature_bucket_still_uses_legacy_half_step_interval():
+def test_temperature_comparison_uses_millifahrenheit_scale():
+    assert hasattr(weather_client, "temperature_f_to_millif")
+    to_millif = weather_client.temperature_f_to_millif
+
+    assert to_millif(67.000) == 67000
+    assert to_millif(68.00000000000001) == 68000
+    assert to_millif(68.001) == 68001
+
+
+def test_range_bucket_interval_uses_scaled_boundary_metadata():
+    parsed = parse_weather_question("Will the highest temperature in Atlanta be 67-68F on May 25?")
+    bounds = temperature_bucket_interval_bounds_f(parsed)
+
+    assert bounds is not None
+    assert getattr(bounds, "original_unit", None) == "F"
+    assert getattr(bounds, "comparison_unit", None) == "millifahrenheit"
+    assert bounds.contains_f(67.000)
+    assert bounds.contains_f(68.000)
+    assert bounds.contains_f(68.00000000000001)
+    assert not bounds.contains_f(68.001)
+
+
+def test_exact_temperature_bucket_uses_displayed_value_without_half_step():
     parsed = parse_weather_question("Will the highest temperature in Atlanta be 87F on May 25?")
+    bounds = temperature_bucket_interval_bounds_f(parsed)
 
     assert parsed.temperature_bucket == "exact"
-    assert rounded_temperature_bucket_interval_f(parsed) == (86.5, 87.5)
+    assert rounded_temperature_bucket_interval_f(parsed) == (87.0, 87.0)
+    assert bounds is not None
+    assert bounds.contains_f(87.0)
+    assert not bounds.contains_f(86.999)
+    assert not bounds.contains_f(87.001)
+
+
+def test_exact_celsius_bucket_uses_displayed_integer_without_hidden_range():
+    parsed = parse_weather_question("Will the highest temperature in Singapore be 29\u00b0C on June 12?")
+    bounds = temperature_bucket_interval_bounds_f(parsed)
+    target_f = c_to_f(29.0)
+
+    assert parsed.temperature_bucket == "exact"
+    assert parsed.threshold_unit == "C"
+    assert rounded_temperature_bucket_interval_f(parsed) == (target_f, target_f)
+    assert bounds is not None
+    assert getattr(bounds, "original_unit", None) == "C"
+    assert getattr(bounds, "comparison_unit", None) == "millifahrenheit"
+    assert bounds.contains_f(target_f)
+    assert not bounds.contains_f(c_to_f(28.999))
+    assert not bounds.contains_f(c_to_f(29.001))
 
 
 def test_parse_celsius_range_temperature_bucket():

@@ -3,11 +3,21 @@
 This is the active rule book for operating or changing the paper bot. Keep it
 compact; historical notes belong in focused `docs/solutions/` entries.
 
+## Current Phase: Strategy Validation First
+
+- Current work is paper-only strategy validation; live discussion requires `docs/paper-validation-runbook.md` gates plus a safety project.
+- Do not build wallet, private-key, signing, real-order, redemption,
+  claim/copy-trading, or `LiveBroker` behavior in this phase.
+- Trust paper PnL only from executable ask/bid depth, fees, spread, slippage,
+  stale-data fail-closed behavior, official station nowcast, and replayable
+  ledgers.
+- Advanced dashboards, calibration/optimizer views, heatmaps, and live trading
+  stay deferred until `docs/strategy-validation-roadmap.md` P0 gates pass.
+
 ## Execution Boundary
 
-- Paper-only execution is the boundary. No private keys, wallet connection,
-  signing, live orders, redemption, copy trading, or private data collection
-  without explicit approval and a separate live-trading safety pass.
+- Paper-only execution is the boundary: no keys, wallet, signing, live orders,
+  redemption, copy trading, or private data without a live-safety pass.
 - Public dashboard exposure requires a real `DASHBOARD_TOKEN` with at least 32
   characters. Public `/api/status` must accept the token only through
   `X-Dashboard-Token`; URL query tokens leak through logs, history, and shares.
@@ -24,8 +34,28 @@ compact; historical notes belong in focused `docs/solutions/` entries.
   trade logging.
 - Unknown, stale, malformed, unsupported, suspicious, missing, or conflictful
   data means skip.
-- Forecast rows must match the target market date exactly. Nearby dates are not
-  substitutes.
+- Market title parsing is not enough rule evidence. New provenance work must
+  preserve the question plus available description/resolution text, source,
+  station, unit, bucket shape, and station-local event date window. If title
+  parsing and rule text conflict, skip the market instead of trading it.
+- Gamma discovery normalizes available rule evidence into the market metadata
+  contract. A title/rule conflict on city, high/low direction, unit, bucket
+  shape, threshold/range value, date hint, or explicit settlement station must
+  fail before forecast fetching with `SKIP_RULE_MISMATCH`.
+- Treat the gap plan as explicit execution, not an always-on backlog. Fresh
+  chats resume only from `docs/active/current-task.md`.
+- Same-station evidence quality must stay explicit in station metadata:
+  temperature unit, reporting precision, same-station support, confidence
+  grade, verification date, and confidence level.
+- Only station confidence grades A/B may enter `TRADING_READY_STATION_MAP`;
+  grades C/D, unsupported providers, inferred, nearby, or unverifiable sources
+  remain excluded. Karachi stays excluded until station evidence is reconciled.
+- Market metadata must carry the station-local event date plus UTC start/end
+  window. Forecast rows must match that local date exactly; nearby dates are
+  not substitutes.
+- Temperature bucket comparisons use centralized millifahrenheit boundaries.
+  Decimal model members must match the displayed exact value to vote YES; do
+  not round them into hidden half-step buckets.
 - `pre_forecast_tradeability_gate` rejects markets before Open-Meteo when they
   are not temperature-shaped, not trading-ready, or missing required date
   evidence. Undated markets always fail closed.
@@ -85,11 +115,16 @@ compact; historical notes belong in focused `docs/solutions/` entries.
 - `DECISION YES` and `DECISION NO` are model/order-book judgments, not
   guaranteed opens. Broker exposure, hedge, confidence, liquidity, fee, and
   stale-data gates may still block entry.
+- A new entry must survive a final pre-trade check: fresh executable book,
+  enough ask depth, configured absolute/percentage spread limits, still-positive
+  after-fee edge, no conflict with held positions, exposure room, rule clarity,
+  and non-stale strategy inputs. A spread failure uses `SKIP_WIDE_SPREAD`.
 - Entry decisions are fee-aware. `p_exec` is executable VWAP; `size_usd` is the
   all-in paper-entry budget; `size_shares` is the fee-adjusted share count.
-- Position sizing defaults:
-  `SIZE_MODE=kelly`, `FRACTIONAL_KELLY=0.25`, `ENTRY_FRACTION=0.20`,
+- Sizing defaults: `SIZE_MODE=kelly`, `FRACTIONAL_KELLY=0.25`, `ENTRY_FRACTION=0.20`,
   `MAX_TOTAL_EXPOSURE_FRACTION=0.60`, `MAX_CITY_EXPOSURE_FRACTION=0.20`.
+- Signal confidence is sizing evidence, not `p_true`: lower confidence scales
+  entry size down; stale forecasts block new entries while held exits still run.
 - In Kelly mode, `ENTRY_FRACTION` is a per-event cap, not the direct order size.
   Do not switch back to `fixed_fraction` without resetting the fraction and
   documenting the risk tradeoff.
@@ -97,7 +132,8 @@ compact; historical notes belong in focused `docs/solutions/` entries.
   allowed only when price, probability, edge, expected return, cash, and
   exposure caps still pass.
 - City-date weather buckets share one correlated-risk budget. At most two
-  complementary legs are selected per event.
+  complementary non-overlapping legs are selected per event; hidden
+  threshold-ladder overlap fails closed and logs keep a scenario payoff audit.
 - Exit decisions use after-fee liquidation PnL, not raw token-price movement.
   Allowed exits: probability stop, take profit, overheated profit, edge faded,
   max hold, settlement, and nowcast bucket-lock risk.
@@ -105,6 +141,10 @@ compact; historical notes belong in focused `docs/solutions/` entries.
   fires before order placement, convert the candidate to SKIP.
 - If an exit signal fires but the close cannot execute, log the blocker and
   preserve the original `exit_trigger`; do not pretend to sell.
+- Whole-stream order-book failure blocks new entries. One missing/illiquid held
+  token is worth $0 in `liquidation_bankroll`, not a global unrelated block.
+- Drawdown circuit breakers block new entries only; held exits and settlements
+  must continue.
 - Profit exits may recover principal and keep a bounded settlement runner only
   when conservative settlement value beats fee-adjusted sell-now value.
 - Resolved paper settlement requires a proven binary winner. Ambiguous closed
@@ -113,6 +153,12 @@ compact; historical notes belong in focused `docs/solutions/` entries.
   corrupt, structurally invalid, or unsafe state fails closed instead of reset.
 - `paper_state.json` and `paper_trades.csv` are paired ledgers. Startup replays
   executed trade rows against `BANKROLL_USD` and fails closed on mismatch.
+- New decision and trade rows must carry compact replay evidence: token/city,
+  station-local date, market shape, station evidence, signal source, entry VWAP,
+  expected net return, reason code, and model/config version. Existing old
+  ledger rows stay readable and are not rewritten.
+- Normal SKIP spam stays suppressed by default, but reports should aggregate
+  stable reason codes such as `SKIP_WIDE_SPREAD`.
 
 ## Nowcast And Station Evidence
 
@@ -129,12 +175,23 @@ compact; historical notes belong in focused `docs/solutions/` entries.
   high/low value when the latest decision row contains observed station
   evidence. A missing nowcast badge means no usable observed value was present
   in the latest decision payload, not that the provider should be assumed idle.
+- Dashboard open-position cards must separate reference mark PnL from bid-depth
+  liquidation PnL and show bid depth, exit status/blocker, and WS freshness.
 - The target date may be station-local today, or station-local yesterday only
   during the post-close freshness window for held-position exit and settlement
   evidence.
 - For daily-high threshold markets, `observed_high_c >= threshold_c` is held
   YES favorable evidence and held NO `nowcast_bucket_lock_risk`. Exact/range
-  buckets must use parsed bucket boundaries.
+  buckets must use Polymarket settlement text directly: exact buckets are the
+  displayed value only, and range buckets are the displayed inclusive
+  endpoints. Do not widen exact buckets into half-step intervals such as
+  `28.5C-29.5C`.
+- For daily-high exact/range held YES positions, same-station nowcast makes
+  YES impossible only after the observed high is above the exact value or range
+  upper endpoint. A lower observed high is not decisive because the day's high
+  can still rise. For daily-low exact/range held YES positions, same-station
+  nowcast makes YES impossible only after the observed low is below the exact
+  value or range lower endpoint.
 
 ## Runtime Data And Disk
 
@@ -146,15 +203,17 @@ compact; historical notes belong in focused `docs/solutions/` entries.
   selected by default.
 - `paper_raw_snapshots.jsonl` is diagnostic evidence, not a source ledger.
   Normal snapshots stay disabled except for errors.
+- Actual account events (`OPEN`, `ADD`, `CLOSE`, `PARTIAL_CLOSE`, `SETTLED`)
+  write compact raw evidence snapshots by default. Normal decisions and ticks
+  still do not write raw snapshots unless debug mode is enabled.
 - Do not apply diagnostic cleanup rules to `paper_state.json`,
   `paper_trades.csv`, or `paper_decisions.csv`.
-- Reports may scan full ledger history when promised, but must stream rows and
-  keep only aggregates or bounded lookups in memory.
+- Minimum reports stream ledger rows and separate trusted executable-depth net
+  PnL from reference-only PnL, liquidity/stale blockers, signal, shape, city,
+  and high/low breakdowns.
 - Individual market evaluation exceptions fail closed as observable
   diagnostics: write a `SKIP_ERROR` row, write an error raw snapshot, and keep
   runner-status error fields.
-- Logrotate compresses high-volume diagnostic/request files, not core account
-  ledgers. Current policy: raw snapshots at 100 MB; request logs and portfolio
-  diagnostics at 10 MB; keep five archives under `data/archive/`.
-- `docs/codex/known-good-commands.md` is the command source for local pytest,
-  Oracle SSH, remote pytest, and dashboard checks.
+- Logrotate compresses diagnostics, not core ledgers: raw snapshots at 100 MB,
+  request/portfolio logs at 10 MB, five archives under `data/archive/`.
+- `docs/codex/known-good-commands.md` is the source for pytest, SSH, and dashboard checks.

@@ -20,6 +20,9 @@ sheet against the wrong exam.
 - `nowcast_station`: the station candidate used for same-day observation checks.
 - `nowcast status`: whether current observed values can be used in probability
   calculation.
+- `nowcast confidence grade`: whether same-station observed values are trusted
+  enough for paper execution. Grades A/B may enter the trading-ready subset;
+  grades C/D stay excluded.
 - `provider_enabled`: the code can read an official observation API for the same
   settlement station.
 - `provider_unavailable`: a settlement station code exists, but the official
@@ -46,12 +49,14 @@ sheet against the wrong exam.
 - Trading discovery and probability estimation now use the trading-ready subset,
   not the full 41-city registry.
 - 39 ICAO stations read same-day observed values through the Aviation Weather
-  Center METAR API.
+  Center METAR API and carry grade A station confidence.
 - `hong kong/HKO` uses Hong Kong Observatory max/min temperature CSV data since
   midnight instead of METAR. Hong Kong max-temperature markets were high-volume
   during research, so this provider was implemented instead of skipping them.
+  It carries grade A station confidence.
 - `karachi/OPMR` currently uses forecasts only because recent AWC METAR data was
-  not available during verification.
+  not available during verification. It carries grade D station confidence and
+  remains excluded.
 - Original Polymarket rule URLs and rule wording are stored in
   `src/weather_bot/stations.py`.
 

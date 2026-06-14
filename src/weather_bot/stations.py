@@ -7,8 +7,18 @@ FORECAST_LOCATION_SOURCE = "settlement_station_coordinates"
 DEFAULT_STATION_VERIFICATION_STATUS = "verified_from_existing_registry"
 DEFAULT_RULE_EVIDENCE_STATUS = "needs_rule_source_url"
 DEFAULT_NOWCAST_PROVIDER_STATUS = "provider_enabled"
+DEFAULT_TEMPERATURE_UNIT = "celsius"
+DEFAULT_REPORTING_PRECISION = "1C"
+DEFAULT_STATION_LAST_VERIFIED_AT = "2026-06-14"
 RULE_EVIDENCE_TRADING_READY_STATUS = "verified_rule_source"
 RULE_EVIDENCE_STATION_ID_CONFLICT_STATUS = "rule_station_id_conflict"
+ACCEPTABLE_NOWCAST_CONFIDENCE_GRADES = frozenset({"A", "B"})
+CONFIDENCE_LEVEL_BY_GRADE = {
+    "A": "high",
+    "B": "medium",
+    "C": "low",
+    "D": "blocked",
+}
 
 
 @dataclass(frozen=True)
@@ -27,9 +37,19 @@ class StationMeta:
     rule_evidence_status: str = DEFAULT_RULE_EVIDENCE_STATUS
     polymarket_rule_url: str = ""
     polymarket_rule_station_text: str = ""
+    temperature_unit: str = DEFAULT_TEMPERATURE_UNIT
+    reporting_precision: str = DEFAULT_REPORTING_PRECISION
+    same_station_nowcast_supported: bool = True
+    nowcast_confidence_grade: str = "A"
+    last_verified_at: str = DEFAULT_STATION_LAST_VERIFIED_AT
+    confidence_level: str = "high"
     nowcast_source_type: str = "metar"
     nowcast_station_id: str = ""
     nowcast_provider_status: str = DEFAULT_NOWCAST_PROVIDER_STATUS
+
+
+def _confidence_level_for_grade(grade: str) -> str:
+    return CONFIDENCE_LEVEL_BY_GRADE.get(grade.upper(), "blocked")
 
 
 def _station(
@@ -43,7 +63,22 @@ def _station(
     nowcast_source_type: str = "metar",
     nowcast_provider_status: str = DEFAULT_NOWCAST_PROVIDER_STATUS,
     nowcast_station_id: str | None = None,
+    temperature_unit: str = DEFAULT_TEMPERATURE_UNIT,
+    reporting_precision: str = DEFAULT_REPORTING_PRECISION,
+    same_station_nowcast_supported: bool | None = None,
+    nowcast_confidence_grade: str | None = None,
+    last_verified_at: str = DEFAULT_STATION_LAST_VERIFIED_AT,
+    confidence_level: str | None = None,
 ) -> StationMeta:
+    supports_same_station = (
+        nowcast_provider_status == DEFAULT_NOWCAST_PROVIDER_STATUS
+        if same_station_nowcast_supported is None
+        else same_station_nowcast_supported
+    )
+    resolved_grade = (
+        nowcast_confidence_grade
+        or ("A" if supports_same_station else "D")
+    ).upper()
     return StationMeta(
         city=city,
         station_id=station_id,
@@ -53,6 +88,12 @@ def _station(
         timezone=timezone,
         elevation_m=elevation_m,
         note="Verified from Polymarket weather resolution rules.",
+        temperature_unit=temperature_unit,
+        reporting_precision=reporting_precision,
+        same_station_nowcast_supported=supports_same_station,
+        nowcast_confidence_grade=resolved_grade,
+        last_verified_at=last_verified_at,
+        confidence_level=confidence_level or _confidence_level_for_grade(resolved_grade),
         nowcast_source_type=nowcast_source_type,
         nowcast_station_id=nowcast_station_id or station_id,
         nowcast_provider_status=nowcast_provider_status,
@@ -83,6 +124,7 @@ _STATION_MAP_BASE: dict[str, StationMeta] = {
         32,
         nowcast_source_type="hko_maxmin_since_midnight",
         nowcast_provider_status="provider_enabled",
+        reporting_precision="0.1C",
     ),
     "istanbul": _station("istanbul", "LTFM", "Istanbul Airport", 41.2613, 28.7419, "Europe/Istanbul", 99),
     "jeddah": _station("jeddah", "OEJN", "King Abdulaziz International Airport Station", 21.6796, 39.1565, "Asia/Riyadh", 15),
@@ -335,11 +377,14 @@ STATION_MAP: dict[str, StationMeta] = {
 
 
 def station_is_trading_ready(station: StationMeta) -> bool:
-    """Return True only when official Polymarket settlement-rule evidence is stored."""
+    """Return True only when rule evidence and same-station confidence are usable."""
     return (
         station.rule_evidence_status == RULE_EVIDENCE_TRADING_READY_STATUS
         and station.polymarket_rule_url.startswith("https://polymarket.com/")
         and bool(station.polymarket_rule_station_text.strip())
+        and station.same_station_nowcast_supported
+        and station.nowcast_provider_status == DEFAULT_NOWCAST_PROVIDER_STATUS
+        and station.nowcast_confidence_grade in ACCEPTABLE_NOWCAST_CONFIDENCE_GRADES
     )
 
 
@@ -375,6 +420,12 @@ def station_audit_rows() -> list[dict[str, object]]:
             "polymarket_rule_url": station.polymarket_rule_url,
             "polymarket_rule_station_text": station.polymarket_rule_station_text,
             "trading_ready": station_is_trading_ready(station),
+            "temperature_unit": station.temperature_unit,
+            "reporting_precision": station.reporting_precision,
+            "same_station_nowcast_supported": station.same_station_nowcast_supported,
+            "nowcast_confidence_grade": station.nowcast_confidence_grade,
+            "last_verified_at": station.last_verified_at,
+            "confidence_level": station.confidence_level,
             "nowcast_source_type": station.nowcast_source_type,
             "nowcast_station_id": station.nowcast_station_id,
             "nowcast_provider_status": station.nowcast_provider_status,

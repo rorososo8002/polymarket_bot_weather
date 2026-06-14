@@ -11,6 +11,7 @@ from weather_bot.probability import (
     WeatherBiasLoadError,
     _extract_member_values,
     _station_for,
+    _nowcast_threshold_adjustment,
     _temperature_bucket_probability,
     _today_for_timezone,
     blend_empirical_and_cdf,
@@ -882,7 +883,7 @@ def test_highest_temperature_below_uses_daily_max_not_daily_min():
     assert signal.p_true < 0.20
 
 
-def test_multi_bucket_temperature_probabilities_share_one_consistent_distribution():
+def test_exact_bucket_temperature_probabilities_do_not_recreate_hidden_half_step_distribution():
     target = _today_for_timezone("Asia/Seoul")
     member_values_c = [17.0, 18.2, 19.4, 20.6, 21.8, 23.0, 24.2, 25.4, 26.6, 27.8, 29.0]
     member_values_f = [value * 9.0 / 5.0 + 32.0 for value in member_values_c]
@@ -915,7 +916,7 @@ def test_multi_bucket_temperature_probabilities_share_one_consistent_distributio
     ]
 
     assert all(signal.source == "open-meteo-ensemble-station" for signal in signals)
-    assert sum(signal.p_true for signal in signals) == pytest.approx(1.0)
+    assert sum(signal.p_true for signal in signals) < 1.0
 
 
 def test_range_temperature_bucket_uses_exact_inclusive_fahrenheit_bounds():
@@ -974,6 +975,39 @@ def test_range_temperature_bucket_uses_exact_converted_celsius_bounds_without_ro
     assert parsed.temperature_range_lower_f == c_to_f(22.0)
     assert parsed.temperature_range_upper_f == c_to_f(23.0)
     assert empirical_p == pytest.approx(3 / 5)
+
+
+def test_exact_celsius_bucket_probability_uses_displayed_value_not_half_step():
+    parsed = parse_weather_question("Will the highest temperature in Singapore be 29C today?")
+    member_values_f = [c_to_f(value_c) for value_c in [28.999, 29.0, 29.001]]
+
+    _probability, empirical_p = _temperature_bucket_probability(
+        parsed,
+        member_values_f,
+        mean_f=sum(member_values_f) / len(member_values_f),
+        sigma_f=1.25,
+    )
+
+    assert parsed.temperature_bucket == "exact"
+    assert empirical_p == pytest.approx(1 / 3)
+
+
+def test_exact_high_nowcast_below_displayed_value_is_not_decisive():
+    parsed = parse_weather_question("Will the highest temperature in Singapore be 29C today?")
+
+    adjusted_p, adjustment = _nowcast_threshold_adjustment(parsed, 0.62, c_to_f(28.9))
+
+    assert adjusted_p == 0.62
+    assert adjustment == "observed-high-not-decisive"
+
+
+def test_range_high_nowcast_above_upper_endpoint_makes_yes_probability_zero():
+    parsed = parse_weather_question("Will the highest temperature in Atlanta be 67-68F today?")
+
+    adjusted_p, adjustment = _nowcast_threshold_adjustment(parsed, 0.62, 68.001)
+
+    assert adjusted_p == 0.0
+    assert adjustment == "observed-high-above-range-bucket"
 
 
 def test_range_temperature_bucket_probability_differs_from_exact_bucket():
@@ -1067,7 +1101,7 @@ def test_temperature_nowcast_can_confirm_threshold_crossing_without_city_fallbac
     assert "evidence=forecast-plus-nowcast" in signal.note
 
 
-def test_exact_bucket_nowcast_above_bucket_keeps_yes_probability_zero():
+def test_exact_bucket_nowcast_just_above_displayed_value_keeps_yes_probability_zero():
     target = _today_for_timezone("Asia/Hong_Kong")
     member_values_f = [85.8, 86.0, 86.2, 86.4]
 
@@ -1091,7 +1125,7 @@ def test_exact_bucket_nowcast_above_bucket_keeps_yes_probability_zero():
             return StationNowcastObservation(
                 station_id="HKO",
                 station_name=station.station_name,
-                observed_high_c=31.0,
+                observed_high_c=30.1,
                 observed_at=datetime(2026, 6, 2, 8, 0, tzinfo=timezone.utc),
                 high_observed_at=datetime(2026, 6, 2, 8, 0, tzinfo=timezone.utc),
                 source="hko-maxmin-since-midnight",

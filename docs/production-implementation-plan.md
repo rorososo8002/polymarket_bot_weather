@@ -6,6 +6,21 @@ Run a conservative paper-trading bot for Polymarket temperature markets using
 verified settlement stations, realtime executable order books, and reproducible
 paper accounting.
 
+## Current Development Phase
+
+The current phase is **strategy validation first**: prove realistic paper
+performance before live trading; active work stays in `docs/active/current-task.md`.
+
+Validation work has priority over new strategy features:
+
+- Entry uses ask-side executable VWAP, not midpoint or best-quote guesses.
+- Exit uses bid-side executable VWAP; no executable close depth means hold.
+- Fees, spread, slippage, stale data, partial liquidity, and official station
+  nowcast must flow into paper results; confidence scales size, not `p_true`.
+- Minimum reports separate bid/ask-depth net PnL from reference midpoint PnL.
+- Live trading, advanced dashboards, calibration views, and complex optimizers
+  stay deferred until paper validation gates pass.
+
 ## Non-Negotiable Rules
 
 - Keep execution paper-only unless live trading is explicitly approved through
@@ -87,23 +102,28 @@ expected_net_return >= ENTRY_MIN_EXPECTED_NET_RETURN_PCT
 through the actual book price, so do not subtract those twice.
 
 `size_usd` is the all-in paper-entry budget. The broker buys fewer shares than
-`size_usd / p_exec` so entry notional plus fee stays inside the budget. Normal
-and partial closes add only after-fee proceeds to paper cash. Dashboard market
-value and liquidation bankroll also use after-exit-fee value.
+`size_usd / p_exec` so entry notional plus fee stays inside the budget. Closes,
+dashboard market value, and liquidation bankroll use after-exit-fee value.
+Open-position cards separate reference mark value from bid-depth liquidation
+value with bid depth, exit status/blocker, and WebSocket freshness.
 
-Entry liquidity checks follow actual order sizing:
+Entry liquidity and final pre-trade checks follow actual order sizing:
 
 1. Probe executable ask depth with at least `MIN_ORDER_USD`.
 2. Compute fee-aware edge and actual `size_usd`.
 3. Recheck executable ask depth for that final `size_usd`.
 4. Recalculate edge, fee, shares, and expected return if final VWAP changes.
-5. Scale down only when the confirmed executable amount still meets
-   `MIN_ORDER_USD`; otherwise skip.
+5. Recheck the fresh executable book before `PaperBroker.open_position`; skip
+   with a named reason if depth, spread, or net edge no longer passes.
 
 Same-market opposite-side entries are blocked. Same-side add-ons are allowed
 only in paper mode when price has dropped enough, live probability remains
 above the position stop, edge and expected return stay positive, and cash plus
 exposure caps leave at least `MIN_ORDER_USD`.
+
+Signal confidence is a sizing multiplier after edge/liquidity checks. Stale
+forecast signals block new entries, but open-position exit management continues.
+Drawdown breakers may stop new entries, but never settlement or exit handling.
 
 ## Weather And Discovery Contract
 
@@ -111,16 +131,23 @@ exposure caps leave at least `MIN_ORDER_USD`.
   result inside that event.
 - Discovery expands supported temperature binary markets inside trading-ready
   weather-category events, not by stopping at the 41-city station count.
+- Discovered markets carry normalized rule provenance from Gamma question,
+  description, resolution/source text, event slug, parsed condition, station
+  evidence, unit, date hint, and station timezone. A conflict between the
+  market title and exposed rule text is not a weak signal; it is a pre-forecast
+  `SKIP_RULE_MISMATCH`.
 - Category slug detail fetches are bounded at 80 per cycle and lower explicit
   `max_pages * page_size` budgets, so discovery cannot delay WebSocket startup.
-- Temperature range buckets such as `86-87F` or `22-23C` preserve displayed
-  inclusive endpoints exactly.
-- Same-station nowcast may adjust probability only when the provider is
-  explicitly mapped to the same settlement station. Current trading-ready
-  sources are AWC METAR for ICAO stations and HKO max/min CSV for Hong Kong.
-- Nowcast target-date access is narrow: station-local today, or station-local
-  yesterday only during the post-close freshness window for held-position exit
-  and settlement-risk evidence.
+- Temperature bucket boundaries use centralized millifahrenheit comparison;
+  range endpoints and exact displayed values stay literal, with no hidden half-step intervals such as `28.5C-29.5C`.
+- Forecast votes for exact buckets count only displayed-value matches, not
+  hidden rounded cells.
+- Same-station nowcast may adjust probability only when station metadata marks
+  same-station support with confidence grade A/B. C/D, unsupported, inferred,
+  or nearby providers cannot enter the execution universe.
+- Event-date metadata uses the station-local date plus UTC start/end window.
+  Nowcast access is station-local today, or station-local yesterday only during
+  the post-close freshness window for held-position exit and settlement risk.
 - AWC METAR nowcast uses one bulk request for the enabled ICAO set, then each
   city filters its own station-date rows. HKO remains one official CSV request.
 - Daily-high markets use observed high; daily-low markets use observed low.
@@ -181,10 +208,9 @@ exposure caps leave at least `MIN_ORDER_USD`.
   10 minutes apart. Cache hits are local reads and do not write request-log
   rows.
 - A 5-min nowcast refresh updates station evidence around cached forecasts, not forecast freshness; open-position dashboard payloads must include latest decision-note nowcast evidence when present.
-- For daily-high threshold markets, `observed_high_c >= threshold_c` makes held
-  YES favorable evidence and held NO a `nowcast_bucket_lock_risk` exit attempt.
-  Exact and range buckets must use parsed bucket boundaries; a held side that
-  nowcast shows is losing gets the same exit-risk treatment.
+- Daily-high thresholds use `observed_high_c >= threshold_c`; exact/range held
+  YES loses only above the upper endpoint, daily-low held YES only below the
+  lower endpoint, and held NO gets `nowcast_bucket_lock_risk` inside the bucket.
 - Forecast warmup must not run inside WebSocket receiver callbacks. Callbacks
   update the order-book cache and enqueue bounded evaluation work only.
 - `STREAM_CYCLE_INTERVAL_SECONDS=2400` is the market-discovery and WebSocket
@@ -202,8 +228,10 @@ entry_bankroll = min(cost_basis_bankroll, liquidation_bankroll)
 ```
 
 Unrealized profits do not increase new-entry sizing. Executable unrealized
-losses reduce sizing immediately. If any held position cannot be valued from a
-usable order book, new entries fail closed with an operator-readable SKIP.
+losses reduce sizing immediately. Whole-stream WebSocket failure still blocks
+new entries. If one held position cannot be priced because its token is
+illiquid, missing, or settling, the bot values that position at $0 for
+`liquidation_bankroll` instead of blocking all unrelated new entries.
 
 Default portfolio limits:
 
@@ -223,10 +251,11 @@ MAX_TOTAL_EXPOSURE_FRACTION=0.60
 ```
 
 For one city-date event, the selector compares one-leg and at-most-two-leg
-`YES+YES`, `YES+NO`, and `NO+NO` combinations across non-overlapping buckets.
-Same-market `YES+NO`, overlapping threshold positions, and third legs are
-blocked. Allocation-size candidates are capped for large ranges while keeping
-the minimum order, allowed maximum, and any affordable preferred size.
+`YES+YES`, `YES+NO`, and `NO+NO` combinations across non-overlapping settlement
+outcomes. Same-market `YES+NO`, hidden threshold-ladder overlap, and third legs
+are blocked; selected portfolios log a compact scenario payoff audit, not raw
+scenario maps. Allocation-size candidates are capped for large ranges while
+keeping the minimum order, allowed maximum, and any affordable preferred size.
 
 ## Accounting And Exit Contract
 
@@ -266,14 +295,23 @@ exactly `1/0` or `0/1`.
 ## Runtime Data Contract
 
 Paper-report readers treat `paper_decisions.csv` and `paper_trades.csv` as
-source ledgers. Full-history reports may scan every row, but they must stream
-rows and keep only aggregates, market-level lookup state, or bounded samples in
-memory.
+source ledgers. Full-history reports may scan every row, but must stream rows
+and keep only aggregates, market lookup state, or bounded samples in memory.
+
+The minimum report separates trusted executable-depth net PnL from reference
+PnL, then shows liquidity/stale blockers, signal, shape, city, and warnings.
 
 `paper_raw_snapshots.jsonl` is high-volume diagnostic evidence, not a source
 ledger. Normal snapshots default to error-only, debug mode is bounded, active
 raw snapshots rotate over 100MB into compressed `archive/`, and disk pressure
 may suspend raw writes with a runner-status warning.
+
+New decision and trade rows are append-only evidence. Fresh headers include
+compact replay fields such as token, city, station-local date, market shape,
+station evidence, signal source, entry VWAP, expected net return, reason code,
+and model/config version. Legacy headers remain readable and are not rewritten.
+Actual account events also write compact raw snapshots by default; normal tick
+and decision snapshots remain suppressed outside debug/error paths.
 
 Dashboard scanner totals expose their counting scope:
 `decision_totals_exact=true` means full-ledger totals, and
@@ -294,56 +332,19 @@ Use `docs/codex/skip-diagnostics.md` to separate:
 
 ## Runtime Defaults
 
-```text
-ORDERBOOK_STREAM_ENABLED=true
-ORDERBOOK_STREAM_URL=wss://ws-subscriptions-clob.polymarket.com/ws/market
-ORDERBOOK_STREAM_STALE_SECONDS=60
-ORDERBOOK_REST_SNAPSHOT_ENABLED=true
-ORDERBOOK_REST_SNAPSHOT_INTERVAL_SECONDS=60
-RUNNER_HEALTH_STATUS_INTERVAL_SECONDS=5
-STREAM_CYCLE_INTERVAL_SECONDS=2400
-FORECAST_CACHE_TTL_SECONDS=10800
-FORECAST_REQUEST_MIN_INTERVAL_SECONDS=15
-FORECAST_RATE_LIMIT_STATE_PATH=forecast_rate_limit_state.json
-WEATHER_BIAS_JSON=
-STATION_NOWCAST_ENABLED=true
-STATION_NOWCAST_CACHE_TTL_SECONDS=300
-STATION_NOWCAST_FRESHNESS_SECONDS=5400
-STATION_NOWCAST_REQUEST_LOG_PATH=station_nowcast_request_log.jsonl
-RAW_SNAPSHOTS_MODE=error
-RAW_SNAPSHOTS_MAX_BYTES=104857600
-RAW_SNAPSHOTS_RETENTION_DAYS=7
-RAW_SNAPSHOTS_MIN_FREE_BYTES=1073741824
-RAW_SNAPSHOTS_MAX_DISK_USAGE_PCT=0.90
-PORTFOLIO_DECISIONS_JSONL_PATH=paper_event_portfolios.jsonl
-DISCOVERY_MAX_PAGES=8
-DISCOVERY_PAGE_SIZE=100
-WEATHER_TAKER_FEE_RATE=0.05
-SIZE_MODE=kelly
-FRACTIONAL_KELLY=0.25
-ENTRY_FRACTION=0.20
-MAX_TOTAL_EXPOSURE_FRACTION=0.60
-ENTRY_MIN_EXPECTED_NET_RETURN_PCT=0.06
-SETTLEMENT_RUNNER_ENABLED=true
-SETTLEMENT_RUNNER_MAX_FRACTION=0.25
-SETTLEMENT_RUNNER_MIN_EV_MARGIN_USD=0.00
-REQUIRE_DATE_HINT_FOR_TRADE=true
-DASHBOARD_HOST=127.0.0.1
-DASHBOARD_PORT=8787
-DASHBOARD_TOKEN=
-```
+Keep this section compact; the canonical default list lives in `.env.example`
+and code defaults live in `src/weather_bot/config.py`. Required production
+anchors are unchanged:
 
-For public dashboard hosts such as `0.0.0.0` or `::`, use a real random
-`DASHBOARD_TOKEN` with at least 32 characters and send it through the
-`X-Dashboard-Token` header.
+- WebSocket order books are enabled by default.
+- Forecast cache TTL is 10 800 seconds and real forecast calls are drip-fed by
+  15-second minimum gaps.
+- Same-station nowcast is enabled with separate provider freshness clocks.
+- Raw snapshots default to error-only and rotate before disk pressure.
+- Public dashboard hosts such as `0.0.0.0` or `::` require a random
+  `DASHBOARD_TOKEN` of at least 32 characters sent through `X-Dashboard-Token`.
 
 ## Verification
 
-Use the known-good local command before inventing variants:
-
-```powershell
-& 'C:\Users\wpdla\Python312\python.exe' -m pytest -q
-```
-
-Routine local, VPS, SSH, and dashboard commands live in
-`docs/codex/known-good-commands.md`.
+Use `docs/codex/known-good-commands.md` for local pytest, VPS, SSH, and
+dashboard commands before inventing variants.

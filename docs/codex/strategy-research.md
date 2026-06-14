@@ -55,6 +55,9 @@ Read this file only for strategy changes, probability modeling, trading behavior
   cap one city's different dates at 20%, and cap total paper exposure at 60%.
 - Size new entries from the smaller of cost-basis bankroll and executable
   liquidation bankroll. Do not let unrealized profits increase risk. If a
-  held position cannot be valued from a usable order book, fail closed and
-  pause new entries.
+  whole-stream order-book failure prevents reliable pricing, fail closed and
+  pause new entries. If only one held token cannot be priced because it is
+  illiquid, missing, or settling, value that held position at `$0` in
+  `liquidation_bankroll` so it cannot inflate sizing, but do not block every
+  unrelated new entry.
 - Never add private keys, live-wallet execution, or real orders unless the user explicitly asks for that separate safety project.

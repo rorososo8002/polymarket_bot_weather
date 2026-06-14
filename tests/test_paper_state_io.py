@@ -460,6 +460,30 @@ def test_log_trade_appends_to_legacy_trade_csv_without_rewriting_header(tmp_path
     assert lines[-1].split(",")[1] == "SKIP_TEST"
 
 
+def test_log_decision_appends_to_legacy_decision_csv_without_rewriting_header(tmp_path):
+    settings = settings_for(tmp_path)
+    legacy_header = (
+        "ts,market_id,slug,question,market_type,side,p_true,p_exec,net_edge,"
+        "size_usd,size_shares,entry_fraction,probability_stop_threshold,"
+        "model_fair_price,target_exit_price,market_heat_score,reason,note"
+    )
+    Path(settings.decisions_csv_path).write_text(
+        legacy_header
+        + "\n"
+        + "2026-01-01T00:00:00+00:00,old,old,q,temperature,YES,0.700000,"
+        + "0.500000,0.100000,10,20,,,,,,legacy,\n",
+        encoding="utf-8",
+    )
+    broker = PaperBroker(settings)
+
+    broker.log_decision(trade_market("m2"), entry_result(), "new decision")
+
+    lines = Path(settings.decisions_csv_path).read_text(encoding="utf-8").splitlines()
+    assert lines[0] == legacy_header
+    assert "reason_code" not in lines[0]
+    assert lines[-1].split(",")[1] == "m2"
+
+
 @pytest.mark.parametrize(
     ("field", "bad_value"),
     [

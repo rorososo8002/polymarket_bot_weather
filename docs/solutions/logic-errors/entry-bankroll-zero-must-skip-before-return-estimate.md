@@ -1,6 +1,7 @@
 ---
 title: Entry Bankroll Zero Must Skip Before Return Estimate
 date: 2026-06-03
+last_updated: 2026-06-13
 category: logic-errors
 module: weather_bot.live_paper_runner, weather_bot.portfolio, weather_bot.edge
 problem_type: logic_error
@@ -19,9 +20,14 @@ tags: [paper-trading, entry-bankroll, fail-closed, minimum-order, expected-retur
 
 ## 1. What The Problem Was
 
-`available_entry_bankroll()` correctly returns `entry_bankroll=0` when an open
-paper position cannot be safely valued from executable order-book depth. That
-zero means the bot does not trust the account basis for new entries.
+`available_entry_bankroll()` returns `entry_bankroll=0` when the overall
+order-book stream is unsafe enough that the bot cannot trust account value for
+new entries. That zero means the bot must not size a new order.
+
+One later refinement matters: a single held token that cannot be priced because
+it is illiquid or settling is no longer treated as a whole-account block. It is
+valued at `$0` in `liquidation_bankroll`, which is conservative but still lets
+unrelated markets proceed.
 
 The live evaluator still sent that zero bankroll through entry sizing. The
 calculated paper order size became zero shares, and the expected-return helper
@@ -33,11 +39,11 @@ raised `shares must be positive`.
 for new paper entries. It is based on cash plus open-position cost basis, but it
 is capped by the executable liquidation value of held positions.
 
-If an existing position cannot be priced, the bot does not know whether the
-account can safely afford another entry. Continuing into expected-return math
-turns an accounting safety signal into a runtime exception. Worse, the operator
-sees an error instead of the real trading decision: no new entry is allowed
-because the held position could not be valued safely.
+If the overall stream is unsafe, the bot does not know whether the account can
+safely afford another entry. Continuing into expected-return math turns an
+accounting safety signal into a runtime exception. Worse, the operator sees an
+error instead of the real trading decision: no new entry is allowed because the
+account basis is not trusted.
 
 ## 3. How It Was Fixed
 

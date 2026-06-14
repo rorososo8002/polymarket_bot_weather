@@ -1,6 +1,7 @@
 ---
 title: Held-position exit evidence must not depend on entry bankroll
 date: 2026-06-07
+last_updated: 2026-06-13
 category: docs/solutions/best-practices
 module: live_paper_runner
 problem_type: best_practice
@@ -26,18 +27,27 @@ the decision reason:
 entry_bankroll=$0.00; cannot price held token ... insufficient executable bid depth
 ```
 
-`entry_bankroll` is the "new bet money" gate. It protects the bot from opening
-more positions when the existing account cannot be valued safely. It is not the
-same thing as exit evidence. Exit evidence is the current answer to: "Given what
-we know now, should an already-held position be closed, partially closed, or
-explicitly held because there is no executable bid?"
+`entry_bankroll` is the "new bet money" gate. It protects the bot from sizing a
+new paper entry from imaginary account value. It is not the same thing as exit
+evidence. Exit evidence is the current answer to: "Given what we know now,
+should an already-held position be closed, partially closed, or explicitly held
+because there is no executable bid?"
+
+The current code separates two cases. If the whole WebSocket stream is stale or
+dead, new entries are blocked. If one held token is missing from the order book
+because it is illiquid or settling, `available_entry_bankroll()` values that
+position at `$0` in liquidation bankroll and continues. That keeps sizing
+conservative without freezing unrelated markets.
 
 ## Guidance
 
 Keep these two paths separate:
 
 - New entries should stay blocked when `available_entry_bankroll()` cannot
-  safely price held positions.
+  safely trust the overall order-book stream.
+- A single unpriceable held token should not block every new entry. Treat it as
+  `$0` in `liquidation_bankroll`, log the warning, and keep exit evidence
+  refresh separate.
 - Held-position exits should still refresh weather probability, station nowcast,
   and per-side `latest_edges` whenever possible.
 - If an exit signal fires but the book has no executable bid depth, log the real

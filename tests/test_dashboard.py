@@ -1234,6 +1234,77 @@ def test_dashboard_payload_surfaces_forecast_and_websocket_health(tmp_path):
     assert payload["bot"]["status"] == "FAILED"
 
 
+def test_dashboard_open_positions_include_exit_liquidity_and_bid_depth_pnl(tmp_path):
+    state_path = tmp_path / "state.json"
+    runner_status_path = tmp_path / "paper_runner_status.json"
+    state_path.write_text(
+        json.dumps(
+            {
+                "cash_usd": 900.0,
+                "positions": [
+                    {
+                        "position_id": "p-liq",
+                        "market_id": "m-liq",
+                        "question": "Will the highest temperature in Seoul be 27C or higher on June 14?",
+                        "token_id": "yes",
+                        "side": "YES",
+                        "entry_price": 0.50,
+                        "shares": 100.0,
+                        "cost_usd": 50.0,
+                        "opened_at": "2026-06-14T00:00:00+00:00",
+                        "last_mark_price": 0.62,
+                        "metadata": {
+                            "city": "seoul",
+                            "date_hint": "june 14",
+                            "best_bid": 0.59,
+                            "absorbable_shares": 40.0,
+                            "can_fully_close": False,
+                            "exit_slippage": 0.03,
+                            "last_exit_trigger": "probability_stop",
+                            "last_exit_blocker": "low_liquidity",
+                            "last_exit_reason": "exit_trigger=probability_stop; low_liquidity",
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    runner_status_path.write_text(
+        json.dumps(
+            {
+                "updated_at": "2099-06-14T00:01:00+00:00",
+                "phase": "streaming",
+                "websocket": {
+                    "thread_alive": True,
+                    "last_book_at": "2099-06-14T00:00:50+00:00",
+                    "stale_book_age_seconds": 10,
+                    "stale": False,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = build_dashboard_payload(Settings(state_path=str(state_path), weather_taker_fee_rate=0.02))
+
+    position = payload["positions"][0]
+    assert position["reference_market_value"] == pytest.approx(61.5288)
+    assert position["reference_unrealized_pnl"] == pytest.approx(11.5288)
+    assert position["exit_best_bid"] == pytest.approx(0.59)
+    assert position["exit_available_shares"] == pytest.approx(40.0)
+    assert position["exit_full_vwap"] is None
+    assert position["exit_half_vwap"] is None
+    assert position["exit_liquidity_status"] == "partial"
+    assert position["exit_blocker"] == "low_liquidity"
+    assert position["bid_depth_market_value"] == pytest.approx(23.40648)
+    assert position["bid_depth_unrealized_pnl"] == pytest.approx(-26.59352)
+    assert position["websocket_status"] == "HEALTHY"
+    assert position["websocket_stale"] is False
+    assert "exit_liquidity_status" in HTML
+    assert "bid_depth_unrealized_pnl" in HTML
+
+
 def test_dashboard_html_explains_health_warnings():
     assert "예보 상태" in HTML
     assert "마지막 성공" in HTML

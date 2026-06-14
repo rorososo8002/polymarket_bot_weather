@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from decimal import Decimal, ROUND_HALF_UP
+import math
 import re
 
 from .models import ParsedWeatherQuestion
@@ -19,6 +21,50 @@ TEMPERATURE_CONTEXT_RE = re.compile(
     r"\b(?:temperature|temperatures|temp|highest|lowest|maximum|minimum|max|min|fahrenheit|celsius)\b",
     re.IGNORECASE,
 )
+TEMPERATURE_COMPARISON_UNIT = "millifahrenheit"
+_TEMPERATURE_MILLIFAHRENHEIT_SCALE = Decimal("1000")
+_TEMPERATURE_MILLIFAHRENHEIT_QUANT = Decimal("1")
+
+
+def temperature_f_to_millif(value_f: float) -> int:
+    """Scale Fahrenheit to an integer comparison unit."""
+    if not math.isfinite(value_f):
+        raise ValueError(f"Temperature must be finite for {TEMPERATURE_COMPARISON_UNIT} comparison.")
+    return int(
+        (Decimal(str(value_f)) * _TEMPERATURE_MILLIFAHRENHEIT_SCALE).quantize(
+            _TEMPERATURE_MILLIFAHRENHEIT_QUANT,
+            rounding=ROUND_HALF_UP,
+        )
+    )
+
+
+def temperature_compare_f(left_f: float, right_f: float) -> int:
+    """Compare Fahrenheit values using the centralized bucket precision."""
+    if math.isnan(left_f) or math.isnan(right_f):
+        raise ValueError("Temperature comparison does not accept NaN.")
+    if math.isfinite(left_f) and math.isfinite(right_f):
+        left_millif = temperature_f_to_millif(left_f)
+        right_millif = temperature_f_to_millif(right_f)
+        return (left_millif > right_millif) - (left_millif < right_millif)
+    if left_f == right_f:
+        return 0
+    return 1 if left_f > right_f else -1
+
+
+def temperature_gt_f(left_f: float, right_f: float) -> bool:
+    return temperature_compare_f(left_f, right_f) > 0
+
+
+def temperature_gte_f(left_f: float, right_f: float) -> bool:
+    return temperature_compare_f(left_f, right_f) >= 0
+
+
+def temperature_lt_f(left_f: float, right_f: float) -> bool:
+    return temperature_compare_f(left_f, right_f) < 0
+
+
+def temperature_lte_f(left_f: float, right_f: float) -> bool:
+    return temperature_compare_f(left_f, right_f) <= 0
 
 
 @dataclass(frozen=True)
@@ -40,13 +86,25 @@ class TemperatureBucketInterval:
     upper_f: float
     lower_inclusive: bool
     upper_inclusive: bool
+    original_unit: str = "F"
+    comparison_unit: str = TEMPERATURE_COMPARISON_UNIT
 
     def as_tuple(self) -> tuple[float, float]:
         return self.lower_f, self.upper_f
 
     def contains_f(self, value_f: float) -> bool:
-        lower_ok = value_f >= self.lower_f if self.lower_inclusive else value_f > self.lower_f
-        upper_ok = value_f <= self.upper_f if self.upper_inclusive else value_f < self.upper_f
+        if not math.isfinite(value_f):
+            return False
+        lower_ok = (
+            temperature_gte_f(value_f, self.lower_f)
+            if self.lower_inclusive
+            else temperature_gt_f(value_f, self.lower_f)
+        )
+        upper_ok = (
+            temperature_lte_f(value_f, self.upper_f)
+            if self.upper_inclusive
+            else temperature_lt_f(value_f, self.upper_f)
+        )
         return lower_ok and upper_ok
 
 
@@ -160,27 +218,23 @@ def _has_temperature_context(q: str, threshold_unit: str) -> bool:
     return TEMPERATURE_CONTEXT_RE.search(q) is not None
 
 
-def _temperature_rounding_half_step_f(parsed: ParsedWeatherQuestion) -> float:
-    return 0.9 if parsed.threshold_unit == "C" else 0.5
-
-
 def temperature_bucket_interval_bounds_f(parsed: ParsedWeatherQuestion) -> TemperatureBucketInterval | None:
     """Return comparison bounds for a parsed temperature bucket.
 
-    Range buckets preserve their displayed endpoints exactly. Exact and tail
-    buckets keep the existing half-step rounded-cell behavior until that bucket
-    shape is handled as a separate strategy decision.
+    Exact buckets preserve their displayed value exactly. Range buckets preserve
+    their displayed endpoints exactly. Tail buckets use the displayed threshold
+    directly.
     """
     if parsed.variable != "temperature" or parsed.threshold_f is None:
         return None
 
-    half_step = _temperature_rounding_half_step_f(parsed)
     if parsed.temperature_bucket == "exact":
         return TemperatureBucketInterval(
-            parsed.threshold_f - half_step,
-            parsed.threshold_f + half_step,
+            parsed.threshold_f,
+            parsed.threshold_f,
             True,
-            False,
+            True,
+            original_unit=parsed.threshold_unit,
         )
     if parsed.temperature_bucket == "range":
         if parsed.temperature_range_lower_f is None or parsed.temperature_range_upper_f is None:
@@ -190,25 +244,40 @@ def temperature_bucket_interval_bounds_f(parsed: ParsedWeatherQuestion) -> Tempe
             parsed.temperature_range_upper_f,
             True,
             True,
+            original_unit=parsed.threshold_unit,
         )
     if parsed.temperature_bucket == "lower_tail":
         return TemperatureBucketInterval(
             float("-inf"),
-            parsed.threshold_f + half_step,
+            parsed.threshold_f,
             False,
-            False,
+            True,
+            original_unit=parsed.threshold_unit,
         )
     if parsed.temperature_bucket == "upper_tail":
         return TemperatureBucketInterval(
-            parsed.threshold_f - half_step,
+            parsed.threshold_f,
             float("inf"),
             True,
             False,
+            original_unit=parsed.threshold_unit,
         )
     if parsed.operator == "<=":
-        return TemperatureBucketInterval(float("-inf"), parsed.threshold_f, False, True)
+        return TemperatureBucketInterval(
+            float("-inf"),
+            parsed.threshold_f,
+            False,
+            True,
+            original_unit=parsed.threshold_unit,
+        )
     if parsed.operator == ">=":
-        return TemperatureBucketInterval(parsed.threshold_f, float("inf"), True, False)
+        return TemperatureBucketInterval(
+            parsed.threshold_f,
+            float("inf"),
+            True,
+            False,
+            original_unit=parsed.threshold_unit,
+        )
     return None
 
 

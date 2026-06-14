@@ -15,10 +15,20 @@ from weather_bot.live_paper_runner import (
     _refresh_held_exit_edges_from_signal,
     _sleep_seconds_until_next_cycle,
     evaluate_market,
+    pre_forecast_tradeability_gate,
     refresh_open_position_edges,
     run_cycle,
 )
-from weather_bot.models import EdgeResult, OrderBook, OrderLevel, PaperPosition, PaperState, RawMarket, WeatherSignal
+from weather_bot.models import (
+    EdgeResult,
+    MarketRuleProvenance,
+    OrderBook,
+    OrderLevel,
+    PaperPosition,
+    PaperState,
+    RawMarket,
+    WeatherSignal,
+)
 from weather_bot.paper import PaperBroker, maybe_close_positions, maybe_settle_resolved_positions
 from weather_bot.polymarket_client import PolymarketClient
 from weather_bot.probability import _target_date_from_hint
@@ -77,6 +87,33 @@ def temp_market() -> RawMarket:
         yes_token_id="yes",
         no_token_id="no",
         condition_id="cond1",
+    )
+
+
+def replayable_temp_market() -> RawMarket:
+    return RawMarket(
+        market_id="m1",
+        question="Will NYC reach 90F on May 25?",
+        slug="nyc-90f-may-25",
+        active=True,
+        closed=False,
+        yes_token_id="yes",
+        no_token_id="no",
+        condition_id="cond1",
+        event_slug="nyc-90f-may-25-event",
+        rule_provenance=MarketRuleProvenance(
+            market_id="m1",
+            question="Will NYC reach 90F on May 25?",
+            slug="nyc-90f-may-25",
+            event_slug="nyc-90f-may-25-event",
+            city="nyc",
+            event_date_local="2026-05-25",
+            event_timezone="America/New_York",
+            station_id="KNYC",
+            unit="F",
+            condition_type="upper_threshold",
+            threshold_value=90,
+        ),
     )
 
 
@@ -140,6 +177,54 @@ def test_discovery_uses_polymarket_weather_category_event_slugs():
     markets = CategoryClient().discover_weather_markets()
 
     assert [market.market_id for market in markets] == ["m1", "m2"]
+
+
+def test_discovery_normalizes_gamma_rule_provenance_fields():
+    rule_url = "https://polymarket.com/event/highest-temperature-in-seoul-on-may-25-2026"
+    client = FakePolymarketClient(
+        pages={
+            0: [
+                {
+                    "id": "event-seoul",
+                    "slug": "highest-temperature-in-seoul-on-may-25-2026",
+                    "markets": [
+                        {
+                            "id": "m1",
+                            "slug": "seoul-27c-or-higher",
+                            "question": "Will the highest temperature in Seoul be 27\u00b0C or higher on May 25?",
+                            "description": "Resolves from the highest temperature recorded at the Incheon Intl Airport Station in Celsius.",
+                            "resolutionRules": "This market resolves Yes if the highest temperature in Seoul is 27\u00b0C or higher on May 25 local time.",
+                            "resolutionSource": rule_url,
+                            **binary_token_fields("yes", "no"),
+                        }
+                    ],
+                }
+            ]
+        }
+    )
+
+    markets = client.discover_weather_markets(max_pages=1, page_size=50)
+
+    assert len(markets) == 1
+    provenance = markets[0].rule_provenance
+    assert provenance is not None
+    assert provenance.market_id == "m1"
+    assert provenance.question == markets[0].question
+    assert provenance.slug == "seoul-27c-or-higher"
+    assert provenance.event_slug == "highest-temperature-in-seoul-on-may-25-2026"
+    assert provenance.description.startswith("Resolves from the highest temperature")
+    assert provenance.resolution_source == rule_url
+    assert provenance.resolution_rules_text.startswith("This market resolves Yes")
+    assert provenance.city == "seoul"
+    assert provenance.event_date_local == "2026-05-25"
+    assert provenance.event_timezone == "Asia/Seoul"
+    assert provenance.event_start_utc == "2026-05-24T15:00:00+00:00"
+    assert provenance.event_end_utc == "2026-05-25T15:00:00+00:00"
+    assert provenance.station_id == "RKSI"
+    assert provenance.unit == "C"
+    assert provenance.condition_type == "upper_threshold"
+    assert provenance.threshold_value == 27
+    assert provenance.mismatch_reason == ""
 
 
 def test_category_slug_discovery_excludes_inactive_and_closed_markets():
@@ -424,6 +509,67 @@ def test_discovery_keeps_range_temperature_bucket():
     )
 
 
+def test_pre_forecast_gate_skips_rule_unit_mismatch_before_forecast():
+    client = FakePolymarketClient()
+    market = client._parse_market(
+        {
+            "id": "sg-29c",
+            "slug": "singapore-29c",
+            "question": "Will the highest temperature in Singapore be 29\u00b0C on June 12?",
+            "description": "Resolution text says this market is settled in Fahrenheit at Singapore Changi Airport Station.",
+            "resolutionRules": "This market resolves using Fahrenheit temperature readings.",
+            **binary_token_fields("yes", "no"),
+        }
+    )
+
+    gated = pre_forecast_tradeability_gate(market, Settings(), "temperature")
+
+    assert gated is not None
+    signal, result = gated
+    assert signal.source == "rule-mismatch"
+    assert result.side == "SKIP"
+    assert "SKIP_RULE_MISMATCH" in result.reason
+    assert "unit mismatch" in result.reason
+
+
+def test_pre_forecast_gate_skips_rule_station_mismatch_before_forecast():
+    client = FakePolymarketClient()
+    market = client._parse_market(
+        {
+            "id": "seoul-27c",
+            "slug": "seoul-27c",
+            "question": "Will the highest temperature in Seoul be 27\u00b0C or higher on May 25?",
+            "description": "Resolution text says the market uses station RJTT.",
+            "resolutionRules": "This market resolves from the highest temperature recorded at station RJTT.",
+            **binary_token_fields("yes", "no"),
+        }
+    )
+
+    gated = pre_forecast_tradeability_gate(market, Settings(), "temperature")
+
+    assert gated is not None
+    _signal, result = gated
+    assert result.side == "SKIP"
+    assert "SKIP_RULE_MISMATCH" in result.reason
+    assert "station mismatch" in result.reason
+
+
+def test_pre_forecast_gate_allows_matching_rule_provenance():
+    client = FakePolymarketClient()
+    market = client._parse_market(
+        {
+            "id": "seoul-27c",
+            "slug": "seoul-27c",
+            "question": "Will the highest temperature in Seoul be 27\u00b0C or higher on May 25?",
+            "description": "Resolution text uses the Incheon Intl Airport Station RKSI and Celsius.",
+            "resolutionRules": "This market resolves Yes if the highest temperature in Seoul is 27\u00b0C or higher on May 25.",
+            **binary_token_fields("yes", "no"),
+        }
+    )
+
+    assert pre_forecast_tradeability_gate(market, Settings(), "temperature") is None
+
+
 def test_discovery_rejects_weather_markets_outside_verified_station_set():
     assert not PolymarketClient._is_weather_market(
         {"question": "Will the highest temperature in Austin be 34\u00b0C or higher on May 25?"}
@@ -602,6 +748,38 @@ def test_entry_does_not_use_fixed_price_drop_guard():
     assert "YES edge=" in per_side["YES"].reason
 
 
+def test_entry_size_scales_down_with_lower_signal_confidence():
+    settings = Settings(
+        min_net_edge=0.01,
+        min_order_usd=1.0,
+        weather_taker_fee_rate=0.0,
+        model_error_margin=0.0,
+        resolution_error_margin=0.0,
+        size_mode="fixed_fraction",
+        entry_fraction=0.10,
+        require_date_hint_for_trade=True,
+    )
+    market = temp_market()
+    parsed = parse_weather_question(market.question)
+    client = FakePolymarketClient(
+        books={
+            "yes": book("yes", bid=0.08, ask=0.13, bid_size=1000.0, ask_size=1000.0),
+            "no": book("no", bid=0.86, ask=0.87, bid_size=1000.0, ask_size=1000.0),
+        }
+    )
+    high_signal = WeatherSignal(0.25, 0.95, "forecast-plus-nowcast", "high confidence", parsed)
+    low_signal = WeatherSignal(0.25, 0.55, "forecast-only", "low confidence", parsed)
+
+    high_result, _high_sides = evaluate_market(market, high_signal, client, settings, 1000.0, "temperature")
+    low_result, _low_sides = evaluate_market(market, low_signal, client, settings, 1000.0, "temperature")
+
+    assert high_result.side == "YES"
+    assert low_result.side == "YES"
+    assert low_result.p_true == high_result.p_true
+    assert low_result.size_usd < high_result.size_usd
+    assert "confidence_size_multiplier" in low_result.reason
+
+
 def test_evaluate_market_refuses_undated_signal_even_when_date_hint_requirement_disabled():
     settings = Settings(
         min_net_edge=0.01,
@@ -759,7 +937,34 @@ def test_indicative_best_bid_does_not_rescue_wide_executable_spread():
 
     assert result.side == "SKIP"
     assert per_side["YES"].side == "SKIP"
-    assert "YES liquidity filter: spread too wide 0.40 > 0.20" in per_side["YES"].reason
+    assert "SKIP_WIDE_SPREAD" in per_side["YES"].reason
+    assert "spread_abs=0.4000 > max_abs=0.2000" in per_side["YES"].reason
+
+
+def test_entry_spread_guard_rejects_high_relative_spread():
+    settings = Settings(
+        min_net_edge=0.01,
+        min_order_usd=1.0,
+        max_entry_spread_abs=1.0,
+        max_entry_spread_pct=0.50,
+        weather_taker_fee_rate=0.0,
+        model_error_margin=0.0,
+        resolution_error_margin=0.0,
+        require_date_hint_for_trade=True,
+    )
+    client = FakePolymarketClient(
+        books={
+            "yes": book("yes", bid=0.03, ask=0.08, bid_size=1000.0, ask_size=1000.0),
+            "no": book("no", bid=0.90, ask=0.92, bid_size=1000.0, ask_size=1000.0),
+        }
+    )
+
+    result, per_side = evaluate_market(temp_market(), temp_signal(p_true=0.95), client, settings, 1000.0, "temperature")
+
+    assert result.side == "SKIP"
+    assert per_side["YES"].side == "SKIP"
+    assert "SKIP_WIDE_SPREAD" in per_side["YES"].reason
+    assert "spread_pct=62.50% > max_pct=50.00%" in per_side["YES"].reason
 
 
 def test_unavailable_forecast_signals_do_not_trade():
@@ -878,6 +1083,51 @@ def test_exit_signal_without_executable_bid_logs_triggered_no_liquidity(tmp_path
     assert "exit signal fired but no executable liquidity" in rows[0]["reason"]
     assert "exit_trigger=probability_stop" in rows[0]["reason"]
     assert "probability stop" in rows[0]["reason"]
+
+
+def test_exit_probe_stores_partial_and_half_vwap_metadata(tmp_path):
+    settings = Settings(
+        state_path=str(tmp_path / "state.json"),
+        trades_csv_path=str(tmp_path / "trades.csv"),
+        decisions_csv_path=str(tmp_path / "decisions.csv"),
+        raw_snapshots_path=str(tmp_path / "raw.jsonl"),
+    )
+    broker = PaperBroker(settings)
+    broker.state.positions = [
+        PaperPosition(
+            position_id="p1",
+            market_id="m1",
+            question="Will NYC reach 90 F on May 25?",
+            token_id="yes",
+            side="YES",
+            entry_price=0.50,
+            shares=100.0,
+            cost_usd=50.0,
+            opened_at=datetime.now(timezone.utc).isoformat(),
+            last_mark_price=0.50,
+            metadata={"entry_p_true": 0.80, "probability_stop_threshold": 0.20},
+        )
+    ]
+    client = FakePolymarketClient(
+        books={
+            "yes": OrderBook(
+                "yes",
+                bids=[OrderLevel(0.60, 30.0), OrderLevel(0.55, 30.0)],
+                asks=[],
+            )
+        }
+    )
+
+    messages = maybe_close_positions(broker, client, {"m1": temp_market()}, {})
+
+    assert messages == []
+    position = broker.state.positions[0]
+    assert position.metadata["best_bid"] == pytest.approx(0.60)
+    assert position.metadata["absorbable_shares"] == pytest.approx(60.0)
+    assert position.metadata["can_fully_close"] is False
+    assert position.metadata["full_exit_vwap"] is None
+    assert position.metadata["half_exit_vwap"] == pytest.approx(0.58)
+    assert position.metadata["partial_exit_vwap"] == pytest.approx(0.575)
 
 
 def test_probability_stop_closes_immediately(tmp_path):
@@ -1409,13 +1659,13 @@ def test_held_positions_are_re_evaluated_even_when_not_in_scan_results(tmp_path)
 
 
 @pytest.mark.parametrize(
-    "question",
+    ("question", "observed_high_c"),
     [
-        "Will the highest temperature in Hong Kong be 30C today?",
-        "Will the highest temperature in Hong Kong be 30-31C today?",
+        ("Will the highest temperature in Hong Kong be 30C today?", 30.0),
+        ("Will the highest temperature in Hong Kong be 30-31C today?", 30.4),
     ],
 )
-def test_nowcast_inside_exact_or_range_bucket_flags_no_exit_risk(tmp_path, question):
+def test_nowcast_inside_exact_or_range_bucket_flags_no_exit_risk(tmp_path, question, observed_high_c):
     settings = Settings(
         state_path=str(tmp_path / "state.json"),
         trades_csv_path=str(tmp_path / "trades.csv"),
@@ -1465,7 +1715,7 @@ def test_nowcast_inside_exact_or_range_bucket_flags_no_exit_risk(tmp_path, quest
         source="test+nowcast",
         note="forecast-plus-nowcast",
         parsed=parsed,
-        nowcast={"observed_high_c": 30.4, "observed_high_f": 86.72},
+        nowcast={"observed_high_c": observed_high_c, "observed_high_f": observed_high_c * 9.0 / 5.0 + 32.0},
     )
     latest_edges: dict[tuple[str, str], EdgeResult] = {}
 
@@ -1482,7 +1732,7 @@ def test_nowcast_inside_exact_or_range_bucket_flags_no_exit_risk(tmp_path, quest
     rows = list(csv.DictReader((tmp_path / "trades.csv").open(encoding="utf-8")))
     assert rows[0]["action"] == "CLOSE"
     assert "exit_trigger=nowcast_bucket_lock_risk" in rows[0]["reason"]
-    assert "observed_high_c=30.4" in rows[0]["reason"]
+    assert f"observed_high_c={observed_high_c}" in rows[0]["reason"]
 
 
 def test_nowcast_above_exact_bucket_closes_held_yes_by_probability_stop(tmp_path):
@@ -1534,9 +1784,9 @@ def test_nowcast_above_exact_bucket_closes_held_yes_by_probability_stop(tmp_path
         p_true=0.0,
         confidence=0.95,
         source="test+nowcast",
-        note="forecast-plus-nowcast; observed-high-above-exact-bucket; observed_high_c=29.6",
+        note="forecast-plus-nowcast; observed-high-above-exact-bucket; observed_high_c=29.1",
         parsed=parsed,
-        nowcast={"observed_high_c": 29.6, "observed_high_f": 85.28},
+        nowcast={"observed_high_c": 29.1, "observed_high_f": 84.38},
     )
     latest_edges: dict[tuple[str, str], EdgeResult] = {}
 
@@ -1647,6 +1897,106 @@ def test_run_cycle_skips_undated_market_before_forecast_when_date_hint_requireme
     assert decisions[0].market.market_id == market.market_id
     assert decisions[0].result.side == "SKIP"
     assert "date_hint=None" in decisions[0].result.reason
+
+
+def test_run_cycle_drawdown_blocks_new_entries_but_still_closes_positions(monkeypatch, tmp_path):
+    state_path = tmp_path / "state.json"
+    trades_path = tmp_path / "trades.csv"
+    decisions_path = tmp_path / "decisions.csv"
+    raw_path = tmp_path / "raw.jsonl"
+    portfolio_path = tmp_path / "portfolio.jsonl"
+    held_question = "Will NYC reach 90 F on May 25?"
+    new_market = RawMarket("new", "Will NYC reach 90 F on May 26?", "new", True, False, "new-yes", "new-no")
+    held_market = RawMarket("held", held_question, "held", True, False, "held-yes", "held-no")
+    state_path.write_text(
+        json.dumps(
+            {
+                "cash_usd": 49.0,
+                "realized_pnl_usd": -1.0,
+                "positions": [
+                    {
+                        "position_id": "held-pos",
+                        "market_id": "held",
+                        "question": held_question,
+                        "token_id": "held-yes",
+                        "side": "YES",
+                        "entry_price": 0.50,
+                        "shares": 100.0,
+                        "cost_usd": 50.0,
+                        "opened_at": "2026-06-14T00:02:00+00:00",
+                        "last_mark_price": 0.50,
+                        "metadata": {"entry_p_true": 0.80, "probability_stop_threshold": 0.70},
+                    }
+                ],
+                "stats": {"temperature": {"wins": 0, "losses": 1, "pnl": -1.0}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    trades_path.write_text(
+        "\n".join(
+            [
+                "ts,action,market_id,slug,question,market_type,side,token_id,shares,price,cash_delta_or_pnl,reason",
+                "2026-06-14T00:00:00+00:00,OPEN,loss,loss,Loss,temperature,YES,loss-yes,10,0.5,-5,fixture",
+                "2026-06-14T00:01:00+00:00,CLOSE,loss,loss,Loss,temperature,YES,loss-yes,10,0.4,-1,fixture loss",
+                f"2026-06-14T00:02:00+00:00,OPEN,held,held,{held_question},temperature,YES,held-yes,100,0.5,-50,fixture held",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    settings = Settings(
+        state_path=str(state_path),
+        trades_csv_path=str(trades_path),
+        decisions_csv_path=str(decisions_path),
+        raw_snapshots_path=str(raw_path),
+        portfolio_decisions_jsonl_path=str(portfolio_path),
+        bankroll_usd=100.0,
+        daily_realized_loss_limit_fraction=0.005,
+        min_net_edge=0.01,
+        min_order_usd=1.0,
+        weather_taker_fee_rate=0.0,
+        model_error_margin=0.0,
+        resolution_error_margin=0.0,
+        require_date_hint_for_trade=True,
+    )
+    forecast_calls: list[str] = []
+
+    class FakeClient:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def discover_weather_markets(self, max_pages: int, page_size: int):
+            return [new_market]
+
+        def get_order_book(self, token_id: str) -> OrderBook:
+            if token_id == "new-yes":
+                raise AssertionError("drawdown must block new entry before order-book fetch")
+            return book(token_id, bid=0.80, ask=0.82, bid_size=200.0, ask_size=200.0)
+
+        def get_market(self, market_id: str) -> RawMarket:
+            assert market_id == "held"
+            return held_market
+
+    def fake_estimator(question, **_kwargs):
+        forecast_calls.append(question)
+        if question == new_market.question:
+            raise AssertionError("drawdown must block new entry before forecast estimation")
+        return WeatherSignal(0.20, 0.90, "test", "held exit signal", parse_weather_question(question))
+
+    monkeypatch.setattr("weather_bot.live_paper_runner.PolymarketClient", FakeClient)
+    monkeypatch.setattr("weather_bot.live_paper_runner.estimate_weather_probability", fake_estimator)
+
+    decisions = run_cycle(settings)
+
+    assert new_market.question not in forecast_calls
+    assert decisions[0].market.market_id == "new"
+    assert decisions[0].result.side == "SKIP"
+    assert "DAILY_LOSS_LIMIT_HIT" in decisions[0].result.reason
+    with trades_path.open(newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    assert rows[-1]["action"] == "CLOSE"
+    assert rows[-1]["market_id"] == "held"
 
 
 def test_run_cycle_logs_market_evaluation_exception_as_skip_error(monkeypatch, tmp_path):
@@ -1905,6 +2255,108 @@ def test_raw_snapshot_log_skips_normal_decisions_by_default(tmp_path):
     assert not (tmp_path / "snapshots.jsonl").exists()
 
 
+def test_decision_log_writes_compact_replay_evidence_fields(tmp_path):
+    settings = Settings(
+        state_path=str(tmp_path / "state.json"),
+        trades_csv_path=str(tmp_path / "trades.csv"),
+        decisions_csv_path=str(tmp_path / "decisions.csv"),
+        raw_snapshots_path=str(tmp_path / "snapshots.jsonl"),
+    )
+    broker = PaperBroker(settings)
+    market = replayable_temp_market()
+    signal = WeatherSignal(
+        p_true=0.82,
+        confidence=0.88,
+        source="test+nowcast",
+        note="station evidence",
+        parsed=parse_weather_question(market.question),
+        nowcast={"observed_high_f": 91.0},
+    )
+    result = EdgeResult(
+        side="YES",
+        p_true=0.82,
+        p_exec=0.50,
+        net_edge=0.32,
+        size_usd=10.0,
+        size_shares=20.0,
+        reason=(
+            "YES edge=0.3200, p_exec_vwap=0.5000, expected_net_return=12.34%, "
+            "best_bid=0.4800, best_ask=0.5000, spread_audit=0.0200 [temperature]"
+        ),
+        expected_net_profit_usd=1.23,
+    )
+
+    broker.log_decision(market, result, signal.note, "temperature", signal=signal)
+
+    with (tmp_path / "decisions.csv").open(newline="", encoding="utf-8") as f:
+        row = next(csv.DictReader(f))
+    assert row["token_id"] == "yes"
+    assert row["city"] == "nyc"
+    assert row["event_date_local"] == "2026-05-25"
+    assert row["condition_type"] == "upper_threshold"
+    assert row["station_id"] == "KNYC"
+    assert row["signal_source"] == "test+nowcast"
+    assert row["signal_confidence"] == "0.880000"
+    assert row["entry_vwap"] == "0.500000"
+    assert row["expected_net_return_pct"] == "0.123400"
+    assert row["best_bid"] == "0.480000"
+    assert row["best_ask"] == "0.500000"
+    assert row["spread"] == "0.020000"
+    assert row["reason_code"] == "YES"
+    assert row["model_version"]
+    assert row["config_version"]
+
+
+def test_account_event_writes_compact_raw_snapshot_by_default(tmp_path):
+    settings = Settings(
+        state_path=str(tmp_path / "state.json"),
+        trades_csv_path=str(tmp_path / "trades.csv"),
+        decisions_csv_path=str(tmp_path / "decisions.csv"),
+        raw_snapshots_path=str(tmp_path / "snapshots.jsonl"),
+    )
+    broker = PaperBroker(settings)
+    market = replayable_temp_market()
+    result = EdgeResult(
+        side="YES",
+        p_true=0.82,
+        p_exec=0.50,
+        net_edge=0.32,
+        size_usd=10.0,
+        size_shares=20.0,
+        reason="YES edge=0.3200, p_exec_vwap=0.5000, expected_net_return=12.34%",
+        expected_net_profit_usd=1.23,
+    )
+
+    broker.open_position(
+        market,
+        "yes",
+        result,
+        "temperature",
+        city="nyc",
+        date_hint="May 25",
+        decision_ts="2026-05-25T00:00:00+00:00",
+    )
+
+    with (tmp_path / "trades.csv").open(newline="", encoding="utf-8") as f:
+        trade = next(csv.DictReader(f))
+    assert trade["action"] == "OPEN"
+    assert trade["reason_code"] == "YES"
+    assert trade["entry_vwap"] == "0.500000"
+    assert trade["expected_net_return_pct"] == "0.123400"
+    assert trade["city"] == "nyc"
+    assert trade["event_date_local"] == "2026-05-25"
+    assert trade["condition_type"] == "upper_threshold"
+    assert trade["station_id"] == "KNYC"
+    assert trade["model_version"]
+    assert trade["config_version"]
+
+    snapshot = json.loads((tmp_path / "snapshots.jsonl").read_text(encoding="utf-8").splitlines()[0])
+    assert snapshot["event"] == "OPEN"
+    assert snapshot["payload"]["action"] == "OPEN"
+    assert snapshot["payload"]["reason_code"] == "YES"
+    assert snapshot["payload"]["market"]["event_date_local"] == "2026-05-25"
+
+
 def test_raw_snapshot_log_saves_error_events_by_default(tmp_path):
     settings = Settings(
         state_path=str(tmp_path / "state.json"),
@@ -2039,6 +2491,23 @@ def test_decision_log_writes_header_when_existing_file_is_empty(tmp_path):
         "market_heat_score",
         "reason",
         "note",
+        "token_id",
+        "city",
+        "event_date_local",
+        "condition_type",
+        "market_shape",
+        "station_id",
+        "signal_source",
+        "signal_confidence",
+        "entry_vwap",
+        "expected_net_return_pct",
+        "best_bid",
+        "best_ask",
+        "spread",
+        "orderbook_status",
+        "reason_code",
+        "model_version",
+        "config_version",
     ]
     assert rows[1][1] == "m1"
 

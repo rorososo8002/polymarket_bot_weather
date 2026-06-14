@@ -94,6 +94,11 @@ class EventPortfolioDecision:
                 {
                     "market_id": leg.market.market_id,
                     "side": leg.result.side,
+                    "covered_outcomes": _covered_outcomes(
+                        leg.result.side,
+                        leg.market.market_id,
+                        self.scenario_probabilities,
+                    ),
                     "size_usd": round(leg.result.size_usd, 6),
                     "size_shares": round(leg.result.size_shares, 6),
                     "p_exec": leg.result.p_exec,
@@ -108,6 +113,10 @@ class EventPortfolioDecision:
                 for leg in self.rejected[:rejected_sample_limit]
             ],
             "rejected_reason_counts": dict(sorted(rejected_reason_counts.items())),
+            "scenario_payoff_audit": _scenario_payoff_audit(
+                self.scenario_probabilities,
+                self.scenario_pnl_usd,
+            ),
             "worst_scenario_pnl_usd": round(worst_scenario_pnl_usd, 6),
         }
 
@@ -124,6 +133,15 @@ class _PortfolioPlan:
 class _ScenarioProbabilityAssessment:
     probabilities: dict[str, float]
     fail_closed_reason: str | None = None
+
+
+@dataclass(frozen=True)
+class _DisplayTemperatureSpan:
+    lower: float
+    upper: float
+    lower_inclusive: bool
+    upper_inclusive: bool
+    unit: str
 
 
 _SCENARIO_PROBABILITY_EPSILON = 1e-9
@@ -298,6 +316,41 @@ def _temperature_interval_bounds(question: str) -> TemperatureBucketInterval | N
     return temperature_bucket_interval_bounds_f(parsed)
 
 
+def _temperature_display_value(parsed) -> float | None:
+    if parsed.threshold_unit == "C":
+        return parsed.threshold_original
+    if parsed.threshold_unit == "F":
+        return parsed.threshold_f
+    return None
+
+
+def _temperature_display_span(question: str) -> _DisplayTemperatureSpan | None:
+    parsed = parse_weather_question(question)
+    if parsed.variable != "temperature" or parsed.threshold_unit not in {"C", "F"}:
+        return None
+    if parsed.temperature_bucket == "range":
+        if parsed.temperature_range_lower_original is None or parsed.temperature_range_upper_original is None:
+            return None
+        return _DisplayTemperatureSpan(
+            parsed.temperature_range_lower_original,
+            parsed.temperature_range_upper_original,
+            True,
+            True,
+            parsed.threshold_unit,
+        )
+
+    value = _temperature_display_value(parsed)
+    if value is None:
+        return None
+    if parsed.temperature_bucket == "exact":
+        return _DisplayTemperatureSpan(value, value, True, True, parsed.threshold_unit)
+    if parsed.temperature_bucket == "lower_tail" or parsed.operator == "<=":
+        return _DisplayTemperatureSpan(-inf, value, False, True, parsed.threshold_unit)
+    if parsed.temperature_bucket == "upper_tail" or parsed.operator == ">=":
+        return _DisplayTemperatureSpan(value, inf, True, False, parsed.threshold_unit)
+    return None
+
+
 def _bucket_intervals_do_not_overlap(left: TemperatureBucketInterval, right: TemperatureBucketInterval) -> bool:
     epsilon = 1e-9
     if left.upper_f < right.lower_f - epsilon:
@@ -309,6 +362,37 @@ def _bucket_intervals_do_not_overlap(left: TemperatureBucketInterval, right: Tem
     if abs(right.upper_f - left.lower_f) <= epsilon:
         return not (right.upper_inclusive and left.lower_inclusive)
     return False
+
+
+def _interval_width(interval: TemperatureBucketInterval) -> float:
+    if isinf(interval.lower_f) or isinf(interval.upper_f):
+        return inf
+    return max(0.0, interval.upper_f - interval.lower_f)
+
+
+def _bucket_interval_overlap_ratio(left: TemperatureBucketInterval, right: TemperatureBucketInterval) -> float:
+    if _bucket_intervals_do_not_overlap(left, right):
+        return 0.0
+
+    intersection_lower = max(left.lower_f, right.lower_f)
+    intersection_upper = min(left.upper_f, right.upper_f)
+    if abs(intersection_upper - intersection_lower) <= _SCENARIO_PROBABILITY_EPSILON:
+        return 1.0
+
+    left_width = _interval_width(left)
+    right_width = _interval_width(right)
+    finite_widths = [
+        width
+        for width in (left_width, right_width)
+        if not isinf(width) and width > _SCENARIO_PROBABILITY_EPSILON
+    ]
+    if not finite_widths:
+        return 1.0
+
+    if isinf(intersection_lower) or isinf(intersection_upper):
+        return 1.0
+    intersection_width = max(0.0, intersection_upper - intersection_lower)
+    return min(1.0, intersection_width / min(finite_widths))
 
 
 def _is_complementary(candidate: PortfolioCandidate, selected: list[PortfolioCandidate], held: list[PaperPosition]) -> bool:
@@ -348,6 +432,17 @@ def _bucket_intervals_overlap(intervals: list[TemperatureBucketInterval]) -> boo
     )
 
 
+def _max_bucket_overlap_ratio(intervals: list[TemperatureBucketInterval]) -> float:
+    ordered = sorted(intervals, key=lambda interval: (interval.lower_f, interval.upper_f))
+    return max(
+        (
+            _bucket_interval_overlap_ratio(left, right)
+            for left, right in zip(ordered, ordered[1:])
+        ),
+        default=0.0,
+    )
+
+
 def _bucket_intervals_cover_all_outcomes(intervals: list[TemperatureBucketInterval]) -> bool:
     if not intervals:
         return False
@@ -365,6 +460,36 @@ def _bucket_intervals_cover_all_outcomes(intervals: list[TemperatureBucketInterv
         if abs(left.upper_f - right.lower_f) > _SCENARIO_PROBABILITY_EPSILON:
             return False
         if not (left.upper_inclusive or right.lower_inclusive):
+            return False
+    return True
+
+
+def _display_spans_cover_all_whole_degree_outcomes(candidates: list[PortfolioCandidate]) -> bool:
+    spans = [
+        span
+        for candidate in candidates
+        if (span := _temperature_display_span(candidate.market.question)) is not None
+    ]
+    if len(spans) != len(candidates) or not spans:
+        return False
+    units = {span.unit for span in spans}
+    if len(units) != 1:
+        return False
+
+    ordered = sorted(spans, key=lambda span: (span.lower, span.upper))
+    first = ordered[0]
+    last = ordered[-1]
+    if not (isinf(first.lower) and first.lower < 0):
+        return False
+    if not (isinf(last.upper) and last.upper > 0):
+        return False
+
+    for left, right in zip(ordered, ordered[1:]):
+        if not (left.upper_inclusive and right.lower_inclusive):
+            return False
+        if isinf(left.upper) or isinf(right.lower):
+            return False
+        if abs((right.lower - left.upper) - 1.0) > _SCENARIO_PROBABILITY_EPSILON:
             return False
     return True
 
@@ -390,10 +515,11 @@ def _scenario_probabilities(candidates: list[PortfolioCandidate]) -> _ScenarioPr
         for candidate in unique.values()
         if (interval := _temperature_interval_bounds(candidate.market.question)) is not None
     ]
-    if _bucket_intervals_overlap(bucket_intervals):
+    overlap_ratio = _max_bucket_overlap_ratio(bucket_intervals)
+    if overlap_ratio > 0:
         return _ScenarioProbabilityAssessment(
             rounded_probabilities,
-            "scenario probabilities overlap",
+            f"scenario probabilities overlap (overlap_ratio={overlap_ratio:.3f})",
         )
 
     if total <= 0:
@@ -402,7 +528,7 @@ def _scenario_probabilities(candidates: list[PortfolioCandidate]) -> _ScenarioPr
     exhaustive = (
         len(bucket_intervals) == len(unique)
         and _bucket_intervals_cover_all_outcomes(bucket_intervals)
-    )
+    ) or _display_spans_cover_all_whole_degree_outcomes(list(unique.values()))
     if exhaustive:
         return _ScenarioProbabilityAssessment(
             {
@@ -427,6 +553,28 @@ def _leg_wins(side: str, market_id: str, outcome: str) -> bool:
     if side == "YES":
         return outcome == market_id
     return side == "NO" and outcome != market_id
+
+
+def _covered_outcomes(side: str, market_id: str, probabilities: dict[str, float]) -> list[str]:
+    return [
+        outcome
+        for outcome in sorted(probabilities)
+        if _leg_wins(side, market_id, outcome)
+    ]
+
+
+def _scenario_payoff_audit(
+    probabilities: dict[str, float],
+    scenario_pnl_usd: dict[str, float],
+) -> list[dict[str, float | str]]:
+    return [
+        {
+            "outcome": outcome,
+            "probability": round(probability, 12),
+            "pnl_usd": round(scenario_pnl_usd.get(outcome, 0.0), 6),
+        }
+        for outcome, probability in sorted(probabilities.items())
+    ]
 
 
 def _scenario_pnl(

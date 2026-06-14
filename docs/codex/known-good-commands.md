@@ -26,6 +26,10 @@ project. This avoids Windows user-temp permission errors and prevents local test
 trash from accumulating. A caller can still pass `--basetemp` explicitly when
 needed.
 
+Run local pytest commands serially in this workspace. Multiple pytest processes
+share `.pytest-tmp/current` by default and can race with `FileExistsError` or
+`WinError 145` unless each process uses a distinct `--basetemp`.
+
 ## Local Python Check
 
 Use this when Python behavior looks suspicious or pytest prints no normal

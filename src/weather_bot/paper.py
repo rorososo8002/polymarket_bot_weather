@@ -4,6 +4,7 @@ import csv
 import gzip
 import json
 import os
+import re
 import shutil
 import time
 from copy import deepcopy
@@ -64,6 +65,7 @@ class SettlementRunnerDecision:
 
 
 PROFIT_RUNNER_TRIGGERS = {"take_profit", "overheated_take_profit"}
+PAPER_MODEL_VERSION = "weather-paper-v1"
 
 TRADE_CSV_FIELDNAMES = [
     "ts",
@@ -82,6 +84,17 @@ TRADE_CSV_FIELDNAMES = [
     "entry_side_probability",
     "entry_net_edge",
     "decision_ts",
+    "reason_code",
+    "entry_vwap",
+    "expected_net_return_pct",
+    "city",
+    "event_date_local",
+    "condition_type",
+    "station_id",
+    "signal_source",
+    "signal_confidence",
+    "model_version",
+    "config_version",
 ]
 
 ACCOUNTING_TRADE_ACTIONS = {"OPEN", "ADD", "CLOSE", "PARTIAL_CLOSE", "SETTLED"}
@@ -107,6 +120,23 @@ DECISION_CSV_FIELDNAMES = [
     "market_heat_score",
     "reason",
     "note",
+    "token_id",
+    "city",
+    "event_date_local",
+    "condition_type",
+    "market_shape",
+    "station_id",
+    "signal_source",
+    "signal_confidence",
+    "entry_vwap",
+    "expected_net_return_pct",
+    "best_bid",
+    "best_ask",
+    "spread",
+    "orderbook_status",
+    "reason_code",
+    "model_version",
+    "config_version",
 ]
 
 DECISION_QUESTION_MAX_CHARS = 240
@@ -187,6 +217,114 @@ def _format_optional_csv_float(value: Any) -> str:
     return f"{number:.6f}"
 
 
+def _format_optional_text(value: Any) -> str:
+    return "" if value in (None, "") else str(value)
+
+
+def _config_version(settings: Settings) -> str:
+    return (
+        f"min_edge={settings.min_net_edge:.4f};"
+        f"min_return={settings.entry_min_expected_net_return_pct:.4f};"
+        f"fee={settings.weather_taker_fee_rate:.4f};"
+        f"spread_abs={settings.max_entry_spread_abs:.4f};"
+        f"spread_pct={settings.max_entry_spread_pct:.4f};"
+        f"size={settings.size_mode};"
+        f"kelly={settings.fractional_kelly:.4f};"
+        f"max_single={settings.max_single_market_fraction:.4f};"
+        f"max_total={settings.max_total_exposure_fraction:.4f}"
+    )
+
+
+def _reason_code(reason: str, fallback: str = "") -> str:
+    head = (reason or "").strip().split(":", 1)[0].strip()
+    token = re.split(r"[\s,;]+", head)[0].strip() if head else ""
+    if token.startswith(("SKIP_", "HOLD_")) or token in {
+        "YES",
+        "NO",
+        "OPEN",
+        "ADD",
+        "CLOSE",
+        "PARTIAL_CLOSE",
+        "SETTLED",
+        "SKIP_ERROR",
+    }:
+        return token
+    return fallback
+
+
+def _reason_float(reason: str, name: str, *, percent: bool = False) -> float | None:
+    suffix = r"%?" if percent else ""
+    match = re.search(rf"\b{re.escape(name)}=([-+]?\d+(?:\.\d+)?)" + suffix, reason or "")
+    if not match:
+        return None
+    try:
+        value = float(match.group(1))
+    except ValueError:
+        return None
+    return value / 100.0 if percent else value
+
+
+def _market_replay_metadata(market: RawMarket, *, city: str = "", date_hint: str = "") -> dict[str, str]:
+    provenance = market.rule_provenance
+    condition_type = provenance.condition_type if provenance is not None else ""
+    event_date_local = provenance.event_date_local if provenance is not None else ""
+    station_id = provenance.station_id if provenance is not None else ""
+    return {
+        "city": (provenance.city if provenance is not None and provenance.city else city) or "",
+        "event_date_local": event_date_local or date_hint or "",
+        "condition_type": condition_type or "",
+        "market_shape": condition_type or "",
+        "station_id": station_id or "",
+        "event_slug": market.event_slug or (provenance.event_slug if provenance is not None else "") or "",
+    }
+
+
+def _signal_replay_metadata(signal: Any | None) -> dict[str, str]:
+    if signal is None:
+        return {"signal_source": "", "signal_confidence": ""}
+    return {
+        "signal_source": str(getattr(signal, "source", "") or ""),
+        "signal_confidence": _format_optional_csv_float(getattr(signal, "confidence", "")),
+    }
+
+
+def _result_replay_metadata(result: EdgeResult) -> dict[str, str]:
+    expected_return = _reason_float(result.reason, "expected_net_return", percent=True)
+    best_bid = _reason_float(result.reason, "best_bid")
+    best_ask = _reason_float(result.reason, "best_ask")
+    spread = _reason_float(result.reason, "spread_audit")
+    return {
+        "reason_code": _reason_code(result.reason, result.side),
+        "entry_vwap": _format_optional_csv_float(result.p_exec),
+        "expected_net_return_pct": _format_optional_csv_float(expected_return),
+        "best_bid": _format_optional_csv_float(best_bid),
+        "best_ask": _format_optional_csv_float(best_ask),
+        "spread": _format_optional_csv_float(spread),
+        "orderbook_status": "executable" if result.side in {"YES", "NO"} and result.p_exec is not None else result.side.lower(),
+    }
+
+
+def _position_replay_metadata(pos: PaperPosition) -> dict[str, Any]:
+    metadata = pos.metadata
+    return {
+        "entry_p_true": metadata.get("entry_p_true"),
+        "entry_side_probability": metadata.get("entry_side_probability"),
+        "entry_net_edge": metadata.get("entry_edge"),
+        "decision_ts": metadata.get("decision_ts"),
+        "entry_vwap": metadata.get("entry_vwap") or pos.entry_price,
+        "expected_net_return_pct": metadata.get("expected_net_return_pct"),
+        "city": metadata.get("city"),
+        "date_hint": metadata.get("date_hint"),
+        "event_date_local": metadata.get("event_date_local"),
+        "condition_type": metadata.get("condition_type"),
+        "station_id": metadata.get("station_id"),
+        "signal_source": metadata.get("signal_source"),
+        "signal_confidence": metadata.get("signal_confidence"),
+        "model_version": metadata.get("model_version"),
+        "config_version": metadata.get("config_version"),
+    }
+
+
 def _compact_text(value: Any, max_chars: int) -> str:
     text = " ".join(str(value or "").split())
     if len(text) <= max_chars:
@@ -207,6 +345,8 @@ def _raw_snapshot_event_is_error(event: str, payload: dict[str, Any]) -> bool:
 
 
 def _should_write_raw_snapshot(mode: str, event: str, payload: dict[str, Any]) -> bool:
+    if _trade_action(event) in ACCOUNTING_TRADE_ACTIONS:
+        return True
     if mode == "debug":
         return True
     if mode == "error":
@@ -878,6 +1018,7 @@ class PaperBroker:
         entry_bankroll_usd: float | None = None,
         decision_ts: str = "",
         allow_same_side_add: bool = False,
+        signal: Any | None = None,
     ) -> PaperPosition | None:
         if result.side not in {"YES", "NO"} or result.p_exec is None or result.size_usd <= 0:
             return None
@@ -952,6 +1093,16 @@ class PaperBroker:
         entry_plan = build_entry_plan(adjusted_result, risk_bankroll, self.settings)
         opened_at = utc_now_iso()
         entry_side_probability = side_true_probability(result.side, result.p_true)
+        market_replay = _market_replay_metadata(market, city=city, date_hint=date_hint)
+        signal_replay = _signal_replay_metadata(signal)
+        result_replay = _result_replay_metadata(result)
+        replay_metadata = {
+            **market_replay,
+            **signal_replay,
+            **result_replay,
+            "model_version": PAPER_MODEL_VERSION,
+            "config_version": _config_version(self.settings),
+        }
         if add_position is not None:
             add_reason = f"{entry_plan.rationale}; add_to_position={add_position.position_id}; entry_fee=${entry_fee_usdc:.5f}"
 
@@ -998,6 +1149,7 @@ class PaperBroker:
                 metadata["market_type"] = market_type
                 metadata["city"] = city
                 metadata["date_hint"] = date_hint
+                metadata.update({key: value for key, value in replay_metadata.items() if value != ""})
                 self.state.cash_usd -= spend
                 return add_position
 
@@ -1017,6 +1169,7 @@ class PaperBroker:
                         "entry_side_probability": entry_side_probability,
                         "entry_net_edge": result.net_edge,
                         "decision_ts": decision_ts,
+                        **replay_metadata,
                     },
                 )
 
@@ -1059,6 +1212,7 @@ class PaperBroker:
                 "market_type": market_type,
                 "city": city,           # Tracks city-level exposure caps.
                 "date_hint": date_hint, # Tracks city-date exposure caps.
+                **{key: value for key, value in replay_metadata.items() if value != ""},
             },
         )
         open_reason = f"{entry_plan.rationale}; entry_fee=${entry_fee_usdc:.5f}"
@@ -1084,6 +1238,7 @@ class PaperBroker:
                     "entry_side_probability": entry_side_probability,
                     "entry_net_edge": result.net_edge,
                     "decision_ts": decision_ts,
+                    **replay_metadata,
                 },
             )
 
@@ -1117,7 +1272,18 @@ class PaperBroker:
             return pnl
 
         def log_close_position() -> None:
-            self.log_trade("CLOSE", dummy, pos.side, pos.token_id, pos.shares, exit_price, pnl, close_reason, market_type)
+            self.log_trade(
+                "CLOSE",
+                dummy,
+                pos.side,
+                pos.token_id,
+                pos.shares,
+                exit_price,
+                pnl,
+                close_reason,
+                market_type,
+                entry_metadata=_position_replay_metadata(pos),
+            )
 
         return self._run_accounting_transaction(
             "CLOSE",
@@ -1177,7 +1343,18 @@ class PaperBroker:
             return pnl
 
         def log_partial_close_position() -> None:
-            self.log_trade("PARTIAL_CLOSE", dummy, pos.side, pos.token_id, shares_to_close, exit_price, pnl, close_reason, market_type)
+            self.log_trade(
+                "PARTIAL_CLOSE",
+                dummy,
+                pos.side,
+                pos.token_id,
+                shares_to_close,
+                exit_price,
+                pnl,
+                close_reason,
+                market_type,
+                entry_metadata=_position_replay_metadata(pos),
+            )
 
         return self._run_accounting_transaction(
             "PARTIAL_CLOSE",
@@ -1186,7 +1363,15 @@ class PaperBroker:
             write_trade=log_partial_close_position,
         )
 
-    def log_decision(self, market: RawMarket, result: EdgeResult, note: str, market_type: str = "temperature") -> str:
+    def log_decision(
+        self,
+        market: RawMarket,
+        result: EdgeResult,
+        note: str,
+        market_type: str = "temperature",
+        *,
+        signal: Any | None = None,
+    ) -> str:
         # Suppress SKIP rows by default — they are 95%+ of all writes and carry
         # no analytical value.  Set DECISIONS_LOG_SKIP_ENABLED=true only for
         # short debugging sessions.
@@ -1194,10 +1379,20 @@ class PaperBroker:
             return utc_now_iso()
         exists = self.decisions_csv_path.exists() and self.decisions_csv_path.stat().st_size > 0
         ts = utc_now_iso()
+        fieldnames = _ensure_csv_columns(self.decisions_csv_path, DECISION_CSV_FIELDNAMES)
+        market_replay = _market_replay_metadata(market)
+        signal_replay = _signal_replay_metadata(signal)
+        result_replay = _result_replay_metadata(result)
+        token_id = ""
+        if result.side == "YES":
+            token_id = market.yes_token_id or ""
+        elif result.side == "NO":
+            token_id = market.no_token_id or ""
         with self.decisions_csv_path.open("a", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(
                 f,
-                fieldnames=DECISION_CSV_FIELDNAMES,
+                fieldnames=fieldnames,
+                extrasaction="ignore",
             )
             if not exists:
                 writer.writeheader()
@@ -1229,6 +1424,23 @@ class PaperBroker:
                 "market_heat_score": heat_score,
                 "reason": _compact_text(result.reason, DECISION_REASON_MAX_CHARS),
                 "note": _compact_text(note, DECISION_NOTE_MAX_CHARS),
+                "token_id": token_id,
+                "city": market_replay["city"],
+                "event_date_local": market_replay["event_date_local"],
+                "condition_type": market_replay["condition_type"],
+                "market_shape": market_replay["market_shape"],
+                "station_id": market_replay["station_id"],
+                "signal_source": signal_replay["signal_source"],
+                "signal_confidence": signal_replay["signal_confidence"],
+                "entry_vwap": result_replay["entry_vwap"],
+                "expected_net_return_pct": result_replay["expected_net_return_pct"],
+                "best_bid": result_replay["best_bid"],
+                "best_ask": result_replay["best_ask"],
+                "spread": result_replay["spread"],
+                "orderbook_status": result_replay["orderbook_status"],
+                "reason_code": result_replay["reason_code"],
+                "model_version": PAPER_MODEL_VERSION,
+                "config_version": _config_version(self.settings),
             })
         return ts
 
@@ -1249,6 +1461,38 @@ class PaperBroker:
         exists = self.trades_csv_path.exists() and self.trades_csv_path.stat().st_size > 0
         fieldnames = _ensure_csv_columns(self.trades_csv_path, TRADE_CSV_FIELDNAMES)
         entry_metadata = entry_metadata or {}
+        market_replay = _market_replay_metadata(
+            market,
+            city=_format_optional_text(entry_metadata.get("city")),
+            date_hint=_format_optional_text(entry_metadata.get("date_hint")),
+        )
+        signal_replay = {
+            "signal_source": _format_optional_text(entry_metadata.get("signal_source")),
+            "signal_confidence": _format_optional_csv_float(entry_metadata.get("signal_confidence")),
+        }
+        reason_code = _format_optional_text(entry_metadata.get("reason_code")) or _reason_code(
+            reason,
+            side if action in {"OPEN", "ADD"} and side in {"YES", "NO"} else action,
+        )
+        entry_vwap = entry_metadata.get("entry_vwap")
+        if entry_vwap in (None, "") and action in {"OPEN", "ADD"}:
+            entry_vwap = price
+        expected_return = entry_metadata.get("expected_net_return_pct")
+        if expected_return in (None, ""):
+            expected_return = _reason_float(reason, "expected_net_return", percent=True)
+        replay_metadata = {
+            "reason_code": reason_code,
+            "entry_vwap": _format_optional_csv_float(entry_vwap),
+            "expected_net_return_pct": _format_optional_csv_float(expected_return),
+            "city": _format_optional_text(entry_metadata.get("city")) or market_replay["city"],
+            "event_date_local": _format_optional_text(entry_metadata.get("event_date_local")) or market_replay["event_date_local"],
+            "condition_type": _format_optional_text(entry_metadata.get("condition_type")) or market_replay["condition_type"],
+            "station_id": _format_optional_text(entry_metadata.get("station_id")) or market_replay["station_id"],
+            "signal_source": signal_replay["signal_source"],
+            "signal_confidence": signal_replay["signal_confidence"],
+            "model_version": _format_optional_text(entry_metadata.get("model_version")) or PAPER_MODEL_VERSION,
+            "config_version": _format_optional_text(entry_metadata.get("config_version")) or _config_version(self.settings),
+        }
         with self.trades_csv_path.open("a", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(
                 f,
@@ -1274,7 +1518,73 @@ class PaperBroker:
                 "entry_side_probability": _format_optional_csv_float(entry_metadata.get("entry_side_probability")),
                 "entry_net_edge": _format_optional_csv_float(entry_metadata.get("entry_net_edge")),
                 "decision_ts": str(entry_metadata.get("decision_ts") or ""),
+                "reason_code": replay_metadata["reason_code"],
+                "entry_vwap": replay_metadata["entry_vwap"],
+                "expected_net_return_pct": replay_metadata["expected_net_return_pct"],
+                "city": replay_metadata["city"],
+                "event_date_local": replay_metadata["event_date_local"],
+                "condition_type": replay_metadata["condition_type"],
+                "station_id": replay_metadata["station_id"],
+                "signal_source": replay_metadata["signal_source"],
+                "signal_confidence": replay_metadata["signal_confidence"],
+                "model_version": replay_metadata["model_version"],
+                "config_version": replay_metadata["config_version"],
             })
+        self._log_account_event_snapshot(
+            action,
+            market,
+            side,
+            token_id,
+            shares,
+            price,
+            cash_delta_or_pnl,
+            reason,
+            market_type,
+            replay_metadata,
+        )
+
+    def _log_account_event_snapshot(
+        self,
+        action: str,
+        market: RawMarket,
+        side: str,
+        token_id: str,
+        shares: float,
+        price: float,
+        cash_delta_or_pnl: float,
+        reason: str,
+        market_type: str,
+        replay_metadata: dict[str, str],
+    ) -> None:
+        if _trade_action(action) not in ACCOUNTING_TRADE_ACTIONS:
+            return
+        payload = {
+            "action": action,
+            "market_type": market_type,
+            "side": side,
+            "token_id": token_id,
+            "shares": round(shares, 6),
+            "price": round(price, 6),
+            "cash_delta_or_pnl": round(cash_delta_or_pnl, 6),
+            "reason": reason,
+            "reason_code": replay_metadata.get("reason_code", ""),
+            "market": {
+                "market_id": market.market_id,
+                "slug": market.slug or "",
+                "event_slug": market.event_slug or "",
+                "city": replay_metadata.get("city", ""),
+                "event_date_local": replay_metadata.get("event_date_local", ""),
+                "condition_type": replay_metadata.get("condition_type", ""),
+                "station_id": replay_metadata.get("station_id", ""),
+            },
+            "replay": replay_metadata,
+        }
+        try:
+            self.log_raw_snapshot(action, market, payload)
+        except Exception:  # noqa: BLE001
+            # Raw evidence is useful, but it must never turn a completed
+            # accounting write into a half-failed ledger transaction.
+            return
 
     def log_raw_snapshot(self, event: str, market: RawMarket, payload: dict[str, Any]) -> None:
         if not _should_write_raw_snapshot(self.settings.raw_snapshots_mode, event, payload):
@@ -1652,6 +1962,9 @@ def maybe_close_positions(
                 pos.metadata["no_liquidity_cycles"] = no_liq
                 pos.metadata["absorbable_shares"] = 0.0
                 pos.metadata["can_fully_close"] = False
+                pos.metadata["full_exit_vwap"] = None
+                pos.metadata["half_exit_vwap"] = None
+                pos.metadata["partial_exit_vwap"] = None
                 edge = latest_edges.get((pos.market_id, pos.side))
                 assessment = _exit_assessment_for_position(pos, mark, edge, broker.settings, now)
                 blocker = "no executable bid depth; indicative best_bid_ask ignored"
@@ -1678,8 +1991,10 @@ def maybe_close_positions(
 
             # Step 1: measure executable absorbable size.
             vwap_exit, exit_slippage = executable_sell_price(book, pos.shares)
+            half_exit_vwap, _half_exit_slippage = executable_sell_price(book, pos.shares * 0.5)
             absorbable = max_absorbable_shares(book.bids, min_price=0.01)
             can_fully_close = vwap_exit is not None
+            partial_exit_vwap: float | None = None
 
             if can_fully_close:
                 # Full close is executable, so VWAP becomes the mark.
@@ -1688,6 +2003,7 @@ def maybe_close_positions(
                 # Partial close is executable, so recalculate VWAP for that size.
                 partial_vwap, partial_slip = executable_sell_price(book, absorbable)
                 if partial_vwap is not None:
+                    partial_exit_vwap = partial_vwap
                     mark = partial_vwap
                     exit_slippage = partial_slip
                 else:
@@ -1707,6 +2023,9 @@ def maybe_close_positions(
             pos.metadata["best_bid"] = round(best_bid, 6)
             pos.metadata["absorbable_shares"] = round(absorbable, 4)
             pos.metadata["can_fully_close"] = can_fully_close
+            pos.metadata["full_exit_vwap"] = round(vwap_exit, 6) if vwap_exit is not None else None
+            pos.metadata["half_exit_vwap"] = round(half_exit_vwap, 6) if half_exit_vwap is not None else None
+            pos.metadata["partial_exit_vwap"] = round(partial_exit_vwap, 6) if partial_exit_vwap is not None else None
 
             # Step 3: evaluate exit conditions.
             edge = latest_edges.get((pos.market_id, pos.side))

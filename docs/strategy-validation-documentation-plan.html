@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Strategy Validation Documentation Plan</title>
+  <style>
+    :root {
+      --ink: #1f2937;
+      --muted: #667085;
+      --line: #d0d5dd;
+      --panel: #f8fafc;
+      --accent: #0f766e;
+      --danger: #991b1b;
+      --warn: #92400e;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", "Malgun Gothic", Arial, sans-serif;
+      color: var(--ink);
+      background: #fff;
+      line-height: 1.65;
+    }
+    main { max-width: 1040px; margin: 0 auto; padding: 40px 24px 72px; }
+    h1 { margin: 0 0 12px; font-size: clamp(28px, 5vw, 44px); line-height: 1.15; letter-spacing: 0; }
+    h2 { margin: 34px 0 12px; font-size: 24px; letter-spacing: 0; }
+    h3 { margin: 18px 0 8px; font-size: 18px; letter-spacing: 0; }
+    p { margin: 0 0 12px; }
+    ul, ol { margin: 8px 0 18px 24px; padding: 0; }
+    li { margin: 7px 0; }
+    code { font-family: Consolas, "Cascadia Mono", monospace; background: #eef2f6; padding: 1px 5px; border-radius: 4px; }
+    pre { overflow-x: auto; background: #101828; color: #f9fafb; padding: 16px; border-radius: 8px; line-height: 1.5; white-space: pre-wrap; }
+    pre code { background: transparent; padding: 0; color: inherit; }
+    header { border-bottom: 1px solid var(--line); padding-bottom: 24px; margin-bottom: 28px; }
+    .meta { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+    .badge { border: 1px solid var(--line); border-radius: 999px; padding: 5px 10px; color: var(--muted); font-size: 13px; }
+    .callout { border-left: 4px solid var(--accent); background: var(--panel); padding: 14px 16px; margin: 18px 0; }
+    .danger { border-left-color: var(--danger); }
+    .warn { border-left-color: var(--warn); }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
+    .card { border: 1px solid var(--line); border-radius: 8px; padding: 14px; background: #fff; }
+    .card h3 { margin-top: 0; }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>Strategy Validation Documentation Plan</h1>
+      <p>새 AI가 폴리마켓 온도 봇을 넘겨받아도 같은 철학으로 개발하게 만드는 문서 정리 기획서다.</p>
+      <div class="meta">
+        <span class="badge">Status: ready for explicit use</span>
+        <span class="badge">Created: 2026-06-14 Asia/Seoul</span>
+        <span class="badge">Paper-only strategy validation</span>
+      </div>
+    </header>
+
+    <section class="callout danger">
+      <p><strong>대전제:</strong> 지금은 실거래 개발 단계가 아니다. 종이계좌 수익률이 실제 호가, 수수료, 정산 관측소, 데이터 지연을 반영한 믿을 만한 증거인지 확인하는 단계다.</p>
+    </section>
+
+    <section>
+      <h2>이미 보호된 기반</h2>
+      <div class="grid">
+        <div class="card"><h3>온도 마켓만</h3><p>비, 눈, 습도, 바람은 fail closed. trading-ready 도시만 실행한다.</p></div>
+        <div class="card"><h3>실시간 호가</h3><p>WebSocket을 메인으로 쓰고 REST는 bounded verification으로만 쓴다.</p></div>
+        <div class="card"><h3>실제 체결가</h3><p>진입은 ask-side VWAP, 청산은 bid-side VWAP를 쓴다.</p></div>
+        <div class="card"><h3>가짜 청산 금지</h3><p>bid depth가 없으면 <code>HOLD_NO_LIQUIDITY</code>지 <code>CLOSE</code>가 아니다.</p></div>
+        <div class="card"><h3>온도 경계</h3><p>exact는 표시값 그대로, range는 표시된 양끝값 그대로다.</p></div>
+        <div class="card"><h3>장부 보호</h3><p><code>paper_state.json</code>과 <code>paper_trades.csv</code>는 서로 맞아야 한다.</p></div>
+      </div>
+    </section>
+
+    <section>
+      <h2>조언 채택 판정</h2>
+      <div class="grid">
+        <div class="card">
+          <h3>지금 채택</h3>
+          <p>마켓 규칙 원문, station-local date, station grade, 정밀 비교, 최종 진입 검사, replayable evidence, report/dashboard 품질 지표.</p>
+        </div>
+        <div class="card">
+          <h3>나중 채택</h3>
+          <p>도시별 calibration, Brier/LogLoss dashboard, region optimizer, large simulator, dynamic nowcast TTL.</p>
+        </div>
+        <div class="card">
+          <h3>거절</h3>
+          <p>live key, midpoint PnL, 정산 근거 없는 도시 확장, retry bombing, exact half-step 복귀.</p>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>문서 역할</h2>
+      <ul>
+        <li><code>AGENTS.md</code>: 헌법. 안정 규칙과 연구 태도만 둔다.</li>
+        <li><code>docs/production-decisions.md</code>: 현행 법전. 지금 운영과 변경에 영향을 주는 규칙만 둔다.</li>
+        <li><code>docs/production-implementation-plan.md</code>: 설계 지도. 코드 구조와 계약을 설명한다.</li>
+        <li><code>docs/strategy-validation-roadmap.md</code>: 교과 과정. 전체 방향을 보여주되 활성 backlog가 아니다.</li>
+        <li><code>docs/active/current-task.md</code>: 오늘의 숙제 카드. 진짜 미완료 작업이 있을 때만 active다.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>다음 AI 작업 순서</h2>
+      <ol>
+        <li>Market rule provenance and mismatch gate</li>
+        <li>Station metadata quality grades</li>
+        <li>Local event date windows</li>
+        <li>Temperature comparison precision hardening</li>
+        <li>Final pre-trade check and configurable spread guard</li>
+        <li>Replayable decision and evidence snapshots</li>
+        <li>Minimum performance report upgrade</li>
+        <li>Dashboard exit liquidity view</li>
+        <li>Confidence score and forecast freshness penalty</li>
+        <li>Drawdown circuit breaker</li>
+        <li>Portfolio payoff table and hidden overlap</li>
+        <li>Paper-validation runbook and live readiness gates</li>
+      </ol>
+    </section>
+
+    <section class="callout warn">
+      <p><strong>정리 규칙:</strong> 완료된 작업은 <code>current-task.md</code>나 one-shot prompt에 남기지 않는다. 증거는 테스트, 커밋, 최종 응답, 또는 <code>docs/solutions/</code>에 둔다.</p>
+    </section>
+
+    <section>
+      <h2>복사 프롬프트</h2>
+      <pre><code>AGENTS.md를 따라 진행해. 먼저 docs/active/current-task.md와 docs/production-decisions.md를 읽어. 이번에는 docs/strategy-validation-documentation-plan.md와 docs/plans/2026-06-14-001-strategy-validation-gap-closure-plan.md를 실행 기준으로 삼아 첫 미완료 작업부터 진행해. 첨부 조언을 무조건 베끼지 말고, 코드와 테스트를 확인해서 이미 보호된 것, 지금 채택할 것, 나중에 할 것, 버릴 것을 구분해. 현재 단계는 paper-only strategy validation이다. 실거래, 지갑, 개인키, 실주문, 상환, 카피트레이딩, LiveBroker는 금지다.</code></pre>
+    </section>
+  </main>
+</body>
+</html>

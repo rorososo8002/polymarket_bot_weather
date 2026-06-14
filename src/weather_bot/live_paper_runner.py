@@ -19,6 +19,7 @@ from .edge import (
     yes_net_edge,
 )
 from .exit_policy import conservative_settlement_value, model_fair_price, target_exit_price
+from .market_rules import market_rule_mismatch_reason
 from .models import EdgeResult, MarketDecision, OrderBook, PaperPosition, RawMarket, WeatherSignal
 from .nowcast import AviationWeatherMetarNowcastProvider
 from .paper import PaperBroker, maybe_close_positions, maybe_settle_resolved_positions
@@ -33,7 +34,7 @@ from .portfolio import (
 )
 from .probability import OpenMeteoEnsembleClient, estimate_weather_probability
 from .realtime_orderbook import OrderBookMarketStream
-from .risk import fractional_kelly_binary
+from .risk import confidence_size_multiplier, drawdown_entry_block_reason, fractional_kelly_binary
 from .runner_status import read_runner_status, update_runner_status_fields, utc_now_iso, write_runner_status
 from .stations import TRADING_READY_STATION_MAP
 from .weather_client import parse_weather_question, temperature_bucket_interval_bounds_f
@@ -471,7 +472,7 @@ def _record_market_evaluation_error(
         "error_type": exc.__class__.__name__,
         "message": error_message,
     }
-    broker.log_decision(market, result, signal.note, market_type)
+    broker.log_decision(market, result, signal.note, market_type, signal=signal)
     broker.log_raw_snapshot(
         "market_evaluation_error",
         market,
@@ -815,6 +816,8 @@ def position_size_usd(
     entry_fraction_override: float | None = None,
     net_edge: float = 0.0,
     min_edge: float | None = None,
+    confidence: float = 1.0,
+    min_confidence: float = 0.50,
 ) -> float:
     """Return target paper order size in USD."""
     if settings.size_mode.lower() == "kelly":
@@ -830,6 +833,12 @@ def position_size_usd(
         edge_floor = min_edge if min_edge is not None else settings.min_net_edge
         edge_scale = 0.5 if (net_edge > 0 and net_edge < edge_floor * 2.0) else 1.0
         frac = min(base * edge_scale, settings.max_single_market_fraction)
+    confidence_multiplier = confidence_size_multiplier(
+        confidence,
+        min_confidence=min_confidence,
+        floor=settings.confidence_size_floor,
+    )
+    frac *= confidence_multiplier
     return bankroll_usd * max(0.0, frac)
 
 
@@ -841,18 +850,48 @@ def _bid_notional(book: OrderBook, min_price: float = 0.01) -> float:
     return sum(level.price * level.size for level in book.bids if level.price >= min_price)
 
 
-def _side_liquidity_reason(side: str, book: OrderBook, market_type: str) -> str | None:
+def _skip_entry_result(result: EdgeResult, reason: str, p_exec: float | None = None, net_edge: float | None = None) -> EdgeResult:
+    return EdgeResult(
+        "SKIP",
+        result.p_true,
+        result.p_exec if p_exec is None else p_exec,
+        result.net_edge if net_edge is None else net_edge,
+        0.0,
+        0.0,
+        reason,
+    )
+
+
+def _spread_guard_reason(side: str, ask: float, bid: float, settings: Settings, market_type: str) -> str | None:
+    spread_abs = max(0.0, ask - bid)
+    if spread_abs > settings.max_entry_spread_abs + 1e-12:
+        return (
+            f"SKIP_WIDE_SPREAD: {side} liquidity filter: "
+            f"spread_abs={spread_abs:.4f} > max_abs={settings.max_entry_spread_abs:.4f} "
+            f"[{market_type}]"
+        )
+    spread_pct = spread_abs / ask if ask > 0 else math.inf
+    if spread_pct > settings.max_entry_spread_pct + 1e-12:
+        return (
+            f"SKIP_WIDE_SPREAD: {side} liquidity filter: "
+            f"spread_pct={spread_pct:.2%} > max_pct={settings.max_entry_spread_pct:.2%}; "
+            f"spread_abs={spread_abs:.4f}, ask={ask:.4f} [{market_type}]"
+        )
+    return None
+
+
+def _side_liquidity_reason(side: str, book: OrderBook, settings: Settings, market_type: str) -> str | None:
     ask = book.best_ask
     bid = book.best_bid
     if ask is None:
         return f"{side} liquidity filter: no ask [{market_type}]"
     if bid is None:
         return f"{side} liquidity filter: no bid [{market_type}]"
-    spread = ask - bid
-    if spread > 0.20:
-        return f"{side} liquidity filter: spread too wide {spread:.2f} > 0.20 [{market_type}]"
     if ask >= 1.0 or ask <= 0.0:
         return f"{side} liquidity filter: invalid ask={ask:.3f} [{market_type}]"
+    spread_reason = _spread_guard_reason(side, ask, bid, settings, market_type)
+    if spread_reason:
+        return spread_reason
     if ask < 0.08:
         return f"{side} liquidity filter: extreme low ask={ask:.3f} below 0.08 [{market_type}]"
     bid_value = _bid_notional(book)
@@ -927,11 +966,12 @@ def _side_result(
     signal: WeatherSignal,
     settings: Settings,
     bankroll_before_entry: float,
+    min_confidence: float,
     min_edge: float,
     entry_fraction_override: float | None,
     market_type: str,
 ) -> EdgeResult:
-    liquidity_reason = _side_liquidity_reason(side, book, market_type)
+    liquidity_reason = _side_liquidity_reason(side, book, settings, market_type)
     if liquidity_reason:
         return EdgeResult("SKIP", signal.p_true, None, -999.0, 0.0, 0.0, liquidity_reason)
 
@@ -958,6 +998,8 @@ def _side_result(
             entry_fraction_override,
             net_edge=edge,
             min_edge=min_edge,
+            confidence=signal.confidence,
+            min_confidence=min_confidence,
         )
         if size_usd < settings.min_order_usd:
             break
@@ -1053,6 +1095,11 @@ def _side_result(
     rejection = ""
     if not return_ok:
         rejection = f", reject=expected net return below {settings.entry_min_expected_net_return_pct:.2%}"
+    confidence_multiplier = confidence_size_multiplier(
+        signal.confidence,
+        min_confidence=min_confidence,
+        floor=settings.confidence_size_floor,
+    )
     reason = (
         f"{side} edge={edge:.4f}, p_exec_vwap={p_exec:.4f}, route={return_estimate.route}, "
         f"expected_exit={return_estimate.expected_exit_price:.4f}, "
@@ -1062,7 +1109,10 @@ def _side_result(
         f"entry_fee=${return_estimate.entry_fee_usdc:.4f}, "
         f"exit_fee=${return_estimate.exit_fee_usdc:.4f}, "
         f"exit_market_cost=${return_estimate.exit_market_cost_usdc:.4f}, "
-        f"spread_audit={spread:.4f}, slip_audit={slip:.4f}{partial_fill_reason}{rejection} [{market_type}]"
+        f"best_bid={(book.best_bid or 0.0):.4f}, best_ask={(book.best_ask or 0.0):.4f}, "
+        f"spread_audit={spread:.4f}, slip_audit={slip:.4f}, "
+        f"confidence_size_multiplier={confidence_multiplier:.3f}"
+        f"{partial_fill_reason}{rejection} [{market_type}]"
     )
     return EdgeResult(
         side=side if is_trade else "SKIP",
@@ -1073,6 +1123,105 @@ def _side_result(
         size_shares=estimate_shares if edge > min_edge and return_ok else 0.0,
         reason=reason,
         expected_net_profit_usd=return_estimate.expected_net_profit_usdc if edge > min_edge and return_ok else 0.0,
+    )
+
+
+def _final_pre_trade_entry_result(
+    market: RawMarket,
+    signal: WeatherSignal,
+    result: EdgeResult,
+    token_id: str,
+    client: PolymarketClient,
+    settings: Settings,
+    market_type: str,
+) -> EdgeResult:
+    rule_mismatch = market_rule_mismatch_reason(market)
+    if rule_mismatch:
+        return _skip_entry_result(
+            result,
+            f"SKIP_RULE_MISMATCH: final pre-trade check failed: {rule_mismatch}",
+        )
+    try:
+        book = client.get_order_book(token_id)
+    except Exception as exc:  # noqa: BLE001
+        return _skip_entry_result(
+            result,
+            f"SKIP_NO_DEPTH: final pre-trade book fetch failed for {result.side}: {exc} [{market_type}]",
+        )
+
+    liquidity_reason = _side_liquidity_reason(result.side, book, settings, market_type)
+    if liquidity_reason:
+        return _skip_entry_result(
+            result,
+            f"{liquidity_reason}; final_pre_trade=true",
+        )
+
+    checked_p_exec, checked_shares, checked_slip = executable_buy_price(
+        book,
+        result.size_usd,
+        fee_rate=settings.weather_taker_fee_rate,
+    )
+    if checked_p_exec is None or checked_shares <= 0:
+        return _skip_entry_result(
+            result,
+            f"SKIP_NO_DEPTH: final pre-trade check failed: {result.side} insufficient ask depth "
+            f"for ${result.size_usd:.2f} [{market_type}]",
+        )
+
+    _entry_fee_per_share, edge, _side_probability = _side_edge_metrics(
+        result.side,
+        signal,
+        checked_p_exec,
+        settings,
+    )
+    _unused, min_edge, _unused_entry_fraction = _market_params(settings, market_type)
+    spread = max(0.0, (book.best_ask or checked_p_exec) - (book.best_bid or checked_p_exec))
+    fair = model_fair_price(result.side, signal.p_true, settings)
+    expected_exit = target_exit_price(checked_p_exec, fair, settings)
+    expected_exit_estimate = estimate_executable_net_return(
+        shares=checked_shares,
+        entry_vwap=checked_p_exec,
+        expected_exit_price=expected_exit,
+        expected_exit_spread=spread,
+        expected_exit_slippage=checked_slip,
+        fee_rate=settings.weather_taker_fee_rate,
+    )
+    settlement_estimate = estimate_executable_net_return(
+        shares=checked_shares,
+        entry_vwap=checked_p_exec,
+        expected_exit_price=conservative_settlement_value(result.side, signal.p_true, settings),
+        fee_rate=settings.weather_taker_fee_rate,
+        hold_to_settlement=True,
+    )
+    return_estimate = max(
+        (expected_exit_estimate, settlement_estimate),
+        key=lambda estimate: estimate.expected_net_return_pct,
+    )
+    return_ok = return_estimate.expected_net_return_pct >= settings.entry_min_expected_net_return_pct
+    if edge <= min_edge or not return_ok:
+        return _skip_entry_result(
+            result,
+            f"SKIP_FINAL_EDGE: final pre-trade check failed: edge={edge:.4f} "
+            f"threshold={min_edge:.4f}, expected_net_return={return_estimate.expected_net_return_pct:.2%} "
+            f"threshold={settings.entry_min_expected_net_return_pct:.2%} [{market_type}]",
+            p_exec=checked_p_exec,
+            net_edge=edge,
+        )
+
+    reason = (
+        f"{result.reason}; final_pre_trade=true, p_exec_vwap={checked_p_exec:.4f}, "
+        f"edge={edge:.4f}, route={return_estimate.route}, "
+        f"expected_net_return={return_estimate.expected_net_return_pct:.2%}, "
+        f"best_bid={(book.best_bid or 0.0):.4f}, best_ask={(book.best_ask or 0.0):.4f}, "
+        f"spread_audit={spread:.4f}, slip_audit={checked_slip:.4f}"
+    )
+    return replace(
+        result,
+        p_exec=checked_p_exec,
+        net_edge=edge,
+        size_shares=checked_shares,
+        reason=reason,
+        expected_net_profit_usd=return_estimate.expected_net_profit_usdc,
     )
 
 
@@ -1141,6 +1290,13 @@ def pre_forecast_tradeability_gate(
             f"unsupported-station: refusing market before forecast [{market_type}]",
         )
 
+    if rule_mismatch := market_rule_mismatch_reason(market):
+        return skip(
+            "rule-mismatch",
+            f"SKIP_RULE_MISMATCH: market title and rule text disagree before forecast. {rule_mismatch}",
+            f"SKIP_RULE_MISMATCH: {rule_mismatch} [{market_type}]",
+        )
+
     if parsed.date_hint is None:
         return skip(
             "pre-forecast-skip",
@@ -1149,6 +1305,42 @@ def pre_forecast_tradeability_gate(
         )
 
     return None
+
+
+def _drawdown_entry_gate(
+    market: RawMarket,
+    broker: PaperBroker,
+    settings: Settings,
+    now: datetime,
+    market_type: str = "temperature",
+) -> tuple[WeatherSignal, EdgeResult] | None:
+    parsed = parse_weather_question(market.question)
+    reason = drawdown_entry_block_reason(
+        settings,
+        broker.state.positions,
+        now=now,
+        city=parsed.city or "",
+        date_hint=parsed.date_hint or "",
+    )
+    if not reason:
+        return None
+    signal = WeatherSignal(
+        p_true=0.5,
+        confidence=0.0,
+        source="drawdown-circuit-breaker",
+        note=reason,
+        parsed=parsed,
+    )
+    result = EdgeResult(
+        side="SKIP",
+        p_true=signal.p_true,
+        p_exec=None,
+        net_edge=-999.0,
+        size_usd=0.0,
+        size_shares=0.0,
+        reason=f"{reason} [{market_type}]",
+    )
+    return signal, result
 
 
 def evaluate_market(
@@ -1202,6 +1394,7 @@ def evaluate_market(
             signal,
             settings,
             bankroll_before_entry,
+            min_confidence,
             min_edge,
             entry_fraction_override,
             market_type,
@@ -1515,26 +1708,31 @@ def run_cycle(settings: Settings | None = None) -> list[MarketDecision]:
                     signal, result = gated
                     per_side: dict[str, EdgeResult] = {}
                 else:
-                    signal = _call_probability_estimator(
-                        estimate_weather_probability,
-                        market.question,
-                        settings=settings,
-                        ensemble_client=ensemble_client,
-                        observation_provider=observation_provider,
-                    )
-                    result, per_side = evaluate_market(
-                        market,
-                        signal,
-                        client,
-                        settings,
-                        entry_bankroll.entry_bankroll,
-                        market_type,
-                        entry_bankroll.reason,
-                    )
+                    drawdown_gate = _drawdown_entry_gate(market, broker, settings, datetime.now(timezone.utc), market_type)
+                    if drawdown_gate is not None:
+                        signal, result = drawdown_gate
+                        per_side = {}
+                    else:
+                        signal = _call_probability_estimator(
+                            estimate_weather_probability,
+                            market.question,
+                            settings=settings,
+                            ensemble_client=ensemble_client,
+                            observation_provider=observation_provider,
+                        )
+                        result, per_side = evaluate_market(
+                            market,
+                            signal,
+                            client,
+                            settings,
+                            entry_bankroll.entry_bankroll,
+                            market_type,
+                            entry_bankroll.reason,
+                        )
                 for side, edge_result in per_side.items():
                     latest_edges[(market.market_id, side)] = edge_result
                 decisions.append(MarketDecision(market=market, signal=signal, result=result))
-                decision_ts = broker.log_decision(market, result, signal.note, market_type)
+                decision_ts = broker.log_decision(market, result, signal.note, market_type, signal=signal)
                 candidates.extend(_event_portfolio_candidates(market, signal, result, per_side, market_type, decision_ts))
                 broker.log_raw_snapshot(
                     "decision",
@@ -1585,7 +1783,7 @@ def run_cycle(settings: Settings | None = None) -> list[MarketDecision]:
                 open_positions=len(broker.state.positions),
                 **_market_error_status_fields(market_error_count, last_market_error),
             )
-        portfolio = _apply_event_portfolio(broker, candidates, entry_bankroll)
+        portfolio = _apply_event_portfolio(broker, candidates, entry_bankroll, client=client)
         print(
             f"EVENT PORTFOLIO {portfolio.event_key}: selected={len(portfolio.selected)} "
             f"exposure=${portfolio.selected_exposure_usd:.2f} cap=${portfolio.event_cap_usd:.2f} "
@@ -1655,37 +1853,68 @@ def _open_position_if_needed(
     entry_bankroll_usd: float | None = None,
     decision_ts: str = "",
     add_to_existing_position_id: str | None = None,
-) -> None:
+    client: PolymarketClient | None = None,
+) -> EdgeResult | None:
     if result.side not in {"YES", "NO"}:
-        return
+        return result
     if not market.active or market.closed:
-        return
+        return None
     token_id = market.yes_token_id if result.side == "YES" else market.no_token_id
     allow_same_side_add = (
         add_to_existing_position_id is not None
         and broker.has_position(market.market_id, result.side)
     )
     if (broker.has_any_position(market.market_id) and not allow_same_side_add) or not token_id:
-        return
+        return None
+    final_result = result
+    if client is not None:
+        final_result = _final_pre_trade_entry_result(
+            market,
+            signal,
+            result,
+            token_id,
+            client,
+            broker.settings,
+            market_type,
+        )
+        if final_result.side == "SKIP":
+            action = final_result.reason.split(":", 1)[0]
+            if not action.startswith("SKIP_"):
+                action = "SKIP_PRE_TRADE"
+            broker.log_trade(
+                action,
+                market,
+                result.side,
+                token_id,
+                0.0,
+                final_result.p_exec if final_result.p_exec is not None else (result.p_exec or 0.0),
+                0.0,
+                final_result.reason,
+                market_type,
+            )
+            return final_result
     city = signal.parsed.city if signal.parsed is not None else ""
     date_hint = signal.parsed.date_hint if signal.parsed is not None else ""
     broker.open_position(
         market,
         token_id,
-        result,
+        final_result,
         market_type,
         city=city or "",
         date_hint=date_hint or "",
         entry_bankroll_usd=entry_bankroll_usd,
         decision_ts=decision_ts,
         allow_same_side_add=allow_same_side_add,
+        signal=signal,
     )
+    return final_result
 
 
 def _apply_event_portfolio(
     broker: PaperBroker,
     candidates: list[PortfolioCandidate],
     entry_bankroll: EntryBankrollSnapshot,
+    client: PolymarketClient | None = None,
 ) -> EventPortfolioDecision:
     decision = select_event_portfolio(broker, candidates, entry_bankroll)
     broker.log_event_portfolio_decision(
@@ -1701,6 +1930,7 @@ def _apply_event_portfolio(
             entry_bankroll_usd=entry_bankroll.entry_bankroll,
             decision_ts=candidate.decision_ts,
             add_to_existing_position_id=candidate.add_to_existing_position_id,
+            client=client,
         )
     return decision
 
@@ -1752,7 +1982,7 @@ def _record_forecast_signal_pending(
         0.0,
         reason,
     )
-    broker.log_decision(market, result, signal.note, market_type)
+    broker.log_decision(market, result, signal.note, market_type, signal=signal)
     broker.log_raw_snapshot(
         "forecast_signal_pending",
         market,
@@ -1806,6 +2036,22 @@ def _evaluate_realtime_update(
         for market in event_groups[event_key]:
             market_type = market_types.get(market.market_id, "temperature")
             try:
+                drawdown_gate = _drawdown_entry_gate(market, broker, settings, current, market_type)
+                if drawdown_gate is not None:
+                    signal, result = drawdown_gate
+                    per_side: dict[str, EdgeResult] = {}
+                    existing_signal = signals_by_market.get(market.market_id)
+                    if existing_signal is not None:
+                        _refresh_held_exit_edges_from_signal(
+                            broker,
+                            market,
+                            existing_signal,
+                            latest_edges,
+                            result.reason,
+                        )
+                    decision_ts = broker.log_decision(market, result, signal.note, market_type, signal=signal)
+                    candidates.extend(_event_portfolio_candidates(market, signal, result, per_side, market_type, decision_ts))
+                    continue
                 if market.market_id not in signals_by_market:
                     if forecast_scheduler is not None:
                         forecast_scheduler.enqueue_priority(market, "ACTIVE_EVALUATION_STALE_SIGNAL", now=current)
@@ -1862,7 +2108,7 @@ def _evaluate_realtime_update(
                         latest_edges,
                         entry_bankroll.reason,
                     )
-                decision_ts = broker.log_decision(market, result, signal.note, market_type)
+                decision_ts = broker.log_decision(market, result, signal.note, market_type, signal=signal)
                 candidates.extend(_event_portfolio_candidates(market, signal, result, per_side, market_type, decision_ts))
                 broker.log_raw_snapshot(
                     "realtime_decision",
@@ -1892,7 +2138,7 @@ def _evaluate_realtime_update(
                     context="realtime_update",
                 )
                 candidates.extend(_event_portfolio_candidates(market, signal, result, {}, market_type))
-        _apply_event_portfolio(broker, candidates, entry_bankroll)
+        _apply_event_portfolio(broker, candidates, entry_bankroll, client=client)
     for message in maybe_close_positions(broker, client, market_by_id, latest_edges):
         print(message)
 
@@ -2007,7 +2253,7 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
                 if gated is not None:
                     signal, result = gated
                     precomputed_signals[market.market_id] = signal
-                    broker.log_decision(market, result, signal.note, market_type)
+                    broker.log_decision(market, result, signal.note, market_type, signal=signal)
                     broker.log_raw_snapshot(
                         "pre_forecast_skip",
                         market,

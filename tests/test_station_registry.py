@@ -1,3 +1,4 @@
+import re
 from dataclasses import replace
 
 from weather_bot.stations import (
@@ -32,6 +33,16 @@ def test_station_audit_rows_explain_forecast_and_rule_evidence_status():
             assert row["rule_evidence_status"] != "verified_rule_source"
 
 
+def test_station_audit_rows_expose_nowcast_quality_metadata():
+    for row in station_audit_rows():
+        assert row["temperature_unit"] == "celsius"
+        assert row["reporting_precision"] in {"1C", "0.1C"}
+        assert isinstance(row["same_station_nowcast_supported"], bool)
+        assert row["nowcast_confidence_grade"] in {"A", "B", "C", "D"}
+        assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(row["last_verified_at"]))
+        assert row["confidence_level"] in {"high", "medium", "low", "blocked"}
+
+
 def test_station_without_rule_evidence_is_not_trading_ready():
     station = replace(
         STATION_MAP["seoul"],
@@ -47,6 +58,36 @@ def test_trading_ready_map_only_contains_verified_rule_evidence():
     assert TRADING_READY_STATION_MAP
     assert set(TRADING_READY_STATION_MAP).issubset(STATION_MAP)
     assert all(station_is_trading_ready(station) for station in TRADING_READY_STATION_MAP.values())
+
+
+def test_trading_ready_stations_require_acceptable_station_confidence():
+    for station in TRADING_READY_STATION_MAP.values():
+        assert station.same_station_nowcast_supported is True
+        assert station.nowcast_confidence_grade in {"A", "B"}
+        assert station.confidence_level in {"high", "medium"}
+
+    low_confidence = replace(
+        STATION_MAP["seoul"],
+        nowcast_confidence_grade="C",
+        confidence_level="low",
+    )
+    unsupported_nowcast = replace(
+        STATION_MAP["seoul"],
+        same_station_nowcast_supported=False,
+    )
+
+    assert not station_is_trading_ready(low_confidence)
+    assert not station_is_trading_ready(unsupported_nowcast)
+
+
+def test_karachi_stays_excluded_until_station_evidence_is_reconciled():
+    karachi = STATION_MAP["karachi"]
+
+    assert karachi.nowcast_confidence_grade == "D"
+    assert karachi.confidence_level == "blocked"
+    assert karachi.same_station_nowcast_supported is False
+    assert "karachi" not in TRADING_READY_STATION_MAP
+    assert not station_is_trading_ready(karachi)
 
 
 def test_seoul_uses_enabled_metar_observation_provider():

@@ -615,6 +615,9 @@ function price(v) {
   const whole = Math.abs(cents - Math.round(cents)) < 0.05;
   return cents.toLocaleString(undefined, {minimumFractionDigits: whole ? 0 : 1, maximumFractionDigits: whole ? 0 : 1}) + "¢";
 }
+function qty(v) {
+  return (v === null || v === undefined || isNaN(v)) ? "--" : Number(v).toLocaleString(undefined, {minimumFractionDigits: 0, maximumFractionDigits: 2});
+}
 function tempC(v) {
   if (v === null || v === undefined || isNaN(v)) return "--";
   const n = Number(v);
@@ -681,6 +684,20 @@ function statusKo(status) {
   return STATUS_KO[raw] || status || "--";
 }
 function phaseKo(phase) { return PHASE_KO[String(phase || "")] || phase; }
+function exitStatusKo(status) {
+  const raw = String(status || "").toLowerCase();
+  if (raw === "full") return "전량 가능";
+  if (raw === "partial") return "부분 가능";
+  if (raw === "blocked") return "청산 막힘";
+  return "확인 필요";
+}
+function exitStatusClass(status) {
+  const raw = String(status || "").toLowerCase();
+  if (raw === "full") return "win";
+  if (raw === "partial") return "price";
+  if (raw === "blocked") return "loss";
+  return "muted-badge";
+}
 function sideKo(side) {
   const raw = String(side || "").toUpperCase();
   return raw === "YES" ? "예" : (raw === "NO" ? "아니오" : (side || "--"));
@@ -707,6 +724,12 @@ function cardForPosition(p) {
   const pnl = p.unrealized_pnl || 0;
   const pnlClass = pnl >= 0 ? "win" : "loss";
   const pnlSign = pnl >= 0 ? "+" : "-";
+  const bidDepthPnl = Number(p.bid_depth_unrealized_pnl || 0);
+  const bidDepthPnlClass = bidDepthPnl >= 0 ? "win" : "loss";
+  const bidDepthPnlSign = bidDepthPnl >= 0 ? "+" : "-";
+  const exitStatus = p.exit_liquidity_status || "unknown";
+  const exitBlocker = p.exit_blocker ? ` · 차단 ${esc(p.exit_blocker)}` : "";
+  const wsAge = p.websocket_stale_book_age_seconds != null ? ` · 호가 ${duration(p.websocket_stale_book_age_seconds)} 전` : "";
   const sideLabel = (p.side || "").toUpperCase() === "YES" ? "Yes" : "No";
   const qLower = (p.question || "").toLowerCase();
   const isHighest = qLower.includes("highest") || qLower.includes("high");
@@ -744,12 +767,23 @@ function cardForPosition(p) {
     <div class="pos-row">
       <span class="badge price">진입 ${price(p.entry_price)}</span>
       <span class="badge current-price">현재가 ${price(p.mark_price)}</span>
-      <span class="badge ${pnlClass}">${pnlSign}${money(Math.abs(pnl))}</span>
+      <span class="badge ${pnlClass}">참고PnL ${pnlSign}${money(Math.abs(pnl))}</span>
+    </div>
+    <div class="pos-row">
+      <span class="badge ${exitStatusClass(exitStatus)}">청산 ${exitStatusKo(exitStatus)}</span>
+      <span class="badge price">최고매수 ${price(p.exit_best_bid)}</span>
+      <span class="badge current-price">전량VWAP ${price(p.exit_full_vwap)}</span>
+      <span class="badge current-price">50%VWAP ${price(p.exit_half_vwap)}</span>
+      <span class="badge ${bidDepthPnlClass}">호가PnL ${bidDepthPnlSign}${money(Math.abs(bidDepthPnl))}</span>
     </div>
     <div class="small muted" style="margin-top:8px">
       ${esc(p.city || "")} ${esc(p.date_hint || "")} · 수량 ${Number(p.shares || 0).toFixed(2)} · 비용 ${money(p.cost_usd)}
       ${p.entry_fee_usdc != null ? ` · 수수료 $${Number(p.entry_fee_usdc).toFixed(4)}` : ''}
       ${p.net_edge != null ? ` · 엣지 ${(Number(p.net_edge)*100).toFixed(1)}%` : ''}
+    </div>
+    <div class="small muted" style="margin-top:4px">
+      매도가능 ${qty(p.exit_available_shares)} / ${qty(p.shares)} · 청산가치 ${money(p.bid_depth_market_value)}
+      · 웹소켓 ${statusKo(p.websocket_status)}${p.websocket_stale ? " · 오래됨" : ""}${wsAge}${exitBlocker}
     </div>
   </div>`;
 }

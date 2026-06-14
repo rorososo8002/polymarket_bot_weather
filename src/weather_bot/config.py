@@ -29,6 +29,7 @@ _POSITIVE_INTEGER_SETTINGS = (
     "discovery_max_pages",
     "discovery_page_size",
     "max_event_portfolio_legs",
+    "max_consecutive_losses",
     "raw_snapshots_max_bytes",
     "raw_snapshots_retention_days",
     "raw_snapshots_min_free_bytes",
@@ -59,15 +60,23 @@ _RATIO_SETTINGS = (
     "max_event_date_exposure_fraction",
     "large_bankroll_event_date_exposure_fraction",
     "entry_min_expected_net_return_pct",
+    "daily_realized_loss_limit_fraction",
+    "daily_unrealized_loss_limit_fraction",
+    "large_loss_threshold_fraction",
+    "max_entry_spread_abs",
+    "max_entry_spread_pct",
     "model_error_margin",
     "resolution_error_margin",
     "settlement_runner_max_fraction",
     "probability_shrink_gamma",
+    "confidence_size_floor",
     "raw_snapshots_max_disk_usage_pct",
 )
 
 _NON_NEGATIVE_NUMBER_SETTINGS = (
     "settlement_runner_min_ev_margin_usd",
+    "city_loss_cooldown_hours",
+    "large_loss_cooldown_hours",
 )
 
 _RATE_SETTINGS = (
@@ -161,10 +170,18 @@ class Settings:
     large_bankroll_event_date_exposure_fraction: float = 0.05
     event_date_exposure_transition_usd: float = 1000.0
     max_event_portfolio_legs: int = 2
+    daily_realized_loss_limit_fraction: float = 0.10
+    daily_unrealized_loss_limit_fraction: float = 0.15
+    max_consecutive_losses: int = 3
+    city_loss_cooldown_hours: float = 24.0
+    large_loss_threshold_fraction: float = 0.05
+    large_loss_cooldown_hours: float = 24.0
 
     # Paper weather-fee default from the official category schedule.
     # A separate live-execution project must query fee parameters per market.
     entry_min_expected_net_return_pct: float = 0.06
+    max_entry_spread_abs: float = 0.20
+    max_entry_spread_pct: float = 1.00
     weather_taker_fee_rate: float = 0.05
     model_error_margin: float = 0.03
     resolution_error_margin: float = 0.01
@@ -174,6 +191,7 @@ class Settings:
 
     # Probability model controls
     probability_shrink_gamma: float = 0.65
+    confidence_size_floor: float = 0.25
     default_temperature_sigma_f: float = 4.5
     require_parse_for_trade: bool = True
     # Compatibility switch for older tests/env files. The paper runner still
@@ -420,6 +438,8 @@ def load_settings() -> Settings:
             "ENTRY_MIN_EXPECTED_NET_RETURN_PCT",
             Settings.entry_min_expected_net_return_pct,
         ),
+        max_entry_spread_abs=_float_env("MAX_ENTRY_SPREAD_ABS", Settings.max_entry_spread_abs),
+        max_entry_spread_pct=_float_env("MAX_ENTRY_SPREAD_PCT", Settings.max_entry_spread_pct),
         weather_taker_fee_rate=_float_env("WEATHER_TAKER_FEE_RATE", Settings.weather_taker_fee_rate),
         model_error_margin=_float_env("MODEL_ERROR_MARGIN", Settings.model_error_margin),
         resolution_error_margin=_float_env("RESOLUTION_ERROR_MARGIN", Settings.resolution_error_margin),
@@ -433,6 +453,7 @@ def load_settings() -> Settings:
             Settings.settlement_runner_min_ev_margin_usd,
         ),
         probability_shrink_gamma=_float_env("PROBABILITY_SHRINK_GAMMA", Settings.probability_shrink_gamma),
+        confidence_size_floor=_float_env("CONFIDENCE_SIZE_FLOOR", Settings.confidence_size_floor),
         default_temperature_sigma_f=_float_env("DEFAULT_TEMPERATURE_SIGMA_F", Settings.default_temperature_sigma_f),
         require_parse_for_trade=_bool_env("REQUIRE_PARSE_FOR_TRADE", Settings.require_parse_for_trade),
         require_date_hint_for_trade=_bool_env("REQUIRE_DATE_HINT_FOR_TRADE", Settings.require_date_hint_for_trade),
@@ -442,6 +463,18 @@ def load_settings() -> Settings:
             "LARGE_BANKROLL_EVENT_DATE_EXPOSURE_FRACTION",
             Settings.large_bankroll_event_date_exposure_fraction,
         ),
+        daily_realized_loss_limit_fraction=_float_env(
+            "DAILY_REALIZED_LOSS_LIMIT_FRACTION",
+            Settings.daily_realized_loss_limit_fraction,
+        ),
+        daily_unrealized_loss_limit_fraction=_float_env(
+            "DAILY_UNREALIZED_LOSS_LIMIT_FRACTION",
+            Settings.daily_unrealized_loss_limit_fraction,
+        ),
+        max_consecutive_losses=_int_env("MAX_CONSECUTIVE_LOSSES", Settings.max_consecutive_losses),
+        city_loss_cooldown_hours=_float_env("CITY_LOSS_COOLDOWN_HOURS", Settings.city_loss_cooldown_hours),
+        large_loss_threshold_fraction=_float_env("LARGE_LOSS_THRESHOLD_FRACTION", Settings.large_loss_threshold_fraction),
+        large_loss_cooldown_hours=_float_env("LARGE_LOSS_COOLDOWN_HOURS", Settings.large_loss_cooldown_hours),
         event_date_exposure_transition_usd=_float_env(
             "EVENT_DATE_EXPOSURE_TRANSITION_USD",
             Settings.event_date_exposure_transition_usd,

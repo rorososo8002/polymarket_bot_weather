@@ -15,6 +15,7 @@ class _DecisionSummary:
     decisions_count: int = 0
     entries_count: int = 0
     skips_count: int = 0
+    stale_blocks_count: int = 0
     skip_reasons: Counter[str] = field(default_factory=Counter)
     bucket_counts: dict[str, int] = field(default_factory=lambda: defaultdict(int))
     bucket_p_true_sums: dict[str, float] = field(default_factory=lambda: defaultdict(float))
@@ -25,9 +26,31 @@ class _DecisionSummary:
 @dataclass
 class _TradeSummary:
     trades_count: int = 0
+    trusted_executable_pnl: float = 0.0
+    trusted_executable_count: int = 0
+    reference_only_pnl: float = 0.0
+    reference_only_count: int = 0
+    no_liquidity_holds: int = 0
+    stale_blocks_count: int = 0
+    exit_attempt_count: int = 0
+    signal_pnl: dict[str, float] = field(default_factory=lambda: defaultdict(float))
+    signal_counts: dict[str, int] = field(default_factory=lambda: defaultdict(int))
+    shape_pnl: dict[str, float] = field(default_factory=lambda: defaultdict(float))
+    shape_counts: dict[str, int] = field(default_factory=lambda: defaultdict(int))
+    direction_pnl: dict[str, float] = field(default_factory=lambda: defaultdict(float))
+    direction_counts: dict[str, int] = field(default_factory=lambda: defaultdict(int))
+    city_pnl: dict[str, float] = field(default_factory=lambda: defaultdict(float))
+    city_counts: dict[str, int] = field(default_factory=lambda: defaultdict(int))
+    bucket_pnl: dict[str, float] = field(default_factory=lambda: defaultdict(float))
+    bucket_counts: dict[str, int] = field(default_factory=lambda: defaultdict(int))
     brier_error_sum: float = 0.0
     brier_count: int = 0
     warnings: list[str] = field(default_factory=list)
+
+
+EXECUTED_PNL_ACTIONS = {"CLOSE", "PARTIAL_CLOSE", "SETTLED"}
+EXIT_BLOCK_ACTIONS = {"HOLD_NO_LIQUIDITY", "HOLD_STREAM_UNHEALTHY"}
+EXIT_ATTEMPT_ACTIONS = EXECUTED_PNL_ACTIONS | EXIT_BLOCK_ACTIONS
 
 
 def _iter_csv_rows(path: Path) -> Iterable[dict[str, str]]:
@@ -44,6 +67,15 @@ def _float(value: str | None, default: float = 0.0) -> float:
         return default
 
 
+def _optional_float(value: str | None) -> float | None:
+    try:
+        if value in (None, ""):
+            return None
+        return float(value)
+    except ValueError:
+        return None
+
+
 def _probability(value: str | None) -> float | None:
     try:
         if value in (None, ""):
@@ -58,6 +90,91 @@ def _probability(value: str | None) -> float | None:
 
 def _skip_label(reason: str) -> str:
     return (reason.split(":", 1)[0] or "unknown").strip()
+
+
+def _is_stale_block(*values: str | None) -> bool:
+    text = " ".join(value or "" for value in values).lower()
+    return "stale" in text or "stream_unhealthy" in text
+
+
+def _reference_pnl(row: dict[str, str]) -> float | None:
+    for field_name in (
+        "reference_pnl_usd",
+        "midpoint_pnl_usd",
+        "reference_only_pnl_usd",
+        "reference_cash_delta_or_pnl",
+    ):
+        parsed = _optional_float(row.get(field_name))
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _signal_label(row: dict[str, str]) -> str:
+    text = " ".join(
+        (
+            row.get("signal_source", ""),
+            row.get("note", ""),
+            row.get("reason", ""),
+        )
+    ).lower()
+    if "nowcast" in text or "forecast-plus" in text:
+        return "nowcast-confirmed"
+    if "forecast" in text:
+        return "forecast-only"
+    return "unknown"
+
+
+def _city_from_question(question: str) -> str:
+    for phrase in ("highest temperature in ", "lowest temperature in ", "temperature in "):
+        index = question.lower().find(phrase)
+        if index != -1:
+            return question[index + len(phrase):].split(" on ")[0].split(" be ")[0].strip().lower() or "unknown"
+    return "unknown"
+
+
+def _city_label(row: dict[str, str]) -> str:
+    return (row.get("city") or "").strip().lower() or _city_from_question(row.get("question", ""))
+
+
+def _shape_label(row: dict[str, str]) -> str:
+    explicit = (row.get("condition_type") or row.get("market_shape") or "").strip()
+    if explicit:
+        return explicit
+    question = (row.get("question") or "").lower()
+    if re.search(r"\d+\s*[-–]\s*\d+", question):
+        return "range"
+    if "or higher" in question or "or above" in question:
+        return "upper_threshold"
+    if "or lower" in question or "or below" in question:
+        return "lower_threshold"
+    return "exact" if question else "unknown"
+
+
+def _direction_label(row: dict[str, str]) -> str:
+    question = (row.get("question") or "").lower()
+    if "lowest temperature" in question:
+        return "daily-low"
+    if "highest temperature" in question:
+        return "daily-high"
+    return "unknown"
+
+
+def _add_pnl_breakdown(summary: _TradeSummary, row: dict[str, str], pnl: float) -> None:
+    signal = _signal_label(row)
+    shape = _shape_label(row)
+    direction = _direction_label(row)
+    city = _city_label(row)
+    bucket = shape
+    for values, counts, label in (
+        (summary.signal_pnl, summary.signal_counts, signal),
+        (summary.shape_pnl, summary.shape_counts, shape),
+        (summary.direction_pnl, summary.direction_counts, direction),
+        (summary.city_pnl, summary.city_counts, city),
+        (summary.bucket_pnl, summary.bucket_counts, bucket),
+    ):
+        values[label] += pnl
+        counts[label] += 1
 
 
 def _edge_bucket(edge: float) -> str:
@@ -116,7 +233,10 @@ def _summarize_decisions(decisions_path: Path) -> _DecisionSummary:
         side = (row.get("side") or "").upper()
         if side.startswith("SKIP"):
             summary.skips_count += 1
-            summary.skip_reasons[_skip_label(row.get("reason", ""))] += 1
+            reason_code = (row.get("reason_code") or "").strip()
+            summary.skip_reasons[reason_code or _skip_label(row.get("reason", ""))] += 1
+            if _is_stale_block(reason_code, row.get("reason"), row.get("note")):
+                summary.stale_blocks_count += 1
             continue
         if side not in {"YES", "NO"}:
             continue
@@ -139,6 +259,21 @@ def _summarize_trades(trades_path: Path, latest_entry_p_yes_by_market: dict[str,
         market_id = trade.get("market_id", "")
         action = (trade.get("action") or "").upper()
         key = _trade_position_key(trade)
+        if action in EXIT_ATTEMPT_ACTIONS:
+            summary.exit_attempt_count += 1
+        if action == "HOLD_NO_LIQUIDITY":
+            summary.no_liquidity_holds += 1
+        if action == "HOLD_STREAM_UNHEALTHY" or _is_stale_block(action, trade.get("reason")):
+            summary.stale_blocks_count += 1
+        reference_pnl = _reference_pnl(trade)
+        if reference_pnl is not None:
+            summary.reference_only_pnl += reference_pnl
+            summary.reference_only_count += 1
+        if action in EXECUTED_PNL_ACTIONS:
+            pnl = _float(trade.get("cash_delta_or_pnl"))
+            summary.trusted_executable_pnl += pnl
+            summary.trusted_executable_count += 1
+            _add_pnl_breakdown(summary, trade, pnl)
         if action == "OPEN" and market_id:
             if key in open_shares_by_position:
                 summary.warnings.append(f"duplicate OPEN {_trade_position_text(key)}")
@@ -184,6 +319,19 @@ def _brier_from_summary(summary: _TradeSummary) -> tuple[float | None, int]:
     return summary.brier_error_sum / summary.brier_count, summary.brier_count
 
 
+def _money(value: float) -> str:
+    return f"${value:+.2f}"
+
+
+def _append_pnl_group(lines: list[str], title: str, pnl_by_label: dict[str, float], counts_by_label: dict[str, int]) -> None:
+    lines.extend(["", f"{title}:"])
+    if not counts_by_label:
+        lines.append("- none")
+        return
+    for label, count in sorted(counts_by_label.items(), key=lambda item: (-abs(pnl_by_label[item[0]]), item[0])):
+        lines.append(f"- {label}: pnl={_money(pnl_by_label[label])} n={count}")
+
+
 def build_report(decisions_path: Path, trades_path: Path) -> str:
     decision_summary = _summarize_decisions(decisions_path)
     trade_summary = _summarize_trades(trades_path, decision_summary.latest_entry_p_yes_by_market)
@@ -211,6 +359,31 @@ def build_report(decisions_path: Path, trades_path: Path) -> str:
     for reason, count in decision_summary.skip_reasons.most_common():
         lines.append(f"- {reason}: {count}")
 
+    lines.extend([
+        "",
+        "pnl_quality:",
+        f"- trusted_executable_net_pnl={_money(trade_summary.trusted_executable_pnl)} n={trade_summary.trusted_executable_count}",
+    ])
+    if trade_summary.reference_only_count:
+        reference_gap = trade_summary.reference_only_pnl - trade_summary.trusted_executable_pnl
+        lines.append(f"- reference_only_pnl={_money(trade_summary.reference_only_pnl)} n={trade_summary.reference_only_count}")
+        lines.append(f"- reference_gap_vs_trusted={_money(reference_gap)}")
+    else:
+        lines.append("- reference_only_pnl=NA n=0")
+
+    no_liq_rate = (
+        trade_summary.no_liquidity_holds / trade_summary.exit_attempt_count
+        if trade_summary.exit_attempt_count
+        else 0.0
+    )
+    stale_blocks = decision_summary.stale_blocks_count + trade_summary.stale_blocks_count
+    lines.extend([
+        "",
+        "liquidity_and_stale_blocks:",
+        f"- no_liquidity_holds={trade_summary.no_liquidity_holds} exit_attempt_rate={no_liq_rate:.1%}",
+        f"- stale_blocks={stale_blocks}",
+    ])
+
     lines.extend(["", "edge_buckets:"])
     for bucket in ("edge < 5%", "edge 5-8%", "edge 8-10%", "edge >= 10%"):
         count = decision_summary.bucket_counts.get(bucket, 0)
@@ -221,6 +394,11 @@ def build_report(decisions_path: Path, trades_path: Path) -> str:
     score, n = _brier_from_summary(trade_summary)
     lines.extend(["", "resolution_quality:"])
     lines.append("resolved_brier=NA n=0" if score is None else f"resolved_brier={score:.4f} n={n}")
+    _append_pnl_group(lines, "signal_performance", trade_summary.signal_pnl, trade_summary.signal_counts)
+    _append_pnl_group(lines, "market_shape_performance", trade_summary.shape_pnl, trade_summary.shape_counts)
+    _append_pnl_group(lines, "direction_performance", trade_summary.direction_pnl, trade_summary.direction_counts)
+    _append_pnl_group(lines, "city_performance", trade_summary.city_pnl, trade_summary.city_counts)
+    _append_pnl_group(lines, "bucket_performance", trade_summary.bucket_pnl, trade_summary.bucket_counts)
     return "\n".join(lines)
 
 

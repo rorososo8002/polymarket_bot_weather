@@ -131,3 +131,30 @@ def test_handoff_docs_stay_compact_and_avoid_chronological_ledgers():
 
     assert "## Compact Ledger" not in decisions
     assert "Completed local" not in progress
+
+
+def test_paper_validation_runbook_defines_live_readiness_gates():
+    runbook_path = ROOT / "docs" / "paper-validation-runbook.md"
+    decisions = (ROOT / "docs" / "production-decisions.md").read_text(encoding="utf-8")
+    roadmap = (ROOT / "docs" / "strategy-validation-roadmap.md").read_text(encoding="utf-8")
+
+    assert runbook_path.exists()
+    runbook = runbook_path.read_text(encoding="utf-8")
+
+    required_phrases = [
+        "30 days",
+        "paper-only",
+        "decision rows",
+        "open/close trades",
+        "bid/ask-depth net PnL",
+        "midpoint/reference gap",
+        "no-liquidity",
+        "core tests",
+        "new experiment version",
+        "live-trading safety project",
+    ]
+    for phrase in required_phrases:
+        assert phrase in runbook
+
+    assert "docs/paper-validation-runbook.md" in decisions
+    assert "docs/paper-validation-runbook.md" in roadmap

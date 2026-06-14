@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import math
 import os
-import re
 import statistics
 import threading
 import time
@@ -17,10 +16,19 @@ import requests
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 from .config import Settings
+from .event_dates import event_date_window_from_hint
 from .models import ParsedWeatherQuestion, WeatherSignal
 from .nowcast import StationNowcastObservation
 from .stations import STATION_MAP, TRADING_READY_STATION_MAP, StationMeta
-from .weather_client import parse_weather_question, temperature_bucket_interval_bounds_f
+from .weather_client import (
+    TEMPERATURE_COMPARISON_UNIT,
+    parse_weather_question,
+    temperature_bucket_interval_bounds_f,
+    temperature_gt_f,
+    temperature_gte_f,
+    temperature_lt_f,
+    temperature_lte_f,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -232,10 +240,16 @@ def _temperature_bucket_probability(
         votes = [bounds.contains_f(value) for value in member_values_f]
         cdf_p = 1.0 - normal_cdf((lower_f - mean_f) / sigma_f)
     elif parsed.operator == ">=":
-        votes = [value >= threshold_f for value in member_values_f]
+        bounds = temperature_bucket_interval_bounds_f(parsed)
+        if bounds is None:
+            raise ValueError("Temperature threshold is missing a parsed interval.")
+        votes = [bounds.contains_f(value) for value in member_values_f]
         cdf_p = probability_temperature_ge(threshold_f, mean_f, sigma_f)
     else:
-        votes = [value <= threshold_f for value in member_values_f]
+        bounds = temperature_bucket_interval_bounds_f(parsed)
+        if bounds is None:
+            raise ValueError("Temperature threshold is missing a parsed interval.")
+        votes = [bounds.contains_f(value) for value in member_values_f]
         cdf_p = normal_cdf((threshold_f - mean_f) / sigma_f)
 
     empirical_p = sum(votes) / len(votes)
@@ -956,44 +970,13 @@ def _should_retry_forecast_exception(exc: BaseException) -> bool:
     )
 
 
-WEEKDAY_INDEX = {
-    "monday": 0,
-    "tuesday": 1,
-    "wednesday": 2,
-    "thursday": 3,
-    "friday": 4,
-    "saturday": 5,
-    "sunday": 6,
-}
-
-
 def _target_date_from_hint(
     parsed: ParsedWeatherQuestion,
     timezone_name: str = "auto",
     now: datetime | None = None,
 ) -> date:
-    today = _today_for_timezone(timezone_name, now)
-    hint = (parsed.date_hint or "").lower().strip()
-    if hint in {"today", "\uc624\ub298"}:
-        return today
-    if hint in {"tomorrow", "\ub0b4\uc77c"}:
-        return today + timedelta(days=1)
-    if hint in WEEKDAY_INDEX:
-        days_ahead = (WEEKDAY_INDEX[hint] - today.weekday()) % 7
-        return today + timedelta(days=days_ahead)
-
-    m = re.search(r"\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+(\d{1,2})\b", hint)
-    if m:
-        month_names = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"]
-        month = month_names.index(m.group(1)[:3]) + 1
-        day = int(m.group(2))
-        candidate = date(today.year, month, day)
-        # Weather markets are near-term; if the date already passed, assume next year.
-        if candidate < today - timedelta(days=3):
-            candidate = date(today.year + 1, month, day)
-        return candidate
-
-    return today
+    window = event_date_window_from_hint(parsed.date_hint, timezone_name, now=now)
+    return window.event_date_local if window is not None else _today_for_timezone(timezone_name, now)
 
 
 def _date_index(daily: dict[str, Any], target: date) -> int:
@@ -1066,7 +1049,7 @@ def _nowcast_threshold_adjustment(
         if bounds is None:
             return forecast_probability, "no-threshold"
         _lower_f, upper_f = bounds.as_tuple()
-        if observed_high_f >= upper_f:
+        if temperature_gt_f(observed_high_f, upper_f):
             return 0.0, "observed-high-above-exact-bucket"
         return forecast_probability, "observed-high-not-decisive"
 
@@ -1075,7 +1058,7 @@ def _nowcast_threshold_adjustment(
         if bounds is None:
             return forecast_probability, "no-threshold"
         _lower_f, upper_f = bounds.as_tuple()
-        if observed_high_f > upper_f:
+        if temperature_gt_f(observed_high_f, upper_f):
             return 0.0, "observed-high-above-range-bucket"
         return forecast_probability, "observed-high-not-decisive"
 
@@ -1084,7 +1067,7 @@ def _nowcast_threshold_adjustment(
         if bounds is None:
             return forecast_probability, "no-threshold"
         _lower_f, upper_f = bounds.as_tuple()
-        if observed_high_f >= upper_f:
+        if temperature_gt_f(observed_high_f, upper_f):
             return 0.0, "observed-high-above-lower-tail"
         return forecast_probability, "observed-high-not-decisive"
 
@@ -1093,13 +1076,13 @@ def _nowcast_threshold_adjustment(
         if bounds is None:
             return forecast_probability, "no-threshold"
         lower_f, _upper_f = bounds.as_tuple()
-        if observed_high_f >= lower_f:
+        if temperature_gte_f(observed_high_f, lower_f):
             return 1.0, "observed-high-reached-upper-tail"
         return forecast_probability, "observed-high-not-decisive"
 
-    if parsed.operator == ">=" and observed_high_f >= threshold_f:
+    if parsed.operator == ">=" and temperature_gte_f(observed_high_f, threshold_f):
         return 1.0, "observed-high-reached-threshold"
-    if parsed.operator == "<=" and observed_high_f > threshold_f:
+    if parsed.operator == "<=" and temperature_gt_f(observed_high_f, threshold_f):
         return 0.0, "observed-high-above-threshold"
     return forecast_probability, "observed-high-not-decisive"
 
@@ -1118,7 +1101,7 @@ def _nowcast_low_threshold_adjustment(
         if bounds is None:
             return forecast_probability, "no-threshold"
         lower_f, _upper_f = bounds.as_tuple()
-        if observed_low_f < lower_f:
+        if temperature_lt_f(observed_low_f, lower_f):
             return 0.0, "observed-low-below-exact-bucket"
         return forecast_probability, "observed-low-not-decisive"
 
@@ -1127,7 +1110,7 @@ def _nowcast_low_threshold_adjustment(
         if bounds is None:
             return forecast_probability, "no-threshold"
         lower_f, _upper_f = bounds.as_tuple()
-        if observed_low_f < lower_f:
+        if temperature_lt_f(observed_low_f, lower_f):
             return 0.0, "observed-low-below-range-bucket"
         return forecast_probability, "observed-low-not-decisive"
 
@@ -1136,7 +1119,7 @@ def _nowcast_low_threshold_adjustment(
         if bounds is None:
             return forecast_probability, "no-threshold"
         _lower_f, upper_f = bounds.as_tuple()
-        if observed_low_f <= upper_f:
+        if temperature_lte_f(observed_low_f, upper_f):
             return 1.0, "observed-low-reached-lower-tail"
         return forecast_probability, "observed-low-not-decisive"
 
@@ -1145,13 +1128,13 @@ def _nowcast_low_threshold_adjustment(
         if bounds is None:
             return forecast_probability, "no-threshold"
         lower_f, _upper_f = bounds.as_tuple()
-        if observed_low_f < lower_f:
+        if temperature_lt_f(observed_low_f, lower_f):
             return 0.0, "observed-low-below-upper-tail"
         return forecast_probability, "observed-low-not-decisive"
 
-    if parsed.operator == "<=" and observed_low_f <= threshold_f:
+    if parsed.operator == "<=" and temperature_lte_f(observed_low_f, threshold_f):
         return 1.0, "observed-low-reached-threshold"
-    if parsed.operator == ">=" and observed_low_f < threshold_f:
+    if parsed.operator == ">=" and temperature_lt_f(observed_low_f, threshold_f):
         return 0.0, "observed-low-below-threshold"
     return forecast_probability, "observed-low-not-decisive"
 
@@ -1162,13 +1145,14 @@ def _observed_temperature_extremes(
     *,
     target: date,
     metric: str,
+    now: datetime | None,
 ) -> StationNowcastObservation | None:
     if hasattr(observation_provider, "observed_temperature_extremes_so_far"):
-        return observation_provider.observed_temperature_extremes_so_far(station, target_date=target)
+        return observation_provider.observed_temperature_extremes_so_far(station, target_date=target, now=now)
     if metric == "min" and hasattr(observation_provider, "observed_low_so_far"):
-        return observation_provider.observed_low_so_far(station, target_date=target)
+        return observation_provider.observed_low_so_far(station, target_date=target, now=now)
     if metric != "min" and hasattr(observation_provider, "observed_high_so_far"):
-        return observation_provider.observed_high_so_far(station, target_date=target)
+        return observation_provider.observed_high_so_far(station, target_date=target, now=now)
     return None
 
 
@@ -1179,6 +1163,7 @@ def _with_temperature_nowcast(
     target: date,
     settings: Settings,
     observation_provider: Any | None,
+    now: datetime | None,
 ) -> WeatherSignal:
     if not settings.station_nowcast_enabled:
         return replace(signal, note=f"{signal.note}; evidence=forecast-only; nowcast_unavailable=disabled")
@@ -1191,6 +1176,7 @@ def _with_temperature_nowcast(
             station,
             target=target,
             metric=parsed.temperature_metric,
+            now=now,
         )
     except Exception as exc:  # noqa: BLE001
         note = f"{signal.note}; evidence=forecast-only; nowcast_unavailable=provider-error:{type(exc).__name__}"
@@ -1247,6 +1233,7 @@ def estimate_weather_probability(
     client: Any | None = None,
     ensemble_client: OpenMeteoEnsembleClient | None = None,
     observation_provider: Any | None = None,
+    now: datetime | None = None,
 ) -> WeatherSignal:
     """Estimate P(YES) for a Polymarket weather question.
 
@@ -1256,6 +1243,7 @@ def estimate_weather_probability(
     is subtracted before threshold comparison.
     """
     settings = settings or Settings()
+    current = now or _utc_now()
     parsed = parse_weather_question(question)
     if parsed.variable != "temperature":
         return WeatherSignal(
@@ -1279,7 +1267,8 @@ def estimate_weather_probability(
         )
 
     if parsed.variable == "temperature" and parsed.threshold_f is not None and parsed.operator is not None:
-        target = _target_date_from_hint(parsed, timezone_name=station.timezone)
+        target_window = event_date_window_from_hint(parsed.date_hint, station.timezone, now=current)
+        target = target_window.event_date_local if target_window is not None else _target_date_from_hint(parsed, timezone_name=station.timezone, now=current)
         variable = _temperature_daily_variable(parsed)
 
         try:
@@ -1289,7 +1278,7 @@ def estimate_weather_probability(
                 station.latitude,
                 station.longitude,
                 timezone=station.timezone,
-                forecast_days=max(3, min(16, int(_lead_time_days(target, timezone_name=station.timezone)) + 2)),
+                forecast_days=max(3, min(16, int(_lead_time_days(target, timezone_name=station.timezone, now=current)) + 2)),
                 city=parsed.city or "",
                 station_id=station.station_id,
                 station_name=station.station_name,
@@ -1302,7 +1291,7 @@ def estimate_weather_probability(
 
             mean_f = _mean(member_values)
             spread_f = _stdev(member_values)
-            sigma_f = dynamic_sigma_f(member_values, _lead_time_days(target, timezone_name=station.timezone))
+            sigma_f = dynamic_sigma_f(member_values, _lead_time_days(target, timezone_name=station.timezone, now=current))
             p, empirical_p = _temperature_bucket_probability(parsed, member_values, mean_f, sigma_f)
 
             # Confidence: station mapped + enough members + low ambiguity.  Wider spread lowers confidence.
@@ -1312,13 +1301,20 @@ def estimate_weather_probability(
             confidence = clamp_probability(parsed.confidence + station_bonus + member_bonus - spread_penalty)
 
             date_used = (daily.get("time") or [target.isoformat()])[min(idx, max(0, len(daily.get("time") or []) - 1))]
+            window_note = ""
+            if target_window is not None:
+                window_note = (
+                    f"; event_window_utc={target_window.event_start_utc.isoformat()}"
+                    f"..{target_window.event_end_utc.isoformat()}"
+                )
             note = (
                 f"{station.station_name} [{station.station_id}] target_date={date_used}; "
                 f"bucket={parsed.temperature_bucket}; {parsed.operator}{_format_threshold(parsed)}; "
+                f"comparison_unit={TEMPERATURE_COMPARISON_UNIT}; "
                 f"members={len(member_values)}; "
                 f"vote={empirical_p:.3f}; mean={mean_f:.1f}F; spread={spread_f:.2f}F; "
                 f"dynamic_sigma={sigma_f:.2f}F; bias={bias_f:+.2f}F; "
-                f"models={ensemble_client.models}. {station.note}"
+                f"models={ensemble_client.models}{window_note}. {station.note}"
             )
             signal = WeatherSignal(
                 p_true=clamp_probability(p),
@@ -1327,7 +1323,7 @@ def estimate_weather_probability(
                 note=note,
                 parsed=parsed,
             )
-            return _with_temperature_nowcast(signal, parsed, station, target, settings, observation_provider)
+            return _with_temperature_nowcast(signal, parsed, station, target, settings, observation_provider, current)
         except Exception as exc:  # noqa: BLE001
             return WeatherSignal(
                 p_true=0.5,

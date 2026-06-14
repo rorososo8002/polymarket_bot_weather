@@ -7,6 +7,30 @@ Side = Literal["YES", "NO", "SKIP", "SKIP_ERROR"]
 
 
 @dataclass(frozen=True)
+class MarketRuleProvenance:
+    market_id: str
+    question: str
+    slug: str | None = None
+    event_slug: str | None = None
+    description: str = ""
+    resolution_source: str = ""
+    resolution_rules_text: str = ""
+    city: str | None = None
+    event_date_local: str | None = None
+    event_timezone: str | None = None
+    event_start_utc: str | None = None
+    event_end_utc: str | None = None
+    station_id: str | None = None
+    unit: Literal["F", "C", "UNKNOWN"] = "UNKNOWN"
+    condition_type: str | None = None
+    exact_value: float | None = None
+    range_low: float | None = None
+    range_high: float | None = None
+    threshold_value: float | None = None
+    mismatch_reason: str = ""
+
+
+@dataclass(frozen=True)
 class RawMarket:
     market_id: str
     question: str
@@ -19,6 +43,7 @@ class RawMarket:
     event_id: str | None = None
     event_slug: str | None = None
     raw: dict[str, Any] | None = None
+    rule_provenance: MarketRuleProvenance | None = None
 
 
 @dataclass(frozen=True)

@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Strategy Validation Gap Closure Plan</title>
+  <style>
+    :root {
+      --ink: #1f2937;
+      --muted: #667085;
+      --line: #d0d5dd;
+      --panel: #f8fafc;
+      --accent: #0f766e;
+      --danger: #991b1b;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", "Malgun Gothic", Arial, sans-serif;
+      color: var(--ink);
+      background: #fff;
+      line-height: 1.65;
+    }
+    main { max-width: 980px; margin: 0 auto; padding: 40px 24px 72px; }
+    h1 { margin: 0 0 12px; font-size: clamp(28px, 5vw, 44px); line-height: 1.15; letter-spacing: 0; }
+    h2 { margin: 34px 0 12px; font-size: 24px; letter-spacing: 0; }
+    h3 { margin: 22px 0 8px; font-size: 18px; letter-spacing: 0; }
+    p { margin: 0 0 12px; }
+    ul, ol { margin: 8px 0 18px 24px; padding: 0; }
+    li { margin: 7px 0; }
+    code { font-family: Consolas, "Cascadia Mono", monospace; background: #eef2f6; padding: 1px 5px; border-radius: 4px; }
+    pre { overflow-x: auto; background: #101828; color: #f9fafb; padding: 16px; border-radius: 8px; line-height: 1.5; }
+    pre code { background: transparent; padding: 0; color: inherit; }
+    header { border-bottom: 1px solid var(--line); padding-bottom: 24px; margin-bottom: 28px; }
+    .meta { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+    .badge { border: 1px solid var(--line); border-radius: 999px; padding: 5px 10px; color: var(--muted); font-size: 13px; }
+    .callout { border-left: 4px solid var(--accent); background: var(--panel); padding: 14px 16px; margin: 18px 0; }
+    .danger { border-left-color: var(--danger); }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 12px; }
+    .card { border: 1px solid var(--line); border-radius: 8px; padding: 14px; background: #fff; }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>Strategy Validation Gap Closure Plan</h1>
+      <p>새 AI가 명시적으로 이 계획 실행을 지시받았을 때 쓰는 순차 작업표다. 기본 새 채팅이 자동으로 실행하는 backlog가 아니다.</p>
+      <div class="meta">
+        <span class="badge">Status: ready for explicit execution</span>
+        <span class="badge">Created: 2026-06-14</span>
+        <span class="badge">Paper-only strategy validation</span>
+      </div>
+    </header>
+
+    <section class="callout danger">
+      <p><strong>현재 단계는 실거래가 아니다.</strong> 지갑, 개인키, 서명, 실주문, 상환, 카피트레이딩, <code>LiveBroker</code>는 별도 live-trading safety project 전까지 금지다.</p>
+    </section>
+
+    <section>
+      <h2>이미 보호된 기반</h2>
+      <p>다음 항목은 새로 만들 단원이 아니라 망가지지 않게 지켜야 할 단원이다.</p>
+      <ul>
+        <li>ask/bid depth 기반 executable VWAP 진입과 청산</li>
+        <li>수수료 반영, partial close, fake close 금지</li>
+        <li>exact bucket half-step 제거와 range endpoint 보존</li>
+        <li>WebSocket book snapshot 우선, price_change delta 제한</li>
+        <li>Open-Meteo cache와 429 rate-limit fail-closed</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>다음 작업 순서</h2>
+      <ol>
+        <li>Market rule provenance and mismatch gate</li>
+        <li>Station metadata quality grades</li>
+        <li>Local event date windows</li>
+        <li>Temperature comparison precision hardening</li>
+        <li>Final pre-trade check and configurable spread guard</li>
+        <li>Replayable decision and evidence snapshots</li>
+        <li>Minimum performance report upgrade</li>
+        <li>Dashboard exit liquidity view</li>
+        <li>Confidence score and forecast freshness penalty</li>
+        <li>Drawdown circuit breaker</li>
+        <li>Portfolio payoff table and hidden overlap</li>
+        <li>Paper-validation runbook and live readiness gates</li>
+      </ol>
+    </section>
+
+    <section>
+      <h2>버릴 조언</h2>
+      <div class="grid">
+        <div class="card"><h3>Live keys</h3><p>paper bot 안에 wallet, private key, real order 코드를 넣지 않는다.</p></div>
+        <div class="card"><h3>Midpoint PnL</h3><p>midpoint 수익률은 참고값일 뿐 trusted PnL이 아니다.</p></div>
+        <div class="card"><h3>City expansion</h3><p>정산 관측소와 nowcast 근거가 없으면 도시를 늘리지 않는다.</p></div>
+        <div class="card"><h3>Retry bombing</h3><p>429나 반복 실패를 두드리지 않는다. batch를 멈춘다.</p></div>
+      </div>
+    </section>
+
+    <section>
+      <h2>새 채팅 명령</h2>
+      <pre><code>AGENTS.md를 따라 진행해. 먼저 docs/active/current-task.md와 docs/production-decisions.md를 읽어. 이번에는 내가 명시적으로 docs/plans/2026-06-14-001-strategy-validation-gap-closure-plan.md 실행을 지시한다. 첨부 조언을 무조건 베끼지 말고, 코드와 테스트를 확인해서 이미 보호된 것, 지금 채택할 것, 나중에 할 것, 버릴 것을 구분해. 현재 단계는 paper-only strategy validation이며 실거래, 지갑, 개인키, LiveBroker는 금지다. 계획서의 첫 미완료 작업부터 순서대로 진행해.</code></pre>
+    </section>
+  </main>
+</body>
+</html>

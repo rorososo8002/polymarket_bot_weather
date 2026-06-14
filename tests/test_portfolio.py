@@ -251,7 +251,7 @@ def test_evaluate_market_skips_when_entry_bankroll_is_zero(tmp_path):
         resolution_error_margin=0.0,
     )
     raw_market = market("seoul-26", "26\u00b0C")
-    signal = WeatherSignal(0.80, 0.90, "test", "test", parse_weather_question(raw_market.question))
+    signal = WeatherSignal(0.80, 1.0, "test", "test", parse_weather_question(raw_market.question))
     client = FakeClient(
         {
             "seoul-26-yes": orderbook("seoul-26-yes", 0.39, 0.40),
@@ -282,7 +282,7 @@ def test_evaluate_market_skips_when_calculated_order_is_below_minimum(tmp_path):
         resolution_error_margin=0.0,
     )
     raw_market = market("seoul-26", "26\u00b0C")
-    signal = WeatherSignal(0.80, 0.90, "test", "test", parse_weather_question(raw_market.question))
+    signal = WeatherSignal(0.80, 1.0, "test", "test", parse_weather_question(raw_market.question))
     client = FakeClient(
         {
             "seoul-26-yes": orderbook("seoul-26-yes", 0.39, 0.40),
@@ -313,7 +313,7 @@ def test_evaluate_market_accepts_minimum_sized_order_without_requiring_max_depth
         resolution_error_margin=0.0,
     )
     raw_market = market("seoul-26", "26\u00b0C")
-    signal = WeatherSignal(0.80, 0.90, "test", "test", parse_weather_question(raw_market.question))
+    signal = WeatherSignal(0.80, 1.0, "test", "test", parse_weather_question(raw_market.question))
     client = FakeClient(
         {
             "seoul-26-yes": orderbook_with_ask_depth("seoul-26-yes", 0.39, [(0.40, 25.0)]),
@@ -344,7 +344,7 @@ def test_evaluate_market_scales_final_order_down_to_available_depth(tmp_path):
         resolution_error_margin=0.0,
     )
     raw_market = market("seoul-26", "26\u00b0C")
-    signal = WeatherSignal(0.80, 0.90, "test", "test", parse_weather_question(raw_market.question))
+    signal = WeatherSignal(0.80, 1.0, "test", "test", parse_weather_question(raw_market.question))
     client = FakeClient(
         {
             "seoul-26-yes": orderbook_with_ask_depth("seoul-26-yes", 0.39, [(0.40, 25.0)]),
@@ -407,7 +407,7 @@ def test_evaluate_market_reprices_edge_when_final_order_walks_the_book(tmp_path)
         resolution_error_margin=0.0,
     )
     raw_market = market("seoul-26", "26\u00b0C")
-    signal = WeatherSignal(0.80, 0.90, "test", "test", parse_weather_question(raw_market.question))
+    signal = WeatherSignal(0.80, 1.0, "test", "test", parse_weather_question(raw_market.question))
     client = FakeClient(
         {
             "seoul-26-yes": orderbook_with_ask_depth("seoul-26-yes", 0.39, [(0.40, 25.0), (0.50, 25.0)]),
@@ -452,7 +452,7 @@ def test_fee_adjusted_shares_drive_portfolio_scenario_and_open_position(tmp_path
         resolution_error_margin=0.0,
     )
     raw_market = market("seoul-26", "26\u00b0C")
-    signal = WeatherSignal(0.80, 0.90, "test", "test", parse_weather_question(raw_market.question))
+    signal = WeatherSignal(0.80, 1.0, "test", "test", parse_weather_question(raw_market.question))
     client = FakeClient(
         {
             "seoul-26-yes": orderbook("seoul-26-yes", 0.39, 0.40),
@@ -564,7 +564,7 @@ def test_range_temperature_interval_uses_displayed_bounds_without_half_step():
     exact_interval = _temperature_interval("Will the highest temperature in Atlanta be 87F on May 25?")
 
     assert range_interval == pytest.approx((86.0, 87.0))
-    assert exact_interval == pytest.approx((86.5, 87.5))
+    assert exact_interval == pytest.approx((87.0, 87.0))
 
 
 def test_event_portfolio_keeps_displayed_range_ladder_separate_from_held_position(tmp_path):
@@ -858,6 +858,25 @@ def test_event_portfolio_fails_closed_when_range_intervals_overlap_at_boundary(t
     assert any("scenario probabilities overlap" in item.reason for item in decision.rejected)
 
 
+def test_event_portfolio_fails_closed_when_threshold_ladders_overlap_with_ratio(tmp_path):
+    broker = PaperBroker(settings(tmp_path))
+
+    decision = select_event_portfolio(
+        broker,
+        [
+            candidate("seoul-29-plus", "29\u00b0C or higher", p_true=0.45, p_exec=0.20, expected_net_profit_usd=2.0),
+            candidate("seoul-30-plus", "30\u00b0C or higher", p_true=0.40, p_exec=0.20, expected_net_profit_usd=2.0),
+        ],
+        usable_snapshot(),
+    )
+
+    assert decision.selected == []
+    assert any(
+        "scenario probabilities overlap" in item.reason and "overlap_ratio=" in item.reason
+        for item in decision.rejected
+    )
+
+
 def test_event_portfolio_tolerates_tiny_probability_sum_dust_without_fail_closed(tmp_path):
     broker = PaperBroker(settings(tmp_path, bankroll_usd=300.0))
 
@@ -904,6 +923,11 @@ def test_event_portfolio_log_reconstructs_budget_legs_rejections_and_scenarios(t
     assert row["rejected_count"] == 1
     assert row["expected_log_growth"] > 0.0
     assert row["worst_scenario_pnl_usd"] <= row["expected_net_profit_usd"]
+    payoff_by_outcome = {item["outcome"]: item for item in row["scenario_payoff_audit"]}
+    assert set(payoff_by_outcome) == set(decision.scenario_probabilities)
+    assert payoff_by_outcome["other"]["probability"] == pytest.approx(decision.scenario_probabilities["other"])
+    assert payoff_by_outcome["other"]["pnl_usd"] == pytest.approx(decision.scenario_pnl_usd["other"])
+    assert payoff_by_outcome["seoul-26"]["pnl_usd"] == pytest.approx(decision.scenario_pnl_usd["seoul-26"])
 
 
 def test_event_portfolio_log_payload_is_compact_summary(tmp_path):
@@ -1385,7 +1409,7 @@ def test_run_cycle_opens_two_profitable_no_legs_for_same_event(monkeypatch, tmp_
 
     def estimate(question, **_kwargs):
         parsed = parse_weather_question(question)
-        return WeatherSignal(0.10, 0.90, "test", "test", parsed)
+        return WeatherSignal(0.10, 1.0, "test", "test", parsed)
 
     monkeypatch.setattr("weather_bot.live_paper_runner.PolymarketClient", CycleClient)
     monkeypatch.setattr("weather_bot.live_paper_runner.estimate_weather_probability", estimate)

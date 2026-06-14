@@ -1,6 +1,7 @@
 ---
 title: Exact and range bucket nowcast must flag held NO exit risk
 date: 2026-06-07
+last_updated: 2026-06-12
 category: logic-errors
 module: weather_bot.live_paper_runner, weather_bot.exit_policy
 problem_type: logic_error
@@ -22,7 +23,8 @@ tags: [paper-trading, nowcast, exit-policy, exact-bucket, range-bucket, held-no]
 Exact and range temperature markets are settlement buckets. A question such as
 `Will the highest temperature in Hong Kong be 30C today?` is not the same as
 `30C or higher` in this project. It means the final observed high must land in
-the parsed exact bucket.
+the displayed exact value. Do not widen the exact value into a hidden half-step
+interval. A range bucket still means the displayed inclusive range endpoints.
 
 The probability code already handled decisive evidence: if observed high fully
 moved above the exact or range bucket, YES became impossible and `p_true` went
@@ -64,8 +66,10 @@ the WebSocket token is stale, the existing paper blocker path still preserves
 
 - Add a focused held-position test before changing exit behavior.
 - Test exact and range buckets together; they share the same bucket-lock risk.
-- Keep the existing YES-impossible rule for observed values fully outside the
-  bucket.
+- Keep the YES-impossible rule for observed values that make the final bucket
+  impossible: daily-high observed values above the exact value/range upper
+  endpoint, and daily-low observed values below the exact value/range lower
+  endpoint.
 - For daily-low markets, verify that observed high is not requested or applied.
 - Check `paper_trades.csv` reasons for the specific `exit_trigger`, not only
   that the position disappeared.

@@ -1,6 +1,7 @@
 ---
 title: Surface nowcast evidence in open-position dashboard payloads
 date: 2026-06-12
+last_updated: 2026-06-12
 category: logic-errors
 module: weather_bot.dashboard
 problem_type: logic_error
@@ -71,10 +72,12 @@ provider never ran.
   key the template reads.
 - Debug missing dashboard fields by checking each layer in order:
   runtime evidence, decision/trade ledger, payload builder, then template.
-- For held-position nowcast exits, remember exact Celsius buckets are rounded
-  intervals. For a 29C exact-high market, 29.1C is still inside the 29C bucket;
-  only above the exact bucket boundary, about 29.5C, should make held YES
-  probability collapse to zero and trigger the normal probability stop path.
+- For held-position nowcast exits, do not treat exact Celsius buckets as
+  rounded intervals. If Polymarket says the settlement source uses whole
+  degrees Celsius, the exact bucket is the displayed integer value itself. For
+  a 29C exact-high market, observed_high_c=29.1 is already above the 29C bucket
+  and should make held YES probability collapse to zero; observed_high_c=28.9
+  is not decisive because the day's high can still rise.
 
 ## Related Issues
 - [Realtime nowcast signals must refresh on the nowcast TTL](./realtime-nowcast-signal-refresh-must-follow-nowcast-ttl.md)

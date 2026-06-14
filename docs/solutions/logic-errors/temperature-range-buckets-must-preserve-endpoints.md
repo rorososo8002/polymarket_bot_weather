@@ -1,6 +1,7 @@
 ---
 title: Temperature range buckets must preserve both endpoints
 date: 2026-06-05
+last_updated: 2026-06-14
 category: logic-errors
 module: weather_bot.weather_client, weather_bot.probability, weather_bot.portfolio
 problem_type: logic_error
@@ -9,6 +10,7 @@ symptoms:
   - "A market such as 86-87F was parsed as an exact 87F bucket."
   - "The YES probability was calculated from a condition different from the market text."
   - "Portfolio interval checks risked using widened ranges instead of the displayed settlement range."
+  - "Float artifacts near endpoints could make a boundary value look just outside the displayed range."
 root_cause: logic_error
 resolution_type: code_fix
 severity: high
@@ -65,6 +67,15 @@ converted values without rounding.
 The portfolio interval code uses the same displayed range interval, so scenario
 tables and complementary-leg checks do not widen or shrink the market condition.
 
+The current implementation also centralizes endpoint comparison in
+`TemperatureBucketInterval.contains_f()`. The boundary values are still stored
+in Fahrenheit for compatibility, but comparison uses `millifahrenheit`, an
+integer scale where `68.000F` becomes `68000`. This keeps values like
+`68.00000000000001F` from being treated as above a displayed `68F` endpoint,
+while a real `68.001F` remains outside the range. The interval metadata exposes
+the original market unit and the internal comparison unit so logs and tests can
+show which ruler was used.
+
 ## 4. What To Check Next Time
 
 - Add a parser test first for any new Polymarket question shape.
@@ -73,9 +84,12 @@ tables and complementary-leg checks do not widen or shrink the market condition.
 - Add a probability test with fake ensemble members at each endpoint.
 - Add just-below and just-above boundary values such as `85.999F` and
   `87.001F`.
+- Include a binary-float artifact case such as `68.00000000000001F`, and a real
+  outside value such as `68.001F`.
 - Add a portfolio interval test when a market shape can overlap another bucket.
 - Check whether a helper name or comment mentions rounding or half-step
-  expansion; range markets must not use that behavior.
+  expansion; range and exact markets must not use that behavior unless the
+  current Polymarket resolution text explicitly says so.
 - Run the focused parser/probability/portfolio tests before the full pytest
   suite.
 
@@ -86,9 +100,15 @@ collapses a market shape, paper trading can look profitable for the wrong
 reason. Temperature buckets must stay consistent across parser output,
 probability intervals, and portfolio complementarity checks.
 
-Exact buckets still have separate legacy rounded-cell behavior in this project.
-Do not copy that rule into range buckets unless official settlement evidence
-explicitly says to do so.
+Exact buckets must preserve the displayed settlement value too. For a displayed
+`29C` exact bucket, do not invent a hidden `28.5C-29.5C` interval. Daily-high
+nowcast below the exact value is not decisive because the high can still rise,
+but nowcast above the exact value already makes held YES impossible.
+
+Keep Celsius/Fahrenheit conversion at the parser or boundary-construction
+edge. After that, probability votes, nowcast risk, and portfolio checks should
+reuse the centralized temperature interval helper instead of writing new float
+comparisons in each module.
 
 ## Related
 

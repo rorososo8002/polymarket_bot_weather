@@ -1010,6 +1010,50 @@ def test_open_position_if_needed_blocks_inactive_or_closed_markets():
     assert opened_market_ids == ["open"]
 
 
+def test_open_position_if_needed_rechecks_fresh_spread_before_broker_open(tmp_path):
+    question = "Will NYC reach 90 F on May 25?"
+    settings = Settings(
+        state_path=str(tmp_path / "state.json"),
+        trades_csv_path=str(tmp_path / "trades.csv"),
+        decisions_csv_path=str(tmp_path / "decisions.csv"),
+        raw_snapshots_path=str(tmp_path / "raw.jsonl"),
+        portfolio_decisions_jsonl_path=str(tmp_path / "portfolio.jsonl"),
+        min_net_edge=0.01,
+        min_order_usd=1.0,
+        max_entry_spread_abs=0.05,
+        max_entry_spread_pct=1.0,
+        weather_taker_fee_rate=0.0,
+        model_error_margin=0.0,
+        resolution_error_margin=0.0,
+        entry_min_expected_net_return_pct=0.01,
+        size_mode="fixed_fraction",
+        entry_fraction=0.10,
+    )
+    broker = runner_module.PaperBroker(settings)
+    market = RawMarket("m1", question, "open", True, False, "yes", "no")
+    signal = WeatherSignal(0.90, 0.90, "test", "test", parse_weather_question(question))
+    result = runner_module.EdgeResult("YES", 0.90, 0.50, 0.40, 10.0, 20.0, "selected")
+
+    class FinalBookClient:
+        def get_order_book(self, token_id: str) -> OrderBook:
+            assert token_id == "yes"
+            return OrderBook("yes", bids=[OrderLevel(0.44, 1000.0)], asks=[OrderLevel(0.50, 1000.0)])
+
+    final_result = runner_module._open_position_if_needed(
+        broker,
+        market,
+        signal,
+        result,
+        "temperature",
+        client=FinalBookClient(),
+    )
+
+    assert final_result.side == "SKIP"
+    assert "SKIP_WIDE_SPREAD" in final_result.reason
+    assert broker.state.positions == []
+    assert "SKIP_WIDE_SPREAD" in (tmp_path / "trades.csv").read_text(encoding="utf-8")
+
+
 def test_stream_status_phase_surfaces_dead_and_stale_websocket():
     assert hasattr(runner_module, "_stream_status_phase")
 

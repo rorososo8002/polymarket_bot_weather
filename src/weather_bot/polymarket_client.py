@@ -8,6 +8,7 @@ from urllib.parse import quote
 import requests
 from tenacity import RetryError, retry, stop_after_attempt, wait_exponential
 
+from .market_rules import build_market_rule_provenance
 from .models import OrderBook, OrderLevel, RawMarket
 from .orderbook_validation import valid_level_size, valid_orderbook_price
 from .stations import TRADING_READY_STATION_MAP
@@ -142,7 +143,7 @@ class PolymarketClient:
                 continue
             if not self._is_new_entry_candidate(row):
                 continue
-            market = self._parse_market(row, event_id=event_id or None, event_slug=event_slug)
+            market = self._parse_market(row, event_id=event_id or None, event_slug=event_slug, event=event)
             if market.yes_token_id and market.no_token_id:
                 markets.append(market)
         if not event_id and markets:
@@ -220,6 +221,7 @@ class PolymarketClient:
         *,
         event_id: str | None = None,
         event_slug: str | None = None,
+        event: dict[str, Any] | None = None,
     ) -> RawMarket:
         yes_token_id, no_token_id = self._token_ids_from_token_objects(row.get("tokens"))
         if not (yes_token_id and no_token_id):
@@ -229,19 +231,32 @@ class PolymarketClient:
             )
         active = parse_api_bool(row.get("active"), default=True)
         closed = parse_api_bool(row.get("closed"), default=False)
+        market_id = str(row.get("id") or row.get("market") or row.get("conditionId") or "unknown")
+        question = str(row.get("question") or row.get("title") or "")
+        slug = row.get("slug")
+        resolved_event_id = event_id or row.get("eventId") or row.get("event_id")
+        resolved_event_slug = event_slug or row.get("eventSlug") or row.get("event_slug")
 
         return RawMarket(
-            market_id=str(row.get("id") or row.get("market") or row.get("conditionId") or "unknown"),
-            question=str(row.get("question") or row.get("title") or ""),
-            slug=row.get("slug"),
+            market_id=market_id,
+            question=question,
+            slug=slug,
             active=active is True,
             closed=closed is not False,
             yes_token_id=yes_token_id,
             no_token_id=no_token_id,
             condition_id=row.get("conditionId") or row.get("condition_id"),
-            event_id=event_id or row.get("eventId") or row.get("event_id"),
-            event_slug=event_slug or row.get("eventSlug") or row.get("event_slug"),
+            event_id=resolved_event_id,
+            event_slug=resolved_event_slug,
             raw=row,
+            rule_provenance=build_market_rule_provenance(
+                market_id=market_id,
+                question=question,
+                slug=slug,
+                event_slug=resolved_event_slug,
+                raw=row,
+                event=event,
+            ),
         )
 
     @classmethod

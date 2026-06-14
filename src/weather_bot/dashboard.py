@@ -577,15 +577,18 @@ def _position_payload(
     pos: dict[str, Any],
     latest_decision: dict[str, str] | None = None,
     fee_rate: float = 0.0,
+    websocket_health: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     metadata = pos.get("metadata") if isinstance(pos.get("metadata"), dict) else {}
     latest_decision = latest_decision or {}
+    websocket_health = websocket_health or {}
     entry = _float(pos.get("entry_price"))
     shares = _float(pos.get("shares"))
     cost = _float(pos.get("cost_usd"))
     mark = _float(pos.get("last_mark_price"), entry)
     exit_fee_usdc = polymarket_taker_fee_usdc(shares, mark, fee_rate)
     value = shares * mark - exit_fee_usdc
+    exit_liquidity = _exit_liquidity_payload(metadata, shares, cost, mark, fee_rate)
     slug = metadata.get("slug") or latest_decision.get("slug") or ""
     event_slug = metadata.get("event_slug") or latest_decision.get("event_slug") or ""
     latest_note = latest_decision.get("note", "")
@@ -605,6 +608,14 @@ def _position_payload(
         "exit_fee_usdc": exit_fee_usdc,
         "market_value": value,
         "unrealized_pnl": value - cost,
+        "reference_mark_price": mark,
+        "reference_market_value": value,
+        "reference_unrealized_pnl": value - cost,
+        **exit_liquidity,
+        "websocket_status": str(websocket_health.get("status") or "UNKNOWN"),
+        "websocket_stale": bool(websocket_health.get("stale")),
+        "websocket_stale_book_age_seconds": websocket_health.get("stale_book_age_seconds"),
+        "websocket_last_book_at": str(websocket_health.get("last_book_at") or ""),
         "forecast_c": forecast_c,
         "nowcast_high_c": _nowcast_c_from_note(latest_note, "observed_high_c"),
         "nowcast_low_c": _nowcast_c_from_note(latest_note, "observed_low_c"),
@@ -632,6 +643,105 @@ def _optional_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _optional_bool(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes"}:
+            return True
+        if normalized in {"false", "0", "no"}:
+            return False
+    return None
+
+
+def _metadata_float(metadata: dict[str, Any], *keys: str) -> float | None:
+    for key in keys:
+        value = _optional_float(metadata.get(key))
+        if value is not None:
+            return value
+    return None
+
+
+def _safe_after_fee_value(shares: float, price: float, fee_rate: float) -> float:
+    if shares <= 0 or price <= 0:
+        return 0.0
+    try:
+        fee = polymarket_taker_fee_usdc(shares, price, fee_rate)
+    except ValueError:
+        return 0.0
+    return shares * price - fee
+
+
+def _exit_liquidity_payload(
+    metadata: dict[str, Any],
+    shares: float,
+    cost: float,
+    mark: float,
+    fee_rate: float,
+) -> dict[str, Any]:
+    best_bid = _metadata_float(metadata, "best_bid")
+    absorbable = _metadata_float(metadata, "absorbable_shares", "exit_available_shares")
+    can_fully_close = _optional_bool(metadata.get("can_fully_close"))
+    available = None if absorbable is None else max(0.0, min(shares, absorbable))
+    full_vwap = _metadata_float(metadata, "full_exit_vwap", "exit_full_vwap")
+    half_vwap = _metadata_float(metadata, "half_exit_vwap", "exit_half_vwap")
+    partial_vwap = _metadata_float(metadata, "partial_exit_vwap", "exit_partial_vwap")
+    if can_fully_close is True and full_vwap is None:
+        full_vwap = mark
+    if can_fully_close is True and half_vwap is None:
+        half_vwap = full_vwap
+
+    if can_fully_close is True:
+        liquidity_status = "full"
+        executable_shares = shares
+    elif available is not None and available > 0:
+        liquidity_status = "partial"
+        executable_shares = available
+    elif best_bid is None and can_fully_close is None and absorbable is None:
+        liquidity_status = "unknown"
+        executable_shares = 0.0
+    else:
+        liquidity_status = "blocked"
+        executable_shares = 0.0
+
+    if liquidity_status == "full":
+        executable_price = full_vwap
+    elif liquidity_status == "partial":
+        executable_price = partial_vwap if partial_vwap is not None else best_bid
+    else:
+        executable_price = None
+    bid_depth_value = _safe_after_fee_value(executable_shares, executable_price or 0.0, fee_rate)
+
+    blocker = str(
+        metadata.get("last_exit_blocker")
+        or metadata.get("exit_blocker")
+        or metadata.get("blocked_by")
+        or ""
+    )
+    if not blocker:
+        if liquidity_status == "blocked":
+            blocker = "no_executable_bid_depth"
+        elif liquidity_status == "partial":
+            blocker = "partial_liquidity"
+
+    return {
+        "exit_best_bid": best_bid,
+        "exit_available_shares": available,
+        "exit_full_vwap": full_vwap,
+        "exit_half_vwap": half_vwap,
+        "exit_partial_vwap": partial_vwap,
+        "exit_liquidity_status": liquidity_status,
+        "exit_blocker": blocker,
+        "exit_trigger": str(metadata.get("last_exit_trigger") or metadata.get("exit_trigger") or ""),
+        "exit_reason": str(metadata.get("last_exit_reason") or metadata.get("exit_reason") or ""),
+        "exit_slippage": _metadata_float(metadata, "exit_slippage"),
+        "bid_depth_executable_shares": executable_shares,
+        "bid_depth_market_value": bid_depth_value,
+        "bid_depth_unrealized_pnl": bid_depth_value - cost,
+    }
 
 
 def _f_to_c(value_f: float) -> float:
@@ -1065,6 +1175,7 @@ def build_dashboard_payload(settings: Settings | None = None, auth_required: boo
             p,
             decision_by_market.get(str(p.get("market_id") or "")),
             settings.weather_taker_fee_rate,
+            health["websocket"],
         )
         for p in state.get("positions", [])
         if isinstance(p, dict)

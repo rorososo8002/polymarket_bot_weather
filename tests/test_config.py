@@ -44,6 +44,8 @@ def test_default_raw_snapshot_mode_saves_only_error_diagnostics():
 
 def test_default_entry_net_return_filter_uses_official_weather_fee_rate():
     assert Settings.entry_min_expected_net_return_pct == 0.06
+    assert Settings.max_entry_spread_abs == 0.20
+    assert Settings.max_entry_spread_pct == 1.00
     assert Settings.weather_taker_fee_rate == 0.05
 
 
@@ -198,6 +200,8 @@ def test_load_settings_rejects_dashboard_port_outside_tcp_range(monkeypatch, raw
 def test_load_settings_reads_conservative_strategy_controls(monkeypatch):
     monkeypatch.setenv("PROBABILITY_STOP_DROP_THRESHOLD", "0.08")
     monkeypatch.setenv("ENTRY_MIN_EXPECTED_NET_RETURN_PCT", "0.07")
+    monkeypatch.setenv("MAX_ENTRY_SPREAD_ABS", "0.12")
+    monkeypatch.setenv("MAX_ENTRY_SPREAD_PCT", "0.75")
     monkeypatch.setenv("WEATHER_TAKER_FEE_RATE", "0.04")
     monkeypatch.setenv("SETTLEMENT_RUNNER_ENABLED", "false")
     monkeypatch.setenv("SETTLEMENT_RUNNER_MAX_FRACTION", "0.20")
@@ -208,6 +212,8 @@ def test_load_settings_reads_conservative_strategy_controls(monkeypatch):
     assert not hasattr(settings, "enable_precipitation_markets")
     assert settings.probability_stop_drop_threshold == 0.08
     assert settings.entry_min_expected_net_return_pct == 0.07
+    assert settings.max_entry_spread_abs == 0.12
+    assert settings.max_entry_spread_pct == 0.75
     assert settings.weather_taker_fee_rate == 0.04
     assert settings.settlement_runner_enabled is False
     assert settings.settlement_runner_max_fraction == 0.20
