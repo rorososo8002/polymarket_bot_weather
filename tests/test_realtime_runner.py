@@ -1078,6 +1078,20 @@ def test_stream_status_phase_surfaces_dead_and_stale_websocket():
     assert "stale" in stale_message
 
 
+def test_stream_status_phase_waits_when_no_streamable_tokens():
+    phase, message = runner_module._stream_status_phase(
+        {"thread_alive": False, "stale": True, "status_reason": "websocket receiver thread is not running"},
+        token_count=0,
+        market_count=0,
+        event_count=0,
+        city_count=0,
+    )
+
+    assert phase == "stream_waiting"
+    assert "no streamable temperature markets" in message
+    assert "0 tokens across 0 markets" in message
+
+
 def test_stream_status_phase_includes_operator_recovery_context():
     phase, message = runner_module._stream_status_phase(
         {

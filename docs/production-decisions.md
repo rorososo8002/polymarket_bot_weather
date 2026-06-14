@@ -42,8 +42,6 @@ compact; historical notes belong in focused `docs/solutions/` entries.
   contract. A title/rule conflict on city, high/low direction, unit, bucket
   shape, threshold/range value, date hint, or explicit settlement station must
   fail before forecast fetching with `SKIP_RULE_MISMATCH`.
-- Treat the gap plan as explicit execution, not an always-on backlog. Fresh
-  chats resume only from `docs/active/current-task.md`.
 - Same-station evidence quality must stay explicit in station metadata:
   temperature unit, reporting precision, same-station support, confidence
   grade, verification date, and confidence level.
@@ -77,9 +75,10 @@ compact; historical notes belong in focused `docs/solutions/` entries.
 
 - Use the Polymarket CLOB WebSocket market stream by default. Do not silently
   replace realtime streaming with polling.
-- Realtime startup must not wait for every market forecast. Start WebSocket once
-  the temperature token subscription set is known, then attach forecast and
-  nowcast signals as they become ready.
+- Zero streamable temperature tokens is WAITING/no-market, not WebSocket failure.
+  Show executable-depth failure only for a real token or concrete WS error.
+- Realtime startup must not wait for every forecast: start WebSocket after the
+  temperature token set is known, then attach forecast/nowcast signals.
 - Polymarket category-page discovery may parse many event slugs, but detailed
   `/events/slug/...` fetches are capped at 80 per discovery cycle and lower
   explicit `max_pages * page_size` budgets must be honored.
@@ -195,8 +194,10 @@ compact; historical notes belong in focused `docs/solutions/` entries.
 
 ## Runtime Data And Disk
 
-- Runtime ledgers are ignored by git and live under `data/` in production.
-  Delete or recreate them only for an intentional fresh paper experiment.
+- Runtime ledgers are ignored by git and live under `data/`; recreate them only
+  for an intentional fresh paper experiment.
+- `paper_runner_status.json` is a concurrent heartbeat; writes must use
+  collision-resistant temp paths before atomic replace.
 - `paper_decisions.csv` suppresses SKIP rows by default. Enable SKIP logging
   only for short debugging sessions.
 - `paper_event_portfolios.jsonl` writes only when at least one trade is

@@ -1234,6 +1234,49 @@ def test_dashboard_payload_surfaces_forecast_and_websocket_health(tmp_path):
     assert payload["bot"]["status"] == "FAILED"
 
 
+def test_dashboard_health_waits_when_no_forecast_or_stream_tokens(tmp_path):
+    state_path = tmp_path / "state.json"
+    runner_status_path = tmp_path / "paper_runner_status.json"
+    state_path.write_text(json.dumps({"cash_usd": 200.0, "positions": []}), encoding="utf-8")
+    runner_status_path.write_text(
+        json.dumps(
+            {
+                "updated_at": "2099-06-14T00:01:00+00:00",
+                "phase": "stream_waiting",
+                "message": "no streamable temperature markets discovered",
+                "markets_total": 0,
+                "events_total": 0,
+                "cities_total": 0,
+                "forecast": {
+                    "last_attempt_at": "",
+                    "last_success_at": "",
+                    "last_failure_reason": "",
+                    "cache_age_seconds": None,
+                    "stale": True,
+                },
+                "websocket": {
+                    "thread_alive": False,
+                    "reconnect_count": 0,
+                    "last_message_at": None,
+                    "last_book_at": None,
+                    "stale_book_age_seconds": None,
+                    "stale": True,
+                    "last_error": "",
+                    "status_reason": "websocket receiver thread is not running",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = build_dashboard_payload(Settings(state_path=str(state_path)))
+
+    assert payload["health"]["forecast"]["status"] == "WAITING"
+    assert payload["health"]["websocket"]["status"] == "WAITING"
+    assert payload["health"]["websocket"]["status_reason"] == "no streamable temperature tokens"
+    assert payload["bot"]["status"] == "WAIT"
+
+
 def test_dashboard_open_positions_include_exit_liquidity_and_bid_depth_pnl(tmp_path):
     state_path = tmp_path / "state.json"
     runner_status_path = tmp_path / "paper_runner_status.json"

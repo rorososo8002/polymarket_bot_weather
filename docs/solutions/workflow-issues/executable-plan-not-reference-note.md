@@ -1,7 +1,7 @@
 ---
 title: Make Handoff Plans Executable, Not Just Explanatory
 date: 2026-06-14
-last_updated: 2026-06-14
+last_updated: 2026-06-15
 category: workflow-issues
 module: documentation
 problem_type: workflow_issue
@@ -63,8 +63,11 @@ For this project:
 - keep durable rules in `AGENTS.md` and `docs/production-decisions.md`
 - keep active unfinished work only in `docs/active/current-task.md`
 - keep one-shot delegation prompts only in `docs/active/new-chat-task-prompts.md`
-- keep reusable implementation plans under `docs/plans/`
+- keep reusable implementation plans under `docs/plans/` only while they still
+  represent future explicit work
 - set active docs back to `Status: none` when the current work is complete
+- remove completed one-shot plans after their durable rules, code contracts,
+  tests, or reusable lessons have been folded into the stable docs
 
 ## Why This Matters
 
@@ -82,21 +85,18 @@ re-analyzing a plan that the user did not ask it to execute.
 
 ## Example
 
-For this repository, the correct handoff shape after the 2026-06-14
-strategy-validation documentation cleanup is:
+For this repository, the correct handoff shape after a one-shot plan has been
+completed is:
 
-- executable plan:
-  `docs/plans/2026-06-14-001-strategy-validation-gap-closure-plan.md`
-- human-readable HTML companion:
-  `docs/plans/2026-06-14-001-strategy-validation-gap-closure-plan.html`
-- documentation planning reference:
-  `docs/strategy-validation-documentation-plan.md`
 - active resume card:
   `docs/active/current-task.md` with `Status: none` unless implementation is
   actively unfinished
 - one-shot new chat prompt holder:
   `docs/active/new-chat-task-prompts.md` with `Status: none` unless an explicit
   handoff prompt is currently needed
+- durable rules in `AGENTS.md` and `docs/production-decisions.md`
+- reusable lessons in focused `docs/solutions/` entries
+- no completed plan file left in default reading paths just to preserve history
 
 ## When To Apply
 

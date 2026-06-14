@@ -828,12 +828,18 @@ def _forecast_health(settings: Settings, runner_status: dict[str, Any]) -> dict[
     raw = runner_status.get("forecast") if isinstance(runner_status.get("forecast"), dict) else {}
     last_success_at = str(raw.get("last_success_at") or _latest_forecast_cache_at(settings))
     cache_age_seconds = _live_age_seconds(last_success_at, raw.get("cache_age_seconds"))
-    stale = bool(raw.get("stale")) or (
-        cache_age_seconds is not None and cache_age_seconds > settings.forecast_cache_ttl_seconds
-    )
+    last_attempt_at = str(raw.get("last_attempt_at") or "")
     last_failure_reason = str(raw.get("last_failure_reason") or "")
     persistence_error = str(raw.get("persistence_error") or "")
-    if last_failure_reason and not last_success_at:
+    waiting_for_first_attempt = not (last_attempt_at or last_success_at or last_failure_reason or persistence_error)
+    stale = not waiting_for_first_attempt and (
+        bool(raw.get("stale")) or (
+            cache_age_seconds is not None and cache_age_seconds > settings.forecast_cache_ttl_seconds
+        )
+    )
+    if waiting_for_first_attempt:
+        status = "WAITING"
+    elif last_failure_reason and not last_success_at:
         status = "FAILED"
     elif stale:
         status = "STALE"
@@ -845,7 +851,7 @@ def _forecast_health(settings: Settings, runner_status: dict[str, Any]) -> dict[
         status = "WAITING"
     return {
         "status": status,
-        "last_attempt_at": str(raw.get("last_attempt_at") or ""),
+        "last_attempt_at": last_attempt_at,
         "last_success_at": last_success_at,
         "last_failure_reason": last_failure_reason,
         "cache_age_seconds": cache_age_seconds,
@@ -857,6 +863,7 @@ def _forecast_health(settings: Settings, runner_status: dict[str, Any]) -> dict[
 
 def _websocket_health(settings: Settings, runner_status: dict[str, Any]) -> dict[str, Any]:
     raw = runner_status.get("websocket") if isinstance(runner_status.get("websocket"), dict) else {}
+    markets_total = int(_float(runner_status.get("markets_total")))
     if not raw:
         return {
             "status": "UNKNOWN",
@@ -867,22 +874,40 @@ def _websocket_health(settings: Settings, runner_status: dict[str, Any]) -> dict
             "stale_book_age_seconds": None,
             "stale": False,
             "last_error": "",
+            "status_reason": "",
         }
     last_book_at = str(raw.get("last_book_at") or "")
     stale_book_age_seconds = _live_age_seconds(last_book_at, raw.get("stale_book_age_seconds"))
-    stale = bool(raw.get("stale")) or (
-        stale_book_age_seconds is not None and stale_book_age_seconds > settings.orderbook_stream_stale_seconds
-    )
     thread_alive = bool(raw.get("thread_alive"))
     last_error = str(raw.get("last_error") or "")
-    if not thread_alive:
+    waiting_for_stream_tokens = (
+        markets_total <= 0
+        and not thread_alive
+        and not last_error
+        and not str(raw.get("last_message_at") or "")
+        and not last_book_at
+    )
+    stale = not waiting_for_stream_tokens and (
+        bool(raw.get("stale")) or (
+            stale_book_age_seconds is not None
+            and stale_book_age_seconds > settings.orderbook_stream_stale_seconds
+        )
+    )
+    if waiting_for_stream_tokens:
+        status = "WAITING"
+        status_reason = "no streamable temperature tokens"
+    elif not thread_alive:
         status = "FAILED"
+        status_reason = str(raw.get("status_reason") or "")
     elif stale:
         status = "STALE"
+        status_reason = str(raw.get("status_reason") or "")
     elif last_error:
         status = "DEGRADED"
+        status_reason = str(raw.get("status_reason") or "")
     else:
         status = "HEALTHY"
+        status_reason = str(raw.get("status_reason") or "")
     return {
         "status": status,
         "thread_alive": thread_alive,
@@ -892,6 +917,7 @@ def _websocket_health(settings: Settings, runner_status: dict[str, Any]) -> dict
         "stale_book_age_seconds": stale_book_age_seconds,
         "stale": stale,
         "last_error": last_error,
+        "status_reason": status_reason,
     }
 
 

@@ -2189,6 +2189,8 @@ def _stream_status_phase(
     city_count: int,
 ) -> tuple[str, str]:
     coverage = f"{token_count} tokens across {market_count} markets, {event_count} events, {city_count} cities"
+    if token_count <= 0:
+        return "stream_waiting", f"no streamable temperature markets discovered; websocket waiting; {coverage}"
     block_reason = websocket_pricing_block_reason(websocket_health)
     recovery = ""
     if block_reason:

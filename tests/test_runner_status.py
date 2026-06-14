@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from weather_bot.config import Settings
 from weather_bot import runner_status as runner_status_module
@@ -38,3 +39,23 @@ def test_update_runner_status_fields_preserves_current_phase_and_message(tmp_pat
     assert payload["markets_done"] == 3
     assert payload["raw_snapshot_storage"]["status"] == "suspended"
     assert "disk usage" in payload["raw_snapshot_storage"]["reason"]
+
+
+def test_runner_status_writes_use_unique_temp_paths(tmp_path, monkeypatch):
+    settings = Settings(state_path=str(tmp_path / "paper_state.json"))
+    replaced_sources: list[str] = []
+    real_replace = runner_status_module.os.replace
+
+    def record_replace(src, dst):
+        replaced_sources.append(Path(src).name)
+        real_replace(src, dst)
+
+    monkeypatch.setattr(runner_status_module.os, "replace", record_replace)
+
+    write_runner_status(settings, "discovering", message="first")
+    runner_status_module.update_runner_status_fields(settings, forecast_worker={"thread_alive": True})
+
+    assert len(replaced_sources) == 2
+    assert replaced_sources[0] != replaced_sources[1]
+    assert all(name.startswith("paper_runner_status.json.") for name in replaced_sources)
+    assert all(name.endswith(".tmp") for name in replaced_sources)

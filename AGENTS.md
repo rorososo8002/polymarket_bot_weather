@@ -276,9 +276,17 @@ before continuing.
   history to it.
 - When work is complete, set `docs/active/current-task.md` back to
   `Status: none` unless there is a real unfinished follow-up.
+- When work is complete, remove completed objectives, completed next actions,
+  completed one-shot prompts, and completed plan pointers from default startup
+  docs. A future AI reading `docs/active/current-task.md` must not need to
+  mentally subtract finished work before starting.
 - Keep `docs/active/new-chat-task-prompts.md` as a single-use active prompt,
   not a backlog. When a prompted part is complete, remove that completed prompt
   and either replace it with exactly one next prompt or set it to `none`.
+- Delete or archive completed one-shot execution plans when their durable rules,
+  implementation contracts, tests, commits, or `docs/solutions/` lessons have
+  already captured the useful evidence. Do not leave completed plans in
+  startup-adjacent docs just because they were once important.
 - Keep active safety, trading, runtime, and handoff rules in
   `docs/production-decisions.md`.
 - Keep strategy and implementation contracts in

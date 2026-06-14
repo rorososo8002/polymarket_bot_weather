@@ -1,19 +1,26 @@
 # Current Task
 
-Status: none
+Status: active
 
 ## Objective
 
-No active unfinished task.
+Fix dashboard forecast/order-book health after fresh paper reset and keep
+handoff docs clean.
 
 ## Current Scope
 
-The explicit strategy-validation gap plan was implemented, focused-tested,
-committed, pushed, and deployed to the Oracle VPS.
+- Completed docs cleanup: removed completed one-shot plans, cleared finished
+  current-task history, and strengthened handoff hygiene rules.
+- Implemented local fix for concurrent `paper_runner_status.json` writes and
+  no-streamable-token health reporting.
+- Focused local tests passed for runner status, dashboard health, and realtime
+  stream status.
 
 ## Next Action
 
-None.
+Run full local pytest, commit the doc/code fix, deploy to the Oracle VPS, and
+verify dashboard health no longer reports false stale/failed state for a
+zero-token waiting cycle.
 
 ## New Chat Prompt
 
