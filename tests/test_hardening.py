@@ -620,6 +620,90 @@ def test_pre_forecast_gate_allows_matching_rule_provenance():
     assert pre_forecast_tradeability_gate(market, Settings(), "temperature") is None
 
 
+def test_pre_forecast_gate_allows_grouped_event_rules_with_unit_toggle_text():
+    client = FakePolymarketClient()
+    event = {
+        "id": "event-seoul",
+        "slug": "highest-temperature-in-seoul-on-june-16-2026",
+        "title": "Highest temperature in Seoul on June 16?",
+        "description": (
+            "This market will resolve to the temperature range that contains the highest "
+            "temperature recorded at the Incheon Intl Airport Station in degrees Celsius "
+            "on 16 Jun '26. The resolution source is Wunderground. To toggle between "
+            "Fahrenheit and Celsius, click the gear icon next to the search bar."
+        ),
+    }
+    market = client._parse_market(
+        {
+            "id": "seoul-28c",
+            "question": "Highest temperature in Seoul on June 16?",
+            "groupItemTitle": "28\u00b0C",
+            **binary_token_fields("yes", "no"),
+        },
+        event=event,
+    )
+
+    assert market.question == "Will the highest temperature in Seoul be 28\u00b0C on June 16?"
+    assert pre_forecast_tradeability_gate(market, Settings(), "temperature") is None
+
+
+def test_pre_forecast_gate_allows_grouped_event_rules_with_precision_numbers():
+    client = FakePolymarketClient()
+    event = {
+        "id": "event-hk",
+        "slug": "highest-temperature-in-hong-kong-on-june-16-2026",
+        "title": "Highest temperature in Hong Kong on June 16?",
+        "description": (
+            "This market will resolve to the temperature range that contains the highest "
+            "temperature recorded by the Hong Kong Observatory in degrees Celsius on "
+            "16 Jun '26. The resolution source measures temperatures in Celsius to one "
+            "decimal place; an example source display may show 9.1\u00b0C."
+        ),
+    }
+    market = client._parse_market(
+        {
+            "id": "hk-29c",
+            "question": "Highest temperature in Hong Kong on June 16?",
+            "groupItemTitle": "29\u00b0C",
+            **binary_token_fields("yes", "no"),
+        },
+        event=event,
+    )
+
+    assert market.question == "Will the highest temperature in Hong Kong be 29\u00b0C on June 16?"
+    assert pre_forecast_tradeability_gate(market, Settings(), "temperature") is None
+
+
+def test_pre_forecast_gate_still_skips_explicit_grouped_bucket_rule_mismatch():
+    client = FakePolymarketClient()
+    event = {
+        "id": "event-seoul",
+        "slug": "highest-temperature-in-seoul-on-june-16-2026",
+        "title": "Highest temperature in Seoul on June 16?",
+        "description": "Resolution text uses the Incheon Intl Airport Station RKSI and Celsius.",
+        "resolutionRules": (
+            "This market resolves Yes if the highest temperature in Seoul is 29\u00b0C "
+            "on June 16."
+        ),
+    }
+    market = client._parse_market(
+        {
+            "id": "seoul-28c",
+            "question": "Highest temperature in Seoul on June 16?",
+            "groupItemTitle": "28\u00b0C",
+            **binary_token_fields("yes", "no"),
+        },
+        event=event,
+    )
+
+    gated = pre_forecast_tradeability_gate(market, Settings(), "temperature")
+
+    assert gated is not None
+    _signal, result = gated
+    assert result.side == "SKIP"
+    assert "threshold value mismatch" in result.reason
+
+
 def test_discovery_rejects_weather_markets_outside_verified_station_set():
     assert not PolymarketClient._is_weather_market(
         {"question": "Will the highest temperature in Austin be 34\u00b0C or higher on May 25?"}

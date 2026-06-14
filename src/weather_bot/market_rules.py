@@ -39,6 +39,12 @@ RESOLUTION_SOURCE_KEYS = (
 EVENT_DESCRIPTION_KEYS = ("description", "longDescription", "long_description")
 EVENT_RESOLUTION_RULE_KEYS = ("resolutionRules", "resolution_rules", "rules")
 EVENT_SOURCE_KEYS = ("resolutionSource", "resolution_source", "resolutionUrl", "resolution_url")
+OUTCOME_CONDITION_RE = re.compile(
+    r"\b(?:"
+    r"resolves?|resolve|resolved|will\s+resolve|shall\s+resolve"
+    r")\s+(?:to\s+)?(?:yes|no)\b",
+    re.IGNORECASE,
+)
 
 
 def build_market_rule_provenance(
@@ -149,11 +155,46 @@ def _combined_text(*parts: str) -> str:
 def _explicit_unit(text: str) -> str | None:
     if not text:
         return None
+    settlement_unit = _settlement_unit_from_text(text)
+    if settlement_unit is not None:
+        return settlement_unit
     if re.search(r"(\bfahrenheit\b|\bdegrees?\s*f\b|\bdeg\s*f\b|[\u00b0\u00ba\u02da]\s*f\b)", text, re.IGNORECASE):
         return "F"
     if re.search(r"(\bcelsius\b|\bcentigrade\b|\bdegrees?\s*c\b|\bdeg\s*c\b|[\u00b0\u00ba\u02da]\s*c\b|\u2103)", text, re.IGNORECASE):
         return "C"
     return None
+
+
+def _settlement_unit_from_text(text: str) -> str | None:
+    unit_patterns = (
+        (
+            "C",
+            (
+                r"\b(?:recorded|measured|measures|source|settlement|settled|resolve[sd]?|resolves?)"
+                r"[^.]{0,160}\b(?:degrees?\s+)?celsius\b",
+                r"\bin\s+(?:degrees?\s+)?celsius\b",
+            ),
+        ),
+        (
+            "F",
+            (
+                r"\b(?:recorded|measured|measures|source|settlement|settled|resolve[sd]?|resolves?)"
+                r"[^.]{0,160}\b(?:degrees?\s+)?fahrenheit\b",
+                r"\bin\s+(?:degrees?\s+)?fahrenheit\b",
+            ),
+        ),
+    )
+    matches: list[tuple[int, str]] = []
+    for unit, patterns in unit_patterns:
+        for pattern in patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                matches.append((match.start(), unit))
+                break
+    if not matches:
+        return None
+    matches.sort(key=lambda item: item[0])
+    return matches[0][1]
 
 
 def _station_id_from_text(text: str) -> str | None:
@@ -235,7 +276,12 @@ def _mismatch_reason(
         return f"unit mismatch: title={title.threshold_unit} rule={rule_unit}"
     if rule_station_id and title_station_id and rule_station_id != title_station_id:
         return f"station mismatch: title={title_station_id} rule={rule_station_id}"
-    if rule is not None and rule.threshold_f is not None and rule.operator is not None:
+    if (
+        rule is not None
+        and rule.threshold_f is not None
+        and rule.operator is not None
+        and _rule_states_outcome_condition(rule_text)
+    ):
         title_condition = _condition_type(title)
         rule_condition = _condition_type(rule)
         if rule_condition and title_condition and rule_condition != title_condition:
@@ -253,3 +299,7 @@ def _mismatch_reason(
     if title_metric and rule_metric and title_metric != rule_metric:
         return f"temperature direction mismatch: title={title_metric} rule={rule_metric}"
     return ""
+
+
+def _rule_states_outcome_condition(rule_text: str) -> bool:
+    return OUTCOME_CONDITION_RE.search(rule_text) is not None

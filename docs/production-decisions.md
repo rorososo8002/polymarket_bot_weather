@@ -1,7 +1,6 @@
 # Production Decisions
 
-This is the active rule book for operating or changing the paper bot. Keep it
-compact; historical notes belong in focused `docs/solutions/` entries.
+This is the active paper-bot rule book; historical notes belong in focused `docs/solutions/` entries.
 
 ## Current Phase: Strategy Validation First
 
@@ -36,13 +35,14 @@ compact; historical notes belong in focused `docs/solutions/` entries.
   preserve the question plus available description/resolution text, source,
   station, unit, bucket shape, and station-local event date window. If title
   parsing and rule text conflict, skip the market instead of trading it.
-- Gamma discovery normalizes available rule evidence into the market metadata
-  contract. A title/rule conflict on city, high/low direction, unit, bucket
-  shape, threshold/range value, date hint, or explicit settlement station must
-  fail before forecast fetching with `SKIP_RULE_MISMATCH`.
-- Recurring temperature events may expose one event title plus outcome labels
-  such as `28°C` or `32°C or higher`; discovery must synthesize binary
-  temperature questions from title+label before parser and YES/NO mapping.
+- Gamma discovery normalizes rule evidence into market metadata; title/rule
+  conflicts on city, high/low direction, unit, bucket, date, or explicit
+  station fail before forecast fetching with `SKIP_RULE_MISMATCH`.
+- Recurring temperature events may expose one title plus labels such as `28°C`;
+  discovery must synthesize binary questions from title+label. Grouped
+  event-level rules may describe station/source/precision/UI toggles rather
+  than each bucket, so compare bucket shape/value only when rule text explicitly
+  states the outcome condition.
 - Station metadata must keep unit, precision, same-station support, confidence
   grade, verification date, and confidence level explicit.
 - Only station confidence grades A/B may enter `TRADING_READY_STATION_MAP`;
