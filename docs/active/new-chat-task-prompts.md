@@ -1,23 +1,10 @@
 # New Chat Task Prompts
 
-Status: active
+Status: none
 
 ## Active Prompt
 
-```text
-Continue this project. Follow AGENTS.md. First read
-docs/active/current-task.md and docs/production-decisions.md.
-
-The explicit strategy-validation gap plan has been implemented, focused-tested,
-and pushed to origin/main. Do not reimplement work items 1 through 12.
-
-Deploy latest origin/main to the Oracle VPS using
-docs/codex/known-good-commands.md, restart affected services, and verify the
-live dashboard HTML plus authenticated /api/status without printing secrets.
-
-Keep execution paper-only. Do not add wallet, private-key, signing, real-order,
-redemption, claim, copy-trading, or LiveBroker behavior.
-```
+none
 
 ## Purpose
 

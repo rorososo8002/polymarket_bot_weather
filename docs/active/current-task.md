@@ -1,40 +1,20 @@
 # Current Task
 
-Status: active
+Status: none
 
 ## Objective
 
-Deploy the completed paper-only strategy-validation gap closure to the Oracle
-VPS.
+No active unfinished task.
 
 ## Current Scope
 
-The explicit strategy-validation gap plan is implemented, focused-tested, and
-pushed to `origin/main`. The code change is `55abcc2`; the latest handoff commit
-is on `origin/main`.
+The explicit strategy-validation gap plan was implemented, focused-tested,
+committed, pushed, and deployed to the Oracle VPS.
 
 ## Next Action
 
-Deploy latest `origin/main` to the Oracle VPS using
-`docs/codex/known-good-commands.md`, restart affected services, and verify the
-live dashboard HTML plus authenticated `/api/status` without printing secrets.
-
-Deployment was not attempted because the SSH escalation request was rejected by
-the Codex usage-limit gate. Retry after the usage window resets.
+None.
 
 ## New Chat Prompt
 
-```text
-Continue this project. Follow AGENTS.md. First read
-docs/active/current-task.md and docs/production-decisions.md.
-
-The explicit strategy-validation gap plan has been implemented, focused-tested,
-and pushed to origin/main. Do not reimplement work items 1 through 12.
-
-Deploy latest origin/main to the Oracle VPS using
-docs/codex/known-good-commands.md, restart affected services, and verify the
-live dashboard HTML plus authenticated /api/status without printing secrets.
-
-Keep execution paper-only. Do not add wallet, private-key, signing, real-order,
-redemption, claim, copy-trading, or LiveBroker behavior.
-```
+none
