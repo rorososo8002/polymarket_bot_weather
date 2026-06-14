@@ -18,6 +18,22 @@ from .weather_client import parse_weather_question
 TRUE_API_BOOL_VALUES = {"true", "1", "yes", "y", "on"}
 FALSE_API_BOOL_VALUES = {"false", "0", "no", "n", "off"}
 CATEGORY_SLUG_DISCOVERY_LIMIT = 80
+GROUPED_TEMPERATURE_TITLE_RE = re.compile(
+    r"^\s*(?P<metric>highest|lowest)\s+temperature\s+in\s+(?P<city>.+?)\s+on\s+(?P<date>[^?]+?)\s*\??\s*$",
+    re.IGNORECASE,
+)
+TEMPERATURE_OUTCOME_LABEL_RE = re.compile(
+    r"\b\d{1,3}(?:\.\d+)?\s*(?:-|to)?\s*\d{0,3}(?:\.\d+)?\s*(?:[\u00b0\u00ba\u02da]?\s*[cf]\b|\u2103|\u2109)",
+    re.IGNORECASE,
+)
+GROUPED_OUTCOME_TITLE_KEYS = (
+    "groupItemTitle",
+    "group_item_title",
+    "outcomeTitle",
+    "outcome_title",
+    "outcome",
+    "name",
+)
 
 
 def parse_api_bool(value: Any, *, default: bool) -> bool | None:
@@ -139,7 +155,7 @@ class PolymarketClient:
         event_slug = str(event.get("slug") or "") or None
         markets: list[RawMarket] = []
         for row in rows:
-            if not isinstance(row, dict) or not self._is_weather_market(row):
+            if not isinstance(row, dict) or not self._is_weather_market(row, event=event):
                 continue
             if not self._is_new_entry_candidate(row):
                 continue
@@ -198,8 +214,53 @@ class PolymarketClient:
         return " ".join(parts).lower()
 
     @classmethod
-    def _is_weather_market(cls, row: dict[str, Any]) -> bool:
+    def _normalized_weather_question(cls, row: dict[str, Any], event: dict[str, Any] | None = None) -> str:
         question = str(row.get("question") or row.get("title") or "")
+        parsed = parse_weather_question(question)
+        if parsed.city and parsed.variable == "temperature" and parsed.threshold_f is not None and parsed.operator:
+            return question
+
+        event = event or {}
+        event_title = str(
+            event.get("title")
+            or event.get("question")
+            or event.get("name")
+            or row.get("eventTitle")
+            or row.get("event_title")
+            or ""
+        ).strip()
+        outcome_label = cls._grouped_outcome_label(row)
+        synthesized = cls._synthesize_grouped_temperature_question(event_title, outcome_label)
+        return synthesized or question
+
+    @staticmethod
+    def _grouped_outcome_label(row: dict[str, Any]) -> str:
+        for key in GROUPED_OUTCOME_TITLE_KEYS:
+            value = row.get(key)
+            if value is None:
+                continue
+            text = str(value).strip()
+            if text and TEMPERATURE_OUTCOME_LABEL_RE.search(text):
+                return text
+        return ""
+
+    @staticmethod
+    def _synthesize_grouped_temperature_question(event_title: str, outcome_label: str) -> str:
+        if not event_title or not outcome_label:
+            return ""
+        match = GROUPED_TEMPERATURE_TITLE_RE.match(event_title)
+        if not match:
+            return ""
+        metric = match.group("metric").lower()
+        city = match.group("city").strip()
+        date = match.group("date").strip()
+        if not city or not date:
+            return ""
+        return f"Will the {metric} temperature in {city} be {outcome_label} on {date}?"
+
+    @classmethod
+    def _is_weather_market(cls, row: dict[str, Any], event: dict[str, Any] | None = None) -> bool:
+        question = cls._normalized_weather_question(row, event=event)
         parsed = parse_weather_question(question)
         if not parsed.city or parsed.city.lower() not in TRADING_READY_STATION_MAP:
             return False
@@ -232,7 +293,7 @@ class PolymarketClient:
         active = parse_api_bool(row.get("active"), default=True)
         closed = parse_api_bool(row.get("closed"), default=False)
         market_id = str(row.get("id") or row.get("market") or row.get("conditionId") or "unknown")
-        question = str(row.get("question") or row.get("title") or "")
+        question = self._normalized_weather_question(row, event=event)
         slug = row.get("slug")
         resolved_event_id = event_id or row.get("eventId") or row.get("event_id")
         resolved_event_slug = event_slug or row.get("eventSlug") or row.get("event_slug")

@@ -26,12 +26,10 @@ compact; historical notes belong in focused `docs/solutions/` entries.
 
 ## Market Universe And Forecasts
 
-- `STATION_MAP` registers 41 cities. Paper execution uses only
-  `TRADING_READY_STATION_MAP`: 40 cities with stored official Polymarket rule
-  evidence. Karachi remains excluded until station evidence is reconciled.
-- Execute temperature markets only. Non-temperature weather markets must not
-  reach forecast probability calculation, order-book subscription, or paper
-  trade logging.
+- `STATION_MAP` registers 41 cities; paper execution uses only the 40-city
+  `TRADING_READY_STATION_MAP`. Karachi stays excluded until evidence is fixed.
+- Execute temperature markets only; non-temperature markets must not reach
+  forecast calculation, order-book subscription, or paper trade logging.
 - Unknown, stale, malformed, unsupported, suspicious, missing, or conflictful
   data means skip.
 - Market title parsing is not enough rule evidence. New provenance work must
@@ -42,9 +40,11 @@ compact; historical notes belong in focused `docs/solutions/` entries.
   contract. A title/rule conflict on city, high/low direction, unit, bucket
   shape, threshold/range value, date hint, or explicit settlement station must
   fail before forecast fetching with `SKIP_RULE_MISMATCH`.
-- Same-station evidence quality must stay explicit in station metadata:
-  temperature unit, reporting precision, same-station support, confidence
-  grade, verification date, and confidence level.
+- Recurring temperature events may expose one event title plus outcome labels
+  such as `28°C` or `32°C or higher`; discovery must synthesize binary
+  temperature questions from title+label before parser and YES/NO mapping.
+- Station metadata must keep unit, precision, same-station support, confidence
+  grade, verification date, and confidence level explicit.
 - Only station confidence grades A/B may enter `TRADING_READY_STATION_MAP`;
   grades C/D, unsupported providers, inferred, nearby, or unverifiable sources
   remain excluded. Karachi stays excluded until station evidence is reconciled.

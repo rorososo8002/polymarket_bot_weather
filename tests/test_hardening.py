@@ -179,6 +179,56 @@ def test_discovery_uses_polymarket_weather_category_event_slugs():
     assert [market.market_id for market in markets] == ["m1", "m2"]
 
 
+def test_discovery_synthesizes_grouped_temperature_outcome_questions():
+    class CategoryClient(FakePolymarketClient):
+        def _get_web_text(self, path: str) -> str:
+            if path == "/weather/temperature":
+                return '<a href="/event/highest-temperature-in-seoul-on-june-15-2026">Seoul</a>'
+            return ""
+
+        def _get(self, url: str, params: dict | None = None):
+            if "/events/slug/highest-temperature-in-seoul-on-june-15-2026" in url:
+                return {
+                    "id": "event-seoul",
+                    "slug": "highest-temperature-in-seoul-on-june-15-2026",
+                    "title": "Highest temperature in Seoul on June 15?",
+                    "description": "This market resolves using the highest temperature recorded at the Incheon Intl Airport Station.",
+                    "markets": [
+                        {
+                            "id": "m-exact",
+                            "question": "Highest temperature in Seoul on June 15?",
+                            "groupItemTitle": "28\u00b0C",
+                            **binary_token_fields("yes-28", "no-28"),
+                        },
+                        {
+                            "id": "m-lower-tail",
+                            "question": "Highest temperature in Seoul on June 15?",
+                            "groupItemTitle": "22\u00b0C or below",
+                            **binary_token_fields("yes-22", "no-22"),
+                        },
+                        {
+                            "id": "m-upper-tail",
+                            "question": "Highest temperature in Seoul on June 15?",
+                            "groupItemTitle": "32\u00b0C or higher",
+                            **binary_token_fields("yes-32", "no-32"),
+                        },
+                    ],
+                }
+            return []
+
+    markets = CategoryClient().discover_weather_markets(max_pages=1, page_size=10)
+
+    assert [market.market_id for market in markets] == ["m-exact", "m-lower-tail", "m-upper-tail"]
+    assert markets[0].question == "Will the highest temperature in Seoul be 28\u00b0C on June 15?"
+    assert markets[1].question == "Will the highest temperature in Seoul be 22\u00b0C or below on June 15?"
+    assert markets[2].question == "Will the highest temperature in Seoul be 32\u00b0C or higher on June 15?"
+    assert parse_weather_question(markets[0].question).temperature_bucket == "exact"
+    assert parse_weather_question(markets[1].question).operator == "<="
+    assert parse_weather_question(markets[2].question).operator == ">="
+    assert markets[0].rule_provenance is not None
+    assert markets[0].rule_provenance.event_date_local == "2026-06-15"
+
+
 def test_discovery_normalizes_gamma_rule_provenance_fields():
     rule_url = "https://polymarket.com/event/highest-temperature-in-seoul-on-may-25-2026"
     client = FakePolymarketClient(

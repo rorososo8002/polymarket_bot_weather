@@ -1627,6 +1627,10 @@ def _discovery_coverage(markets: list[RawMarket]) -> dict[str, int]:
     return {"events": len(groups), "cities": len(cities), "markets": len(markets)}
 
 
+def _pre_forecast_skip_reason(signal: WeatherSignal, result: EdgeResult) -> str:
+    return (result.reason or signal.note or "unknown_pre_forecast_skip").strip()
+
+
 def run_cycle(settings: Settings | None = None) -> list[MarketDecision]:
     settings = settings or load_settings()
     cycle_started_at = utc_now_iso()
@@ -2238,10 +2242,12 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
                 max_pages=settings.discovery_max_pages,
                 page_size=settings.discovery_page_size,
             )
+            raw_discovered_count = len(discovered_markets)
             failed_phase = "market_preparation"
             discovered_markets = _temperature_markets_only(discovered_markets)
             event_groups = _group_weather_markets_by_event(discovered_markets)
             markets = [market for group in event_groups for market in group]
+            temperature_coverage = _discovery_coverage(markets)
             market_by_id = _stream_market_registry(discovery_client, broker, markets)
             for msg in _settle_resolved_positions_before_streaming(broker, market_by_id):
                 print(msg)
@@ -2249,11 +2255,14 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
             stream_candidates = _temperature_markets_only(list(market_by_id.values()))
             stream_markets: list[RawMarket] = []
             precomputed_signals: dict[str, WeatherSignal] = {}
+            pre_forecast_skip_counts: dict[str, int] = {}
             for market in stream_candidates:
                 market_type = "temperature"
                 gated = pre_forecast_tradeability_gate(market, settings, market_type)
                 if gated is not None:
                     signal, result = gated
+                    skip_reason = _pre_forecast_skip_reason(signal, result)
+                    pre_forecast_skip_counts[skip_reason] = pre_forecast_skip_counts.get(skip_reason, 0) + 1
                     precomputed_signals[market.market_id] = signal
                     broker.log_decision(market, result, signal.note, market_type, signal=signal)
                     broker.log_raw_snapshot(
@@ -2280,6 +2289,19 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
                 token_id: market
                 for market in stream_markets
                 for token_id in _market_token_ids(market)
+            }
+            discovery_status = {
+                "raw_discovered_markets": raw_discovered_count,
+                "temperature_markets": temperature_coverage["markets"],
+                "temperature_events": temperature_coverage["events"],
+                "temperature_cities": temperature_coverage["cities"],
+                "stream_candidates": len(stream_candidates),
+                "pre_forecast_skipped": sum(pre_forecast_skip_counts.values()),
+                "pre_forecast_skip_reasons": pre_forecast_skip_counts,
+                "stream_markets": len(stream_markets),
+                "stream_events": coverage["events"],
+                "stream_cities": coverage["cities"],
+                "stream_tokens": len(market_by_token),
             }
             signals_by_market: dict[str, WeatherSignal] = {}
             signal_refreshed_at_by_market: dict[str, datetime] = {}
@@ -2397,6 +2419,7 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
                     forecast_worker=forecast_worker.status_snapshot() if forecast_worker is not None else forecast_scheduler.status_snapshot(),
                     websocket=websocket_health,
                     realtime_evaluator=evaluator_worker.status_snapshot() if evaluator_worker is not None else None,
+                    discovery=discovery_status,
                     **_market_error_status_fields(market_error_count, last_market_error),
                 )
 
