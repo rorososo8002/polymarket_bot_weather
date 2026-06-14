@@ -11,7 +11,7 @@ docs/active/current-task.md and docs/production-decisions.md.
 The explicit strategy-validation gap plan has been implemented, focused-tested,
 and pushed to origin/main. Do not reimplement work items 1 through 12.
 
-Deploy latest origin/main (currently 8935bf9) to the Oracle VPS using
+Deploy latest origin/main to the Oracle VPS using
 docs/codex/known-good-commands.md, restart affected services, and verify the
 live dashboard HTML plus authenticated /api/status without printing secrets.
 
