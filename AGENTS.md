@@ -247,6 +247,9 @@ before continuing.
   behavior as the code.
 - Touch only files needed for the task.
 - Preserve user changes. Never reset, overwrite, or revert unrelated work.
+- Be token-frugal. Do the smallest verification that proves the claim, avoid
+  rereading large docs already summarized in the active task, and do not repeat
+  successful checks without a new reason.
 - For behavior changes, add or update focused tests and verify the behavior.
 - Run focused tests before broad tests.
 - Make failure modes observable. A running process is not enough when a
@@ -259,6 +262,11 @@ before continuing.
   the live dashboard HTML and authenticated `/api/status`. If the change also
   affects paper-position metadata, settlement, or runner behavior, restart
   `polymarket-weather-bot` too.
+- For routine VPS deploys, keep the path lean: SSH preflight once, transfer
+  once, remote pytest once, restart once, then verify service state, dashboard
+  HTML, bare `/api/status` 403, query-token 403, and header-auth `/api/status`
+  200. Do not redeploy only to sync handoff/doc-only commits unless the user
+  explicitly asks or the server needs those docs for runtime behavior.
 - Run git mutations serially. Do not run `git add`, `git commit`, branch
   changes, or other index-locking commands in parallel.
 
