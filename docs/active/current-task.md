@@ -10,12 +10,12 @@ VPS.
 ## Current Scope
 
 The explicit strategy-validation gap plan is implemented, focused-tested, and
-committed as `55abcc2` (`feat: close strategy validation gaps`). The commit has
-been pushed to `origin/main`.
+pushed to `origin/main`. The code change is `55abcc2`; the latest handoff commit
+is `8935bf9`.
 
 ## Next Action
 
-Deploy commit `55abcc2` to the Oracle VPS using
+Deploy latest `origin/main` (`8935bf9`) to the Oracle VPS using
 `docs/codex/known-good-commands.md`, restart affected services, and verify the
 live dashboard HTML plus authenticated `/api/status` without printing secrets.
 
@@ -29,10 +29,9 @@ Continue this project. Follow AGENTS.md. First read
 docs/active/current-task.md and docs/production-decisions.md.
 
 The explicit strategy-validation gap plan has been implemented, focused-tested,
-committed as 55abcc2, and pushed to origin/main. Do not reimplement work items
-1 through 12.
+and pushed to origin/main. Do not reimplement work items 1 through 12.
 
-Deploy commit 55abcc2 to the Oracle VPS using
+Deploy latest origin/main (currently 8935bf9) to the Oracle VPS using
 docs/codex/known-good-commands.md, restart affected services, and verify the
 live dashboard HTML plus authenticated /api/status without printing secrets.
 
