@@ -121,7 +121,7 @@ This is the active paper-bot rule book; historical notes belong in focused `docs
 - Entry decisions are fee-aware. `p_exec` is executable VWAP; `size_usd` is the
   all-in paper-entry budget; `size_shares` is the fee-adjusted share count.
 - Sizing defaults: `SIZE_MODE=kelly`, `FRACTIONAL_KELLY=0.25`, `ENTRY_FRACTION=0.20`,
-  `MAX_TOTAL_EXPOSURE_FRACTION=0.60`, `MAX_CITY_EXPOSURE_FRACTION=0.20`.
+  `MAX_TOTAL_EXPOSURE_FRACTION=0.60`, `MAX_CITY_EXPOSURE_FRACTION=0.20`; active VPS paper uses `BANKROLL_USD=200`, `MIN_ORDER_USD=20.00`, and a 10% single-market cap so normal new entries target about $20.
 - Signal confidence is sizing evidence, not `p_true`: lower confidence scales
   entry size down; stale forecasts block new entries while held exits still run.
 - In Kelly mode, `ENTRY_FRACTION` is a per-event cap, not the direct order size.
@@ -172,7 +172,10 @@ This is the active paper-bot rule book; historical notes belong in focused `docs
   TTL must never be used to declare a forecast signal stale.
 - Dashboard position cards must show event, selected bucket, side, station,
   nowcast value or reason unavailable, bid-depth liquidation PnL as primary,
-  reference PnL as secondary, exit liquidity, and WS freshness in Korean.
+  reference PnL as secondary, exit liquidity, and WS freshness in Korean. The
+  side badge must be the plain Polymarket outcome label `Yes` or `No`; do not
+  add `Long`, `Short`, or `보유` because the bot only buys outcome tokens and
+  those words imply a separate margin direction that does not exist here.
 - The target date may be station-local today, or station-local yesterday only
   during the post-close freshness window for held-position exit and settlement
   evidence.

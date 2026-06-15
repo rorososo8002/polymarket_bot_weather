@@ -865,8 +865,8 @@ function setHealthStatus(id, status) {
 
 function sidePositionKo(side) {
   const raw = String(side || "").toUpperCase();
-  if (raw === "YES") return "YES 보유";
-  if (raw === "NO") return "NO 보유";
+  if (raw === "YES") return "Yes";
+  if (raw === "NO") return "No";
   return raw || "--";
 }
 function bucketLabelFromFields(threshold, condition) {

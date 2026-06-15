@@ -65,7 +65,7 @@ def test_vps_env_example_keeps_runtime_state_under_data_dir():
     text = env_example.read_text(encoding="utf-8")
 
     assert "STATE_PATH=/opt/polymarket-weather-bot/data/paper_state.json" in text
-    assert "BANKROLL_USD=100\n" in text
+    assert "BANKROLL_USD=200\n" in text
     assert "PORTFOLIO_DECISIONS_JSONL_PATH=/opt/polymarket-weather-bot/data/paper_event_portfolios.jsonl" in text
     assert "RAW_SNAPSHOTS_PATH=/opt/polymarket-weather-bot/data/paper_raw_snapshots.jsonl" in text
     assert "FORECAST_REQUEST_LOG_PATH=/opt/polymarket-weather-bot/data/forecast_request_log.jsonl" in text
@@ -95,7 +95,7 @@ def test_vps_env_example_keeps_runtime_state_under_data_dir():
     assert "SETTLEMENT_RUNNER_ENABLED=true" in text
     assert "SETTLEMENT_RUNNER_MAX_FRACTION=0.25" in text
     assert "SETTLEMENT_RUNNER_MIN_EV_MARGIN_USD=0.00" in text
-    assert "BANKROLL_USD=100\n" in text
+    assert "BANKROLL_USD=200\n" in text
     assert "SIZE_MODE=kelly" in text
     assert "FRACTIONAL_KELLY=0.25" in text
     assert "ENTRY_FRACTION=0.20" in text
@@ -106,7 +106,7 @@ def test_vps_env_example_keeps_runtime_state_under_data_dir():
     assert "LARGE_BANKROLL_EVENT_DATE_EXPOSURE_FRACTION=0.05" in text
     assert "EVENT_DATE_EXPOSURE_TRANSITION_USD=1000" in text
     assert "MAX_EVENT_PORTFOLIO_LEGS=2" in text
-    assert "MIN_ORDER_USD=10.00" in text
+    assert "MIN_ORDER_USD=20.00" in text
     assert "ESTIMATED_FEE_PER_SHARE" not in text
     assert "POLYMARKET_PRIVATE_KEY" not in text
 

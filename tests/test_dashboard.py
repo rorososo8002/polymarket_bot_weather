@@ -1159,6 +1159,10 @@ def test_dashboard_uses_korean_labels_and_tabbed_right_rail():
     assert 'data-range="1D"' in HTML
     assert 'id="chart-tooltip"' in HTML
     assert '"¢"' in HTML
+    assert "YES 보유" not in HTML
+    assert "NO 보유" not in HTML
+    assert 'return "Yes";' in HTML
+    assert 'return "No";' in HTML
 
 
 def test_dashboard_payload_uses_runner_status_as_bot_heartbeat(tmp_path):
