@@ -15,6 +15,7 @@ from .config import Settings, load_settings
 from .dashboard_template import HTML
 from .edge import polymarket_taker_fee_usdc
 from .runner_status import read_runner_status
+from .stations import TRADING_READY_STATION_MAP
 from .weather_client import parse_weather_question
 
 
@@ -593,10 +594,31 @@ def _position_payload(
     event_slug = metadata.get("event_slug") or latest_decision.get("event_slug") or ""
     latest_note = latest_decision.get("note", "")
     forecast_c = _forecast_c_from_note(latest_note)
+    summary = _question_summary(str(pos.get("question", "")))
+    city = str(metadata.get("city") or latest_decision.get("city") or summary["city"] or "")
+    station = TRADING_READY_STATION_MAP.get(city.lower())
+    station_id = str(
+        metadata.get("station_id")
+        or latest_decision.get("station_id")
+        or (station.station_id if station is not None else "")
+        or ""
+    )
+    station_name = str(
+        metadata.get("station_name")
+        or (station.station_name if station is not None else "")
+        or station_id
+    )
+    nowcast_unavailable = _note_token(latest_note, "nowcast_unavailable")
+    nowcast_source = _note_token(latest_note, "nowcast_source")
+    observed_at = _note_token(latest_note, "observed_at")
+    bucket_label = _bucket_display_label(summary["threshold_c"], summary["condition_label"])
     return {
         "position_id": pos.get("position_id", ""),
         "market_id": pos.get("market_id", ""),
         "question": pos.get("question", ""),
+        "event_title": _event_title_from_position(city, metadata.get("date_hint") or latest_decision.get("event_date_local") or summary["date_hint"]),
+        "display_title": _position_display_title(city, metadata.get("date_hint") or summary["date_hint"], bucket_label, str(pos.get("side") or "")),
+        "bucket_label": bucket_label,
         "slug": slug,
         "event_slug": _slug_text(event_slug) or _event_slug_from_market_slug(slug),
         "market_url": _polymarket_market_url(slug, event_slug),
@@ -619,9 +641,15 @@ def _position_payload(
         "forecast_c": forecast_c,
         "nowcast_high_c": _nowcast_c_from_note(latest_note, "observed_high_c"),
         "nowcast_low_c": _nowcast_c_from_note(latest_note, "observed_low_c"),
+        "nowcast_unavailable_reason": nowcast_unavailable,
+        "nowcast_source": nowcast_source,
+        "observed_at": observed_at,
         "opened_at": pos.get("opened_at", ""),
-        "city": metadata.get("city", ""),
+        "city": city,
         "date_hint": metadata.get("date_hint", ""),
+        "event_date_local": metadata.get("event_date_local") or latest_decision.get("event_date_local") or "",
+        "station_id": station_id,
+        "station_name": station_name,
         "target_exit_price": _float(metadata.get("last_target_exit_price"), _float(metadata.get("target_exit_price"))),
         "probability_stop_threshold": _float(metadata.get("probability_stop_threshold")),
         "reason": metadata.get("reason", ""),
@@ -772,6 +800,40 @@ def _nowcast_c_from_note(note: str, key: str) -> float | None:
     return round(float(match.group(1)), 3)
 
 
+def _note_token(note: str, key: str) -> str:
+    if not note:
+        return ""
+    match = re.search(rf"\b{re.escape(key)}=([^;]+)", note)
+    return match.group(1).strip() if match else ""
+
+
+def _bucket_display_label(threshold_c: float | None, condition_label: str) -> str:
+    if threshold_c is None:
+        return ""
+    value = f"{threshold_c:g}°C"
+    if condition_label == "or higher":
+        return f"{value} 이상"
+    if condition_label == "or lower":
+        return f"{value} 이하"
+    return value
+
+
+def _event_title_from_position(city: str, date_hint: Any) -> str:
+    city_text = str(city or "").strip()
+    date_text = str(date_hint or "").strip()
+    if not city_text or not date_text:
+        return ""
+    return f"Highest temperature in {city_text.title()} on {date_text.title()}?"
+
+
+def _position_display_title(city: str, date_hint: Any, bucket_label: str, side: str) -> str:
+    parts = [part for part in (str(city or "").title(), str(date_hint or "").title(), bucket_label) if part]
+    side_text = str(side or "").upper()
+    if side_text in {"YES", "NO"}:
+        parts.append(side_text)
+    return " · ".join(parts)
+
+
 def _target_exit_from_reason(reason: str) -> float | None:
     match = re.search(r"\btarget_exit(?:_price)?[=:]\s*([01](?:\.\d+)?)\b", reason)
     return _optional_float(match.group(1)) if match else None
@@ -863,6 +925,7 @@ def _forecast_health(settings: Settings, runner_status: dict[str, Any]) -> dict[
 
 def _websocket_health(settings: Settings, runner_status: dict[str, Any]) -> dict[str, Any]:
     raw = runner_status.get("websocket") if isinstance(runner_status.get("websocket"), dict) else {}
+    discovery = runner_status.get("discovery") if isinstance(runner_status.get("discovery"), dict) else {}
     markets_total = int(_float(runner_status.get("markets_total")))
     if not raw:
         return {
@@ -875,6 +938,10 @@ def _websocket_health(settings: Settings, runner_status: dict[str, Any]) -> dict
             "stale": False,
             "last_error": "",
             "status_reason": "",
+            "stream_tokens": int(_float(discovery.get("stream_tokens"))),
+            "stream_markets": int(_float(discovery.get("stream_markets"))),
+            "stream_events": int(_float(discovery.get("stream_events"))),
+            "stream_cities": int(_float(discovery.get("stream_cities"))),
         }
     last_book_at = str(raw.get("last_book_at") or "")
     stale_book_age_seconds = _live_age_seconds(last_book_at, raw.get("stale_book_age_seconds"))
@@ -918,6 +985,10 @@ def _websocket_health(settings: Settings, runner_status: dict[str, Any]) -> dict
         "stale": stale,
         "last_error": last_error,
         "status_reason": status_reason,
+        "stream_tokens": int(_float(discovery.get("stream_tokens"))),
+        "stream_markets": int(_float(discovery.get("stream_markets"))),
+        "stream_events": int(_float(discovery.get("stream_events"))),
+        "stream_cities": int(_float(discovery.get("stream_cities"))),
     }
 
 
@@ -1170,13 +1241,30 @@ def _per_city_nowcast_status(settings: Settings, limit: int = 300) -> list[dict[
     for row in rows:
         city = str(row.get("city") or "")
         if city == "bulk-metar":
-            latest_bulk = row  # keep the most recent bulk entry
+            latest_bulk = _merge_nowcast_status(latest_bulk, row)  # keep the most recent bulk entry plus prior success/error
         elif city:
-            latest[city] = row
+            latest[city] = _merge_nowcast_status(latest.get(city), row)
     result = sorted(latest.values(), key=lambda r: str(r.get("city") or ""))
     if latest_bulk is not None:
         result = [latest_bulk] + result  # show bulk entry first
     return result
+
+
+def _merge_nowcast_status(previous: dict[str, Any] | None, row: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(previous or {})
+    status = str(row.get("status") or "").lower()
+    requested_at = str(row.get("requested_at") or "")
+    if status == "success":
+        merged["last_success_at"] = requested_at
+        merged["last_success_status_code"] = row.get("status_code")
+    elif status:
+        merged["last_failure_at"] = requested_at
+        merged["last_failure_error"] = str(row.get("error") or row.get("unavailable_reason") or status)
+    merged.update(row)
+    merged.setdefault("last_success_at", "")
+    merged.setdefault("last_failure_at", "")
+    merged.setdefault("last_failure_error", "")
+    return merged
 
 
 def build_dashboard_payload(settings: Settings | None = None, auth_required: bool = False) -> dict[str, Any]:

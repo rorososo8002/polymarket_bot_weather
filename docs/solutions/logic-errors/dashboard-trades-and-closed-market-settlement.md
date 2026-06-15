@@ -106,6 +106,10 @@ must keep failing closed.
 
 - When a dashboard panel says "trades", test it with many trailing SKIP rows.
   The panel should still show older `OPEN`/`CLOSE` activity.
+- Do not reconcile `Recent Trades` by adding open positions plus realized
+  results. `Recent Trades` is an execution receipt list; a market that opened
+  and later closed contributes both an `OPEN` row and a `CLOSE` row, while the
+  current open-position list shows only positions still held.
 - When a closed market is still in `paper_state.json`, check both explicit
   winner fields and exact binary `outcomePrices`.
 - Test the actual long-running service path, not only a one-cycle helper path,

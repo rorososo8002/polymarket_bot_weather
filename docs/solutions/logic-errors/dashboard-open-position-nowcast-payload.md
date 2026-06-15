@@ -1,7 +1,7 @@
 ---
 title: Surface nowcast evidence in open-position dashboard payloads
 date: 2026-06-12
-last_updated: 2026-06-12
+last_updated: 2026-06-16
 category: logic-errors
 module: weather_bot.dashboard
 problem_type: logic_error
@@ -9,6 +9,7 @@ component: service_object
 symptoms:
   - "Open-position cards showed station -- even though the station nowcast provider had fresh observed evidence."
   - "Runtime decision notes contained observed_high_c, but /api/status positions did not expose nowcast_high_c."
+  - "Open positions looked blank when nowcast was intentionally unavailable because the target date was not station-local today yet."
 root_cause: logic_error
 resolution_type: code_fix
 severity: medium
@@ -67,11 +68,25 @@ This also makes the operator view honest: `station --` now means the latest
 decision did not contain a usable observed high/low value, not that the station
 provider never ran.
 
+When the latest decision explicitly says nowcast was unavailable, surface that
+reason too. For example, `nowcast_unavailable=target-date-not-today` means the
+bot intentionally refused to use station observations because the target date
+had not started in the settlement station's local timezone. The dashboard should
+show that as "target date not yet active" rather than leaving the operator to
+infer that the station provider is broken.
+
+For open positions, the dashboard can also recover stable station identity from
+`TRADING_READY_STATION_MAP` when older runtime metadata lacks `station_id` or
+`station_name`. The station registry is already the execution universe, so it is
+the right fallback for display-only station names.
+
 ## Prevention
 - When adding a dashboard badge, add a payload test that asserts the exact API
   key the template reads.
 - Debug missing dashboard fields by checking each layer in order:
   runtime evidence, decision/trade ledger, payload builder, then template.
+- Show unavailable-nowcast reasons explicitly. A blank badge makes an intended
+  fail-closed decision look like missing functionality.
 - For held-position nowcast exits, do not treat exact Celsius buckets as
   rounded intervals. If Polymarket says the settlement source uses whole
   degrees Celsius, the exact bucket is the displayed integer value itself. For

@@ -280,6 +280,48 @@ HTML = r"""<!doctype html>
       outline-offset: 3px;
       border-radius: 4px;
     }
+    .market-subtitle {
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.45;
+      margin: -3px 0 8px;
+      overflow-wrap: anywhere;
+    }
+    .position-heading {
+      display: grid;
+      gap: 3px;
+      margin-bottom: 8px;
+    }
+    .position-title-main {
+      color: var(--text);
+      font-size: 13px;
+      line-height: 1.35;
+      font-weight: 800;
+      text-decoration: none;
+      overflow-wrap: anywhere;
+    }
+    .position-title-main:hover { color: var(--blue); }
+    .position-title-meta {
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.45;
+      overflow-wrap: anywhere;
+    }
+    .detail-line {
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.5;
+      margin-top: 6px;
+      overflow-wrap: anywhere;
+    }
+    .detail-line strong { color: var(--text); font-weight: 800; }
+    .reference-line {
+      color: var(--muted-2);
+      font-size: 10px;
+      line-height: 1.45;
+      margin-top: 4px;
+      overflow-wrap: anywhere;
+    }
     .badges {
       display: flex;
       flex-wrap: wrap;
@@ -304,6 +346,52 @@ HTML = r"""<!doctype html>
     .badge.current-price { color: var(--blue); border-color: rgba(46,92,255,.46); background: var(--blue-soft); }
     .badge.obs-temp { color: #5de0c0; border-color: rgba(93,224,192,.42); background: rgba(93,224,192,.12); }
     .badge.muted-badge { color: var(--muted-2); border-color: var(--line); background: transparent; font-style: italic; }
+    .reason-box {
+      margin-top: 8px;
+      padding: 8px 9px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: rgba(8, 10, 15, .38);
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.5;
+      overflow-wrap: anywhere;
+    }
+    .reason-box b { color: var(--text); }
+    .reason-facts {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px;
+      margin-top: 6px;
+    }
+    .realized-fact-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(92px, 1fr));
+      gap: 6px;
+      margin-top: 8px;
+    }
+    .fact {
+      min-width: 0;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 6px 7px;
+      background: rgba(27, 32, 48, .72);
+    }
+    .fact span {
+      display: block;
+      color: var(--muted-2);
+      font-size: 9px;
+      font-weight: 800;
+      letter-spacing: .02em;
+      margin-bottom: 3px;
+    }
+    .fact strong {
+      display: block;
+      color: var(--text);
+      font-size: 12px;
+      line-height: 1.2;
+      overflow-wrap: anywhere;
+    }
     .logs-panel-body { min-height: 0; overflow: hidden; display: grid; grid-template-columns: 1fr 1fr; gap: 10px; height: 100%; padding: 10px; }
     .logs-col-title { font-size: 11px; font-weight: 700; color: var(--muted); letter-spacing: .03em; margin-bottom: 6px; padding: 0 2px; border-bottom: 1px solid var(--line); padding-bottom: 6px; }
     .logs-col-list { overflow-y: auto; max-height: calc(100vh - 150px); display: grid; gap: 6px; align-content: start; }
@@ -385,6 +473,53 @@ HTML = r"""<!doctype html>
     .health-title strong.bad { color: var(--red); }
     .health-title strong.warn { color: var(--yellow); }
     .health-detail { color: var(--muted); font-size: 11px; line-height: 1.45; overflow-wrap: anywhere; }
+    .stream-activity {
+      margin-top: 6px;
+      padding: 8px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: rgba(8, 10, 15, .34);
+      display: grid;
+      gap: 7px;
+    }
+    .stream-activity-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      font-size: 11px;
+      color: var(--muted);
+      font-weight: 800;
+    }
+    .stream-activity-head strong { color: var(--yellow); }
+    .stream-activity-head strong.good { color: var(--green); }
+    .stream-activity-head strong.bad { color: var(--red); }
+    .stream-bars {
+      display: grid;
+      grid-template-columns: repeat(14, 1fr);
+      gap: 3px;
+      align-items: end;
+      height: 36px;
+    }
+    .stream-bars span {
+      display: block;
+      min-width: 0;
+      height: 12px;
+      border-radius: 2px;
+      background: var(--line-strong);
+      opacity: .52;
+    }
+    .stream-activity.live .stream-bars span {
+      background: linear-gradient(180deg, #5de0c0, var(--green));
+      animation: streamPulse 1.15s ease-in-out infinite;
+    }
+    .stream-activity.live .stream-bars span:nth-child(2n) { animation-delay: .12s; }
+    .stream-activity.live .stream-bars span:nth-child(3n) { animation-delay: .24s; }
+    .stream-activity.live .stream-bars span:nth-child(4n) { animation-delay: .36s; }
+    .stream-activity.live .stream-bars span:nth-child(5n) { animation-delay: .48s; }
+    @keyframes streamPulse {
+      0%, 100% { height: 10px; opacity: .45; }
+      45% { height: 34px; opacity: 1; }
+    }
     .chart-title {
       gap: 10px;
       min-height: 38px;
@@ -560,6 +695,18 @@ HTML = r"""<!doctype html>
           <div id="r-websocket-message" class="health-detail">마지막 메시지 --</div>
           <div id="r-websocket-book" class="health-detail">마지막 주문장 --</div>
           <div id="r-websocket-error" class="health-detail">최근 오류 --</div>
+          <div id="r-stream-activity" class="stream-activity">
+            <div class="stream-activity-head">
+              <span>실시간 감시 활동</span>
+              <strong id="r-stream-pulse">대기</strong>
+            </div>
+            <div class="stream-bars" aria-hidden="true">
+              <span></span><span></span><span></span><span></span><span></span><span></span><span></span>
+              <span></span><span></span><span></span><span></span><span></span><span></span><span></span>
+            </div>
+            <div id="r-stream-summary" class="health-detail">감시 대상 --</div>
+            <div id="r-stream-reason" class="health-detail">상태 설명 --</div>
+          </div>
         </div>
           </div>
         </div>
@@ -698,10 +845,6 @@ function exitStatusClass(status) {
   if (raw === "blocked") return "loss";
   return "muted-badge";
 }
-function sideKo(side) {
-  const raw = String(side || "").toUpperCase();
-  return raw === "YES" ? "예" : (raw === "NO" ? "아니오" : (side || "--"));
-}
 function actionKo(action) {
   const raw = String(action || "").toUpperCase();
   return ACTION_KO[raw] || action || "--";
@@ -720,46 +863,129 @@ function setHealthStatus(id, status) {
   element.className = raw === "FAILED" ? "bad" : (raw === "STALE" || raw === "DEGRADED" ? "warn" : "");
 }
 
+function sidePositionKo(side) {
+  const raw = String(side || "").toUpperCase();
+  if (raw === "YES") return "YES 보유";
+  if (raw === "NO") return "NO 보유";
+  return raw || "--";
+}
+function bucketLabelFromFields(threshold, condition) {
+  if (threshold === null || threshold === undefined || isNaN(Number(threshold))) return "--";
+  const suffix = conditionKo(condition);
+  return tempC(threshold) + (suffix ? " " + suffix : "");
+}
+function nowcastUnavailableKo(reason) {
+  const raw = String(reason || "").toLowerCase();
+  if (!raw) return "관측값 대기";
+  if (raw === "target-date-not-today") return "대상일 전이라 대기";
+  if (raw === "station-cache-miss") return "관측 캐시 대기";
+  if (raw === "station-fetch-failed") return "관측 호출 실패";
+  if (raw === "unsupported-station") return "지원 관측소 아님";
+  if (raw === "malformed-station-data") return "관측값 형식 오류";
+  return raw.replace(/[-_]/g, " ");
+}
+function nowcastUnavailableDetail(reason) {
+  const raw = String(reason || "").toLowerCase();
+  if (raw === "target-date-not-today") {
+    return "대상 날짜가 아직 해당 도시 기준 오늘이 아니라서 관측소 최고/최저값을 일부러 쓰지 않았습니다.";
+  }
+  if (raw === "station-fetch-failed") return "관측소 API 호출이 실패해서 이 값은 추측하지 않고 대기합니다.";
+  if (raw === "station-cache-miss") return "아직 쓸 수 있는 관측 캐시가 없어 다음 관측 호출을 기다립니다.";
+  if (!raw) return "아직 최신 의사결정 기록에 관측값이 없습니다.";
+  return nowcastUnavailableKo(raw);
+}
+function streamStatusClass(status) {
+  const raw = String(status || "").toUpperCase();
+  if (raw === "HEALTHY") return "good";
+  if (raw === "FAILED") return "bad";
+  if (raw === "STALE" || raw === "DEGRADED") return "warn";
+  return "";
+}
+function closeReasonParts(reason) {
+  const text = String(reason || "");
+  const closePart = text.replace(/^entry:[^;]*;?\s*/i, "").trim();
+  const source = closePart || text;
+  if (!source) return {summary: "", facts: []};
+  const facts = [];
+  const trigger = (source.match(/exit_trigger=([^;]+)/i) || [])[1] || "";
+  const observedHigh = (source.match(/observed_high_c=([\d.\-]+)/i) || [])[1];
+  const observedLow = (source.match(/observed_low_c=([\d.\-]+)/i) || [])[1];
+  const pTrue = (source.match(/p_true=([\d.]+)/i) || [])[1];
+  const exitFee = (source.match(/exit_fee=\$([\d.]+)/i) || [])[1];
+  const gross = (source.match(/gross=\$([\d.]+)/i) || [])[1];
+  const net = (source.match(/net=\$([\d.]+)/i) || [])[1];
+  let summary = source;
+  if (trigger === "nowcast_bucket_lock_risk" || source.includes("nowcast bucket lock risk")) {
+    if (source.includes("NO held")) {
+      summary = "관측 최고기온이 선택한 온도칸 안에 들어왔습니다. 우리는 NO를 들고 있었기 때문에, 이 온도칸이 맞을 위험이 커져 손절했습니다.";
+    } else if (source.includes("YES held")) {
+      summary = "관측값이 선택한 온도칸을 벗어나기 시작했습니다. 우리는 YES를 들고 있었기 때문에, 더 큰 손실을 막으려고 정리했습니다.";
+    } else {
+      summary = "관측소 현재값 때문에 선택한 온도칸의 손실 위험이 커져 포지션을 정리했습니다.";
+    }
+  } else if (trigger) {
+    summary = `청산 조건 ${trigger} 때문에 포지션을 정리했습니다.`;
+  }
+  if (observedHigh !== undefined) facts.push(`관측 최고 ${tempC(parseFloat(observedHigh))}`);
+  if (observedLow !== undefined) facts.push(`관측 최저 ${tempC(parseFloat(observedLow))}`);
+  if (pTrue !== undefined) facts.push(`모델 YES 확률 ${(parseFloat(pTrue) * 100).toFixed(1)}%`);
+  if (gross !== undefined) facts.push(`청산 전 금액 $${parseFloat(gross).toFixed(2)}`);
+  if (exitFee !== undefined) facts.push(`청산 수수료 $${parseFloat(exitFee).toFixed(4)}`);
+  if (net !== undefined) facts.push(`순수령 $${parseFloat(net).toFixed(2)}`);
+  return {summary, facts};
+}
+
 function cardForPosition(p) {
-  const pnl = p.unrealized_pnl || 0;
-  const pnlClass = pnl >= 0 ? "win" : "loss";
-  const pnlSign = pnl >= 0 ? "+" : "-";
   const bidDepthPnl = Number(p.bid_depth_unrealized_pnl || 0);
   const bidDepthPnlClass = bidDepthPnl >= 0 ? "win" : "loss";
   const bidDepthPnlSign = bidDepthPnl >= 0 ? "+" : "-";
   const exitStatus = p.exit_liquidity_status || "unknown";
   const exitBlocker = p.exit_blocker ? ` · 차단 ${esc(p.exit_blocker)}` : "";
   const wsAge = p.websocket_stale_book_age_seconds != null ? ` · 호가 ${duration(p.websocket_stale_book_age_seconds)} 전` : "";
-  const sideLabel = (p.side || "").toUpperCase() === "YES" ? "Yes" : "No";
+  const sideRaw = (p.side || "").toUpperCase();
   const qLower = (p.question || "").toLowerCase();
   const isHighest = qLower.includes("highest") || qLower.includes("high");
   const sideProbPct = p.p_true != null
-    ? ((p.side || "").toUpperCase() === "YES" ? p.p_true : (1 - p.p_true)) * 100
+    ? (sideRaw === "YES" ? p.p_true : (1 - p.p_true)) * 100
     : null;
+  const displayTitle = p.display_title || [p.city, p.date_hint, p.bucket_label, sideRaw].filter(Boolean).join(" · ") || p.question || "";
+  const eventTitle = p.event_title || p.question || "";
   const titleHtml = p.market_url
-    ? `<a class="market-title market-link" href="${esc(p.market_url)}" target="_blank" rel="noopener noreferrer">${esc(p.question)}</a>`
-    : `<div class="market-title">${esc(p.question)}</div>`;
-  // Forecast badge
+    ? `<a class="position-title-main" href="${esc(p.market_url)}" target="_blank" rel="noopener noreferrer">${esc(displayTitle)}</a>`
+    : `<div class="position-title-main">${esc(displayTitle)}</div>`;
   const forecastBadge = p.forecast_c != null
     ? `<span class="badge forecast">예보 ${tempC(p.forecast_c)}</span>`
     : `<span class="badge muted-badge">예보 --</span>`;
-  // Probability badge
   const probBadge = sideProbPct != null
     ? `<span class="badge neutral">확률 ${sideProbPct.toFixed(0)}%</span>`
     : `<span class="badge muted-badge">확률 --</span>`;
-  // Nowcast badge: show observed high/low based on market type
   const nowcastVal = isHighest
     ? (p.nowcast_high_c != null ? p.nowcast_high_c : null)
     : (p.nowcast_low_c != null ? p.nowcast_low_c : null);
   const nowcastLabel = isHighest ? "관측 최고" : "관측 최저";
   const nowcastBadge = nowcastVal != null
     ? `<span class="badge obs-temp">${nowcastLabel} ${tempC(nowcastVal)}</span>`
-    : `<span class="badge muted-badge">관측소 --</span>`;
+    : `<span class="badge muted-badge">${esc(nowcastUnavailableKo(p.nowcast_unavailable_reason))}</span>`;
+  const stationLabel = p.station_name && p.station_id && p.station_name !== p.station_id
+    ? `${p.station_name} (${p.station_id})`
+    : (p.station_name || p.station_id || "");
+  const observedLine = nowcastVal != null
+    ? `${nowcastLabel} ${tempC(nowcastVal)}${p.observed_at ? ` · 관측시각 ${shortDateTime(p.observed_at)}` : ""}`
+    : nowcastUnavailableDetail(p.nowcast_unavailable_reason);
+  const referencePnl = Number(p.reference_unrealized_pnl ?? p.unrealized_pnl ?? 0);
+  const showReference = Number.isFinite(referencePnl) && Math.abs(referencePnl - bidDepthPnl) >= 0.01;
+  const referenceSign = referencePnl >= 0 ? "+" : "-";
+  const referenceLine = showReference
+    ? `<div class="reference-line">참고PnL ${referenceSign}${money(Math.abs(referencePnl))}: 마지막 표시가 기준인 장부 참고값입니다. 실제 청산 판단은 위 청산PnL을 우선합니다.</div>`
+    : "";
   return `<div class="card open">
-    ${titleHtml}
+    <div class="position-heading">
+      ${titleHtml}
+      <div class="position-title-meta">이벤트: ${esc(eventTitle)}</div>
+    </div>
     <div class="pos-row">
-      <span class="badge ${(p.side||'').toUpperCase() === 'YES' ? 'yes' : 'no'}">${sideLabel}</span>
-      <span class="badge long">Long</span>
+      <span class="badge ${sideRaw === 'YES' ? 'yes' : 'no'}">${sidePositionKo(sideRaw)}</span>
+      <span class="badge price">선택 ${esc(p.bucket_label || "--")}</span>
       ${forecastBadge}
       ${probBadge}
       ${nowcastBadge}
@@ -767,21 +993,25 @@ function cardForPosition(p) {
     <div class="pos-row">
       <span class="badge price">진입 ${price(p.entry_price)}</span>
       <span class="badge current-price">현재가 ${price(p.mark_price)}</span>
-      <span class="badge ${pnlClass}">참고PnL ${pnlSign}${money(Math.abs(pnl))}</span>
+      <span class="badge ${bidDepthPnlClass}">청산PnL ${bidDepthPnlSign}${money(Math.abs(bidDepthPnl))}</span>
     </div>
     <div class="pos-row">
       <span class="badge ${exitStatusClass(exitStatus)}">청산 ${exitStatusKo(exitStatus)}</span>
       <span class="badge price">최고매수 ${price(p.exit_best_bid)}</span>
-      <span class="badge current-price">전량VWAP ${price(p.exit_full_vwap)}</span>
-      <span class="badge current-price">50%VWAP ${price(p.exit_half_vwap)}</span>
-      <span class="badge ${bidDepthPnlClass}">호가PnL ${bidDepthPnlSign}${money(Math.abs(bidDepthPnl))}</span>
+      <span class="badge current-price" title="전량을 지금 주문장에 팔 때의 평균 매도가">전량 매도평균 ${price(p.exit_full_vwap)}</span>
+      <span class="badge current-price" title="절반만 지금 주문장에 팔 때의 평균 매도가">절반 매도평균 ${price(p.exit_half_vwap)}</span>
     </div>
-    <div class="small muted" style="margin-top:8px">
+    ${referenceLine}
+    <div class="detail-line">
+      <strong>관측소</strong> ${esc(stationLabel || "--")} · ${esc(observedLine)}
+      ${p.nowcast_source ? ` · 출처 ${esc(p.nowcast_source)}` : ""}
+    </div>
+    <div class="detail-line">
       ${esc(p.city || "")} ${esc(p.date_hint || "")} · 수량 ${Number(p.shares || 0).toFixed(2)} · 비용 ${money(p.cost_usd)}
       ${p.entry_fee_usdc != null ? ` · 수수료 $${Number(p.entry_fee_usdc).toFixed(4)}` : ''}
       ${p.net_edge != null ? ` · 엣지 ${(Number(p.net_edge)*100).toFixed(1)}%` : ''}
     </div>
-    <div class="small muted" style="margin-top:4px">
+    <div class="detail-line">
       매도가능 ${qty(p.exit_available_shares)} / ${qty(p.shares)} · 청산가치 ${money(p.bid_depth_market_value)}
       · 웹소켓 ${statusKo(p.websocket_status)}${p.websocket_stale ? " · 오래됨" : ""}${wsAge}${exitBlocker}
     </div>
@@ -798,21 +1028,21 @@ function cardForTrade(t) {
   const pnlClass = isProfit ? "win" : "loss";
   const cardClass = isClose ? (isProfit ? "profit" : "loss") : "open";
   const reasonKo = _buildReasonKo(t.reason || "");
-  const reasonParsed = _parseCloseReason(t.reason || "");
+  const closeParts = closeReasonParts(t.reason || "");
   const ts = shortDateTime(t.ts || "");
-  // Entry cost from shares × price
-  const entryCost = (Number(t.shares || 0) * Number(t.price || 0));
+  const closeFacts = closeParts.facts.length
+    ? `<div class="reason-facts">${closeParts.facts.map(x => `<span class="badge muted-badge">${esc(x)}</span>`).join("")}</div>`
+    : "";
   return `<div class="card ${cardClass}">
     <div class="market-title">${esc(t.question || "")}</div>
     <div class="pos-row">
       <span class="badge ${isClose ? (isProfit ? 'win' : 'loss') : 'neutral'}">${esc(actionLabel)}</span>
-      <span class="badge ${(t.side||'').toUpperCase() === 'YES' ? 'yes' : 'no'}">${sideLabel}</span>
-      <span class="badge long">Long</span>
+      <span class="badge ${(t.side||'').toUpperCase() === 'YES' ? 'yes' : 'no'}">${sidePositionKo(sideLabel)}</span>
       <span class="badge current-price">체결가 ${price(t.price)}</span>
       <span class="badge ${pnlClass}">${pnlSign}${money(Math.abs(pnl))}</span>
     </div>
-    ${reasonKo ? `<div class="small muted" style="margin-top:6px">${esc(reasonKo)}</div>` : ""}
-    ${reasonParsed ? `<div class="small muted" style="margin-top:4px">이유: ${esc(reasonParsed)}</div>` : ""}
+    ${reasonKo ? `<div class="reason-box"><b>진입 근거</b><br>${esc(reasonKo)}</div>` : ""}
+    ${isClose && closeParts.summary ? `<div class="reason-box"><b>정리 이유</b><br>${esc(closeParts.summary)}${closeFacts}</div>` : ""}
     <div class="small muted" style="margin-top:4px">${ts}</div>
   </div>`;
 }
@@ -849,8 +1079,7 @@ function _buildReasonKo(reason) {
 }
 function _parseCloseReason(reason) {
   if (!reason) return "";
-  // Strip the entry: prefix, show the close reason cleanly
-  return reason.replace(/^entry:[^;]*;?\s*/i, "").trim();
+  return closeReasonParts(reason).summary;
 }
 
 function realizedCards(rows) {
@@ -860,36 +1089,39 @@ function realizedCards(rows) {
     const isProfit = pnl > 0;
     const resultLabel = isProfit ? "수익" : "손절";
     const cardClass = isProfit ? "profit" : "loss";
-    const exitLabel = isProfit ? "익절가" : "손절가";
-    const sideLabel = (r.side || "").toUpperCase() === "YES" ? "Yes" : "No";
+    const exitLabel = isProfit ? "익절" : "손절";
+    const sideRaw = (r.side || "").toUpperCase();
     const pnlSign = isProfit ? "+" : "";
-    // side probability from p_true
     const sideProbPct = r.p_true != null
-      ? ((r.side || "").toUpperCase() === "YES" ? r.p_true : (1 - r.p_true)) * 100
+      ? (sideRaw === "YES" ? r.p_true : (1 - r.p_true)) * 100
       : null;
-    const reasonKo = _buildReasonKo(r.reason || "");
-    // Human-readable reason for close
-    let closeReason = r.reason || "";
-    // Strip the entry: prefix if present, show clean close reason
-    const closePart = closeReason.replace(/^entry:[^;]*;?\s*/i, "").trim();
+    const bucket = bucketLabelFromFields(r.threshold_c, r.condition_label);
+    const closeParts = closeReasonParts(r.reason || "");
+    const fact = (label, value, cls = "") => `<div class="fact"><span>${esc(label)}</span><strong class="${cls}">${esc(value)}</strong></div>`;
+    const reasonFacts = closeParts.facts.length
+      ? `<div class="reason-facts">${closeParts.facts.map(x => `<span class="badge muted-badge">${esc(x)}</span>`).join("")}</div>`
+      : "";
     return `<div class="card ${cardClass}">
       <div class="market-title">${esc(r.question || "")}</div>
       <div class="pos-row">
         <span class="badge ${isProfit ? 'win' : 'loss'}">${resultLabel}</span>
-        <span class="badge ${(r.side||'').toUpperCase() === 'YES' ? 'yes' : 'no'}">${sideLabel}</span>
-        <span class="badge long">Long</span>
+        <span class="badge ${sideRaw === 'YES' ? 'yes' : 'no'}">${sidePositionKo(sideRaw)}</span>
+        <span class="badge price">선택 ${esc(bucket)}</span>
         ${r.forecast_c ? `<span class="badge forecast">예보 ${tempC(r.forecast_c)}</span>` : ''}
         ${sideProbPct != null ? `<span class="badge neutral">확률 ${sideProbPct.toFixed(0)}%</span>` : ''}
       </div>
-      <div class="pos-row">
-        <span class="badge price">진입 ${price(r.entry_price)}</span>
-        <span class="badge price">${exitLabel} ${price(r.exit_price)}</span>
-        <span class="badge ${isProfit ? 'win' : 'loss'}">${pnlSign}${money(Math.abs(pnl))}</span>
-        <span class="badge neutral">수익률 ${roi(r.roi)}</span>
+      <div class="realized-fact-grid">
+        ${fact("결과", resultLabel, isProfit ? "profit-text" : "loss-text")}
+        ${fact("포지션", sidePositionKo(sideRaw))}
+        ${fact("진입가", price(r.entry_price))}
+        ${fact(exitLabel + "가", price(r.exit_price))}
+        ${fact("손익", pnlSign + money(Math.abs(pnl)), isProfit ? "profit-text" : "loss-text")}
+        ${fact("수익률", roi(r.roi), isProfit ? "profit-text" : "loss-text")}
+        ${fact("도시", r.city || "--")}
+        ${fact("시간", shortDateTime(r.closed_at))}
       </div>
-      ${reasonKo ? `<div class="small muted" style="margin-top:6px">${esc(reasonKo)}</div>` : ''}
-      ${closePart ? `<div class="small muted" style="margin-top:4px">이유: ${esc(closePart)}</div>` : ''}
-      <div class="small muted" style="margin-top:4px">${esc(r.city || '')} ${esc(r.date_hint || '')} · ${shortDateTime(r.closed_at)}</div>
+      ${closeParts.summary ? `<div class="reason-box"><b>정리 이유</b><br>${esc(closeParts.summary)}${reasonFacts}</div>` : ''}
+      <div class="detail-line">${esc(r.city || '')} ${esc(r.date_hint || '')}</div>
     </div>`;
   }).join("");
 }
@@ -920,13 +1152,16 @@ function cityForecastCard(c) {
 function cityNowcastCard(c) {
   const ok = (c.status || "").toUpperCase() === "SUCCESS" || (c.status || "").toUpperCase() === "HIT";
   const cls = ok ? "ok" : ((c.error || c.unavailable_reason) ? "fail" : "warn");
-  const statusText = ok ? "✓ 성공" : "✗ 실패";
+  const statusText = ok ? "✓ 성공" : (c.last_success_at ? "✗ 실패 · 이전 성공 있음" : "✗ 실패");
   const ts = shortDateTime(c.requested_at || c.attempted_at || "");
   const err = c.error || c.unavailable_reason || "";
   const stn = c.station_name || "";
   const hiC = c.observed_high_c != null ? `<span style="color:var(--red)">최고기온 ${tempC(c.observed_high_c)}</span>` : "";
   const loC = c.observed_low_c != null ? `<span style="color:var(--blue)">최저기온 ${tempC(c.observed_low_c)}</span>` : "";
   const temps = [hiC, loC].filter(Boolean).join(" · ");
+  const lastSuccess = c.last_success_at ? shortDateTime(c.last_success_at) : "";
+  const lastFailure = c.last_failure_at ? shortDateTime(c.last_failure_at) : "";
+  const lastFailureError = c.last_failure_error || err;
   // bulk-metar: AWC METAR one-shot request covering all 38 METAR-source stations
   const isBulk = (c.city || "") === "bulk-metar" || String(c.request_mode || "").includes("bulk");
   if (isBulk) {
@@ -938,9 +1173,10 @@ function cityNowcastCard(c) {
       <span class="${ok ? 'city-status-ok' : 'city-status-fail'}">${statusText}</span>
     </div>
     <div class="city-card-detail" style="color:var(--muted)">홍콩 제외 전체 도시 1회 요청${triggerCity}</div>
-    <div class="city-card-detail">마지막 호출: ${ts}</div>
+    <div class="city-card-detail">최근 시도: ${ts}</div>
+    ${lastSuccess ? `<div class="city-card-detail">마지막 성공: ${lastSuccess}</div>` : ""}
     <div class="city-card-detail" style="color:var(--muted)">갱신 주기: 캐시 만료 시 (≥5분)</div>
-    ${err ? `<div class="city-card-detail" style="color:var(--red)">실패: ${esc(err.slice(0, 80))}</div>` : ""}
+    ${lastFailureError && !ok ? `<div class="city-card-detail" style="color:var(--red)">최근 실패: ${esc(String(lastFailureError).slice(0, 80))}${lastFailure ? ` · ${lastFailure}` : ""}</div>` : ""}
   </div>`;
   }
   return `<div class="city-card ${cls}">
@@ -949,9 +1185,11 @@ function cityNowcastCard(c) {
       <span class="${ok ? 'city-status-ok' : 'city-status-fail'}">${statusText}</span>
     </div>
     ${stn ? `<div class="city-card-detail">공식 관측소: ${esc(stn)}</div>` : ""}
-    <div class="city-card-detail">호출 성공: ${ts}</div>
+    <div class="city-card-detail">최근 시도: ${ts}</div>
+    ${lastSuccess ? `<div class="city-card-detail">마지막 성공: ${lastSuccess}</div>` : ""}
     ${temps ? `<div class="city-card-detail">${temps}</div>` : ""}
-    ${err ? `<div class="city-card-detail" style="color:var(--red)">실패: ${esc(err.slice(0, 80))}</div>` : ""}
+    ${lastFailureError && !ok ? `<div class="city-card-detail" style="color:var(--red)">최근 실패: ${esc(String(lastFailureError).slice(0, 80))}${lastFailure ? ` · ${lastFailure}` : ""}</div>` : ""}
+    ${!ok ? `<div class="city-card-detail" style="color:var(--muted)">대응: 다음 관측 주기에 다시 시도하고, 성공 캐시는 유지합니다.</div>` : ""}
   </div>`;
 }
 
@@ -1095,6 +1333,15 @@ function render(payload) {
   setText("r-websocket-message", "마지막 메시지 " + shortDateTime(websocketHealth.last_message_at));
   setText("r-websocket-book", "마지막 주문장 " + shortDateTime(websocketHealth.last_book_at) + " · 경과 " + (websocketHealth.stale_book_age_seconds == null ? "--" : duration(websocketHealth.stale_book_age_seconds)));
   setText("r-websocket-error", "최근 오류 " + (websocketHealth.last_error || "--"));
+  const streamActivity = document.getElementById("r-stream-activity");
+  const streamPulse = document.getElementById("r-stream-pulse");
+  const streamStatus = String(websocketHealth.status || "").toUpperCase();
+  const streamLive = streamStatus === "HEALTHY";
+  streamActivity.classList.toggle("live", streamLive);
+  streamPulse.textContent = streamLive ? "수신 중" : statusKo(streamStatus);
+  streamPulse.className = streamStatusClass(streamStatus);
+  setText("r-stream-summary", "감시 대상 " + Number(websocketHealth.stream_tokens || 0) + "토큰 · " + Number(websocketHealth.stream_markets || 0) + "마켓 · " + Number(websocketHealth.stream_cities || 0) + "도시");
+  setText("r-stream-reason", "상태 설명 " + (websocketHealth.status_reason || (streamLive ? "주문장 메시지를 정상 수신 중" : "--")));
   // Per-city forecast/nowcast cards → logs panel (3rd tab)
   const forecastCities = (payload.scanner || {}).per_city_forecast || [];
   document.getElementById("r-forecast-cities").innerHTML = forecastCities.length

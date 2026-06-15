@@ -87,6 +87,54 @@ def test_dashboard_payload_scanner_has_per_city_forecast(tmp_path):
     assert "per_city_nowcast" in scanner
 
 
+def test_dashboard_nowcast_status_keeps_last_success_when_latest_call_fails(tmp_path):
+    state_path = tmp_path / "state.json"
+    nowcast_log = tmp_path / "station_nowcast_request_log.jsonl"
+    state_path.write_text(json.dumps({"cash_usd": 100.0, "positions": []}), encoding="utf-8")
+    nowcast_log.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "city": "hong kong",
+                        "status": "success",
+                        "requested_at": "2026-06-16T00:10:00+00:00",
+                        "status_code": 200,
+                        "station_id": "HKO",
+                        "station_name": "Hong Kong Observatory",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "city": "hong kong",
+                        "status": "error",
+                        "requested_at": "2026-06-16T00:23:00+00:00",
+                        "error": "ConnectionError",
+                        "station_id": "HKO",
+                        "station_name": "Hong Kong Observatory",
+                    }
+                ),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    payload = build_dashboard_payload(
+        Settings(
+            bankroll_usd=100.0,
+            state_path=str(state_path),
+            station_nowcast_request_log_path=str(nowcast_log),
+        )
+    )
+
+    hong_kong = next(row for row in payload["scanner"]["per_city_nowcast"] if row["city"] == "hong kong")
+    assert hong_kong["status"] == "error"
+    assert hong_kong["error"] == "ConnectionError"
+    assert hong_kong["last_success_at"] == "2026-06-16T00:10:00+00:00"
+    assert hong_kong["last_failure_at"] == "2026-06-16T00:23:00+00:00"
+    assert hong_kong["last_failure_error"] == "ConnectionError"
+
+
 def test_dashboard_refuses_public_host_with_empty_token(monkeypatch):
     class FailingServer:
         def __init__(self, *_args, **_kwargs):
@@ -271,7 +319,7 @@ def test_dashboard_payload_summarizes_state_trades_and_decisions(tmp_path):
                         "cost_usd": 50.0,
                         "opened_at": "2026-05-24T10:00:00+00:00",
                         "last_mark_price": 0.6,
-                        "metadata": {"city": "seoul", "date_hint": "may 24"},
+                        "metadata": {"city": "seoul", "date_hint": "may 24", "station_id": "RKSI"},
                     }
                 ],
                 "stats": {"temperature": {"wins": 1, "losses": 1, "pnl": 4.0}},
@@ -391,6 +439,10 @@ def test_dashboard_payload_summarizes_state_trades_and_decisions(tmp_path):
     assert payload["positions"][0]["forecast_c"] == pytest.approx(28.7)
     assert payload["positions"][0]["nowcast_high_c"] == pytest.approx(29.0)
     assert payload["positions"][0]["nowcast_low_c"] is None
+    assert payload["positions"][0]["station_id"] == "RKSI"
+    assert payload["positions"][0]["station_name"] == "Incheon Intl Airport Station"
+    assert payload["positions"][0]["bucket_label"] == "21°C 이상"
+    assert payload["positions"][0]["display_title"] == "Seoul · May 24 · 21°C 이상 · YES"
     assert "events" not in payload
     assert "recent_decisions" not in payload
     assert "pressure" not in payload
@@ -1217,6 +1269,12 @@ def test_dashboard_payload_surfaces_forecast_and_websocket_health(tmp_path):
                     "stale": True,
                     "last_error": "RuntimeError: websocket stopped",
                 },
+                "discovery": {
+                    "stream_tokens": 506,
+                    "stream_markets": 253,
+                    "stream_events": 23,
+                    "stream_cities": 21,
+                },
             }
         ),
         encoding="utf-8",
@@ -1231,6 +1289,8 @@ def test_dashboard_payload_surfaces_forecast_and_websocket_health(tmp_path):
     assert payload["health"]["websocket"]["status"] == "FAILED"
     assert payload["health"]["websocket"]["thread_alive"] is False
     assert payload["health"]["websocket"]["reconnect_count"] == 3
+    assert payload["health"]["websocket"]["stream_tokens"] == 506
+    assert payload["health"]["websocket"]["stream_markets"] == 253
     assert payload["bot"]["status"] == "FAILED"
 
 
