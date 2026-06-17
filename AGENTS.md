@@ -82,6 +82,11 @@ trading-risk, server, or workflow work, read these first:
 2. `docs/active/current-task.md`
 3. `docs/production-decisions.md`
 
+Read the mandatory set once at the start of a new task/turn. Within the same
+turn, do not reread these files in full unless the file changed, context was
+compacted, or a concrete contradiction/blocker requires rechecking. Use the
+already-read context for subsequent test, commit, VPS, or verification steps.
+
 `docs/active/current-task.md` is the only default unfinished-work card. If it
 says `Status: active`, continue from its `Next Action`. If it says
 `Status: none`, start from the user's latest request and read only the relevant
@@ -250,6 +255,12 @@ before continuing.
 - Be token-frugal. Do the smallest verification that proves the claim, avoid
   rereading large docs already summarized in the active task, and do not repeat
   successful checks without a new reason.
+- In one turn, do not reread large mandatory docs after the first read. Inspect
+  only the needed section with `rg`, `Select-String`, line windows, or focused
+  file snippets.
+- Prefer `git diff --stat`, `git diff --name-only`, staged-name lists, and
+  specific-file diffs over full `git diff` output. Open full diffs only when
+  reviewing a small touched file or a specific risky hunk.
 - For behavior changes, add or update focused tests and verify the behavior.
 - Run focused tests before broad tests.
 - Make failure modes observable. A running process is not enough when a
@@ -298,8 +309,12 @@ before continuing.
 
 ## Compound Learning
 
-- After non-trivial review, debugging, workflow correction, repeated mistake,
-  or durable prevention-rule work, run `ce-compound`.
+- Run `ce-compound` only when the work produced a new durable prevention lesson
+  that is not already covered under `docs/solutions/`. First search/list the
+  relevant solution area instead of opening the full corpus.
+- Prefer the shortest useful compound path. For small lessons, write/update one
+  focused solution note directly or use a lightweight/headless flow instead of
+  loading broad review workflows.
 - Save durable lessons under `docs/solutions/` and reuse existing lessons when
   working in documented areas.
 - Skip `ce-compound` only when there is no durable lesson. When skipped, say:
