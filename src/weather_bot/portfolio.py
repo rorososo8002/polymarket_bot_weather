@@ -145,6 +145,7 @@ class _DisplayTemperatureSpan:
 
 
 _SCENARIO_PROBABILITY_EPSILON = 1e-9
+_MIN_EXHAUSTIVE_SCENARIO_PROBABILITY_MASS = 0.50
 _MAX_ALLOCATION_SIZE_CANDIDATES = 50
 _ALLOCATION_SIZE_ROUND_DIGITS = 6
 
@@ -530,6 +531,14 @@ def _scenario_probabilities(candidates: list[PortfolioCandidate]) -> _ScenarioPr
         and _bucket_intervals_cover_all_outcomes(bucket_intervals)
     ) or _display_spans_cover_all_whole_degree_outcomes(list(unique.values()))
     if exhaustive:
+        if total < _MIN_EXHAUSTIVE_SCENARIO_PROBABILITY_MASS:
+            return _ScenarioProbabilityAssessment(
+                rounded_probabilities,
+                (
+                    "scenario probabilities have insufficient mass for exhaustive "
+                    f"normalization (total={total:.6f})"
+                ),
+            )
         return _ScenarioProbabilityAssessment(
             {
                 market_id: round(probability / total, 12)

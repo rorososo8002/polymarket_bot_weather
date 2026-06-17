@@ -1,0 +1,4 @@
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+17 * * * * polymarket cd /opt/polymarket-weather-bot && PYTHONPATH=/opt/polymarket-weather-bot/src .venv/bin/python -m weather_bot.runtime_cleanup --data-dir /opt/polymarket-weather-bot/data --max-archive-bytes 104857600 >> /opt/polymarket-weather-bot/data/runtime_cleanup.log 2>&1

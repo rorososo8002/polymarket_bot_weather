@@ -98,14 +98,16 @@ net_edge > configured threshold
 expected_net_return >= ENTRY_MIN_EXPECTED_NET_RETURN_PCT
 ```
 
+Active paper thresholds are less conservative than before:
+`MIN_NET_EDGE=0.03` and `ENTRY_MIN_EXPECTED_NET_RETURN_PCT=0.04`. This is a paper-validation choice, not live-trading permission.
+
 `p_exec` is executable ask-side VWAP. It already includes spread/slippage
 through the actual book price, so do not subtract those twice.
 
 `size_usd` is the all-in paper-entry budget. The broker buys fewer shares than
-`size_usd / p_exec` so entry notional plus fee stays inside the budget. Closes,
-dashboard market value, and liquidation bankroll use after-exit-fee value.
-Open-position cards separate reference mark value from bid-depth liquidation
-value with bid depth, exit status/blocker, and WebSocket freshness.
+`size_usd / p_exec` so entry plus fee stays inside budget. Closes, dashboard,
+and liquidation bankroll use after-exit-fee value and separate reference marks
+from bid-depth liquidation value.
 
 Entry liquidity and final pre-trade checks follow actual order sizing:
 
@@ -138,10 +140,13 @@ Drawdown breakers may stop new entries, but never settlement or exit handling.
   `SKIP_RULE_MISMATCH`.
 - Category slug detail fetches are bounded at 80 per cycle and lower explicit
   `max_pages * page_size` budgets, so discovery cannot delay WebSocket startup.
-- Temperature bucket boundaries use centralized millifahrenheit comparison;
-  range endpoints and exact displayed values stay literal, with no hidden half-step intervals such as `28.5C-29.5C`.
-- Forecast votes for exact buckets count only displayed-value matches, not
-  hidden rounded cells.
+- Temperature bucket settlement boundaries use centralized millifahrenheit
+  comparison; range endpoints and exact displayed values stay literal, with no
+  hidden settlement interval such as `28.5C-29.5C`.
+- Exact Celsius changed from exact decimal member matches to whole-degree
+  display probability, e.g. `P(source_displayed_integer_c == 23)`. NO skips
+  only on the forecast-mean modal integer bucket; adjacent/tail NO still needs
+  fee-aware edge, return, liquidity, and portfolio approval.
 - Same-station nowcast may adjust probability only when station metadata marks
   same-station support with confidence grade A/B. C/D, unsupported, inferred,
   or nearby providers cannot enter the execution universe.
@@ -216,6 +221,7 @@ Drawdown breakers may stop new entries, but never settlement or exit handling.
 - `STREAM_CYCLE_INTERVAL_SECONDS=2400` is the market-discovery and WebSocket
   subscription rebuild interval. It should represent the intended streaming
   window, not be consumed by a long pre-stream forecast warmup.
+- At a planned stream-cycle boundary, stop the realtime evaluator with `drain=False` before stopping the old WebSocket stream. Pending queue entries are old-window hints; the next stream window must re-evaluate from fresh executable depth instead of logging artificial `HOLD_STREAM_UNHEALTHY` rows.
 
 ## Portfolio And Risk Contract
 
@@ -236,18 +242,10 @@ illiquid, missing, or settling, the bot values that position at $0 for
 Default portfolio limits:
 
 ```text
-BANKROLL_USD=200
-SIZE_MODE=kelly
-FRACTIONAL_KELLY=0.25
-ENTRY_FRACTION=0.20
-MIN_ORDER_USD=20.00
-MAX_SINGLE_MARKET_FRACTION=0.10
-MAX_EVENT_DATE_EXPOSURE_FRACTION=0.10
-LARGE_BANKROLL_EVENT_DATE_EXPOSURE_FRACTION=0.05
-EVENT_DATE_EXPOSURE_TRANSITION_USD=1000
-MAX_EVENT_PORTFOLIO_LEGS=2
-MAX_CITY_EXPOSURE_FRACTION=0.20
-MAX_TOTAL_EXPOSURE_FRACTION=0.60
+BANKROLL_USD=200; SIZE_MODE=kelly; FRACTIONAL_KELLY=0.25; ENTRY_FRACTION=0.20
+MIN_ORDER_USD=20.00; MAX_SINGLE_MARKET_FRACTION=0.10; MAX_EVENT_PORTFOLIO_LEGS=2
+MAX_EVENT_DATE_EXPOSURE_FRACTION=0.10; LARGE_BANKROLL_EVENT_DATE_EXPOSURE_FRACTION=0.05; EVENT_DATE_EXPOSURE_TRANSITION_USD=1000
+MAX_CITY_EXPOSURE_FRACTION=0.20; MAX_TOTAL_EXPOSURE_FRACTION=0.90
 ```
 
 For one city-date event, the selector compares one-leg and at-most-two-leg
@@ -256,6 +254,7 @@ outcomes. Same-market `YES+NO`, hidden threshold-ladder overlap, and third legs
 are blocked; selected portfolios log a compact scenario payoff audit, not raw
 scenario maps. Allocation-size candidates are capped for large ranges while
 keeping the minimum order, allowed maximum, and any affordable preferred size.
+Exhaustive-looking buckets normalize only from credible raw mass; exact dust fails closed instead of stretching into fake 100% tails.
 
 ## Accounting And Exit Contract
 

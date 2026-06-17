@@ -24,6 +24,14 @@ Everything else is noise that wastes disk and makes analysis harder.
 - `station_nowcast_request_log.jsonl` — 10 MB logrotate
 - `paper_event_portfolios.jsonl` — 10 MB logrotate, only selections by default
 
+### Delete automatically after 100 MB
+- `data/archive/` diagnostic archives only. `runtime_cleanup` deletes the
+  oldest known diagnostic archive files once their combined size exceeds
+  100 MB.
+- Never delete active account ledgers automatically: `paper_state.json`,
+  `paper_trades.csv`, and `paper_decisions.csv` are validation evidence, not
+  disposable cache.
+
 ### Discard (never useful)
 - SKIP rows in `paper_decisions.csv` — "didn't trade because conditions not met";
   >95% of all writes; zero analytical value. Suppressed via
@@ -34,7 +42,7 @@ Everything else is noise that wastes disk and makes analysis harder.
 | File | Growth rate (no guard) | Guard |
 |------|------------------------|-------|
 | `paper_decisions.csv` | ~6 GB / 9 h (with SKIP) | SKIP suppressed by default |
-| `paper_event_portfolios.jsonl` | ~1.2 GB / 9 h (all evals) | write-only-on-trade + logrotate 10 MB |
+| `paper_event_portfolios.jsonl` | ~1.2 GB / 9 h (all evals) | write-only-on-trade by default; for investigations use skip logging with logrotate 10 MB plus archive pruning |
 | `paper_trades.csv` | ~50 MB / 9 h | executed trades only; do not rotate until replay is archive-aware |
 | `paper_raw_snapshots.jsonl` | mode=error only | 100 MB internal cap |
 | journalctl | unbounded | `SystemMaxUse=50M` in journald.conf |
@@ -52,6 +60,30 @@ olddir /opt/polymarket-weather-bot/data/archive
 ```
 
 Triggered hourly by `/etc/cron.d/polymarket-logrotate`.
+
+## Runtime Cleanup
+
+`runtime_cleanup` is the second guard after logrotate. Logrotate moves
+high-volume diagnostics into `data/archive/`; cleanup keeps that archive under
+the operator budget.
+
+Recommended VPS command:
+
+```bash
+sudo -u polymarket /opt/polymarket-weather-bot/.venv/bin/python -m weather_bot.runtime_cleanup \
+  --data-dir /opt/polymarket-weather-bot/data \
+  --max-archive-bytes 104857600
+```
+
+It deletes only known diagnostic archive names:
+
+- `paper_raw_snapshots*`
+- `forecast_request_log*`
+- `station_nowcast_request_log*`
+- `paper_event_portfolios*`
+
+Use `--dry-run` before changing the cron rule if you need to inspect what would
+be deleted.
 
 ## Journald Configuration
 

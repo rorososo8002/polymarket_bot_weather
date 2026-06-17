@@ -89,18 +89,23 @@ The bot is not ready for live-trading planning until all P0 gates are true.
 4. Partial liquidity becomes scaled entry, `PARTIAL_CLOSE`, or a hold blocker.
 5. Fees, spread, and slippage are reflected before PnL is trusted.
 6. Stale order books block new entries and pause exits with observable reasons.
-7. Exact buckets are exact displayed values; no hidden half-step intervals.
-8. Range buckets preserve displayed inclusive endpoints.
-9. Threshold markets follow the exact rule wording.
-10. Daily-high markets use observed high; daily-low markets use observed low.
-11. Same-station nowcast is used only when official station evidence is mapped.
-12. Event date windows are evaluated in the station-local timezone.
-13. Market rule provenance is preserved: title, description/resolution text,
+7. Exact bucket settlement checks are exact displayed values; no hidden
+   half-step settlement intervals.
+8. Whole-degree Celsius exact-bucket probability estimates the settlement
+   source's displayed integer value. Exact Celsius NO entries fail closed on
+   the forecast-mean modal integer bucket, while adjacent or tail NO entries
+   may trade only when normal executable edge and return gates pass.
+9. Range buckets preserve displayed inclusive endpoints.
+10. Threshold markets follow the exact rule wording.
+11. Daily-high markets use observed high; daily-low markets use observed low.
+12. Same-station nowcast is used only when official station evidence is mapped.
+13. Event date windows are evaluated in the station-local timezone.
+14. Market rule provenance is preserved: title, description/resolution text,
     station/source evidence, unit, bucket shape, and local event window are
     consistent before a market may trade.
-14. A final pre-trade check revalidates executable depth, spread, stale data,
+15. A final pre-trade check revalidates executable depth, spread, stale data,
     edge, exposure, opposing positions, and rule clarity before paper entry.
-15. Decision, trade, snapshot, and report outputs carry enough fields to audit
+16. Decision, trade, snapshot, and report outputs carry enough fields to audit
     the result later.
 16. The minimum performance report shows realistic net PnL, no-liquidity rate,
     stale-data blocks, signal-type breakdown, market-shape breakdown, city
@@ -201,6 +206,11 @@ Goal: make market-rule and station evidence impossible to misread.
 Required behavior:
 
 - exact Celsius/Fahrenheit bucket means the displayed value only
+- whole-degree exact Celsius probability estimates
+  `P(source_displayed_integer_c == bucket_c)` instead of exact decimal member
+  equality
+- exact Celsius NO entry skips when the forecast mean maps to the same
+  displayed integer bucket, not merely because it is within 1.0C
 - range bucket means displayed inclusive endpoints
 - threshold market follows its own above/below/inclusive wording
 - daily-high YES risk checks observed high

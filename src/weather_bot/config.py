@@ -136,7 +136,7 @@ class Settings:
     dashboard_token: str = ""
 
     # Strategy thresholds
-    min_net_edge: float = 0.05
+    min_net_edge: float = 0.03
     exit_net_edge: float = 0.00
     # Exit policy: stop is probability-based; profit is model-fair-value based.
     probability_stop_drop_threshold: float = 0.10
@@ -153,7 +153,7 @@ class Settings:
     entry_fraction: float = 0.20
     fractional_kelly: float = 0.25
     max_single_market_fraction: float = 0.10
-    max_total_exposure_fraction: float = 0.60
+    max_total_exposure_fraction: float = 0.90
     bankroll_usd: float = 100.0
     min_order_usd: float = 10.0
 
@@ -179,7 +179,7 @@ class Settings:
 
     # Paper weather-fee default from the official category schedule.
     # A separate live-execution project must query fee parameters per market.
-    entry_min_expected_net_return_pct: float = 0.06
+    entry_min_expected_net_return_pct: float = 0.04
     max_entry_spread_abs: float = 0.20
     max_entry_spread_pct: float = 1.00
     weather_taker_fee_rate: float = 0.05

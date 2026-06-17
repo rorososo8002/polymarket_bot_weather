@@ -947,6 +947,97 @@ def test_evaluate_market_refuses_undated_signal_even_when_date_hint_requirement_
     assert "date_hint=None" in result.reason
 
 
+def test_exact_celsius_no_entry_skips_forecast_mean_modal_bucket():
+    settings = Settings(
+        min_net_edge=0.01,
+        min_order_usd=1.0,
+        entry_min_expected_net_return_pct=0.0,
+        weather_taker_fee_rate=0.0,
+        model_error_margin=0.0,
+        resolution_error_margin=0.0,
+        require_date_hint_for_trade=True,
+    )
+    question = "Will the highest temperature in Amsterdam be 23C on June 16?"
+    market = RawMarket(
+        market_id="amsterdam-23c",
+        question=question,
+        slug="amsterdam-23c",
+        active=True,
+        closed=False,
+        yes_token_id="yes",
+        no_token_id="no",
+    )
+    signal = WeatherSignal(
+        p_true=0.0,
+        confidence=0.95,
+        source="open-meteo-ensemble-station",
+        note=(
+            "Amsterdam Airport Schiphol Station [EHAM] target_date=2026-06-16; "
+            "bucket=exact; ==23.0C/73.4F; members=31; vote=0.000; "
+            "mean=73.1F; spread=1.64F"
+        ),
+        parsed=parse_weather_question(question),
+    )
+    client = FakePolymarketClient(
+        books={
+            "yes": book("yes", bid=0.45, ask=0.46, bid_size=1000.0, ask_size=1000.0),
+            "no": book("no", bid=0.53, ask=0.54, bid_size=1000.0, ask_size=1000.0),
+        }
+    )
+
+    result, per_side = evaluate_market(market, signal, client, settings, 200.0, "temperature")
+
+    assert per_side["NO"].side == "SKIP"
+    assert per_side["NO"].net_edge > settings.min_net_edge
+    assert "SKIP_EXACT_CELSIUS_MODAL_NO" in per_side["NO"].reason
+    assert result.side == "SKIP"
+
+
+def test_exact_celsius_no_entry_allows_adjacent_non_modal_bucket_when_edge_passes():
+    settings = Settings(
+        min_net_edge=0.01,
+        min_order_usd=1.0,
+        entry_min_expected_net_return_pct=0.0,
+        weather_taker_fee_rate=0.0,
+        model_error_margin=0.0,
+        resolution_error_margin=0.0,
+        require_date_hint_for_trade=True,
+    )
+    question = "Will the highest temperature in Amsterdam be 22C on June 16?"
+    market = RawMarket(
+        market_id="amsterdam-22c",
+        question=question,
+        slug="amsterdam-22c",
+        active=True,
+        closed=False,
+        yes_token_id="yes",
+        no_token_id="no",
+    )
+    signal = WeatherSignal(
+        p_true=0.10,
+        confidence=0.95,
+        source="open-meteo-ensemble-station",
+        note=(
+            "Amsterdam Airport Schiphol Station [EHAM] target_date=2026-06-16; "
+            "bucket=exact; ==22.0C/71.6F; members=31; vote=0.100; "
+            "mean=73.1F; spread=1.64F"
+        ),
+        parsed=parse_weather_question(question),
+    )
+    client = FakePolymarketClient(
+        books={
+            "yes": book("yes", bid=0.28, ask=0.29, bid_size=1000.0, ask_size=1000.0),
+            "no": book("no", bid=0.69, ask=0.70, bid_size=1000.0, ask_size=1000.0),
+        }
+    )
+
+    result, per_side = evaluate_market(market, signal, client, settings, 200.0, "temperature")
+
+    assert per_side["NO"].side == "NO"
+    assert "SKIP_EXACT_CELSIUS_MODAL_NO" not in per_side["NO"].reason
+    assert result.side == "NO"
+
+
 def test_entry_net_return_filter_rejects_thin_high_price_trade(tmp_path):
     settings = Settings(
         state_path=str(tmp_path / "state.json"),
@@ -2039,6 +2130,7 @@ def test_run_cycle_drawdown_blocks_new_entries_but_still_closes_positions(monkey
     decisions_path = tmp_path / "decisions.csv"
     raw_path = tmp_path / "raw.jsonl"
     portfolio_path = tmp_path / "portfolio.jsonl"
+    today = datetime.now(timezone.utc).date().isoformat()
     held_question = "Will NYC reach 90 F on May 25?"
     new_market = RawMarket("new", "Will NYC reach 90 F on May 26?", "new", True, False, "new-yes", "new-no")
     held_market = RawMarket("held", held_question, "held", True, False, "held-yes", "held-no")
@@ -2053,14 +2145,14 @@ def test_run_cycle_drawdown_blocks_new_entries_but_still_closes_positions(monkey
                         "market_id": "held",
                         "question": held_question,
                         "token_id": "held-yes",
-                        "side": "YES",
-                        "entry_price": 0.50,
-                        "shares": 100.0,
-                        "cost_usd": 50.0,
-                        "opened_at": "2026-06-14T00:02:00+00:00",
-                        "last_mark_price": 0.50,
-                        "metadata": {"entry_p_true": 0.80, "probability_stop_threshold": 0.70},
-                    }
+                            "side": "YES",
+                            "entry_price": 0.50,
+                            "shares": 100.0,
+                            "cost_usd": 50.0,
+                            "opened_at": f"{today}T00:02:00+00:00",
+                            "last_mark_price": 0.50,
+                            "metadata": {"entry_p_true": 0.80, "probability_stop_threshold": 0.70},
+                        }
                 ],
                 "stats": {"temperature": {"wins": 0, "losses": 1, "pnl": -1.0}},
             }
@@ -2069,13 +2161,13 @@ def test_run_cycle_drawdown_blocks_new_entries_but_still_closes_positions(monkey
     )
     trades_path.write_text(
         "\n".join(
-            [
-                "ts,action,market_id,slug,question,market_type,side,token_id,shares,price,cash_delta_or_pnl,reason",
-                "2026-06-14T00:00:00+00:00,OPEN,loss,loss,Loss,temperature,YES,loss-yes,10,0.5,-5,fixture",
-                "2026-06-14T00:01:00+00:00,CLOSE,loss,loss,Loss,temperature,YES,loss-yes,10,0.4,-1,fixture loss",
-                f"2026-06-14T00:02:00+00:00,OPEN,held,held,{held_question},temperature,YES,held-yes,100,0.5,-50,fixture held",
-            ]
-        )
+                [
+                    "ts,action,market_id,slug,question,market_type,side,token_id,shares,price,cash_delta_or_pnl,reason",
+                    f"{today}T00:00:00+00:00,OPEN,loss,loss,Loss,temperature,YES,loss-yes,10,0.5,-5,fixture",
+                    f"{today}T00:01:00+00:00,CLOSE,loss,loss,Loss,temperature,YES,loss-yes,10,0.4,-1,fixture loss",
+                    f"{today}T00:02:00+00:00,OPEN,held,held,{held_question},temperature,YES,held-yes,100,0.5,-50,fixture held",
+                ]
+            )
         + "\n",
         encoding="utf-8",
     )

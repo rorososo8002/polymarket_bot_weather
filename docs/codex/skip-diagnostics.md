@@ -162,6 +162,60 @@ For repeated SKIPs, collect:
   from executable levels.
 - Count by reason over a fixed operator-chosen window such as 1 hour or 24 hours.
 
+## WebSocket Freshness Report
+
+Use the paper runtime diagnosis report before weakening strategy thresholds or
+WebSocket freshness rules:
+
+```powershell
+& 'C:\Users\wpdla\Python312\python.exe' -m weather_bot.runtime_diagnostics --data-dir data --tail 500
+```
+
+On the VPS, run it from `/opt/polymarket-weather-bot`:
+
+```bash
+sudo -u polymarket .venv/bin/python -m weather_bot.runtime_diagnostics --data-dir data --tail 500
+```
+
+This report reads `paper_runner_status.json`, `paper_state.json`, and a bounded
+tail of `paper_trades.csv`. It separates:
+
+- whole-stream WebSocket health, which can block all new entries
+- token-level held-position freshness, which can pause one position
+- recent `OPEN`, `CLOSE`, `HOLD_RUNNER`, and `HOLD_STREAM_UNHEALTHY` counts
+- the top stale held tokens by city, market, and latest blocker text
+
+If whole-stream health is fresh but one token repeatedly appears in
+`token_stale_blocks`, do not loosen global freshness rules. Treat that as a
+held-token liquidity or subscription investigation.
+
+## Portfolio Rejection Report
+
+When the question is "why did the event portfolio throw away candidates?",
+temporarily enable:
+
+```text
+PORTFOLIO_LOG_SKIP_ENABLED=true
+```
+
+This makes `paper_event_portfolios.jsonl` record zero-selection portfolio rows:
+rejection counts, a small rejection sample, candidate budget, and scenario
+payoff audit. It is the right evidence for portfolio blockers such as
+`scenario probabilities overlap`, insufficient probability mass, minimum-order
+budget, or "not selected by event portfolio optimizer".
+
+Because this can grow quickly, run it only with the runtime archive cleanup
+enabled. The cleanup budget deletes diagnostic archives, not account ledgers.
+
+Summarize the recent rejection reasons with:
+
+```bash
+python -m weather_bot.runtime_diagnostics --data-dir data --tail 500
+```
+
+The report includes a `portfolio_rejections` section with zero-selection rows,
+top rejection reasons, and the latest event that selected no legs.
+
 ## When To Investigate
 
 Treat these as default triggers:
@@ -174,13 +228,6 @@ Treat these as default triggers:
 
 ## Next Tooling To Build
 
-Create a skip diagnosis report that reads:
-
-- `paper_decisions.csv`
-- `paper_event_portfolios.jsonl`
-- `paper_runner_status.json`
-- recent order-book health details when available
-
-The report should group SKIPs by reason category, show the top repeated causes,
-and recommend the next investigation step. This should be paper-only and must
-not enable live trading, wallet use, or real orders.
+Add bounded `paper_decisions.csv` reason aggregation when a future investigation
+needs non-portfolio candidate-level SKIP reasons. Keep the report paper-only and
+do not enable live trading, wallet use, or real orders.

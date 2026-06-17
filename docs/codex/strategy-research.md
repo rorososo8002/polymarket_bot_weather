@@ -36,6 +36,12 @@ Read this file only for strategy changes, probability modeling, trading behavior
   entry spread and slippage; do not subtract them twice. Evaluate conservative
   settlement value separately so high prices are judged by remaining return,
   not rejected by a blanket cap.
+- Current exact Celsius strategy is source-display aware. The old rule counted
+  only exact decimal forecast-member equality, which made near-bucket NO look
+  falsely cheap. The new rule estimates the chance that the settlement source
+  displays the selected whole-degree Celsius integer, then blocks NO only on
+  the forecast-mean modal integer bucket. Adjacent or tail NO entries still need
+  executable depth, after-fee edge, expected return, and portfolio approval.
 - Discover weather events before binary submarkets. One city-date temperature
   event can contain lower-tail, exact, and upper-tail buckets. Expand every
   supported weather-category event found, compute bucket probabilities from
@@ -52,7 +58,7 @@ Read this file only for strategy changes, probability modeling, trading behavior
   budget to 5%. Normalize event probabilities to 100%, then compare
   `YES+YES`, `YES+NO`, `NO+NO`, one-leg, and no-entry outcomes. Require each
   opened leg to be at least `$10`, size entries with 1/4 fractional Kelly,
-  cap one city's different dates at 20%, and cap total paper exposure at 60%.
+  cap one city's different dates at 20%, and cap total paper exposure at 90%.
 - Size new entries from the smaller of cost-basis bankroll and executable
   liquidation bankroll. Do not let unrealized profits increase risk. If a
   whole-stream order-book failure prevents reliable pricing, fail closed and

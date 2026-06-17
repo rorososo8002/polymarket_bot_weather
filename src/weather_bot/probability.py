@@ -22,6 +22,7 @@ from .nowcast import StationNowcastObservation
 from .stations import STATION_MAP, TRADING_READY_STATION_MAP, StationMeta
 from .weather_client import (
     TEMPERATURE_COMPARISON_UNIT,
+    c_to_f,
     parse_weather_question,
     temperature_bucket_interval_bounds_f,
     temperature_gt_f,
@@ -206,6 +207,28 @@ def blend_empirical_and_cdf(empirical_p: float, mean_f: float, threshold_f: floa
     return clamp_probability(0.70 * empirical_p + 0.30 * cdf_p)
 
 
+def _is_whole_celsius_exact_bucket(parsed: ParsedWeatherQuestion) -> bool:
+    if parsed.temperature_bucket != "exact" or parsed.threshold_unit != "C":
+        return False
+    if parsed.threshold_original is None:
+        return False
+    threshold_c = float(parsed.threshold_original)
+    return math.isfinite(threshold_c) and abs(threshold_c - round(threshold_c)) <= 1e-9
+
+
+def _source_display_integer_celsius_bounds_f(parsed: ParsedWeatherQuestion) -> tuple[float, float] | None:
+    """Return forecast-probability support for a whole-degree Celsius display.
+
+    This is not the settlement interval. Settlement still uses the displayed
+    exact value; this helper estimates which integer the source is likely to
+    display when the source reports whole-degree Celsius.
+    """
+    if not _is_whole_celsius_exact_bucket(parsed):
+        return None
+    bucket_c = float(parsed.threshold_original)
+    return c_to_f(bucket_c - 0.5), c_to_f(bucket_c + 0.5)
+
+
 def _temperature_bucket_probability(
     parsed: ParsedWeatherQuestion,
     member_values_f: list[float],
@@ -219,11 +242,19 @@ def _temperature_bucket_probability(
     threshold_f = parsed.threshold_f
 
     if parsed.temperature_bucket in {"exact", "range"}:
-        bounds = temperature_bucket_interval_bounds_f(parsed)
-        if bounds is None:
-            raise ValueError("Temperature bucket is missing a parsed interval.")
-        lower_f, upper_f = bounds.as_tuple()
-        votes = [bounds.contains_f(value) for value in member_values_f]
+        display_bounds = _source_display_integer_celsius_bounds_f(parsed)
+        if display_bounds is not None:
+            lower_f, upper_f = display_bounds
+            votes = [
+                temperature_gte_f(value, lower_f) and temperature_lt_f(value, upper_f)
+                for value in member_values_f
+            ]
+        else:
+            bounds = temperature_bucket_interval_bounds_f(parsed)
+            if bounds is None:
+                raise ValueError("Temperature bucket is missing a parsed interval.")
+            lower_f, upper_f = bounds.as_tuple()
+            votes = [bounds.contains_f(value) for value in member_values_f]
         cdf_p = normal_cdf((upper_f - mean_f) / sigma_f) - normal_cdf((lower_f - mean_f) / sigma_f)
     elif parsed.temperature_bucket == "lower_tail":
         bounds = temperature_bucket_interval_bounds_f(parsed)
@@ -1307,10 +1338,15 @@ def estimate_weather_probability(
                     f"; event_window_utc={target_window.event_start_utc.isoformat()}"
                     f"..{target_window.event_end_utc.isoformat()}"
                 )
+            probability_model_note = (
+                "; probability_model=source_display_integer_c"
+                if _source_display_integer_celsius_bounds_f(parsed) is not None
+                else ""
+            )
             note = (
                 f"{station.station_name} [{station.station_id}] target_date={date_used}; "
                 f"bucket={parsed.temperature_bucket}; {parsed.operator}{_format_threshold(parsed)}; "
-                f"comparison_unit={TEMPERATURE_COMPARISON_UNIT}; "
+                f"comparison_unit={TEMPERATURE_COMPARISON_UNIT}{probability_model_note}; "
                 f"members={len(member_values)}; "
                 f"vote={empirical_p:.3f}; mean={mean_f:.1f}F; spread={spread_f:.2f}F; "
                 f"dynamic_sigma={sigma_f:.2f}F; bias={bias_f:+.2f}F; "

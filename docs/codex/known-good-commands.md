@@ -196,6 +196,13 @@ rotated until replay is archive-aware.
 /etc/cron.d/polymarket-logrotate          ← hourly cron
 ```
 
+Runtime cleanup keeps diagnostic archives under 100 MB and must not delete
+`paper_state.json`, `paper_trades.csv`, or `paper_decisions.csv`:
+
+```powershell
+ssh -i $key $oracle "cd /opt/polymarket-weather-bot && sudo -u polymarket PYTHONPATH=/opt/polymarket-weather-bot/src .venv/bin/python -m weather_bot.runtime_cleanup --data-dir data --max-archive-bytes 104857600"
+```
+
 To check current disk usage:
 
 ```powershell

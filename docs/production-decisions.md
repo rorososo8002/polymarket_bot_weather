@@ -5,55 +5,33 @@ This is the active paper-bot rule book; historical notes belong in focused `docs
 ## Current Phase: Strategy Validation First
 
 - Current work is paper-only strategy validation; live discussion requires `docs/paper-validation-runbook.md` gates plus a safety project.
-- Do not build wallet, private-key, signing, real-order, redemption,
-  claim/copy-trading, or `LiveBroker` behavior in this phase.
-- Trust paper PnL only from executable ask/bid depth, fees, spread, slippage,
-  stale-data fail-closed behavior, official station nowcast, and replayable
-  ledgers.
-- Advanced dashboards, calibration/optimizer views, heatmaps, and live trading
-  stay deferred until `docs/strategy-validation-roadmap.md` P0 gates pass.
+- Do not build wallet, private-key, signing, real-order, redemption, claim/copy-trading, or `LiveBroker` behavior in this phase.
+- Trust paper PnL only from executable ask/bid depth, fees, spread, slippage, stale-data fail-closed behavior, official station nowcast, and replayable ledgers.
+- Advanced dashboards, calibration/optimizer views, heatmaps, and live trading stay deferred until `docs/strategy-validation-roadmap.md` P0 gates pass.
 
 ## Execution Boundary
 
-- Paper-only execution is the boundary: no keys, wallet, signing, live orders,
-  redemption, copy trading, or private data without a live-safety pass.
-- Public dashboard exposure requires a real `DASHBOARD_TOKEN` with at least 32
-  characters. Public `/api/status` must accept the token only through
-  `X-Dashboard-Token`; URL query tokens leak through logs, history, and shares.
-- Boolean, numeric, integer, and choice settings fail closed at startup when
-  malformed or outside safe ranges.
+- Paper-only execution is the boundary: no keys, wallet, signing, live orders, redemption, copy trading, or private data without a live-safety pass.
+- Public dashboard exposure requires a real `DASHBOARD_TOKEN` with at least 32 characters. Public `/api/status` must accept the token only through `X-Dashboard-Token`; URL query tokens leak through logs, history, and shares.
+- Boolean, numeric, integer, and choice settings fail closed at startup when malformed or outside safe ranges.
 
 ## Market Universe And Forecasts
 
-- `STATION_MAP` registers 41 cities; paper execution uses only the 40-city
-  `TRADING_READY_STATION_MAP`. Karachi stays excluded until evidence is fixed.
-- Execute temperature markets only; non-temperature markets must not reach
-  forecast calculation, order-book subscription, or paper trade logging.
-- Unknown, stale, malformed, unsupported, suspicious, missing, or conflictful
-  data means skip.
-- Market title parsing is not enough rule evidence. New provenance work must
-  preserve the question plus available description/resolution text, source,
-  station, unit, bucket shape, and station-local event date window. If title
-  parsing and rule text conflict, skip the market instead of trading it.
-- Gamma discovery normalizes rule evidence into market metadata; title/rule
-  conflicts on city, high/low direction, unit, bucket, date, or explicit
-  station fail before forecast fetching with `SKIP_RULE_MISMATCH`.
-- Recurring temperature events may expose one title plus labels such as `28°C`;
-  discovery must synthesize binary questions from title+label. Grouped
-  event-level rules may describe station/source/precision/UI toggles rather
-  than each bucket, so compare bucket shape/value only when rule text explicitly
-  states the outcome condition.
-- Station metadata must keep unit, precision, same-station support, confidence
-  grade, verification date, and confidence level explicit.
-- Only station confidence grades A/B may enter `TRADING_READY_STATION_MAP`;
-  grades C/D, unsupported providers, inferred, nearby, or unverifiable sources
-  remain excluded. Karachi stays excluded until station evidence is reconciled.
-- Market metadata must carry the station-local event date plus UTC start/end
-  window. Forecast rows must match that local date exactly; nearby dates are
-  not substitutes.
-- Temperature bucket comparisons use centralized millifahrenheit boundaries.
-  Decimal model members must match the displayed exact value to vote YES; do
-  not round them into hidden half-step buckets.
+- `STATION_MAP` registers 41 cities; paper execution uses only the 40-city `TRADING_READY_STATION_MAP`. Karachi stays excluded until evidence is fixed.
+- Execute temperature markets only; non-temperature markets must not reach forecast calculation, order-book subscription, or paper trade logging.
+- Unknown, stale, malformed, unsupported, suspicious, missing, or conflictful data means skip.
+- Market title parsing is not enough rule evidence. Preserve question, available rule/source text, station, unit, bucket shape, and station-local date window; title/rule conflicts mean skip.
+- Gamma discovery normalizes rule evidence into market metadata; city, high/low, unit, bucket, date, or explicit-station conflicts fail before forecast with `SKIP_RULE_MISMATCH`.
+- Recurring temperature events may expose one title plus labels such as `28°C`; discovery must synthesize binary questions from title+label. Grouped event-level rules may describe station/source/precision/UI toggles rather than each bucket, so compare bucket shape/value only when rule text explicitly states the outcome condition.
+- Station metadata must keep unit, precision, same-station support, confidence grade, verification date, and confidence level explicit.
+- Only station confidence grades A/B may enter `TRADING_READY_STATION_MAP`; grades C/D, unsupported providers, inferred, nearby, or unverifiable sources remain excluded. Karachi stays excluded until station evidence is reconciled.
+- Market metadata must carry the station-local event date plus UTC start/end window. Forecast rows must match that local date exactly; nearby dates are not substitutes.
+- Temperature bucket settlement comparisons use centralized millifahrenheit
+  boundaries. Exact settlement still means the displayed value only, but
+  whole-degree Celsius exact-bucket probabilities now estimate the chance that
+  the settlement source displays that integer Celsius value. This replaces the
+  old exact-member-only strategy and must not be reused as a hidden settlement
+  range.
 - `pre_forecast_tradeability_gate` rejects markets before Open-Meteo when they
   are not temperature-shaped, not trading-ready, or missing required date
   evidence. Undated markets always fail closed.
@@ -104,6 +82,7 @@ This is the active paper-bot rule book; historical notes belong in focused `docs
   come from WebSocket `book` or the bounded REST `/book` verification path.
 - Stale or dead executable depth blocks new entries and pauses held-position
   exits with observable reasons.
+- Planned 40-minute stream rebuilds must discard pending realtime evaluator work before stopping the old WebSocket stream. Old-window queue entries must not create `HOLD_STREAM_UNHEALTHY` rows after the receiver has been intentionally stopped.
 - REST order-book snapshots may seed or resync the WebSocket cache at a bounded
   interval. They are verification photos, not the realtime camera: WebSocket
   remains primary, REST snapshots must not trigger evaluations, and raw
@@ -120,8 +99,13 @@ This is the active paper-bot rule book; historical notes belong in focused `docs
   and non-stale strategy inputs. A spread failure uses `SKIP_WIDE_SPREAD`.
 - Entry decisions are fee-aware. `p_exec` is executable VWAP; `size_usd` is the
   all-in paper-entry budget; `size_shares` is the fee-adjusted share count.
+  The active paper strategy is intentionally more exploratory than the earlier
+  conservative baseline: default entry edge is `MIN_NET_EDGE=0.03` and default
+  expected net return is `ENTRY_MIN_EXPECTED_NET_RETURN_PCT=0.04` so the paper
+  run can collect more executable NO samples while still requiring positive
+  after-fee expected value.
 - Sizing defaults: `SIZE_MODE=kelly`, `FRACTIONAL_KELLY=0.25`, `ENTRY_FRACTION=0.20`,
-  `MAX_TOTAL_EXPOSURE_FRACTION=0.60`, `MAX_CITY_EXPOSURE_FRACTION=0.20`; active VPS paper uses `BANKROLL_USD=200`, `MIN_ORDER_USD=20.00`, and a 10% single-market cap so normal new entries target about $20.
+  `MAX_TOTAL_EXPOSURE_FRACTION=0.90`, `MAX_CITY_EXPOSURE_FRACTION=0.20`; active VPS paper uses `BANKROLL_USD=200`, `MIN_ORDER_USD=20.00`, a 10% single-market cap, and a 90% total-exposure cap so normal new entries target about $20 while allowing about nine concurrent fully sized positions when independent opportunities exist.
 - Signal confidence is sizing evidence, not `p_true`: lower confidence scales
   entry size down; stale forecasts block new entries while held exits still run.
 - In Kelly mode, `ENTRY_FRACTION` is a per-event cap, not the direct order size.
@@ -131,8 +115,8 @@ This is the active paper-bot rule book; historical notes belong in focused `docs
   allowed only when price, probability, edge, expected return, cash, and
   exposure caps still pass.
 - City-date weather buckets share one correlated-risk budget. At most two
-  complementary non-overlapping legs are selected per event; hidden
-  threshold-ladder overlap fails closed and logs keep a scenario payoff audit.
+  complementary non-overlapping legs per event; hidden overlap fails closed,
+  logs audit scenarios, and exact dust cannot become a fake 100% tail outcome.
 - Exit decisions use after-fee liquidation PnL, not raw token-price movement.
   Allowed exits: probability stop, take profit, overheated profit, edge faded,
   max hold, settlement, and nowcast bucket-lock risk.
@@ -179,18 +163,21 @@ This is the active paper-bot rule book; historical notes belong in focused `docs
 - The target date may be station-local today, or station-local yesterday only
   during the post-close freshness window for held-position exit and settlement
   evidence.
-- For daily-high threshold markets, `observed_high_c >= threshold_c` is held
-  YES favorable evidence and held NO `nowcast_bucket_lock_risk`. Exact/range
-  buckets must use Polymarket settlement text directly: exact buckets are the
-  displayed value only, and range buckets are the displayed inclusive
-  endpoints. Do not widen exact buckets into half-step intervals such as
-  `28.5C-29.5C`.
+- For daily-high thresholds, `observed_high_c >= threshold_c` favors held YES
+  and triggers held NO `nowcast_bucket_lock_risk`. Exact/range buckets use
+  settlement text directly: exact is the displayed value only, range is the
+  displayed inclusive endpoints; never widen exact to `28.5C-29.5C`.
+- Exact Celsius probability has switched from exact-member-only voting to
+  source-display integer modeling. For a whole-degree `23C` bucket, the model
+  estimates `P(source_displayed_integer_c == 23)`. New exact Celsius NO entries
+  are blocked only when the forecast mean maps to that same displayed integer
+  bucket; adjacent or tail NO candidates may trade when executable price,
+  edge, return, liquidity, and portfolio gates pass.
 - For daily-high exact/range held YES positions, same-station nowcast makes
   YES impossible only after the observed high is above the exact value or range
-  upper endpoint. A lower observed high is not decisive because the day's high
-  can still rise. For daily-low exact/range held YES positions, same-station
-  nowcast makes YES impossible only after the observed low is below the exact
-  value or range lower endpoint.
+  upper endpoint; a lower observed high is not decisive. For daily-low
+  exact/range held YES, same-station nowcast makes YES impossible only after
+  observed low is below the exact value or range lower endpoint.
 
 ## Runtime Data And Disk
 
@@ -201,7 +188,10 @@ This is the active paper-bot rule book; historical notes belong in focused `docs
 - `paper_decisions.csv` suppresses SKIP rows by default. Enable SKIP logging
   only for short debugging sessions.
 - `paper_event_portfolios.jsonl` writes only when at least one trade is
-  selected by default.
+  selected by default. For bounded investigations, `PORTFOLIO_LOG_SKIP_ENABLED`
+  may be enabled so zero-selection portfolio rows record compact rejection
+  counts and samples. Pair this with archive pruning because skip portfolio
+  diagnostics can grow quickly.
 - `paper_raw_snapshots.jsonl` is diagnostic evidence, not a source ledger.
   Normal snapshots stay disabled except for errors.
 - Actual account events (`OPEN`, `ADD`, `CLOSE`, `PARTIAL_CLOSE`, `SETTLED`)
@@ -217,4 +207,7 @@ This is the active paper-bot rule book; historical notes belong in focused `docs
   runner-status error fields.
 - Logrotate compresses diagnostics, not core ledgers: raw snapshots at 100 MB,
   request/portfolio logs at 10 MB, five archives under `data/archive/`.
+  `runtime_cleanup` may delete only known diagnostic archives from
+  `data/archive/` when their combined size exceeds 100 MB. It must not delete
+  `paper_state.json`, `paper_trades.csv`, or `paper_decisions.csv`.
 - `docs/codex/known-good-commands.md` is the source for pytest, SSH, and dashboard checks.

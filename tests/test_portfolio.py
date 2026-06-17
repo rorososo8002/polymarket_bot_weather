@@ -788,6 +788,28 @@ def test_event_portfolio_normalizes_exhaustive_bucket_probabilities_to_one(tmp_p
     }
 
 
+def test_event_portfolio_fails_closed_when_exhaustive_probability_mass_is_dust(tmp_path):
+    broker = PaperBroker(settings(tmp_path))
+    candidates = [
+        candidate("seoul-low", "16\u00b0C or below", p_true=0.000001, p_exec=0.20, expected_net_profit_usd=2.0),
+        *[
+            candidate(f"seoul-{value}", f"{value}\u00b0C", p_true=0.0, p_exec=0.50, expected_net_profit_usd=2.0)
+            for value in range(17, 26)
+        ],
+        candidate("seoul-high", "26\u00b0C or higher", p_true=0.000247, p_exec=0.20, expected_net_profit_usd=2.0),
+    ]
+
+    decision = select_event_portfolio(broker, candidates, usable_snapshot())
+
+    assert decision.selected == []
+    assert decision.expected_net_profit_usd == 0.0
+    assert len(decision.rejected) == len(candidates)
+    assert all(
+        "scenario probabilities have insufficient mass for exhaustive normalization" in item.reason
+        for item in decision.rejected
+    )
+
+
 def test_event_portfolio_keeps_other_when_non_exhaustive_probabilities_are_below_one(tmp_path):
     broker = PaperBroker(settings(tmp_path))
 
@@ -1134,10 +1156,10 @@ def test_broker_city_cap_allows_two_dates_but_blocks_third(tmp_path):
     assert broker.city_exposure("seoul") == 20.0
 
 
-def test_broker_total_open_exposure_cap_is_sixty_percent(tmp_path):
+def test_broker_total_open_exposure_cap_is_ninety_percent(tmp_path):
     broker = PaperBroker(settings(tmp_path))
     positions = []
-    for idx in range(7):
+    for idx in range(10):
         item = candidate(f"city-{idx}", f"{20 + idx}°C")
         positions.append(
             broker.open_position(
@@ -1150,9 +1172,9 @@ def test_broker_total_open_exposure_cap_is_sixty_percent(tmp_path):
             )
         )
 
-    assert all(pos is not None for pos in positions[:6])
-    assert positions[6] is None
-    assert broker.total_exposure() == 60.0
+    assert all(pos is not None for pos in positions[:9])
+    assert positions[9] is None
+    assert broker.total_exposure() == 90.0
 
 
 def test_runner_applies_selected_event_portfolio_and_writes_one_event_log(tmp_path):

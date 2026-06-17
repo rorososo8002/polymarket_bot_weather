@@ -85,5 +85,9 @@ Read this file only for runtime logs, paper-trading data, dashboard readers, or 
   text so the strategy evidence ledger does not become a raw-data warehouse.
   New `paper_event_portfolios.jsonl` rows keep selected legs, rejection
   counts/samples, and worst scenario PnL rather than full candidate maps.
+  Zero-selection portfolio rows are normally suppressed; enable
+  `PORTFOLIO_LOG_SKIP_ENABLED=true` only for bounded investigations into why
+  candidates were discarded, pair it with runtime archive cleanup, then summarize
+  the rows with `python -m weather_bot.runtime_diagnostics --data-dir data`.
 - Full-history reports may still scan every row when their meaning depends on all rows, but they should stream rows and keep only aggregate counters, market-level lookups, or bounded result sets in memory.
 - `analyze_paper.py` keeps the existing full-history report meaning by streaming decision and trade rows instead of materializing whole CSV files.

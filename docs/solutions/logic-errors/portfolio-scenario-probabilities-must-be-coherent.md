@@ -1,6 +1,7 @@
 ---
 title: Portfolio scenario probabilities must be coherent before normalization
 date: 2026-06-05
+last_updated: 2026-06-17
 category: logic-errors
 module: weather_bot.portfolio
 problem_type: logic_error
@@ -9,6 +10,7 @@ symptoms:
   - "`scenario_probabilities` could be normalized just because its probability sum was at least one."
   - "Incomplete or overlapping temperature buckets could still feed the event portfolio optimizer."
   - "Paper entries could be selected from a weather outcome table that did not match the real event."
+  - "Near-zero exact-bucket probability dust could be stretched into a fake near-100% tail scenario."
 root_cause: logic_error
 resolution_type: code_fix
 severity: high
@@ -48,6 +50,14 @@ The same danger exists when intervals overlap. Two range buckets such as
 `86-87F` and `87-88F` both include `87F`, so one real weather outcome is counted
 twice. That must not reach paper entry selection.
 
+The Amsterdam June 16 case exposed the mirror-image failure. Exact Celsius
+bucket probabilities were literal displayed-value votes, so the exact buckets
+near the forecast mean carried zero probability. The lower and upper tails had
+only tiny non-zero dust, but the event still looked exhaustive because the
+displayed bucket labels covered the whole ladder. Normalizing that tiny total
+made the upper tail look almost certain even though the forecast mean was near
+23C, not the upper tail.
+
 ## 3. How It Was Fixed
 
 `weather_bot.portfolio` now assesses scenario probabilities before the optimizer
@@ -61,12 +71,16 @@ can use them:
 - fail closed when intervals overlap
 - fail closed when intervals are not exhaustive and the probability sum is
   meaningfully above one
+- fail closed when an exhaustive-looking ladder has too little raw probability
+  mass to normalize credibly
 - allow only tiny floating-point dust with an epsilon of `1e-9`
 
 Fail closed means the bot does not guess and does not select a leg. The
 portfolio decision records a human-readable rejection reason such as
 `scenario probabilities overlap` or
-`scenario probabilities exceed one without exhaustive intervals`.
+`scenario probabilities exceed one without exhaustive intervals`. For the
+near-zero-mass case, it records
+`scenario probabilities have insufficient mass for exhaustive normalization`.
 
 ## 4. What To Check Next Time
 
@@ -77,6 +91,8 @@ portfolio decision records a human-readable rejection reason such as
 - Add a test for the unsafe incomplete case where the sum exceeds one.
 - Add overlap tests for exact/tail buckets and range buckets when range parsing
   exists.
+- Add a dust-mass test when exact buckets can all be near zero while tail
+  buckets are merely non-zero.
 - Use a tiny epsilon only for computer arithmetic dust, not as a strategy
   tolerance.
 

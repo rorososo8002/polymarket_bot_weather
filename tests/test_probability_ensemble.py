@@ -22,7 +22,7 @@ from weather_bot.probability import (
 from weather_bot.live_paper_runner import evaluate_market
 from weather_bot.models import RawMarket
 from weather_bot.nowcast import StationNowcastObservation
-from weather_bot.weather_client import c_to_f, parse_weather_question
+from weather_bot.weather_client import c_to_f, parse_weather_question, temperature_bucket_interval_bounds_f
 
 
 def test_open_meteo_client_default_cache_ttl_matches_api_budget():
@@ -977,9 +977,9 @@ def test_range_temperature_bucket_uses_exact_converted_celsius_bounds_without_ro
     assert empirical_p == pytest.approx(3 / 5)
 
 
-def test_exact_celsius_bucket_probability_uses_displayed_value_not_half_step():
+def test_exact_celsius_bucket_probability_uses_source_display_integer_model():
     parsed = parse_weather_question("Will the highest temperature in Singapore be 29C today?")
-    member_values_f = [c_to_f(value_c) for value_c in [28.999, 29.0, 29.001]]
+    member_values_f = [c_to_f(value_c) for value_c in [28.499, 28.5, 29.0, 29.499, 29.5]]
 
     _probability, empirical_p = _temperature_bucket_probability(
         parsed,
@@ -989,7 +989,11 @@ def test_exact_celsius_bucket_probability_uses_displayed_value_not_half_step():
     )
 
     assert parsed.temperature_bucket == "exact"
-    assert empirical_p == pytest.approx(1 / 3)
+    assert empirical_p == pytest.approx(3 / 5)
+
+    settlement_bounds = temperature_bucket_interval_bounds_f(parsed)
+    assert settlement_bounds is not None
+    assert settlement_bounds.as_tuple() == pytest.approx((c_to_f(29.0), c_to_f(29.0)))
 
 
 def test_exact_high_nowcast_below_displayed_value_is_not_decisive():

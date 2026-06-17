@@ -527,6 +527,118 @@ def test_realtime_forever_starts_websocket_before_forecast_signal_warmup(tmp_pat
     assert probability_calls == []
 
 
+def test_realtime_cycle_discards_pending_evaluations_before_stopping_stream(tmp_path, monkeypatch):
+    question = "Will the highest temperature in Seoul be 27C or higher today?"
+    market = RawMarket("seoul", question, "seoul", True, False, "yes", "no", event_id="seoul-today")
+    call_order: list[str] = []
+    discovery_calls = 0
+
+    class FakeClient:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def discover_weather_markets(self, *, max_pages, page_size):
+            nonlocal discovery_calls
+            discovery_calls += 1
+            if discovery_calls > 1:
+                raise RuntimeError("stop after planned cycle cleanup")
+            return [market]
+
+        def get_order_book(self, token_id):
+            return OrderBook(token_id, bids=[OrderLevel(0.45, 100)], asks=[OrderLevel(0.50, 100)])
+
+    class RecordingEvaluator:
+        def __init__(self, **_kwargs):
+            pass
+
+        def start(self):
+            call_order.append("evaluator.start")
+
+        def stop(self, *, drain=True, timeout=5.0):
+            call_order.append(f"evaluator.stop(drain={drain})")
+
+        def enqueue_tokens(self, updated_token_ids):
+            return len(updated_token_ids)
+
+        def status_snapshot(self):
+            return {"thread_alive": True, "queue_depth": 1}
+
+    class RecordingForecastWorker:
+        def __init__(self, **_kwargs):
+            pass
+
+        def start(self):
+            call_order.append("forecast.start")
+
+        def stop(self):
+            call_order.append("forecast.stop")
+
+        def status_snapshot(self):
+            return {"thread_alive": True}
+
+    class RecordingStream:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def start(self, token_ids):
+            assert set(token_ids) == {"yes", "no"}
+            call_order.append("stream.start")
+
+        def stop(self):
+            call_order.append("stream.stop")
+
+        def health_snapshot(self):
+            return {"thread_alive": True, "stale": False, "status_reason": "fresh fixture"}
+
+    monkeypatch.setattr(runner_module, "PolymarketClient", FakeClient)
+    monkeypatch.setattr(runner_module, "RealtimeEvaluationCoalescer", RecordingEvaluator)
+    monkeypatch.setattr(runner_module, "RealtimeForecastSignalWorker", RecordingForecastWorker)
+    monkeypatch.setattr(runner_module, "OrderBookMarketStream", RecordingStream)
+
+    class PlannedCycleDateTime:
+        calls = 0
+
+        @classmethod
+        def now(cls, tz=None):
+            cls.calls += 1
+            base = datetime(2026, 6, 2, 0, 0, tzinfo=timezone.utc)
+            if cls.calls >= 3:
+                return base + timedelta(seconds=2)
+            return base
+
+        @classmethod
+        def fromisoformat(cls, value):
+            return datetime.fromisoformat(value)
+
+    monkeypatch.setattr(runner_module, "datetime", PlannedCycleDateTime)
+
+    def stop_after_error_backoff(_seconds):
+        raise RuntimeError("stop after error backoff")
+
+    monkeypatch.setattr(runner_module.time, "sleep", stop_after_error_backoff)
+
+    settings = Settings(
+        state_path=str(tmp_path / "state.json"),
+        trades_csv_path=str(tmp_path / "trades.csv"),
+        decisions_csv_path=str(tmp_path / "decisions.csv"),
+        raw_snapshots_path=str(tmp_path / "raw.jsonl"),
+        portfolio_decisions_jsonl_path=str(tmp_path / "portfolio.jsonl"),
+        stream_cycle_interval_seconds=1,
+    )
+
+    with pytest.raises(RuntimeError, match="stop after error backoff"):
+        runner_module.run_realtime_forever(settings)
+
+    assert call_order[:5] == [
+        "evaluator.start",
+        "stream.start",
+        "forecast.start",
+        "evaluator.stop(drain=False)",
+        "forecast.stop",
+    ]
+    assert call_order[5] == "stream.stop"
+
+
 def test_realtime_update_without_signal_fails_closed_without_order_book_lookup(tmp_path):
     question = "Will the highest temperature in Seoul be 27C or higher today?"
     market = RawMarket("seoul-pending", question, "seoul-pending", True, False, "yes", "no", event_id="seoul-today")

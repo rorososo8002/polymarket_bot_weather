@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, replace
+from decimal import Decimal, ROUND_HALF_UP
 import inspect
 from datetime import datetime, timedelta, timezone
 import math
+import re
 import threading
 import time
 from typing import Any
@@ -48,6 +50,8 @@ GENERAL_FORECAST_REFRESH_SECONDS = 40 * 60
 HELD_POSITION_FORECAST_REFRESH_SECONDS = 30 * 60
 PRIORITY_FORECAST_REFRESH_SECONDS = 20 * 60
 FORECAST_WORKER_IDLE_SLEEP_SECONDS = 1.0
+EXACT_CELSIUS_INTEGER_BUCKET_TOLERANCE = 1e-9
+FORECAST_MEAN_NOTE_RE = re.compile(r"\bmean=([-+]?\d+(?:\.\d+)?)F\b")
 # Failure cooldown is intentionally equal to the cache TTL so that a city that
 # fails mid-batch is skipped for the rest of the current batch and retried only
 # at the next batch (when its cache entry also expires).  The actual value is
@@ -331,6 +335,52 @@ def _finite_float(value: Any) -> float | None:
     except (TypeError, ValueError):
         return None
     return number if math.isfinite(number) else None
+
+
+def _forecast_mean_f_from_note(note: str) -> float | None:
+    match = FORECAST_MEAN_NOTE_RE.search(note)
+    if match is None:
+        return None
+    return _finite_float(match.group(1))
+
+
+def _source_display_integer_c(value_c: float) -> int:
+    return int(Decimal(str(value_c)).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+
+
+def _exact_celsius_no_entry_modal_risk_reason(
+    side: str,
+    signal: WeatherSignal,
+    market_type: str,
+) -> str | None:
+    parsed = signal.parsed
+    if side != "NO" or parsed is None:
+        return None
+    if parsed.variable != "temperature" or parsed.temperature_bucket != "exact":
+        return None
+    if parsed.threshold_unit != "C" or parsed.threshold_original is None:
+        return None
+
+    forecast_mean_f = _forecast_mean_f_from_note(signal.note)
+    if forecast_mean_f is None:
+        return None
+    forecast_mean_c = (forecast_mean_f - 32.0) * 5.0 / 9.0
+    threshold_c = float(parsed.threshold_original)
+    if abs(threshold_c - round(threshold_c)) > EXACT_CELSIUS_INTEGER_BUCKET_TOLERANCE:
+        return None
+
+    modal_bucket_c = _source_display_integer_c(forecast_mean_c)
+    threshold_bucket_c = int(round(threshold_c))
+    if modal_bucket_c != threshold_bucket_c:
+        return None
+
+    return (
+        "SKIP_EXACT_CELSIUS_MODAL_NO: NO entry blocked because "
+        f"forecast_mean_c={forecast_mean_c:.1f} maps to displayed integer "
+        f"bucket {modal_bucket_c}C, the same as exact bucket {threshold_bucket_c}C; "
+        "adjacent or tail NO candidates may still trade only when executable "
+        f"edge and expected return pass [{market_type}]"
+    )
 
 
 def _nowcast_bucket_lock_exit_signal(side: str, signal: WeatherSignal) -> tuple[str, str] | None:
@@ -1066,6 +1116,10 @@ def _side_result(
             f"${settings.min_order_usd:.2f}; skipping before expected-return estimate [{market_type}]"
         )
         return EdgeResult("SKIP", signal.p_true, p_exec, edge, 0.0, 0.0, reason)
+
+    precision_risk_reason = _exact_celsius_no_entry_modal_risk_reason(side, signal, market_type)
+    if precision_risk_reason:
+        return EdgeResult("SKIP", signal.p_true, p_exec, edge, 0.0, 0.0, precision_risk_reason)
 
     estimate_shares = fee_adjusted_entry_shares(size_usd, p_exec, settings.weather_taker_fee_rate)
     spread = max(0.0, (book.best_ask or p_exec) - (book.best_bid or p_exec))
@@ -2452,18 +2506,20 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
                     failed_phase = "websocket_monitoring"
                     time.sleep(1)
             finally:
-                try:
-                    stream.stop()
-                except Exception:  # noqa: BLE001
-                    failed_phase = "websocket_stop"
-                    raise
-                stream = None
+                if evaluator_worker is not None:
+                    failed_phase = "realtime_evaluator_stop"
+                    evaluator_worker.stop(drain=False)
+                    evaluator_worker = None
                 if forecast_worker is not None:
+                    failed_phase = "forecast_worker_stop"
                     forecast_worker.stop()
                     forecast_worker = None
-                if evaluator_worker is not None:
-                    evaluator_worker.stop()
-                    evaluator_worker = None
+                try:
+                    failed_phase = "websocket_stop"
+                    stream.stop()
+                except Exception:  # noqa: BLE001
+                    raise
+                stream = None
         except Exception as exc:  # noqa: BLE001
             evaluator_status = evaluator_worker.status_snapshot() if evaluator_worker is not None else None
             forecast_worker_status = forecast_worker.status_snapshot() if forecast_worker is not None else None

@@ -1,7 +1,7 @@
 ---
 title: Rotate raw snapshots without truncating paper ledgers
 date: 2026-06-04
-last_updated: 2026-06-08
+last_updated: 2026-06-18
 category: workflow-issues
 module: vps_runtime_data
 problem_type: workflow_issue
@@ -12,8 +12,9 @@ applies_when:
   - "Cleaning up paper bot data without destroying account or strategy evidence"
   - "Resetting the paper experiment only after the operator explicitly asks for a new bankroll window"
   - "Adding automatic cleanup for diagnostic raw snapshots"
+  - "Adding a fixed-size archive budget for rotated diagnostic files"
   - "Recovering when the disk is already too full to upload a remote script"
-tags: [vps, runtime-data, logrotate, disk, paper-trading, raw-snapshots, syslog, reset]
+tags: [vps, runtime-data, logrotate, disk, paper-trading, raw-snapshots, syslog, reset, runtime-cleanup]
 ---
 
 # Rotate raw snapshots without truncating paper ledgers
@@ -85,6 +86,20 @@ The code-level prevention now starts earlier than logrotate:
   `paper_runner_status.json` gets a `raw_snapshot_storage` warning.
 - `paper_decisions.csv` and `paper_event_portfolios.jsonl` store compact
   summaries for new rows instead of raw payloads or full candidate maps.
+- `weather_bot.runtime_cleanup` prunes only known diagnostic archives under
+  `data/archive/` once their combined size exceeds `104857600` bytes (100MB).
+  It deletes oldest matching archives first and never targets active paper
+  ledgers.
+
+On 2026-06-18, the operator needed to see why event-portfolio candidates were
+being discarded without letting diagnostic files grow forever. The correction
+was to keep zero-selection portfolio rows opt-in with
+`PORTFOLIO_LOG_SKIP_ENABLED=true`, summarize them through
+`weather_bot.runtime_diagnostics`, and add an hourly cron job that runs
+`weather_bot.runtime_cleanup` against `/opt/polymarket-weather-bot/data`.
+The cleanup allowlist covers diagnostic archive prefixes only:
+`paper_raw_snapshots*`, `forecast_request_log*`,
+`station_nowcast_request_log*`, and `paper_event_portfolios*`.
 
 During the 2026-06-04 emergency cleanup, the disk was too full for `scp` to
 upload even a small remote script to `/tmp`. The working order was:
@@ -162,6 +177,9 @@ returned 200 with zero open positions.
 - Keep `RAW_SNAPSHOTS_MODE=debug` time-bounded. Turn it back to `error` after
   the investigation.
 - Validate logrotate with `sudo logrotate -d /etc/logrotate.d/polymarket-weather-bot-runtime`.
+- Validate archive pruning with
+  `python -m weather_bot.runtime_cleanup --data-dir data --dry-run` before
+  enabling or changing the cron budget.
 - Confirm the bot is active again and that `paper_runner_status.json` updates
   after restart.
 - Run SSH checks serially from Windows PowerShell. Parallel SSH commands can

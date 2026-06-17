@@ -43,7 +43,8 @@ def test_default_raw_snapshot_mode_saves_only_error_diagnostics():
 
 
 def test_default_entry_net_return_filter_uses_official_weather_fee_rate():
-    assert Settings.entry_min_expected_net_return_pct == 0.06
+    assert Settings.min_net_edge == 0.03
+    assert Settings.entry_min_expected_net_return_pct == 0.04
     assert Settings.max_entry_spread_abs == 0.20
     assert Settings.max_entry_spread_pct == 1.00
     assert Settings.weather_taker_fee_rate == 0.05
@@ -67,7 +68,7 @@ def test_default_city_date_portfolio_caps_shrink_after_one_thousand_dollars():
     assert Settings.large_bankroll_event_date_exposure_fraction == 0.05
     assert Settings.event_date_exposure_transition_usd == 1000.0
     assert Settings.max_event_portfolio_legs == 2
-    assert Settings.max_total_exposure_fraction == 0.60
+    assert Settings.max_total_exposure_fraction == 0.90
     assert Settings.min_order_usd == 10.0
 
 
@@ -76,7 +77,7 @@ def test_default_settings_pass_numeric_range_validation():
 
     assert settings.bankroll_usd == 100.0
     assert settings.min_order_usd == 10.0
-    assert settings.max_total_exposure_fraction == 0.60
+    assert settings.max_total_exposure_fraction == 0.90
 
 
 @pytest.mark.parametrize(

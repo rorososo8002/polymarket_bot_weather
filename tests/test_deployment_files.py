@@ -39,7 +39,7 @@ def test_local_env_example_exposes_settlement_runner_defaults():
     assert "STATION_NOWCAST_REQUEST_LOG_PATH=station_nowcast_request_log.jsonl" in text
     assert "SIZE_MODE=kelly" in text
     assert "FRACTIONAL_KELLY=0.25" in text
-    assert "MAX_TOTAL_EXPOSURE_FRACTION=0.60" in text
+    assert "MAX_TOTAL_EXPOSURE_FRACTION=0.90" in text
 
 
 def test_local_env_example_does_not_expose_removed_precipitation_settings():
@@ -90,7 +90,8 @@ def test_vps_env_example_keeps_runtime_state_under_data_dir():
     assert "DISCOVERY_PAGE_SIZE=100" in text
     assert "MAX_EVENTS" not in text
     assert "MAX_MARKETS" not in text
-    assert "ENTRY_MIN_EXPECTED_NET_RETURN_PCT=0.06" in text
+    assert "MIN_NET_EDGE=0.03" in text
+    assert "ENTRY_MIN_EXPECTED_NET_RETURN_PCT=0.04" in text
     assert "WEATHER_TAKER_FEE_RATE=0.05" in text
     assert "SETTLEMENT_RUNNER_ENABLED=true" in text
     assert "SETTLEMENT_RUNNER_MAX_FRACTION=0.25" in text
@@ -100,7 +101,7 @@ def test_vps_env_example_keeps_runtime_state_under_data_dir():
     assert "FRACTIONAL_KELLY=0.25" in text
     assert "ENTRY_FRACTION=0.20" in text
     assert "MAX_SINGLE_MARKET_FRACTION=0.10" in text
-    assert "MAX_TOTAL_EXPOSURE_FRACTION=0.60" in text
+    assert "MAX_TOTAL_EXPOSURE_FRACTION=0.90" in text
     assert "MAX_CITY_EXPOSURE_FRACTION=0.20" in text
     assert "MAX_EVENT_DATE_EXPOSURE_FRACTION=0.10" in text
     assert "LARGE_BANKROLL_EVENT_DATE_EXPOSURE_FRACTION=0.05" in text
@@ -136,6 +137,25 @@ def test_runtime_logrotate_rotates_high_volume_diagnostics_only():
     assert "/opt/polymarket-weather-bot/data/paper_state.json" not in text
     assert "/opt/polymarket-weather-bot/data/paper_trades.csv" not in text
     assert "/opt/polymarket-weather-bot/data/paper_decisions.csv" not in text
+
+
+def test_runtime_cleanup_cron_prunes_diagnostic_archive_only():
+    cron = ROOT / "deploy" / "cron" / "polymarket-runtime-cleanup"
+
+    text = cron.read_text(encoding="utf-8")
+
+    assert "weather_bot.runtime_cleanup" in text
+    assert "--data-dir /opt/polymarket-weather-bot/data" in text
+    assert "--max-archive-bytes 104857600" in text
+    assert "paper_state.json" not in text
+    assert "paper_trades.csv" not in text
+    assert "paper_decisions.csv" not in text
+
+
+def test_pyproject_exposes_runtime_cleanup_console_script():
+    pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+
+    assert pyproject["project"]["scripts"]["paper-runtime-cleanup"] == "weather_bot.runtime_cleanup:main"
 
 
 def test_dashboard_systemd_service_runs_dashboard_from_venv():
