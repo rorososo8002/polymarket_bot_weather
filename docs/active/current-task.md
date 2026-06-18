@@ -26,11 +26,14 @@ $200 account.
 
 ## Next Action
 
-Complete local verification, deploy the official settlement-station strategy to
-the Oracle VPS, and reset runtime ledgers/archives for a fresh $200 experiment.
+Resume once SSH execution is available: deploy the committed official
+settlement-station strategy to the Oracle VPS, then reset runtime
+ledgers/archives for a fresh $200 experiment.
 
 ## New Chat Prompt
 
-Continue the official settlement-station strategy conversion. Keep the bot
-paper-only, deploy after verification, then reset server runtime ledgers and
-archives for a fresh $200 paper account.
+Continue the official settlement-station strategy conversion from commit
+`6b7b2ca`. Local verification passed with 468 tests. SSH execution was blocked
+by the app approval/usage limit, so resume with Oracle VPS deploy, service
+restart, dashboard/API verification, and runtime ledger/archive deletion for a
+fresh $200 paper account.
