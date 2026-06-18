@@ -69,16 +69,18 @@ NO edge = (1 - P(bucket_c)) - executable_NO_price - fee - risk_margins
 
 For a whole-degree `23C` bucket, the probability model estimates the chance
 that the settlement source displays `23C`. This is a probability model for a
-whole-degree display source, not a hidden settlement range.
+whole-degree display source, not a hidden settlement range. Current evidence
+shows the display bucket should be modeled as `[23.0C, 24.0C)`: `23.7C` still
+supports `23C`, while `24.0C` breaks it.
 
 Exact Celsius NO is now blocked only when the forecast mean maps to the same
-displayed integer bucket. In the Amsterdam example, a mean near `22.8C` maps
+displayed integer bucket. In the Amsterdam example, a mean near `23.1C` maps
 to the `23C` modal bucket, so `23NO` is blocked. `22NO`, `24NO`, or tail NO
 can still be considered, but only if executable depth, after-fee edge,
 expected net return, and portfolio limits all pass.
 
 The active paper thresholds were also made less conservative for validation:
-`MIN_NET_EDGE=0.03` and `ENTRY_MIN_EXPECTED_NET_RETURN_PCT=0.04`. This should
+`MIN_NET_EDGE=0.08` and `ENTRY_MIN_EXPECTED_NET_RETURN_PCT=0.04`. This should
 increase paper sample count while still rejecting negative after-fee expected
 value.
 
