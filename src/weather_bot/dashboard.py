@@ -593,7 +593,6 @@ def _position_payload(
     slug = metadata.get("slug") or latest_decision.get("slug") or ""
     event_slug = metadata.get("event_slug") or latest_decision.get("event_slug") or ""
     latest_note = latest_decision.get("note", "")
-    forecast_c = _forecast_c_from_note(latest_note)
     summary = _question_summary(str(pos.get("question", "")))
     city = str(metadata.get("city") or latest_decision.get("city") or summary["city"] or "")
     station = TRADING_READY_STATION_MAP.get(city.lower())
@@ -612,6 +611,7 @@ def _position_payload(
     nowcast_source = _note_token(latest_note, "nowcast_source")
     observed_at = _note_token(latest_note, "observed_at")
     bucket_label = _bucket_display_label(summary["threshold_c"], summary["condition_label"])
+    station_evidence = _official_station_evidence(latest_decision)
     return {
         "position_id": pos.get("position_id", ""),
         "market_id": pos.get("market_id", ""),
@@ -638,7 +638,6 @@ def _position_payload(
         "websocket_stale": bool(websocket_health.get("stale")),
         "websocket_stale_book_age_seconds": websocket_health.get("stale_book_age_seconds"),
         "websocket_last_book_at": str(websocket_health.get("last_book_at") or ""),
-        "forecast_c": forecast_c,
         "nowcast_high_c": _nowcast_c_from_note(latest_note, "observed_high_c"),
         "nowcast_low_c": _nowcast_c_from_note(latest_note, "observed_low_c"),
         "nowcast_unavailable_reason": nowcast_unavailable,
@@ -654,13 +653,17 @@ def _position_payload(
         "probability_stop_threshold": _float(metadata.get("probability_stop_threshold")),
         "reason": metadata.get("reason", ""),
         # --- extra fields for richer dashboard display ---
-        "p_true": _optional_float(latest_decision.get("p_true")),
         "net_edge": _optional_float(latest_decision.get("net_edge")),
         "entry_fraction": _optional_float(metadata.get("entry_fraction")) or _optional_float(latest_decision.get("entry_fraction")),
         "entry_fee_usdc": _optional_float(metadata.get("entry_fee_usdc")),
         "market_heat_score": _optional_float(metadata.get("market_heat_score")),
         "model_fair_price": _optional_float(metadata.get("model_fair_price")),
         "market_type": metadata.get("market_type", "temperature"),
+        "station_lock_strength": station_evidence["lock_strength"],
+        "station_allocation_fraction": station_evidence["allocation_fraction"],
+        "station_settlement_boundary_c": station_evidence["settlement_boundary_c"],
+        "station_buffer_c": station_evidence["buffer_c"],
+        "station_hours_to_close": station_evidence["hours_to_close"],
     }
 
 
@@ -784,13 +787,6 @@ def _value_or_zero(value: float | None) -> float:
     return 0.0 if value is None else value
 
 
-def _forecast_c_from_note(note: str) -> float | None:
-    match = re.search(r"\bmean=([-+]?\d+(?:\.\d+)?)F\b", note)
-    if not match:
-        return None
-    return round(_f_to_c(float(match.group(1))), 1)
-
-
 def _nowcast_c_from_note(note: str, key: str) -> float | None:
     if key not in {"observed_high_c", "observed_low_c"}:
         return None
@@ -805,6 +801,103 @@ def _note_token(note: str, key: str) -> str:
         return ""
     match = re.search(rf"\b{re.escape(key)}=([^;]+)", note)
     return match.group(1).strip() if match else ""
+
+
+def _question_settlement_boundary_c(question: str) -> float | None:
+    parsed = parse_weather_question(question)
+    if (
+        parsed.variable != "temperature"
+        or parsed.temperature_bucket != "exact"
+        or parsed.threshold_original is None
+        or parsed.threshold_unit != "C"
+    ):
+        return None
+    bucket_c = float(parsed.threshold_original)
+    return bucket_c if parsed.temperature_metric == "min" else bucket_c + 1.0
+
+
+def _first_optional_float(*values: Any) -> float | None:
+    for value in values:
+        parsed = _optional_float(value)
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _official_station_evidence(row: dict[str, Any]) -> dict[str, Any]:
+    note = str(row.get("note") or "")
+    boundary = _first_optional_float(
+        _note_token(note, "next_displayed_integer_c"),
+        _note_token(note, "displayed_bucket_lower_c"),
+        _question_settlement_boundary_c(str(row.get("question") or "")),
+    )
+    buffer_c = _first_optional_float(
+        _note_token(note, "buffer_to_next_integer_c"),
+        _note_token(note, "buffer_to_lower_c"),
+    )
+    allocation = _optional_float(_note_token(note, "entry_size_fraction_override"))
+    lock_strength = _note_token(note, "official_nowcast_lock")
+    return {
+        "lock_strength": lock_strength,
+        "allocation_fraction": allocation,
+        "settlement_boundary_c": boundary,
+        "buffer_c": buffer_c,
+        "hours_to_close": _optional_float(_note_token(note, "hours_to_close")),
+        "observed_high_c": _nowcast_c_from_note(note, "observed_high_c"),
+        "observed_low_c": _nowcast_c_from_note(note, "observed_low_c"),
+        "observed_at": _note_token(note, "observed_at"),
+        "station_source": _note_token(note, "nowcast_source"),
+    }
+
+
+def _station_signal_rows(decisions: list[dict[str, str]], limit: int = 80) -> list[dict[str, Any]]:
+    signals: list[dict[str, Any]] = []
+    for row in decisions:
+        evidence = _official_station_evidence(row)
+        if not evidence["lock_strength"]:
+            continue
+        city = str(row.get("city") or _question_summary(str(row.get("question") or ""))["city"] or "")
+        station = TRADING_READY_STATION_MAP.get(city.lower())
+        signals.append(
+            {
+                "ts": str(row.get("ts") or ""),
+                "market_id": str(row.get("market_id") or ""),
+                "question": str(row.get("question") or ""),
+                "side": str(row.get("side") or ""),
+                "city": city,
+                "station_id": str(row.get("station_id") or (station.station_id if station else "") or ""),
+                "station_name": str((station.station_name if station else "") or ""),
+                "reason": str(row.get("reason") or ""),
+                "reason_code": str(row.get("reason_code") or ""),
+                **evidence,
+            }
+        )
+    return _sorted_recent(signals, limit)
+
+
+def _recent_skip_rows(settings: Settings, limit: int = 80) -> list[dict[str, Any]]:
+    path = (
+        Path(settings.skip_diagnostics_jsonl_path)
+        if settings.skip_diagnostics_jsonl_path
+        else Path(settings.decisions_csv_path).with_name("paper_skip_diagnostics.jsonl")
+    )
+    rows: list[dict[str, Any]] = []
+    for row in _read_jsonl(path, limit):
+        evidence = _official_station_evidence(row)
+        rows.append(
+            {
+                "ts": str(row.get("ts") or ""),
+                "market_id": str(row.get("market_id") or ""),
+                "question": str(row.get("question") or ""),
+                "side": str(row.get("side") or ""),
+                "city": str(row.get("city") or ""),
+                "station_id": str(row.get("station_id") or ""),
+                "reason_code": str(row.get("reason_code") or ""),
+                "reason": str(row.get("reason") or ""),
+                **evidence,
+            }
+        )
+    return _sorted_recent(rows, limit)
 
 
 def _bucket_display_label(threshold_c: float | None, condition_label: str) -> str:
@@ -867,6 +960,15 @@ def _latest_entry_decisions(decisions: list[dict[str, str]]) -> dict[str, dict[s
     for row in decisions:
         if (row.get("side") or "").upper() in {"YES", "NO"} and row.get("market_id"):
             latest[row["market_id"]] = row
+    return latest
+
+
+def _latest_decisions_by_market(decisions: list[dict[str, str]]) -> dict[str, dict[str, str]]:
+    latest: dict[str, dict[str, str]] = {}
+    for row in decisions:
+        market_id = str(row.get("market_id") or "")
+        if market_id:
+            latest[market_id] = row
     return latest
 
 
@@ -1026,7 +1128,6 @@ def _realized_results(
         if entry_cost <= 0 and entry_price is not None and shares > 0:
             entry_cost = entry_price * shares
         target_exit = _optional_float(decision.get("target_exit_price")) or _target_exit_from_reason(opened.get("reason", "")) or exit_price or entry_price
-        forecast_c = _forecast_c_from_note(decision.get("note", ""))
         exit_trigger = _exit_trigger_from_reason(trade.get("reason", ""))
         rows.append(
             {
@@ -1037,7 +1138,6 @@ def _realized_results(
                 "action": action,
                 "city": summary["city"],
                 "date_hint": summary["date_hint"],
-                "forecast_c": _round_optional(forecast_c, 1),
                 "threshold_c": round(_value_or_zero(summary["threshold_c"]), 1),
                 "condition_label": summary["condition_label"],
                 "expected_exit_price": round(_value_or_zero(target_exit), 4),
@@ -1047,7 +1147,6 @@ def _realized_results(
                 "roi": round(pnl / entry_cost, 6) if entry_cost > 0 else 0.0,
                 "reason": trade.get("reason", ""),
                 "exit_trigger": exit_trigger,
-                "p_true": _optional_float(decision.get("p_true")),
                 "net_edge": _optional_float(decision.get("net_edge")),
             }
         )
@@ -1192,8 +1291,9 @@ def _bot_status(
         status = "LATE"
     else:
         status = "STALE"
+    primary_input = "station" if settings.official_nowcast_entry_only else "forecast"
     component_statuses = {
-        str(health.get("forecast", {}).get("status") or ""),
+        str(health.get(primary_input, {}).get("status") or ""),
         str(health.get("websocket", {}).get("status") or ""),
     }
     if "FAILED" in component_statuses:
@@ -1217,18 +1317,6 @@ def _bot_status(
         "markets_total": int(_float(runner_status.get("markets_total"))),
         "next_scan_at": str(runner_status.get("next_scan_at") or ""),
     }
-
-
-def _per_city_forecast_status(settings: Settings, limit: int = 300) -> list[dict[str, Any]]:
-    """Latest Open-Meteo forecast call status per city (from request log)."""
-    path = Path(settings.forecast_request_log_path) if settings.forecast_request_log_path else Path(settings.state_path).with_name("forecast_request_log.jsonl")
-    rows = _read_jsonl(path, limit)
-    latest: dict[str, dict[str, Any]] = {}
-    for row in rows:
-        city = str(row.get("city") or "")
-        if city and city not in ("", "bulk-metar"):
-            latest[city] = row
-    return sorted(latest.values(), key=lambda r: str(r.get("city") or ""))
 
 
 def _per_city_nowcast_status(settings: Settings, limit: int = 300) -> list[dict[str, Any]]:
@@ -1272,29 +1360,91 @@ def _merge_nowcast_status(previous: dict[str, Any] | None, row: dict[str, Any]) 
     return merged
 
 
+def _station_health(settings: Settings, observations: list[dict[str, Any]]) -> dict[str, Any]:
+    attempts: list[datetime] = []
+    successes: list[datetime] = []
+    failures: list[tuple[datetime, str]] = []
+    for row in observations:
+        attempted_at = _parse_datetime(str(row.get("requested_at") or row.get("attempted_at") or ""))
+        if attempted_at is not None:
+            attempts.append(attempted_at)
+        success_at = _parse_datetime(str(row.get("last_success_at") or ""))
+        if success_at is None and str(row.get("status") or "").lower() in {"success", "hit"}:
+            success_at = attempted_at
+        if success_at is not None:
+            successes.append(success_at)
+        failure_at = _parse_datetime(str(row.get("last_failure_at") or ""))
+        if failure_at is None and str(row.get("status") or "").lower() not in {"", "success", "hit"}:
+            failure_at = attempted_at
+        if failure_at is not None:
+            failures.append(
+                (
+                    failure_at,
+                    str(row.get("last_failure_error") or row.get("error") or row.get("unavailable_reason") or ""),
+                )
+            )
+
+    latest_attempt = max(attempts) if attempts else None
+    latest_success = max(successes) if successes else None
+    latest_failure = max(failures, default=None, key=lambda item: item[0])
+    age_seconds = (
+        max(0, int((datetime.now(timezone.utc) - latest_success).total_seconds()))
+        if latest_success is not None
+        else None
+    )
+    stale = age_seconds is not None and age_seconds > settings.station_nowcast_cache_ttl_seconds
+    if not observations:
+        status = "WAITING"
+    elif latest_success is None:
+        status = "FAILED"
+    elif stale:
+        status = "STALE"
+    elif latest_failure is not None and latest_failure[0] > latest_success:
+        status = "DEGRADED"
+    else:
+        status = "HEALTHY"
+    return {
+        "status": status,
+        "last_attempt_at": latest_attempt.replace(microsecond=0).isoformat() if latest_attempt else "",
+        "last_success_at": latest_success.replace(microsecond=0).isoformat() if latest_success else "",
+        "last_failure_at": latest_failure[0].replace(microsecond=0).isoformat() if latest_failure else "",
+        "last_failure_reason": latest_failure[1] if latest_failure else "",
+        "age_seconds": age_seconds,
+        "cache_ttl_seconds": settings.station_nowcast_cache_ttl_seconds,
+        "stale": stale,
+        "observation_sources": len(observations),
+    }
+
+
 def build_dashboard_payload(settings: Settings | None = None, auth_required: bool = False) -> dict[str, Any]:
     settings = settings or load_settings()
     state = _read_json(Path(settings.state_path))
     trades = _read_csv(Path(settings.trades_csv_path), 800)
     decisions_path = Path(settings.decisions_csv_path)
     decisions = _read_csv(decisions_path, 500)
-    decision_by_market = _latest_entry_decisions(decisions)
+    latest_decision_by_market = _latest_decisions_by_market(decisions)
     scanner_totals = _decision_totals(decisions_path)
     trades_path = Path(settings.trades_csv_path)
     trade_history = _trade_dashboard_cache(trades_path)
     trade_totals = trade_history["totals"]
     runner_status = read_runner_status(settings)
-    event_portfolios = _read_jsonl(Path(settings.portfolio_decisions_jsonl_path), 20)
+    station_observations = _per_city_nowcast_status(settings)
+    station_health = _station_health(settings, station_observations)
+    websocket_health = _websocket_health(settings, runner_status)
     health = {
+        "station": station_health,
+        "websocket": websocket_health,
+    }
+    bot_health = {
         "forecast": _forecast_health(settings, runner_status),
-        "websocket": _websocket_health(settings, runner_status),
+        **health,
     }
     positions = [
         _position_payload(
             p,
-            decision_by_market.get(str(p.get("market_id") or "")),
+            latest_decision_by_market.get(str(p.get("market_id") or "")),
             settings.weather_taker_fee_rate,
-            health["websocket"],
+            websocket_health,
         )
         for p in state.get("positions", [])
         if isinstance(p, dict)
@@ -1320,7 +1470,7 @@ def build_dashboard_payload(settings: Settings | None = None, auth_required: boo
     return {
         "generated_at": _now_iso(),
         "security": {"auth_required": auth_required},
-        "bot": _bot_status(settings, trades, decisions, positions, runner_status, health),
+        "bot": _bot_status(settings, trades, decisions, positions, runner_status, bot_health),
         "health": health,
         "summary": {
             "initial_bankroll": settings.bankroll_usd,
@@ -1344,7 +1494,6 @@ def build_dashboard_payload(settings: Settings | None = None, auth_required: boo
         "realized_results": realized_results,
         "scanner": {
             "decisions": scanner_totals["decisions"],
-            "forecast_unavailable": scanner_totals["forecast_unavailable"],
             "skips": scanner_totals["skips"],
             "entries": scanner_totals["entries"],
             "entry_signals": scanner_totals["entries"],
@@ -1352,9 +1501,10 @@ def build_dashboard_payload(settings: Settings | None = None, auth_required: boo
             "decision_totals_scope": scanner_totals["decision_totals_scope"],
             "actual_opens": int(trade_totals["opens"]),
             "actual_closes": int(trade_totals["closes"]),
-            "latest_forecast_at": _latest_forecast_cache_at(settings),
-            "per_city_forecast": _per_city_forecast_status(settings),
-            "per_city_nowcast": _per_city_nowcast_status(settings),
+            "latest_station_at": station_health["last_success_at"],
+            "station_observations": station_observations,
+            "station_signals": _station_signal_rows(decisions),
+            "recent_skips": _recent_skip_rows(settings),
         },
         "equity_points": _equity_points(
             settings,

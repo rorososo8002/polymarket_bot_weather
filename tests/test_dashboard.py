@@ -67,24 +67,98 @@ def test_read_csv_uses_tail_without_loading_entire_file(tmp_path):
     assert [row["note"] for row in tail] == ["117", "118", "119"]
 
 
-def test_dashboard_payload_scanner_has_per_city_forecast(tmp_path):
-    """Scanner payload includes per_city_forecast list (event portfolio removed)."""
+def test_dashboard_payload_uses_official_station_monitoring_instead_of_forecast(tmp_path):
     state_path = tmp_path / "state.json"
+    decisions_path = tmp_path / "decisions.csv"
+    nowcast_log = tmp_path / "station_nowcast_request_log.jsonl"
+    skip_log = tmp_path / "paper_skip_diagnostics.jsonl"
     state_path.write_text(json.dumps({"cash_usd": 100.0, "positions": []}), encoding="utf-8")
+    write_csv(
+        decisions_path,
+        [
+            {
+                "ts": "2099-06-19T00:20:00+00:00",
+                "market_id": "m-seoul-23",
+                "question": "Will the highest temperature in Seoul be 23°C on June 19?",
+                "side": "NO",
+                "city": "seoul",
+                "station_id": "RKSI",
+                "signal_source": "ensemble+official-nowcast-lock",
+                "reason": "official station lock",
+                "note": (
+                    "observed_high_c=24.0; observed_at=2099-06-19T00:19:00+00:00; "
+                    "nowcast_source=aviationweather-metar; official_nowcast_lock=strong_no; "
+                    "next_displayed_integer_c=24.0; entry_size_fraction_override=0.50"
+                ),
+            }
+        ],
+    )
+    nowcast_log.write_text(
+        json.dumps(
+            {
+                "city": "seoul",
+                "station_id": "RKSI",
+                "station_name": "Incheon Intl Airport Station",
+                "status": "success",
+                "requested_at": "2099-06-19T00:19:00+00:00",
+                "observed_high_c": 24.0,
+                "observed_low_c": 20.1,
+                "source": "aviationweather-metar",
+            }
+        ),
+        encoding="utf-8",
+    )
+    skip_log.write_text(
+        json.dumps(
+            {
+                "ts": "2099-06-19T00:21:00+00:00",
+                "market_id": "m-seoul-23",
+                "city": "seoul",
+                "side": "SKIP",
+                "reason_code": "SKIP_WIDE_SPREAD",
+                "reason": "spread too wide",
+                "station_id": "RKSI",
+                "signal_source": "ensemble+official-nowcast-lock",
+                "note": "observed_high_c=24.0; official_nowcast_lock=strong_no",
+            }
+        ),
+        encoding="utf-8",
+    )
 
     payload = build_dashboard_payload(
         Settings(
             bankroll_usd=100.0,
             state_path=str(state_path),
+            decisions_csv_path=str(decisions_path),
+            station_nowcast_request_log_path=str(nowcast_log),
+            skip_diagnostics_jsonl_path=str(skip_log),
         )
     )
 
     scanner = payload["scanner"]
-    # event portfolio is intentionally removed from the dashboard
-    assert "latest_event_portfolio" not in scanner
-    # per-city forecast/nowcast lists are present
-    assert "per_city_forecast" in scanner
-    assert "per_city_nowcast" in scanner
+    assert "forecast" not in payload["health"]
+    assert "latest_forecast_at" not in scanner
+    assert "per_city_forecast" not in scanner
+    assert payload["health"]["station"]["status"] == "HEALTHY"
+    assert scanner["latest_station_at"] == "2099-06-19T00:19:00+00:00"
+    assert scanner["station_observations"][0]["station_id"] == "RKSI"
+    assert scanner["station_signals"][0]["lock_strength"] == "strong_no"
+    assert scanner["station_signals"][0]["observed_high_c"] == pytest.approx(24.0)
+    assert scanner["station_signals"][0]["settlement_boundary_c"] == pytest.approx(24.0)
+    assert scanner["station_signals"][0]["allocation_fraction"] == pytest.approx(0.50)
+    assert scanner["recent_skips"][0]["reason_code"] == "SKIP_WIDE_SPREAD"
+
+
+def test_dashboard_html_is_official_station_first():
+    assert "최근 예보 갱신" not in HTML
+    assert "예보 상태 (Open-Meteo)" not in HTML
+    assert "도시별 예보 호출 기록" not in HTML
+    assert "cityForecastCard" not in HTML
+    assert "forecastHealth.cache_ttl_seconds" not in HTML
+    assert "관측소 감시" in HTML
+    assert "정산 경계" in HTML
+    assert "진입 비중" in HTML
+    assert "최근 스킵" in HTML
 
 
 def test_dashboard_nowcast_status_keeps_last_success_when_latest_call_fails(tmp_path):
@@ -127,7 +201,7 @@ def test_dashboard_nowcast_status_keeps_last_success_when_latest_call_fails(tmp_
         )
     )
 
-    hong_kong = next(row for row in payload["scanner"]["per_city_nowcast"] if row["city"] == "hong kong")
+    hong_kong = next(row for row in payload["scanner"]["station_observations"] if row["city"] == "hong kong")
     assert hong_kong["status"] == "error"
     assert hong_kong["error"] == "ConnectionError"
     assert hong_kong["last_success_at"] == "2026-06-16T00:10:00+00:00"
@@ -427,7 +501,7 @@ def test_dashboard_payload_summarizes_state_trades_and_decisions(tmp_path):
     assert payload["summary"]["wins"] == 1
     assert payload["summary"]["losses"] == 1
     assert payload["scanner"]["decisions"] == 2
-    assert payload["scanner"]["forecast_unavailable"] == 1
+    assert "forecast_unavailable" not in payload["scanner"]
     assert payload["scanner"]["skips"] == 1
     assert payload["scanner"]["entries"] == 1
     assert payload["scanner"]["decision_totals_exact"] is True
@@ -436,7 +510,7 @@ def test_dashboard_payload_summarizes_state_trades_and_decisions(tmp_path):
     assert payload["bot"]["scan_interval_seconds"] == 2400
     assert payload["bot"]["orderbook_mode"] == "websocket"
     assert payload["positions"][0]["unrealized_pnl"] == pytest.approx(8.8)
-    assert payload["positions"][0]["forecast_c"] == pytest.approx(28.7)
+    assert "forecast_c" not in payload["positions"][0]
     assert payload["positions"][0]["nowcast_high_c"] == pytest.approx(29.0)
     assert payload["positions"][0]["nowcast_low_c"] is None
     assert payload["positions"][0]["station_id"] == "RKSI"
@@ -571,7 +645,7 @@ def test_dashboard_scanner_totals_include_appended_decisions(tmp_path):
     assert second_payload["scanner"]["decisions"] == 2
     assert second_payload["scanner"]["skips"] == 1
     assert second_payload["scanner"]["entries"] == 1
-    assert second_payload["scanner"]["forecast_unavailable"] == 1
+    assert "forecast_unavailable" not in second_payload["scanner"]
 
 
 def test_dashboard_large_decision_file_skips_initial_full_scan(monkeypatch, tmp_path):
@@ -747,7 +821,7 @@ def test_dashboard_payload_builds_realized_trade_rows_for_operator_table(tmp_pat
     realized = payload["realized_results"][0]
     assert realized["date_hint"] == "may 29"
     assert realized["city"] == "seoul"
-    assert realized["forecast_c"] == 30.0
+    assert "forecast_c" not in realized
     assert realized["threshold_c"] == 27.0
     assert realized["condition_label"] == "or higher"
     assert realized["expected_exit_price"] == 0.32
@@ -827,7 +901,7 @@ def test_dashboard_realized_rows_are_latest_first_and_numeric_when_history_is_sp
 
     first = payload["realized_results"][0]
     assert first["market_id"] == "m-new"
-    assert first["forecast_c"] is None
+    assert "forecast_c" not in first
     assert first["expected_exit_price"] == 0.4
     assert first["entry_price"] == 0.4
     assert first["exit_price"] == 0.4
@@ -904,7 +978,8 @@ def test_dashboard_realized_row_exposes_probability_stop_trigger(tmp_path):
 
     realized = payload["realized_results"][0]
     assert realized["exit_trigger"] == "probability_stop"
-    assert realized["forecast_c"] == pytest.approx(32.7)
+    assert "forecast_c" not in realized
+    assert "p_true" not in realized
 
 
 def test_dashboard_template_explains_probability_stop_as_defensive_close():
@@ -1001,7 +1076,7 @@ def test_dashboard_realized_rows_survive_recent_skip_trade_noise(tmp_path):
     assert payload["realized_results"][0]["pnl"] == 14.0
 
 
-def test_dashboard_open_positions_include_polymarket_link_and_forecast_weather(tmp_path):
+def test_dashboard_open_positions_include_polymarket_link_without_forecast_weather(tmp_path):
     state_path = tmp_path / "state.json"
     trades_path = tmp_path / "trades.csv"
     decisions_path = tmp_path / "decisions.csv"
@@ -1079,7 +1154,71 @@ def test_dashboard_open_positions_include_polymarket_link_and_forecast_weather(t
 
     position = payload["positions"][0]
     assert position["market_url"] == "https://polymarket.com/ko/event/seoul-27c"
-    assert position["forecast_c"] == 30.0
+    assert "forecast_c" not in position
+    assert "p_true" not in position
+
+
+def test_dashboard_open_position_uses_latest_station_decision_not_entry_snapshot(tmp_path):
+    state_path = tmp_path / "state.json"
+    decisions_path = tmp_path / "decisions.csv"
+    state_path.write_text(
+        json.dumps(
+            {
+                "cash_usd": 150.0,
+                "positions": [
+                    {
+                        "position_id": "p-seoul",
+                        "market_id": "m-seoul-23",
+                        "question": "Will the highest temperature in Seoul be 23°C on June 19?",
+                        "side": "YES",
+                        "entry_price": 0.6,
+                        "shares": 50.0,
+                        "cost_usd": 30.0,
+                        "opened_at": "2099-06-19T00:00:00+00:00",
+                        "last_mark_price": 0.6,
+                        "metadata": {"city": "seoul", "station_id": "RKSI"},
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    write_csv(
+        decisions_path,
+        [
+            {
+                "ts": "2099-06-19T00:01:00+00:00",
+                "market_id": "m-seoul-23",
+                "question": "Will the highest temperature in Seoul be 23°C on June 19?",
+                "side": "YES",
+                "city": "seoul",
+                "station_id": "RKSI",
+                "note": "observed_high_c=23.2; official_nowcast_lock=base_yes; entry_size_fraction_override=0.20",
+            },
+            {
+                "ts": "2099-06-19T00:10:00+00:00",
+                "market_id": "m-seoul-23",
+                "question": "Will the highest temperature in Seoul be 23°C on June 19?",
+                "side": "HOLD",
+                "city": "seoul",
+                "station_id": "RKSI",
+                "note": (
+                    "observed_high_c=24.0; observed_at=2099-06-19T00:09:00+00:00; "
+                    "official_nowcast_lock=strong_no; next_displayed_integer_c=24.0; "
+                    "entry_size_fraction_override=0.50"
+                ),
+            },
+        ],
+    )
+
+    payload = build_dashboard_payload(
+        Settings(state_path=str(state_path), decisions_csv_path=str(decisions_path))
+    )
+
+    position = payload["positions"][0]
+    assert position["nowcast_high_c"] == pytest.approx(24.0)
+    assert position["station_lock_strength"] == "strong_no"
+    assert position["station_allocation_fraction"] == pytest.approx(0.50)
 
 
 def test_dashboard_open_position_link_strips_condition_suffix_from_weather_slug(tmp_path):
@@ -1121,7 +1260,7 @@ def test_dashboard_open_position_link_strips_condition_suffix_from_weather_slug(
     )
 
 
-def test_dashboard_summary_reports_latest_forecast_cache_time_and_profit_loss_totals(tmp_path):
+def test_dashboard_summary_reports_profit_loss_without_forecast_cache_time(tmp_path):
     state_path = tmp_path / "state.json"
     trades_path = tmp_path / "trades.csv"
     decisions_path = tmp_path / "decisions.csv"
@@ -1206,7 +1345,8 @@ def test_dashboard_summary_reports_latest_forecast_cache_time_and_profit_loss_to
 
     assert payload["summary"]["realized_profit_usd"] == 12.0
     assert payload["summary"]["realized_loss_usd"] == 4.0
-    assert payload["scanner"]["latest_forecast_at"] == "2026-05-30T09:30:00+00:00"
+    assert "latest_forecast_at" not in payload["scanner"]
+    assert payload["scanner"]["latest_station_at"] == ""
 
 
 def test_dashboard_uses_korean_labels_and_tabbed_right_rail():
@@ -1219,12 +1359,12 @@ def test_dashboard_uses_korean_labels_and_tabbed_right_rail():
     assert "Scanner Intelligence" not in HTML
     assert "보유 포지션" in HTML
     assert "총 진입 비용" in HTML
-    assert "최근 예보 갱신" in HTML
+    assert "최근 관측 성공" in HTML
     assert "총 손익" in HTML
     assert "수익 현황" in HTML
     assert "손실 현황" in HTML
-    assert "예보" in HTML
-    assert "스캐너 정보" in HTML
+    assert "예보 상태 (Open-Meteo)" not in HTML
+    assert "관측소 감시" in HTML
     assert "최근 체결" in HTML
     assert 'role="tablist"' in HTML
     assert 'id="scanner-panel"' in HTML
@@ -1325,7 +1465,7 @@ def test_dashboard_payload_uses_runner_status_as_bot_heartbeat(tmp_path):
     assert payload["bot"]["markets_total"] == 40
 
 
-def test_dashboard_payload_surfaces_forecast_and_websocket_health(tmp_path):
+def test_dashboard_payload_surfaces_station_and_websocket_health(tmp_path):
     state_path = tmp_path / "state.json"
     runner_status_path = tmp_path / "paper_runner_status.json"
     state_path.write_text(json.dumps({"cash_usd": 1000.0, "positions": []}), encoding="utf-8")
@@ -1365,10 +1505,8 @@ def test_dashboard_payload_surfaces_forecast_and_websocket_health(tmp_path):
 
     payload = build_dashboard_payload(Settings(state_path=str(state_path)))
 
-    assert payload["health"]["forecast"]["status"] == "STALE"
-    assert payload["health"]["forecast"]["cache_age_seconds"] >= 1801
-    assert payload["health"]["forecast"]["cache_ttl_seconds"] == Settings.forecast_cache_ttl_seconds
-    assert payload["health"]["forecast"]["persistence_error"] == "OSError: disk full"
+    assert "forecast" not in payload["health"]
+    assert payload["health"]["station"]["status"] == "WAITING"
     assert payload["health"]["websocket"]["status"] == "FAILED"
     assert payload["health"]["websocket"]["thread_alive"] is False
     assert payload["health"]["websocket"]["reconnect_count"] == 3
@@ -1377,7 +1515,7 @@ def test_dashboard_payload_surfaces_forecast_and_websocket_health(tmp_path):
     assert payload["bot"]["status"] == "FAILED"
 
 
-def test_dashboard_health_waits_when_no_forecast_or_stream_tokens(tmp_path):
+def test_dashboard_health_waits_when_no_station_observation_or_stream_tokens(tmp_path):
     state_path = tmp_path / "state.json"
     runner_status_path = tmp_path / "paper_runner_status.json"
     state_path.write_text(json.dumps({"cash_usd": 200.0, "positions": []}), encoding="utf-8")
@@ -1414,7 +1552,7 @@ def test_dashboard_health_waits_when_no_forecast_or_stream_tokens(tmp_path):
 
     payload = build_dashboard_payload(Settings(state_path=str(state_path)))
 
-    assert payload["health"]["forecast"]["status"] == "WAITING"
+    assert payload["health"]["station"]["status"] == "WAITING"
     assert payload["health"]["websocket"]["status"] == "WAITING"
     assert payload["health"]["websocket"]["status_reason"] == "no streamable temperature tokens"
     assert payload["bot"]["status"] == "WAIT"
@@ -1492,13 +1630,15 @@ def test_dashboard_open_positions_include_exit_liquidity_and_bid_depth_pnl(tmp_p
 
 
 def test_dashboard_html_explains_health_warnings():
-    assert "예보 상태" in HTML
+    assert "공식 관측소 수신 상태" in HTML
     assert "마지막 성공" in HTML
     assert "실시간 주문장 상태" in HTML
     assert "재연결" in HTML
     assert "마지막 주문장" in HTML
 
 
-def test_dashboard_html_uses_forecast_ttl_from_api_payload():
+def test_dashboard_html_uses_station_age_from_api_payload():
     assert "const ttl = 10800;" not in HTML
-    assert "forecastHealth.cache_ttl_seconds" in HTML
+    assert "stationHealth.age_seconds" in HTML
+    assert "grid-template-columns: repeat(5, minmax(0, 1fr))" in HTML
+    assert "white-space: nowrap" in HTML

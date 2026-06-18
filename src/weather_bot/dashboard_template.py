@@ -342,7 +342,6 @@ HTML = r"""<!doctype html>
     .badge.no, .badge.short, .badge.loss { color: var(--red); border-color: #7a1020; background: var(--red-soft); }
     .badge.price { color: var(--yellow); border-color: rgba(245, 184, 61, .42); background: var(--yellow-soft); }
     .badge.neutral { color: var(--blue); border-color: rgba(46, 92, 255, .46); background: var(--blue-soft); }
-    .badge.forecast { color: var(--text); border-color: rgba(46, 92, 255, .7); background: var(--blue); }
     .badge.current-price { color: var(--blue); border-color: rgba(46,92,255,.46); background: var(--blue-soft); }
     .badge.obs-temp { color: #5de0c0; border-color: rgba(93,224,192,.42); background: rgba(93,224,192,.12); }
     .badge.muted-badge { color: var(--muted-2); border-color: var(--line); background: transparent; font-style: italic; }
@@ -542,6 +541,7 @@ HTML = r"""<!doctype html>
       font: inherit;
       font-size: 11px;
       font-weight: 750;
+      white-space: nowrap;
       cursor: pointer;
     }
     .range-btn:hover,
@@ -604,6 +604,14 @@ HTML = r"""<!doctype html>
       .chart-wrap { height: 320px; }
       .position-list, .realized-list { max-height: 360px; }
       .right-col { max-height: 640px; }
+      .chart-title { align-items: flex-start; flex-direction: column; }
+      .range-controls {
+        width: 100%;
+        margin-left: 0;
+        display: grid;
+        grid-template-columns: repeat(5, minmax(0, 1fr));
+      }
+      .range-btn { padding: 5px 4px; }
       .result-table { min-width: 0; font-size: 10px; }
       .result-table th,
       .result-table td { padding: 8px 5px; }
@@ -668,25 +676,25 @@ HTML = r"""<!doctype html>
 
     <aside class="col right-col">
       <div class="right-tabs" role="tablist" aria-label="오른쪽 정보">
-        <button id="scanner-tab" class="tab-btn active" type="button" role="tab" aria-selected="true" aria-controls="scanner-panel" data-tab-target="scanner-panel">스캐너 정보</button>
+        <button id="scanner-tab" class="tab-btn active" type="button" role="tab" aria-selected="true" aria-controls="scanner-panel" data-tab-target="scanner-panel">관측소 감시</button>
         <button id="trades-tab" class="tab-btn" type="button" role="tab" aria-selected="false" aria-controls="trades-panel" data-tab-target="trades-panel">최근 체결 <span id="trade-count">0</span></button>
-        <button id="logs-tab" class="tab-btn" type="button" role="tab" aria-selected="false" aria-controls="logs-panel" data-tab-target="logs-panel">예보&amp;관측 호출</button>
+        <button id="logs-tab" class="tab-btn" type="button" role="tab" aria-selected="false" aria-controls="logs-panel" data-tab-target="logs-panel">관측 신호&amp;스킵</button>
       </div>
       <div class="right-panels">
         <div id="scanner-panel" class="tab-panel active" role="tabpanel" aria-labelledby="scanner-tab">
           <div class="panel-body scanner-body">
         <div class="right-stat"><span>보유 포지션</span><strong id="r-open">0</strong></div>
         <div class="right-stat"><span>총 진입 비용</span><strong id="r-exposure">$0</strong></div>
-        <div class="right-stat"><span>최근 예보 갱신</span><strong id="r-latest-forecast" class="neutral">--</strong></div>
+        <div class="right-stat"><span>최근 관측 성공</span><strong id="r-latest-station" class="neutral">--</strong></div>
         <div class="right-stat"><span>총 손익</span><strong id="r-net-profit">$0</strong></div>
         <div class="right-stat"><span>수익 현황</span><strong id="r-total-profit" class="">$0</strong></div>
         <div class="right-stat"><span>손실 현황</span><strong id="r-total-loss" class="bad">$0</strong></div>
         <div class="right-stat"><span>매매가능현금</span><strong id="r-cash">$0</strong></div>
         <div class="health-box">
-          <div class="health-title"><span>예보 상태 (Open-Meteo)</span><strong id="r-forecast-health">--</strong></div>
-          <div id="r-forecast-success" class="health-detail">마지막 성공 --</div>
-          <div id="r-forecast-age" class="health-detail">다음 갱신까지 --</div>
-          <div id="r-forecast-error" class="health-detail">최근 실패 이유 --</div>
+          <div class="health-title"><span>공식 관측소 수신 상태</span><strong id="r-station-health">--</strong></div>
+          <div id="r-station-success" class="health-detail">마지막 성공 --</div>
+          <div id="r-station-age" class="health-detail">관측값 경과 --</div>
+          <div id="r-station-error" class="health-detail">최근 실패 이유 --</div>
         </div>
         <div class="health-box">
           <div class="health-title"><span>실시간 주문장 상태</span><strong id="r-websocket-health">--</strong></div>
@@ -708,6 +716,10 @@ HTML = r"""<!doctype html>
             <div id="r-stream-reason" class="health-detail">상태 설명 --</div>
           </div>
         </div>
+        <div class="city-cards-section">
+          <div class="city-cards-title">공식 관측소 최근 호출</div>
+          <div id="r-station-observations" class="city-cards-list"><div class="small muted">로딩 중…</div></div>
+        </div>
           </div>
         </div>
 
@@ -717,12 +729,12 @@ HTML = r"""<!doctype html>
         <div id="logs-panel" class="tab-panel" role="tabpanel" aria-labelledby="logs-tab">
           <div class="logs-panel-body">
             <div style="display:flex;flex-direction:column;min-height:0">
-              <div class="logs-col-title">🌤 도시별 예보 호출 기록</div>
-              <div id="r-forecast-cities" class="logs-col-list"><div class="small muted">로딩 중…</div></div>
+              <div class="logs-col-title">관측소 잠금 신호</div>
+              <div id="r-station-signals" class="logs-col-list"><div class="small muted">로딩 중…</div></div>
             </div>
             <div style="display:flex;flex-direction:column;min-height:0">
-              <div class="logs-col-title">🛰 도시별 관측소 호출 기록</div>
-              <div id="r-nowcast-cities" class="logs-col-list"><div class="small muted">로딩 중…</div></div>
+              <div class="logs-col-title">최근 스킵</div>
+              <div id="r-recent-skips" class="logs-col-list"><div class="small muted">로딩 중…</div></div>
             </div>
           </div>
         </div>
@@ -894,6 +906,26 @@ function nowcastUnavailableDetail(reason) {
   if (!raw) return "아직 최신 의사결정 기록에 관측값이 없습니다.";
   return nowcastUnavailableKo(raw);
 }
+function stationLockLabel(value) {
+  const raw = String(value || "").toLowerCase();
+  if (raw === "strong_no") return "강한 No 확정";
+  if (raw === "strong_yes") return "강한 Yes 후보";
+  if (raw === "base_yes") return "Yes 후보";
+  return "관측 신호 대기";
+}
+function stationLockClass(value) {
+  const raw = String(value || "").toLowerCase();
+  if (raw === "strong_no") return "no";
+  if (raw.includes("yes")) return "yes";
+  return "muted-badge";
+}
+function stationBoundaryText(row) {
+  const parts = [];
+  if (row.station_settlement_boundary_c != null) parts.push(`정산 경계 ${tempC(row.station_settlement_boundary_c)}`);
+  if (row.station_buffer_c != null) parts.push(`경계 여유 ${tempC(row.station_buffer_c)}`);
+  if (row.station_hours_to_close != null) parts.push(`마감까지 ${duration(Number(row.station_hours_to_close) * 3600)}`);
+  return parts.join(" · ");
+}
 function streamStatusClass(status) {
   const raw = String(status || "").toUpperCase();
   if (raw === "HEALTHY") return "good";
@@ -982,20 +1014,11 @@ function cardForPosition(p) {
   const sideRaw = (p.side || "").toUpperCase();
   const qLower = (p.question || "").toLowerCase();
   const isHighest = qLower.includes("highest") || qLower.includes("high");
-  const sideProbPct = p.p_true != null
-    ? (sideRaw === "YES" ? p.p_true : (1 - p.p_true)) * 100
-    : null;
   const displayTitle = p.display_title || [p.city, p.date_hint, p.bucket_label, sideRaw].filter(Boolean).join(" · ") || p.question || "";
   const eventTitle = p.event_title || p.question || "";
   const titleHtml = p.market_url
     ? `<a class="position-title-main" href="${esc(p.market_url)}" target="_blank" rel="noopener noreferrer">${esc(displayTitle)}</a>`
     : `<div class="position-title-main">${esc(displayTitle)}</div>`;
-  const forecastBadge = p.forecast_c != null
-    ? `<span class="badge forecast">예보 ${tempC(p.forecast_c)}</span>`
-    : `<span class="badge muted-badge">예보 --</span>`;
-  const probBadge = sideProbPct != null
-    ? `<span class="badge neutral">확률 ${sideProbPct.toFixed(0)}%</span>`
-    : `<span class="badge muted-badge">확률 --</span>`;
   const nowcastVal = isHighest
     ? (p.nowcast_high_c != null ? p.nowcast_high_c : null)
     : (p.nowcast_low_c != null ? p.nowcast_low_c : null);
@@ -1003,6 +1026,11 @@ function cardForPosition(p) {
   const nowcastBadge = nowcastVal != null
     ? `<span class="badge obs-temp">${nowcastLabel} ${tempC(nowcastVal)}</span>`
     : `<span class="badge muted-badge">${esc(nowcastUnavailableKo(p.nowcast_unavailable_reason))}</span>`;
+  const lockBadge = `<span class="badge ${stationLockClass(p.station_lock_strength)}">${esc(stationLockLabel(p.station_lock_strength))}</span>`;
+  const allocationBadge = p.station_allocation_fraction != null
+    ? `<span class="badge neutral">진입 비중 ${(Number(p.station_allocation_fraction) * 100).toFixed(0)}%</span>`
+    : `<span class="badge muted-badge">진입 비중 --</span>`;
+  const boundaryLine = stationBoundaryText(p);
   const stationLabel = p.station_name && p.station_id && p.station_name !== p.station_id
     ? `${p.station_name} (${p.station_id})`
     : (p.station_name || p.station_id || "");
@@ -1023,9 +1051,9 @@ function cardForPosition(p) {
     <div class="pos-row">
       <span class="badge ${sideRaw === 'YES' ? 'yes' : 'no'}">${sidePositionKo(sideRaw)}</span>
       <span class="badge price">선택 ${esc(p.bucket_label || "--")}</span>
-      ${forecastBadge}
-      ${probBadge}
       ${nowcastBadge}
+      ${lockBadge}
+      ${allocationBadge}
     </div>
     <div class="pos-row">
       <span class="badge price">진입 ${price(p.entry_price)}</span>
@@ -1043,6 +1071,7 @@ function cardForPosition(p) {
       <strong>관측소</strong> ${esc(stationLabel || "--")} · ${esc(observedLine)}
       ${p.nowcast_source ? ` · 출처 ${esc(p.nowcast_source)}` : ""}
     </div>
+    <div class="detail-line"><strong>정산 경계</strong> ${esc(boundaryLine || "관측 신호가 생기면 표시")}</div>
     <div class="detail-line">
       ${esc(p.city || "")} ${esc(p.date_hint || "")} · 수량 ${Number(p.shares || 0).toFixed(2)} · 비용 ${money(p.cost_usd)}
       ${p.entry_fee_usdc != null ? ` · 수수료 $${Number(p.entry_fee_usdc).toFixed(4)}` : ''}
@@ -1131,9 +1160,6 @@ function realizedCards(rows) {
     const exitLabel = isProfit ? (isDefensiveClose ? "정리" : "익절") : "손절";
     const sideRaw = (r.side || "").toUpperCase();
     const pnlSign = isProfit ? "+" : "";
-    const sideProbPct = r.p_true != null
-      ? (sideRaw === "YES" ? r.p_true : (1 - r.p_true)) * 100
-      : null;
     const bucket = bucketLabelFromFields(r.threshold_c, r.condition_label);
     const closeParts = closeReasonParts(r.reason || "");
     const fact = (label, value, cls = "") => `<div class="fact"><span>${esc(label)}</span><strong class="${cls}">${esc(value)}</strong></div>`;
@@ -1146,8 +1172,6 @@ function realizedCards(rows) {
         <span class="badge ${isProfit ? 'win' : 'loss'}">${resultLabel}</span>
         <span class="badge ${sideRaw === 'YES' ? 'yes' : 'no'}">${sidePositionKo(sideRaw)}</span>
         <span class="badge price">선택 ${esc(bucket)}</span>
-        ${r.forecast_c != null ? `<span class="badge forecast">예보 ${tempC(r.forecast_c)}</span>` : ''}
-        ${sideProbPct != null ? `<span class="badge neutral">확률 ${sideProbPct.toFixed(0)}%</span>` : ''}
       </div>
       <div class="realized-fact-grid">
         ${fact("결과", resultLabel, isProfit ? "profit-text" : "loss-text")}
@@ -1165,26 +1189,42 @@ function realizedCards(rows) {
   }).join("");
 }
 
-function cityForecastCard(c) {
-  const ok = (c.status || "").toUpperCase() === "SUCCESS" || (c.status || "").toUpperCase() === "HIT";
-  const cls = ok ? "ok" : ((c.error || c.unavailable_reason) ? "fail" : "warn");
-  const statusText = ok ? "✓ 성공" : "✗ 실패";
-  const ts = shortDateTime(c.attempted_at || "");
-  const err = c.error || c.unavailable_reason || "";
-  const stn = c.station_name ? `공식 관측소: ${c.station_name}` : "";
-  const hiC = c.forecast_high_c != null ? `<span style="color:var(--red)">최고 ${tempC(c.forecast_high_c)}</span>` : "";
-  const loC = c.forecast_low_c != null ? `<span style="color:var(--blue)">최저 ${tempC(c.forecast_low_c)}</span>` : "";
-  const prob = c.probability != null ? `확률 ${(Number(c.probability)*100).toFixed(0)}%` : "";
-  const temps = [hiC, loC, prob].filter(Boolean).join(" · ");
-  return `<div class="city-card ${cls}">
+function stationSignalCard(signal) {
+  const lock = signal.lock_strength || "";
+  const observed = signal.observed_high_c != null
+    ? `관측 최고 ${tempC(signal.observed_high_c)}`
+    : (signal.observed_low_c != null ? `관측 최저 ${tempC(signal.observed_low_c)}` : "관측값 --");
+  const boundary = signal.settlement_boundary_c != null ? `정산 경계 ${tempC(signal.settlement_boundary_c)}` : "정산 경계 --";
+  const buffer = signal.buffer_c != null ? `경계 여유 ${tempC(signal.buffer_c)}` : "";
+  const close = signal.hours_to_close != null ? `마감까지 ${duration(Number(signal.hours_to_close) * 3600)}` : "";
+  const allocation = signal.allocation_fraction != null ? `진입 비중 ${(Number(signal.allocation_fraction) * 100).toFixed(0)}%` : "진입 비중 --";
+  const station = [signal.station_name, signal.station_id].filter(Boolean).join(" · ");
+  return `<div class="city-card ${String(lock).includes("no") ? "fail" : "ok"}">
     <div class="city-card-row">
-      <span class="city-name">${esc(c.city || c.station_id || "?")}</span>
-      <span class="${ok ? 'city-status-ok' : 'city-status-fail'}">${statusText}</span>
+      <span class="city-name">${esc(signal.city || signal.station_id || "?")}</span>
+      <span class="${String(lock).includes("no") ? "city-status-fail" : "city-status-ok"}">${esc(stationLockLabel(lock))}</span>
     </div>
-    ${stn ? `<div class="city-card-detail">${esc(stn)}</div>` : ""}
-    <div class="city-card-detail">호출 성공: ${ts}</div>
-    ${temps ? `<div class="city-card-detail">${temps}</div>` : ""}
-    ${err ? `<div class="city-card-detail" style="color:var(--red)">실패: ${esc(err.slice(0, 80))}</div>` : ""}
+    <div class="city-card-detail">${esc(signal.question || "")}</div>
+    ${station ? `<div class="city-card-detail">공식 관측소: ${esc(station)}</div>` : ""}
+    <div class="city-card-detail">${esc([observed, boundary, buffer, close].filter(Boolean).join(" · "))}</div>
+    <div class="city-card-detail">${esc(allocation)} · 판단 ${esc(sidePositionKo(signal.side))}</div>
+    <div class="city-card-detail">관측시각 ${shortDateTime(signal.observed_at || signal.ts)}</div>
+  </div>`;
+}
+
+function recentSkipCard(skip) {
+  const observed = skip.observed_high_c != null
+    ? `관측 최고 ${tempC(skip.observed_high_c)}`
+    : (skip.observed_low_c != null ? `관측 최저 ${tempC(skip.observed_low_c)}` : "");
+  return `<div class="city-card warn">
+    <div class="city-card-row">
+      <span class="city-name">${esc(skip.city || skip.station_id || "?")}</span>
+      <span class="city-status-fail">${esc(skip.reason_code || "SKIP")}</span>
+    </div>
+    <div class="city-card-detail">${esc(skip.question || "")}</div>
+    <div class="city-card-detail">${esc(skip.reason || "조건을 통과하지 못해 진입하지 않았습니다.")}</div>
+    ${observed ? `<div class="city-card-detail">${esc(observed)}</div>` : ""}
+    <div class="city-card-detail">${shortDateTime(skip.ts)}</div>
   </div>`;
 }
 
@@ -1347,7 +1387,7 @@ function render(payload) {
   setText("m-winrate", pct(payload.summary.win_rate));
   setText("r-open", payload.summary.open_positions);
   setText("r-exposure", money(payload.summary.exposure));
-  setText("r-latest-forecast", shortDateTime(payload.scanner.latest_forecast_at));
+  setText("r-latest-station", shortDateTime(payload.scanner.latest_station_at));
   const profitUsd = payload.summary.realized_profit_usd || 0;
   const lossUsd = payload.summary.realized_loss_usd || 0;
   const netProfit = profitUsd - lossUsd;
@@ -1357,14 +1397,11 @@ function render(payload) {
   setText("r-total-profit", "+" + money(profitUsd));
   setText("r-total-loss", "-" + money(lossUsd));
   setText("r-cash", money(payload.summary.cash));
-  const forecastHealth = (payload.health || {}).forecast || {};
-  setHealthStatus("r-forecast-health", forecastHealth.status);
-  setText("r-forecast-success", "마지막 성공 " + shortDateTime(forecastHealth.last_success_at));
-  const ttl = Number(forecastHealth.cache_ttl_seconds || 10800);
-  const age = forecastHealth.cache_age_seconds;
-  const remaining = age != null ? Math.max(0, ttl - age) : null;
-  setText("r-forecast-age", "다음 갱신까지 " + (remaining != null ? duration(remaining) : "--"));
-  setText("r-forecast-error", "최근 실패 이유 " + (forecastHealth.last_failure_reason || "--"));
+  const stationHealth = (payload.health || {}).station || {};
+  setHealthStatus("r-station-health", stationHealth.status);
+  setText("r-station-success", "마지막 성공 " + shortDateTime(stationHealth.last_success_at));
+  setText("r-station-age", "관측값 경과 " + (stationHealth.age_seconds == null ? "--" : duration(stationHealth.age_seconds)));
+  setText("r-station-error", "최근 실패 이유 " + (stationHealth.last_failure_reason || "--"));
   const websocketHealth = (payload.health || {}).websocket || {};
   setHealthStatus("r-websocket-health", websocketHealth.status);
   setText("r-websocket-thread", "실시간 수신 스레드 " + (websocketHealth.thread_alive === true ? "실행중" : (websocketHealth.thread_alive === false ? "중지" : "--")));
@@ -1381,15 +1418,18 @@ function render(payload) {
   streamPulse.className = streamStatusClass(streamStatus);
   setText("r-stream-summary", "감시 대상 " + Number(websocketHealth.stream_tokens || 0) + "토큰 · " + Number(websocketHealth.stream_markets || 0) + "마켓 · " + Number(websocketHealth.stream_cities || 0) + "도시");
   setText("r-stream-reason", "상태 설명 " + (websocketHealth.status_reason || (streamLive ? "주문장 메시지를 정상 수신 중" : "--")));
-  // Per-city forecast/nowcast cards → logs panel (3rd tab)
-  const forecastCities = (payload.scanner || {}).per_city_forecast || [];
-  document.getElementById("r-forecast-cities").innerHTML = forecastCities.length
-    ? forecastCities.map(cityForecastCard).join("")
-    : `<div class="small muted">예보 호출 기록 없음</div>`;
-  const nowcastCities = (payload.scanner || {}).per_city_nowcast || [];
-  document.getElementById("r-nowcast-cities").innerHTML = nowcastCities.length
-    ? nowcastCities.map(cityNowcastCard).join("")
+  const stationObservations = (payload.scanner || {}).station_observations || [];
+  document.getElementById("r-station-observations").innerHTML = stationObservations.length
+    ? stationObservations.map(cityNowcastCard).join("")
     : `<div class="small muted">관측소 호출 기록 없음</div>`;
+  const stationSignals = (payload.scanner || {}).station_signals || [];
+  document.getElementById("r-station-signals").innerHTML = stationSignals.length
+    ? stationSignals.map(stationSignalCard).join("")
+    : `<div class="small muted">아직 정산 잠금 신호가 없습니다</div>`;
+  const recentSkips = (payload.scanner || {}).recent_skips || [];
+  document.getElementById("r-recent-skips").innerHTML = recentSkips.length
+    ? recentSkips.map(recentSkipCard).join("")
+    : `<div class="small muted">최근 스킵 기록이 없습니다</div>`;
   setText("open-count", payload.positions.length);
   setText("trade-count", payload.recent_trades.length);
   const realizedRows = payload.realized_results || [];
