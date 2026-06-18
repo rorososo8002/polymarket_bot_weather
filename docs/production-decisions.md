@@ -100,12 +100,12 @@ This is the active paper-bot rule book; historical notes belong in focused `docs
 - Entry decisions are fee-aware. `p_exec` is executable VWAP; `size_usd` is the
   all-in paper-entry budget; `size_shares` is the fee-adjusted share count.
   The active paper strategy is intentionally more exploratory than the earlier
-  conservative baseline: default entry edge is `MIN_NET_EDGE=0.03` and default
+  conservative baseline: default entry edge is `MIN_NET_EDGE=0.08` and default
   expected net return is `ENTRY_MIN_EXPECTED_NET_RETURN_PCT=0.04` so the paper
   run can collect more executable NO samples while still requiring positive
   after-fee expected value.
-- Sizing defaults: `SIZE_MODE=kelly`, `FRACTIONAL_KELLY=0.25`, `ENTRY_FRACTION=0.20`,
-  `MAX_TOTAL_EXPOSURE_FRACTION=0.90`, `MAX_CITY_EXPOSURE_FRACTION=0.20`; active VPS paper uses `BANKROLL_USD=200`, `MIN_ORDER_USD=20.00`, a 10% single-market cap, and a 90% total-exposure cap so normal new entries target about $20 while allowing about nine concurrent fully sized positions when independent opportunities exist.
+- Sizing defaults: `SIZE_MODE=kelly`, `FRACTIONAL_KELLY=0.50`, `ENTRY_FRACTION=0.20`,
+  `MAX_TOTAL_EXPOSURE_FRACTION=0.90`, `MAX_CITY_EXPOSURE_FRACTION=0.20`; active VPS paper uses `BANKROLL_USD=200`, `MIN_ORDER_USD=10.00`, a 15% single-market cap, and a 90% total-exposure cap so smaller high-edge candidates can clear the minimum order while single-market exposure stays capped near $30.
 - Signal confidence is sizing evidence, not `p_true`: lower confidence scales
   entry size down; stale forecasts block new entries while held exits still run.
 - In Kelly mode, `ENTRY_FRACTION` is a per-event cap, not the direct order size.
@@ -120,6 +120,10 @@ This is the active paper-bot rule book; historical notes belong in focused `docs
 - Exit decisions use after-fee liquidation PnL, not raw token-price movement.
   Allowed exits: probability stop, take profit, overheated profit, edge faded,
   max hold, settlement, and nowcast bucket-lock risk.
+- Profit-taking exits require at least `MIN_PROFIT_PCT=0.08` after exit fees.
+  Probability stop remains a defensive exit and may close a small win or loss
+  when the model probability breaks below the stored stop line; dashboard copy
+  must label that as defensive cleanup, not as take-profit.
 - Nowcast bucket-lock risk blocks new entry as well as triggering exit. If it
   fires before order placement, convert the candidate to SKIP.
 - If an exit signal fires but the close cannot execute, log the blocker and
@@ -127,9 +131,13 @@ This is the active paper-bot rule book; historical notes belong in focused `docs
 - Whole-stream order-book failure blocks new entries. One missing/illiquid held
   token is worth $0 in `liquidation_bankroll`, not a global unrelated block.
 - Drawdown circuit breakers block new entries only; held exits and settlements
-  must continue.
-- Profit exits may recover principal and keep a bounded settlement runner only
-  when conservative settlement value beats fee-adjusted sell-now value.
+  must continue. Active paper daily and large-loss stops are 50% of bankroll,
+  not a fixed $20 stop.
+- Profit exits may keep the full position as a settlement runner when
+  conservative settlement value beats fee-adjusted sell-now value. The active
+  paper default is `SETTLEMENT_RUNNER_MAX_FRACTION=1.00`, so this path does not
+  sell a principal-recovery tranche first. Lowering the max fraction is an
+  explicit risk-control override, not the default profit path.
 - Resolved paper settlement requires a proven binary winner. Ambiguous closed
   prices are not guessed.
 - `paper_state.json` is the account book, not a disposable cache. Existing
@@ -185,8 +193,9 @@ This is the active paper-bot rule book; historical notes belong in focused `docs
   for an intentional fresh paper experiment.
 - `paper_runner_status.json` is a concurrent heartbeat; writes must use
   collision-resistant temp paths before atomic replace.
-- `paper_decisions.csv` suppresses SKIP rows by default. Enable SKIP logging
-  only for short debugging sessions.
+- `paper_decisions.csv` suppresses SKIP rows by default. Continuous SKIP
+  tracing belongs in bounded `paper_skip_diagnostics.jsonl`, not the decision
+  ledger.
 - `paper_event_portfolios.jsonl` writes only when at least one trade is
   selected by default. For bounded investigations, `PORTFOLIO_LOG_SKIP_ENABLED`
   may be enabled so zero-selection portfolio rows record compact rejection
@@ -205,9 +214,8 @@ This is the active paper-bot rule book; historical notes belong in focused `docs
 - Individual market evaluation exceptions fail closed as observable
   diagnostics: write a `SKIP_ERROR` row, write an error raw snapshot, and keep
   runner-status error fields.
-- Logrotate compresses diagnostics, not core ledgers: raw snapshots at 100 MB,
-  request/portfolio logs at 10 MB, five archives under `data/archive/`.
-  `runtime_cleanup` may delete only known diagnostic archives from
-  `data/archive/` when their combined size exceeds 100 MB. It must not delete
-  `paper_state.json`, `paper_trades.csv`, or `paper_decisions.csv`.
+- Logrotate compresses diagnostics, not core ledgers: raw snapshots and SKIP
+  diagnostics at 100 MB, request/portfolio logs at 10 MB, five archives under
+  `data/archive/`. `runtime_cleanup` may delete only known diagnostic archives
+  when their combined size exceeds 100 MB, never account or decision ledgers.
 - `docs/codex/known-good-commands.md` is the source for pytest, SSH, and dashboard checks.

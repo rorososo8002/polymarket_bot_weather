@@ -40,19 +40,24 @@ def test_default_raw_snapshot_mode_saves_only_error_diagnostics():
     assert Settings.raw_snapshots_retention_days == 7
     assert Settings.raw_snapshots_min_free_bytes == 1024 * 1024 * 1024
     assert Settings.raw_snapshots_max_disk_usage_pct == 0.90
+    assert Settings.skip_diagnostics_enabled is True
+    assert Settings.skip_diagnostics_jsonl_path == ""
+    assert Settings.skip_diagnostics_max_bytes == 100 * 1024 * 1024
+    assert Settings.skip_diagnostics_archive_max_bytes == 100 * 1024 * 1024
 
 
 def test_default_entry_net_return_filter_uses_official_weather_fee_rate():
-    assert Settings.min_net_edge == 0.03
+    assert Settings.min_net_edge == 0.08
     assert Settings.entry_min_expected_net_return_pct == 0.04
     assert Settings.max_entry_spread_abs == 0.20
     assert Settings.max_entry_spread_pct == 1.00
     assert Settings.weather_taker_fee_rate == 0.05
+    assert Settings.min_profit_pct == 0.08
 
 
 def test_default_settlement_runner_is_bounded_and_enabled():
     assert Settings.settlement_runner_enabled is True
-    assert Settings.settlement_runner_max_fraction == 0.25
+    assert Settings.settlement_runner_max_fraction == 1.00
     assert Settings.settlement_runner_min_ev_margin_usd == 0.0
 
 
@@ -60,14 +65,17 @@ def test_default_city_date_portfolio_caps_shrink_after_one_thousand_dollars():
     assert Settings.bankroll_usd == 100.0
     assert Settings.size_mode == "kelly"
     assert Settings.entry_fraction == 0.20
-    assert Settings.fractional_kelly == 0.25
-    assert Settings.max_single_market_fraction == 0.10
+    assert Settings.fractional_kelly == 0.50
+    assert Settings.max_single_market_fraction == 0.15
     assert Settings.add_to_position_drop_pct == 0.10
     assert Settings.max_city_exposure_fraction == 0.20
     assert Settings.max_event_date_exposure_fraction == 0.10
     assert Settings.large_bankroll_event_date_exposure_fraction == 0.05
     assert Settings.event_date_exposure_transition_usd == 1000.0
     assert Settings.max_event_portfolio_legs == 2
+    assert Settings.daily_realized_loss_limit_fraction == 0.50
+    assert Settings.daily_unrealized_loss_limit_fraction == 0.50
+    assert Settings.large_loss_threshold_fraction == 0.50
     assert Settings.max_total_exposure_fraction == 0.90
     assert Settings.min_order_usd == 10.0
 
@@ -343,6 +351,10 @@ def test_load_settings_reads_raw_snapshot_storage_mode(monkeypatch):
     monkeypatch.setenv("RAW_SNAPSHOTS_RETENTION_DAYS", "9")
     monkeypatch.setenv("RAW_SNAPSHOTS_MIN_FREE_BYTES", "54321")
     monkeypatch.setenv("RAW_SNAPSHOTS_MAX_DISK_USAGE_PCT", "0.75")
+    monkeypatch.setenv("SKIP_DIAGNOSTICS_ENABLED", "false")
+    monkeypatch.setenv("SKIP_DIAGNOSTICS_JSONL_PATH", "data/skip.jsonl")
+    monkeypatch.setenv("SKIP_DIAGNOSTICS_MAX_BYTES", "22222")
+    monkeypatch.setenv("SKIP_DIAGNOSTICS_ARCHIVE_MAX_BYTES", "33333")
 
     settings = load_settings()
 
@@ -351,6 +363,10 @@ def test_load_settings_reads_raw_snapshot_storage_mode(monkeypatch):
     assert settings.raw_snapshots_retention_days == 9
     assert settings.raw_snapshots_min_free_bytes == 54321
     assert settings.raw_snapshots_max_disk_usage_pct == 0.75
+    assert settings.skip_diagnostics_enabled is False
+    assert settings.skip_diagnostics_jsonl_path == "data/skip.jsonl"
+    assert settings.skip_diagnostics_max_bytes == 22222
+    assert settings.skip_diagnostics_archive_max_bytes == 33333
 
 
 def test_load_settings_rejects_unknown_raw_snapshot_storage_mode(monkeypatch):

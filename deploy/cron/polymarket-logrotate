@@ -1,0 +1,4 @@
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+7 * * * * root /usr/sbin/logrotate -s /var/lib/logrotate/polymarket-weather-bot.status /etc/logrotate.d/polymarket-weather-bot >/dev/null 2>&1

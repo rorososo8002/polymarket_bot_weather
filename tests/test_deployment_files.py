@@ -27,7 +27,7 @@ def test_local_env_example_exposes_settlement_runner_defaults():
     text = (ROOT / ".env.example").read_text(encoding="utf-8")
 
     assert "SETTLEMENT_RUNNER_ENABLED=true" in text
-    assert "SETTLEMENT_RUNNER_MAX_FRACTION=0.25" in text
+    assert "SETTLEMENT_RUNNER_MAX_FRACTION=1.00" in text
     assert "SETTLEMENT_RUNNER_MIN_EV_MARGIN_USD=0.00" in text
     assert "ORDERBOOK_REST_SNAPSHOT_ENABLED=true" in text
     assert "ORDERBOOK_REST_SNAPSHOT_INTERVAL_SECONDS=60" in text
@@ -35,11 +35,18 @@ def test_local_env_example_exposes_settlement_runner_defaults():
     assert "FORECAST_REQUEST_LOG_PATH=forecast_request_log.jsonl" in text
     assert "FORECAST_REQUEST_MIN_INTERVAL_SECONDS=15" in text
     assert "FORECAST_RATE_LIMIT_STATE_PATH=forecast_rate_limit_state.json" in text
+    assert "SKIP_DIAGNOSTICS_ENABLED=true" in text
+    assert "SKIP_DIAGNOSTICS_JSONL_PATH=paper_skip_diagnostics.jsonl" in text
+    assert "SKIP_DIAGNOSTICS_MAX_BYTES=104857600" in text
+    assert "SKIP_DIAGNOSTICS_ARCHIVE_MAX_BYTES=104857600" in text
     assert "STATION_NOWCAST_CACHE_TTL_SECONDS=300" in text
     assert "STATION_NOWCAST_REQUEST_LOG_PATH=station_nowcast_request_log.jsonl" in text
     assert "SIZE_MODE=kelly" in text
-    assert "FRACTIONAL_KELLY=0.25" in text
+    assert "FRACTIONAL_KELLY=0.50" in text
     assert "MAX_TOTAL_EXPOSURE_FRACTION=0.90" in text
+    assert "DAILY_REALIZED_LOSS_LIMIT_FRACTION=0.50" in text
+    assert "DAILY_UNREALIZED_LOSS_LIMIT_FRACTION=0.50" in text
+    assert "LARGE_LOSS_THRESHOLD_FRACTION=0.50" in text
 
 
 def test_local_env_example_does_not_expose_removed_precipitation_settings():
@@ -67,6 +74,10 @@ def test_vps_env_example_keeps_runtime_state_under_data_dir():
     assert "STATE_PATH=/opt/polymarket-weather-bot/data/paper_state.json" in text
     assert "BANKROLL_USD=200\n" in text
     assert "PORTFOLIO_DECISIONS_JSONL_PATH=/opt/polymarket-weather-bot/data/paper_event_portfolios.jsonl" in text
+    assert "SKIP_DIAGNOSTICS_ENABLED=true" in text
+    assert "SKIP_DIAGNOSTICS_JSONL_PATH=/opt/polymarket-weather-bot/data/paper_skip_diagnostics.jsonl" in text
+    assert "SKIP_DIAGNOSTICS_MAX_BYTES=104857600" in text
+    assert "SKIP_DIAGNOSTICS_ARCHIVE_MAX_BYTES=104857600" in text
     assert "RAW_SNAPSHOTS_PATH=/opt/polymarket-weather-bot/data/paper_raw_snapshots.jsonl" in text
     assert "FORECAST_REQUEST_LOG_PATH=/opt/polymarket-weather-bot/data/forecast_request_log.jsonl" in text
     assert "FORECAST_REQUEST_MIN_INTERVAL_SECONDS=15" in text
@@ -90,24 +101,27 @@ def test_vps_env_example_keeps_runtime_state_under_data_dir():
     assert "DISCOVERY_PAGE_SIZE=100" in text
     assert "MAX_EVENTS" not in text
     assert "MAX_MARKETS" not in text
-    assert "MIN_NET_EDGE=0.03" in text
+    assert "MIN_NET_EDGE=0.08" in text
     assert "ENTRY_MIN_EXPECTED_NET_RETURN_PCT=0.04" in text
     assert "WEATHER_TAKER_FEE_RATE=0.05" in text
     assert "SETTLEMENT_RUNNER_ENABLED=true" in text
-    assert "SETTLEMENT_RUNNER_MAX_FRACTION=0.25" in text
+    assert "SETTLEMENT_RUNNER_MAX_FRACTION=1.00" in text
     assert "SETTLEMENT_RUNNER_MIN_EV_MARGIN_USD=0.00" in text
     assert "BANKROLL_USD=200\n" in text
     assert "SIZE_MODE=kelly" in text
-    assert "FRACTIONAL_KELLY=0.25" in text
+    assert "FRACTIONAL_KELLY=0.50" in text
     assert "ENTRY_FRACTION=0.20" in text
-    assert "MAX_SINGLE_MARKET_FRACTION=0.10" in text
+    assert "MAX_SINGLE_MARKET_FRACTION=0.15" in text
     assert "MAX_TOTAL_EXPOSURE_FRACTION=0.90" in text
     assert "MAX_CITY_EXPOSURE_FRACTION=0.20" in text
     assert "MAX_EVENT_DATE_EXPOSURE_FRACTION=0.10" in text
     assert "LARGE_BANKROLL_EVENT_DATE_EXPOSURE_FRACTION=0.05" in text
     assert "EVENT_DATE_EXPOSURE_TRANSITION_USD=1000" in text
     assert "MAX_EVENT_PORTFOLIO_LEGS=2" in text
-    assert "MIN_ORDER_USD=20.00" in text
+    assert "DAILY_REALIZED_LOSS_LIMIT_FRACTION=0.50" in text
+    assert "DAILY_UNREALIZED_LOSS_LIMIT_FRACTION=0.50" in text
+    assert "LARGE_LOSS_THRESHOLD_FRACTION=0.50" in text
+    assert "MIN_ORDER_USD=10.00" in text
     assert "ESTIMATED_FEE_PER_SHARE" not in text
     assert "POLYMARKET_PRIVATE_KEY" not in text
 
@@ -126,12 +140,13 @@ def test_runtime_logrotate_rotates_high_volume_diagnostics_only():
     text = logrotate.read_text(encoding="utf-8")
 
     assert "/opt/polymarket-weather-bot/data/paper_raw_snapshots.jsonl" in text
+    assert "/opt/polymarket-weather-bot/data/paper_skip_diagnostics.jsonl" in text
     assert "/opt/polymarket-weather-bot/data/forecast_request_log.jsonl" in text
     assert "/opt/polymarket-weather-bot/data/station_nowcast_request_log.jsonl" in text
     assert "/opt/polymarket-weather-bot/data/paper_event_portfolios.jsonl" in text
     assert "size 100M" in text
     assert "size 10M" in text
-    assert text.count("rotate 5") == 4
+    assert text.count("rotate 5") == 5
     assert "maxage 7" in text
     assert "compresscmd /usr/bin/zstd" in text
     assert "/opt/polymarket-weather-bot/data/paper_state.json" not in text
@@ -150,6 +165,17 @@ def test_runtime_cleanup_cron_prunes_diagnostic_archive_only():
     assert "paper_state.json" not in text
     assert "paper_trades.csv" not in text
     assert "paper_decisions.csv" not in text
+
+
+def test_runtime_logrotate_cron_runs_hourly_with_private_state_file():
+    cron = ROOT / "deploy" / "cron" / "polymarket-logrotate"
+
+    text = cron.read_text(encoding="utf-8")
+
+    assert "7 * * * * root" in text
+    assert "/usr/sbin/logrotate" in text
+    assert "/var/lib/logrotate/polymarket-weather-bot.status" in text
+    assert "/etc/logrotate.d/polymarket-weather-bot" in text
 
 
 def test_pyproject_exposes_runtime_cleanup_console_script():

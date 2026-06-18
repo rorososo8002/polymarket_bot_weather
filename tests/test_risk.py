@@ -64,3 +64,21 @@ def test_drawdown_entry_block_reason_uses_today_realized_loss(tmp_path):
 
     assert "DAILY_LOSS_LIMIT_HIT" in reason
     assert "realized_loss=$1.00" in reason
+
+
+def test_default_drawdown_limit_allows_loss_below_half_bankroll(tmp_path):
+    trades_path = tmp_path / "trades.csv"
+    trades_path.write_text(
+        "\n".join(
+            [
+                "ts,action,market_id,slug,question,market_type,side,token_id,shares,price,cash_delta_or_pnl,reason,city,event_date_local",
+                "2026-06-14T00:00:00+00:00,CLOSE,m1,s,q,temperature,YES,yes,10,0.40,-22.27,loss,seoul,2026-06-14",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    settings = Settings(bankroll_usd=200.0, trades_csv_path=str(trades_path))
+
+    reason = drawdown_entry_block_reason(settings, [], now=datetime(2026, 6, 14, tzinfo=timezone.utc))
+
+    assert reason == ""

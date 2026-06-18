@@ -907,10 +907,14 @@ function closeReasonParts(reason) {
   const source = closePart || text;
   if (!source) return {summary: "", facts: []};
   const facts = [];
-  const trigger = (source.match(/exit_trigger=([^;]+)/i) || [])[1] || "";
+  const trigger = closeTrigger(source);
   const observedHigh = (source.match(/observed_high_c=([\d.\-]+)/i) || [])[1];
   const observedLow = (source.match(/observed_low_c=([\d.\-]+)/i) || [])[1];
   const pTrue = (source.match(/p_true=([\d.]+)/i) || [])[1];
+  const sideProb = source.match(/side_probability\s+([\d.]+)->([\d.]+)/i);
+  const stopThreshold = (source.match(/threshold=([\d.]+)/i) || [])[1];
+  const probabilityDrop = (source.match(/drop=([\d.]+)/i) || [])[1];
+  const netPnl = (source.match(/net_pnl=([-+]?\d+(?:\.\d+)?)%/i) || [])[1];
   const exitFee = (source.match(/exit_fee=\$([\d.]+)/i) || [])[1];
   const gross = (source.match(/gross=\$([\d.]+)/i) || [])[1];
   const net = (source.match(/net=\$([\d.]+)/i) || [])[1];
@@ -924,15 +928,48 @@ function closeReasonParts(reason) {
       summary = "관측소 현재값 때문에 선택한 온도칸의 손실 위험이 커져 포지션을 정리했습니다.";
     }
   } else if (trigger) {
-    summary = `청산 조건 ${trigger} 때문에 포지션을 정리했습니다.`;
+    if (trigger === "probability_stop") {
+      if (sideProb) {
+        summary = `진입 때 이 포지션 방향의 예보 확률은 ${probPct(sideProb[1])}였는데, 최신 예보에서 ${probPct(sideProb[2])}까지 내려갔습니다. 방어선 ${probPct(stopThreshold)} 이하라서 수익을 키우는 익절이 아니라 더 큰 손실을 막기 위한 방어청산입니다.`;
+      } else {
+        summary = "예보 확률이 보유 방향과 반대로 꺾여 방어선 아래로 내려갔습니다. 수익을 키우는 익절이 아니라 더 큰 손실을 막기 위한 방어청산입니다.";
+      }
+    } else if (trigger === "take_profit") {
+      summary = "가격이 봇이 계산한 목표익절가에 도달했고, 수수료를 뺀 순수익률이 최소 익절 기준을 넘어 포지션을 정리했습니다.";
+    } else if (trigger === "overheated_take_profit") {
+      summary = "시장 매수가가 봇이 계산한 공정가보다 과하게 비싸졌고, 수수료를 뺀 순수익률이 최소 익절 기준을 넘어 과열익절했습니다.";
+    } else if (trigger === "edge_faded") {
+      summary = "처음 진입할 때 있던 우위가 사라졌습니다. 손실 제한 안에서 더 오래 들고 갈 이유가 약해져 정리했습니다.";
+    } else if (trigger === "max_holding") {
+      summary = "정해둔 최대 보유 시간을 넘겨 포지션을 정리했습니다.";
+    } else {
+      summary = `청산 조건 ${trigger} 때문에 포지션을 정리했습니다.`;
+    }
   }
   if (observedHigh !== undefined) facts.push(`관측 최고 ${tempC(parseFloat(observedHigh))}`);
   if (observedLow !== undefined) facts.push(`관측 최저 ${tempC(parseFloat(observedLow))}`);
   if (pTrue !== undefined) facts.push(`모델 YES 확률 ${(parseFloat(pTrue) * 100).toFixed(1)}%`);
+  if (sideProb) facts.push(`포지션 방향확률 ${probPct(sideProb[1])} → ${probPct(sideProb[2])}`);
+  if (stopThreshold !== undefined) facts.push(`방어선 ${probPct(stopThreshold)}`);
+  if (probabilityDrop !== undefined) facts.push(`확률하락 ${probPct(probabilityDrop)}`);
+  if (netPnl !== undefined) facts.push(`순수익률 ${parseFloat(netPnl).toFixed(1)}%`);
   if (gross !== undefined) facts.push(`청산 전 금액 $${parseFloat(gross).toFixed(2)}`);
   if (exitFee !== undefined) facts.push(`청산 수수료 $${parseFloat(exitFee).toFixed(4)}`);
   if (net !== undefined) facts.push(`순수령 $${parseFloat(net).toFixed(2)}`);
   return {summary, facts};
+}
+
+function closeTrigger(reason) {
+  return (String(reason || "").match(/exit_trigger=([^;]+)/i) || [])[1] || "";
+}
+
+function defensiveCloseTrigger(trigger) {
+  return ["probability_stop", "edge_faded", "max_holding", "nowcast_bucket_lock_risk"].includes(String(trigger || ""));
+}
+
+function probPct(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? `${(n * 100).toFixed(1)}%` : "--";
 }
 
 function cardForPosition(p) {
@@ -1087,9 +1124,11 @@ function realizedCards(rows) {
   return rows.map(r => {
     const pnl = Number(r.pnl || 0);
     const isProfit = pnl > 0;
-    const resultLabel = isProfit ? "수익" : "손절";
+    const trigger = r.exit_trigger || closeTrigger(r.reason || "");
+    const isDefensiveClose = defensiveCloseTrigger(trigger);
+    const resultLabel = isProfit ? (isDefensiveClose ? "방어청산" : "수익") : "손절";
     const cardClass = isProfit ? "profit" : "loss";
-    const exitLabel = isProfit ? "익절" : "손절";
+    const exitLabel = isProfit ? (isDefensiveClose ? "정리" : "익절") : "손절";
     const sideRaw = (r.side || "").toUpperCase();
     const pnlSign = isProfit ? "+" : "";
     const sideProbPct = r.p_true != null
@@ -1107,7 +1146,7 @@ function realizedCards(rows) {
         <span class="badge ${isProfit ? 'win' : 'loss'}">${resultLabel}</span>
         <span class="badge ${sideRaw === 'YES' ? 'yes' : 'no'}">${sidePositionKo(sideRaw)}</span>
         <span class="badge price">선택 ${esc(bucket)}</span>
-        ${r.forecast_c ? `<span class="badge forecast">예보 ${tempC(r.forecast_c)}</span>` : ''}
+        ${r.forecast_c != null ? `<span class="badge forecast">예보 ${tempC(r.forecast_c)}</span>` : ''}
         ${sideProbPct != null ? `<span class="badge neutral">확률 ${sideProbPct.toFixed(0)}%</span>` : ''}
       </div>
       <div class="realized-fact-grid">

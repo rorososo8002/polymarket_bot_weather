@@ -57,7 +57,7 @@ class SettlementRunnerDecision:
     shares_to_close: float
     runner_shares: float
     max_runner_shares: float
-    principal_recovery_shares: float
+    cap_close_shares: float
     net_sell_price: float
     sell_now_net_usdc: float
     settlement_ev_usdc: float
@@ -408,6 +408,29 @@ def _prune_raw_snapshot_archives(path: Path, retention_days: int) -> None:
             continue
 
 
+def _prune_diagnostic_archives_by_bytes(path: Path, max_bytes: int) -> None:
+    if max_bytes < 0:
+        return
+    archive_dir = _raw_snapshot_archive_dir(path)
+    if not archive_dir.exists():
+        return
+    pattern = f"{path.stem}.*{path.suffix}.gz"
+    files = [archive_path for archive_path in archive_dir.glob(pattern) if archive_path.is_file()]
+    sizes = {archive_path: archive_path.stat().st_size for archive_path in files}
+    total = sum(sizes.values())
+    if total <= max_bytes:
+        return
+    for archive_path in sorted(files, key=lambda item: (item.stat().st_mtime, item.name)):
+        if total <= max_bytes:
+            break
+        size = sizes[archive_path]
+        try:
+            archive_path.unlink()
+            total -= size
+        except OSError:
+            continue
+
+
 def _raw_snapshot_disk_pressure_reason(settings: Settings, path: Path) -> str | None:
     try:
         usage = shutil.disk_usage(path.parent)
@@ -528,6 +551,11 @@ class PaperBroker:
         self.trades_csv_path = Path(settings.trades_csv_path)
         self.accounting_journal_path = self.state_path.with_name(f"{self.state_path.name}.journal")
         self.decisions_csv_path = Path(settings.decisions_csv_path)
+        self.skip_diagnostics_jsonl_path = (
+            Path(settings.skip_diagnostics_jsonl_path)
+            if settings.skip_diagnostics_jsonl_path
+            else self.decisions_csv_path.with_name("paper_skip_diagnostics.jsonl")
+        )
         self.portfolio_decisions_jsonl_path = Path(settings.portfolio_decisions_jsonl_path)
         self.raw_snapshots_path = Path(settings.raw_snapshots_path)
         self._raw_snapshot_storage_suspended = False
@@ -1372,13 +1400,26 @@ class PaperBroker:
         *,
         signal: Any | None = None,
     ) -> str:
+        ts = utc_now_iso()
+        if result.side == "SKIP":
+            try:
+                self._log_skip_diagnostic(ts, market, result, note, market_type, signal=signal)
+            except Exception as exc:  # noqa: BLE001
+                update_runner_status_fields(
+                    self.settings,
+                    skip_diagnostics={
+                        "status": "error",
+                        "reason": f"{exc.__class__.__name__}: {' '.join(str(exc).split())[:160]}",
+                        "path": str(self.skip_diagnostics_jsonl_path),
+                        "updated_at": utc_now_iso(),
+                    },
+                )
         # Suppress SKIP rows by default — they are 95%+ of all writes and carry
         # no analytical value.  Set DECISIONS_LOG_SKIP_ENABLED=true only for
         # short debugging sessions.
         if result.side == "SKIP" and not self.settings.decisions_log_skip_enabled:
-            return utc_now_iso()
+            return ts
         exists = self.decisions_csv_path.exists() and self.decisions_csv_path.stat().st_size > 0
-        ts = utc_now_iso()
         fieldnames = _ensure_csv_columns(self.decisions_csv_path, DECISION_CSV_FIELDNAMES)
         market_replay = _market_replay_metadata(market)
         signal_replay = _signal_replay_metadata(signal)
@@ -1443,6 +1484,62 @@ class PaperBroker:
                 "config_version": _config_version(self.settings),
             })
         return ts
+
+    def _log_skip_diagnostic(
+        self,
+        ts: str,
+        market: RawMarket,
+        result: EdgeResult,
+        note: str,
+        market_type: str,
+        *,
+        signal: Any | None = None,
+    ) -> None:
+        if not self.settings.skip_diagnostics_enabled:
+            return
+        path = self.skip_diagnostics_jsonl_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _rotate_raw_snapshot_if_needed(path, self.settings.skip_diagnostics_max_bytes)
+        _prune_diagnostic_archives_by_bytes(path, self.settings.skip_diagnostics_archive_max_bytes)
+
+        market_replay = _market_replay_metadata(market)
+        signal_replay = _signal_replay_metadata(signal)
+        result_replay = _result_replay_metadata(result)
+        row = {
+            "ts": ts,
+            "market_id": market.market_id,
+            "slug": market.slug or "",
+            "event_slug": market.event_slug or "",
+            "question": _compact_text(market.question, DECISION_QUESTION_MAX_CHARS),
+            "market_type": market_type,
+            "side": result.side,
+            "reason_code": result_replay["reason_code"],
+            "reason": _compact_text(result.reason, DECISION_REASON_MAX_CHARS),
+            "note": _compact_text(note, DECISION_NOTE_MAX_CHARS),
+            "p_true": round(result.p_true, 6),
+            "p_exec": None if result.p_exec is None else round(result.p_exec, 6),
+            "net_edge": round(result.net_edge, 6),
+            "size_usd": round(result.size_usd, 2),
+            "size_shares": round(result.size_shares, 6),
+            "city": market_replay["city"],
+            "event_date_local": market_replay["event_date_local"],
+            "condition_type": market_replay["condition_type"],
+            "station_id": market_replay["station_id"],
+            "signal_source": signal_replay["signal_source"],
+            "signal_confidence": signal_replay["signal_confidence"],
+            "entry_vwap": result_replay["entry_vwap"],
+            "expected_net_return_pct": result_replay["expected_net_return_pct"],
+            "best_bid": result_replay["best_bid"],
+            "best_ask": result_replay["best_ask"],
+            "spread": result_replay["spread"],
+            "orderbook_status": result_replay["orderbook_status"],
+            "model_version": PAPER_MODEL_VERSION,
+            "config_version": _config_version(self.settings),
+        }
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
+        _rotate_raw_snapshot_if_needed(path, self.settings.skip_diagnostics_max_bytes)
+        _prune_diagnostic_archives_by_bytes(path, self.settings.skip_diagnostics_archive_max_bytes)
 
     def log_trade(
         self,
@@ -1770,21 +1867,20 @@ def _runner_decision(
         return SettlementRunnerDecision(False, 0.0, 0.0, 0.0, 0.0, net_sell_price, sell_now_net, settlement_ev, reason)
 
     max_runner_shares = pos.shares * max_fraction
-    principal_recovery_shares = min(pos.shares, pos.cost_usd / net_sell_price)
-    cap_recovery_shares = max(0.0, pos.shares - max_runner_shares)
-    shares_to_close = min(pos.shares, max(principal_recovery_shares, cap_recovery_shares))
-    runner_shares = max(0.0, pos.shares - shares_to_close)
-    if shares_to_close <= 0.0 or runner_shares <= 0.000001:
+    runner_shares = min(pos.shares, max_runner_shares)
+    cap_close_shares = max(0.0, pos.shares - runner_shares)
+    shares_to_close = min(pos.shares, cap_close_shares)
+    if runner_shares <= 0.000001:
         reason = (
-            f"settlement runner blocked: no bounded runner after principal recovery "
+            f"settlement runner blocked: no bounded runner after cap check "
             f"shares_to_close={shares_to_close:.4f} runner={runner_shares:.4f}"
         )
-        return SettlementRunnerDecision(False, shares_to_close, runner_shares, max_runner_shares, principal_recovery_shares, net_sell_price, sell_now_net, settlement_ev, reason)
+        return SettlementRunnerDecision(False, shares_to_close, runner_shares, max_runner_shares, cap_close_shares, net_sell_price, sell_now_net, settlement_ev, reason)
 
     reason = (
         f"settlement runner ok: sell_now_net=${sell_now_net:.2f} "
         f"settlement_ev=${settlement_ev:.2f} net_sell_price={net_sell_price:.4f} "
-        f"principal_recovery_shares={principal_recovery_shares:.4f} "
+        f"shares_to_close={shares_to_close:.4f} runner_shares={runner_shares:.4f} "
         f"max_runner_shares={max_runner_shares:.4f}"
     )
     return SettlementRunnerDecision(
@@ -1792,7 +1888,7 @@ def _runner_decision(
         shares_to_close,
         runner_shares,
         max_runner_shares,
-        principal_recovery_shares,
+        cap_close_shares,
         net_sell_price,
         sell_now_net,
         settlement_ev,
@@ -2059,12 +2155,24 @@ def maybe_close_positions(
                 pos.metadata["last_settlement_runner_decision"] = runner_decision.reason
                 if runner_decision.keep_runner:
                     desired_close = runner_decision.shares_to_close
+                    if desired_close <= 0.000001:
+                        pos.metadata["settlement_runner_active"] = True
+                        reason = _runner_hold_reason(
+                            runner_decision,
+                            status="active",
+                            held_shares=pos.shares,
+                            assessment_reason=close_reason,
+                        )
+                        pos.metadata["last_settlement_runner_decision"] = reason
+                        broker.log_trade("HOLD_RUNNER", market, pos.side, pos.token_id, pos.shares, mark, 0.0, reason, market_type)
+                        messages.append(f"HOLD_RUNNER {pos.side} shares={pos.shares:.2f} price={mark:.4f} reason={reason}")
+                        continue
                     shares_to_close = min(desired_close, absorbable if not can_fully_close else desired_close)
                     if shares_to_close < 0.001:
                         no_liq = pos.metadata.get("no_liquidity_cycles", 0) + 1
                         pos.metadata["no_liquidity_cycles"] = no_liq
                         reason = (
-                            f"tranche=principal_recovery action=hold low_liquidity "
+                            f"tranche=runner_cap action=hold low_liquidity "
                             f"desired_shares={desired_close:.4f} absorbable={absorbable:.4f}; "
                             f"{runner_decision.reason}; assessment={close_reason}"
                         )
@@ -2080,15 +2188,15 @@ def maybe_close_positions(
                         tranche_vwap = mark
                         tranche_slippage = exit_slippage
                     low_liquidity = shares_to_close + 0.000001 < desired_close
-                    principal_reason = (
-                        f"tranche=principal_recovery action=partial_close "
+                    cap_reason = (
+                        f"tranche=runner_cap action=partial_close "
                         f"desired_shares={desired_close:.4f} actual_shares={shares_to_close:.4f} "
                         f"runner_target_shares={runner_decision.runner_shares:.4f} "
                         f"exit_vwap={tranche_vwap:.4f} slippage={tranche_slippage:.4f} "
                         f"{'low_liquidity ' if low_liquidity else ''}"
                         f"{runner_decision.reason}; assessment={close_reason}"
                     )
-                    pnl = broker.partial_close_position(pos, shares_to_close, tranche_vwap, principal_reason)
+                    pnl = broker.partial_close_position(pos, shares_to_close, tranche_vwap, cap_reason)
                     if not low_liquidity and pos.shares <= runner_decision.max_runner_shares + 0.000001:
                         pos.metadata["settlement_runner_active"] = True
                         runner_status = "active"
@@ -2107,7 +2215,7 @@ def maybe_close_positions(
                     messages.append(
                         f"PARTIAL_CLOSE {pos.side} closed={shares_to_close:.2f} remain={pos.shares:.2f} "
                         f"pnl=${pnl:.2f} price={tranche_vwap:.4f} best_bid={best_bid:.4f} "
-                        f"{'low_liquidity ' if low_liquidity else ''}reason={principal_reason}"
+                        f"{'low_liquidity ' if low_liquidity else ''}reason={cap_reason}"
                     )
                     messages.append(
                         f"HOLD_RUNNER {pos.side} shares={pos.shares:.2f} "

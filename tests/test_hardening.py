@@ -1386,7 +1386,7 @@ def test_probability_stop_closes_immediately(tmp_path):
     assert broker.state.positions == []
 
 
-def test_profit_exit_recovers_principal_and_keeps_settlement_runner(tmp_path):
+def test_profit_exit_holds_full_position_as_settlement_runner(tmp_path):
     settings = Settings(
         state_path=str(tmp_path / "state.json"),
         trades_csv_path=str(tmp_path / "trades.csv"),
@@ -1396,7 +1396,7 @@ def test_profit_exit_recovers_principal_and_keeps_settlement_runner(tmp_path):
         weather_taker_fee_rate=0.0,
         model_error_margin=0.0,
         resolution_error_margin=0.0,
-        settlement_runner_max_fraction=0.25,
+        settlement_runner_max_fraction=1.00,
     )
     broker = PaperBroker(settings)
     pos = PaperPosition(
@@ -1418,15 +1418,17 @@ def test_profit_exit_recovers_principal_and_keeps_settlement_runner(tmp_path):
 
     messages = maybe_close_positions(broker, client, {"m1": temp_market()}, latest_edges)
 
-    assert any("PARTIAL_CLOSE YES" in msg for msg in messages)
+    assert not any("PARTIAL_CLOSE YES" in msg for msg in messages)
+    assert any("HOLD_RUNNER YES shares=100.00" in msg for msg in messages)
     assert len(broker.state.positions) == 1
     runner = broker.state.positions[0]
-    assert round(runner.shares, 6) == 25.0
-    assert round(runner.cost_usd, 6) == 5.0
+    assert round(runner.shares, 6) == 100.0
+    assert round(runner.cost_usd, 6) == 20.0
+    assert runner.metadata["settlement_runner_active"] is True
     rows = list(csv.DictReader((tmp_path / "trades.csv").open(encoding="utf-8")))
-    assert [row["action"] for row in rows] == ["PARTIAL_CLOSE", "HOLD_RUNNER"]
-    assert "tranche=principal_recovery" in rows[0]["reason"]
-    assert "tranche=settlement_runner" in rows[1]["reason"]
+    assert [row["action"] for row in rows] == ["HOLD_RUNNER"]
+    assert "tranche=settlement_runner" in rows[0]["reason"]
+    assert "held_shares=100.0000" in rows[0]["reason"]
 
 
 def test_probability_deterioration_still_full_closes_without_runner(tmp_path):
@@ -1775,7 +1777,7 @@ def test_token_stale_websocket_pauses_only_that_position_exit_evaluation(tmp_pat
     assert "token stale-token executable order book depth age 120s exceeds 60s" in rows[1]["reason"]
 
 
-def test_low_liquidity_limits_principal_recovery_tranche(tmp_path):
+def test_low_liquidity_limits_runner_cap_tranche(tmp_path):
     settings = Settings(
         state_path=str(tmp_path / "state.json"),
         trades_csv_path=str(tmp_path / "trades.csv"),
@@ -1815,6 +1817,7 @@ def test_low_liquidity_limits_principal_recovery_tranche(tmp_path):
     rows = list(csv.DictReader((tmp_path / "trades.csv").open(encoding="utf-8")))
     assert [row["action"] for row in rows] == ["PARTIAL_CLOSE", "HOLD_RUNNER"]
     assert "low_liquidity" in rows[0]["reason"]
+    assert "tranche=runner_cap" in rows[0]["reason"]
 
 
 def test_forever_loop_sleep_subtracts_cycle_runtime():

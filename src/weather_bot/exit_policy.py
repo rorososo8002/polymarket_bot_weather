@@ -194,7 +194,7 @@ def assess_exit(
             "take_profit",
         )
 
-    if mark_price >= fair + settings.overheat_margin and pnl.net_pct > 0:
+    if mark_price >= fair + settings.overheat_margin and pnl.net_pct >= settings.min_profit_pct:
         return ExitAssessment(
             True,
             f"take profit: overheated vs model fair {fair:.4f}, heat={heat:.1%}, {_pnl_reason(pnl)}",

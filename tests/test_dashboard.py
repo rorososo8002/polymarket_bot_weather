@@ -827,11 +827,90 @@ def test_dashboard_realized_rows_are_latest_first_and_numeric_when_history_is_sp
 
     first = payload["realized_results"][0]
     assert first["market_id"] == "m-new"
-    assert first["forecast_c"] == 29.0
+    assert first["forecast_c"] is None
     assert first["expected_exit_price"] == 0.4
     assert first["entry_price"] == 0.4
     assert first["exit_price"] == 0.4
     assert first["roi"] == 1.25
+
+
+def test_dashboard_realized_row_exposes_probability_stop_trigger(tmp_path):
+    state_path = tmp_path / "state.json"
+    trades_path = tmp_path / "trades.csv"
+    decisions_path = tmp_path / "decisions.csv"
+    state_path.write_text(json.dumps({"cash_usd": 1000.34, "realized_pnl_usd": 0.34, "positions": []}), encoding="utf-8")
+    write_csv(
+        trades_path,
+        [
+            {
+                "ts": "2026-06-18T01:08:20+00:00",
+                "action": "OPEN",
+                "market_id": "m-milan",
+                "slug": "milan-34c",
+                "question": "Will the highest temperature in Milan be 34°C on June 19?",
+                "market_type": "temperature",
+                "side": "NO",
+                "token_id": "no",
+                "shares": "33.39",
+                "price": "0.59",
+                "cash_delta_or_pnl": "-19.71",
+                "reason": "entry: model_p=0.166, side=NO, p_exec=0.5900, target_exit=0.7272",
+            },
+            {
+                "ts": "2026-06-18T06:23:00+00:00",
+                "action": "CLOSE",
+                "market_id": "m-milan",
+                "slug": "milan-34c",
+                "question": "Will the highest temperature in Milan be 34°C on June 19?",
+                "market_type": "temperature",
+                "side": "NO",
+                "token_id": "no",
+                "shares": "33.39",
+                "price": "0.624",
+                "cash_delta_or_pnl": "0.34",
+                "reason": "exit_trigger=probability_stop; probability stop: side_probability 0.834->0.720 <= threshold=0.734 (drop=0.114); exit_fee=$0.3700 gross=$19.71 net=$19.34",
+            },
+        ],
+    )
+    write_csv(
+        decisions_path,
+        [
+            {
+                "ts": "2026-06-18T06:20:00+00:00",
+                "market_id": "m-milan",
+                "slug": "milan-34c",
+                "question": "Will the highest temperature in Milan be 34°C on June 19?",
+                "market_type": "temperature",
+                "side": "NO",
+                "p_true": "0.280",
+                "p_exec": "0.624",
+                "net_edge": "0.02",
+                "size_usd": "0",
+                "size_shares": "0",
+                "entry_fraction": "",
+                "probability_stop_threshold": "0.734",
+                "model_fair_price": "",
+                "target_exit_price": "",
+                "market_heat_score": "",
+                "reason": "hold",
+                "note": "station target_date=2026-06-19; ==34.0C/93.2F; mean=90.8F",
+            }
+        ],
+    )
+
+    payload = build_dashboard_payload(
+        Settings(state_path=str(state_path), trades_csv_path=str(trades_path), decisions_csv_path=str(decisions_path))
+    )
+
+    realized = payload["realized_results"][0]
+    assert realized["exit_trigger"] == "probability_stop"
+    assert realized["forecast_c"] == pytest.approx(32.7)
+
+
+def test_dashboard_template_explains_probability_stop_as_defensive_close():
+    assert "방어청산" in HTML
+    assert "예보 확률이 보유 방향과 반대로 꺾여" in HTML
+    assert "수익을 키우는 익절이 아니라" in HTML
 
 
 def test_dashboard_realized_rows_survive_recent_skip_trade_noise(tmp_path):

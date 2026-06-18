@@ -99,7 +99,7 @@ expected_net_return >= ENTRY_MIN_EXPECTED_NET_RETURN_PCT
 ```
 
 Active paper thresholds are less conservative than before:
-`MIN_NET_EDGE=0.03` and `ENTRY_MIN_EXPECTED_NET_RETURN_PCT=0.04`. This is a paper-validation choice, not live-trading permission.
+`MIN_NET_EDGE=0.08` and `ENTRY_MIN_EXPECTED_NET_RETURN_PCT=0.04`. This is a paper-validation choice, not live-trading permission.
 
 `p_exec` is executable ask-side VWAP. It already includes spread/slippage
 through the actual book price, so do not subtract those twice.
@@ -125,7 +125,7 @@ exposure caps leave at least `MIN_ORDER_USD`.
 
 Signal confidence is a sizing multiplier after edge/liquidity checks. Stale
 forecast signals block new entries, but open-position exit management continues.
-Drawdown breakers may stop new entries, but never settlement or exit handling.
+Drawdown breakers may stop new entries, but never settlement or exit handling; active paper daily and large-loss stops are 50% of bankroll, not fixed dollars.
 
 ## Weather And Discovery Contract
 
@@ -242,8 +242,8 @@ illiquid, missing, or settling, the bot values that position at $0 for
 Default portfolio limits:
 
 ```text
-BANKROLL_USD=200; SIZE_MODE=kelly; FRACTIONAL_KELLY=0.25; ENTRY_FRACTION=0.20
-MIN_ORDER_USD=20.00; MAX_SINGLE_MARKET_FRACTION=0.10; MAX_EVENT_PORTFOLIO_LEGS=2
+BANKROLL_USD=200; SIZE_MODE=kelly; FRACTIONAL_KELLY=0.50; ENTRY_FRACTION=0.20
+MIN_ORDER_USD=10.00; MAX_SINGLE_MARKET_FRACTION=0.15; MAX_EVENT_PORTFOLIO_LEGS=2
 MAX_EVENT_DATE_EXPOSURE_FRACTION=0.10; LARGE_BANKROLL_EVENT_DATE_EXPOSURE_FRACTION=0.05; EVENT_DATE_EXPOSURE_TRANSITION_USD=1000
 MAX_CITY_EXPOSURE_FRACTION=0.20; MAX_TOTAL_EXPOSURE_FRACTION=0.90
 ```
@@ -280,6 +280,14 @@ Open positions close only through:
 
 Exit triggers use after-fee liquidation PnL. Evaluation failure sentinels such
 as `net_edge=-999` with no executable `p_exec` are not exit signals.
+Model-target and overheated take-profit exits require at least
+`MIN_PROFIT_PCT=0.08` after exit fees. When the settlement-runner check says
+conservative settlement value is better than fee-adjusted sell-now value, the
+active paper default holds the full position to settlement instead of selling a
+principal-recovery tranche first. Probability stop is different: it is a
+defensive close when the held side probability falls below its stored stop
+threshold, so dashboard wording must explain it as risk cleanup rather than as
+a normal profit-taking win.
 
 If an actual exit signal fires but no executable close is available, the broker
 keeps the blocker action instead of pretending to sell. No executable bid depth
@@ -318,8 +326,7 @@ Dashboard scanner totals expose their counting scope:
 
 ## SKIP Diagnostics Contract
 
-SKIP is a safe decision, not a final explanation. Repeated SKIPs must be
-classified before changing strategy thresholds or risk settings.
+SKIP is a safe decision, not a final explanation. Repeated SKIPs must be classified from bounded `paper_skip_diagnostics.jsonl` before changing strategy thresholds or risk settings.
 
 Use `docs/codex/skip-diagnostics.md` to separate:
 

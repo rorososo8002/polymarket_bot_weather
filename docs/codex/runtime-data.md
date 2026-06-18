@@ -20,6 +20,9 @@ Read this file only for runtime logs, paper-trading data, dashboard readers, or 
   default, and suspends raw writes with a `paper_runner_status.json` warning
   when disk pressure is dangerous. The Oracle VPS logrotate rule is a matching
   safety net and must not include paper state, trade, or decision ledgers.
+- `paper_skip_diagnostics.jsonl` is the bounded SKIP reason black box. It is
+  diagnostic-only, rotates at 100MB, and uses archive pruning; keep
+  `DECISIONS_LOG_SKIP_ENABLED=false` unless debugging the decision ledger itself.
 - `forecast_cache.json` is a forecast result cache, not an API request ledger.
   It overwrites entries by location/model cache key, so it cannot reconstruct
   total Open-Meteo calls after the fact.

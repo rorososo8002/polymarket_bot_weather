@@ -48,6 +48,16 @@ def test_prune_runtime_archive_never_deletes_active_ledgers(tmp_path):
     assert (tmp_path / "paper_decisions.csv").exists()
 
 
+def test_prune_runtime_archive_includes_skip_diagnostics(tmp_path):
+    archive_file = tmp_path / "archive" / "paper_skip_diagnostics.jsonl.1.zst"
+    _write_bytes(archive_file, 120, mtime=100)
+
+    summary = prune_runtime_archive(tmp_path, max_archive_bytes=50)
+
+    assert summary.deleted_files == [str(archive_file)]
+    assert not archive_file.exists()
+
+
 def test_prune_runtime_archive_dry_run_reports_without_deleting(tmp_path):
     archive_file = tmp_path / "archive" / "station_nowcast_request_log.jsonl.1.zst"
     _write_bytes(archive_file, 120, mtime=100)

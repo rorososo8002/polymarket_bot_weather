@@ -839,6 +839,11 @@ def _target_exit_from_reason(reason: str) -> float | None:
     return _optional_float(match.group(1)) if match else None
 
 
+def _exit_trigger_from_reason(reason: str) -> str:
+    match = re.search(r"\bexit_trigger=([^;]+)", reason)
+    return match.group(1).strip() if match else ""
+
+
 def _question_summary(question: str) -> dict[str, Any]:
     parsed = parse_weather_question(question)
     threshold_c: float | None = None
@@ -1022,8 +1027,7 @@ def _realized_results(
             entry_cost = entry_price * shares
         target_exit = _optional_float(decision.get("target_exit_price")) or _target_exit_from_reason(opened.get("reason", "")) or exit_price or entry_price
         forecast_c = _forecast_c_from_note(decision.get("note", ""))
-        if forecast_c is None:
-            forecast_c = summary["threshold_c"]
+        exit_trigger = _exit_trigger_from_reason(trade.get("reason", ""))
         rows.append(
             {
                 "closed_at": trade.get("ts", ""),
@@ -1033,7 +1037,7 @@ def _realized_results(
                 "action": action,
                 "city": summary["city"],
                 "date_hint": summary["date_hint"],
-                "forecast_c": round(_value_or_zero(forecast_c), 1),
+                "forecast_c": _round_optional(forecast_c, 1),
                 "threshold_c": round(_value_or_zero(summary["threshold_c"]), 1),
                 "condition_label": summary["condition_label"],
                 "expected_exit_price": round(_value_or_zero(target_exit), 4),
@@ -1042,6 +1046,7 @@ def _realized_results(
                 "pnl": round(pnl, 4),
                 "roi": round(pnl / entry_cost, 6) if entry_cost > 0 else 0.0,
                 "reason": trade.get("reason", ""),
+                "exit_trigger": exit_trigger,
                 "p_true": _optional_float(decision.get("p_true")),
                 "net_edge": _optional_float(decision.get("net_edge")),
             }

@@ -17,6 +17,7 @@ def settings_for(tmp_path: Path) -> Settings:
         state_path=str(tmp_path / "paper_state.json"),
         trades_csv_path=str(tmp_path / "paper_trades.csv"),
         decisions_csv_path=str(tmp_path / "paper_decisions.csv"),
+        skip_diagnostics_jsonl_path=str(tmp_path / "paper_skip_diagnostics.jsonl"),
         portfolio_decisions_jsonl_path=str(tmp_path / "paper_event_portfolios.jsonl"),
         raw_snapshots_path=str(tmp_path / "paper_raw_snapshots.jsonl"),
     )
@@ -482,6 +483,43 @@ def test_log_decision_appends_to_legacy_decision_csv_without_rewriting_header(tm
     assert lines[0] == legacy_header
     assert "reason_code" not in lines[0]
     assert lines[-1].split(",")[1] == "m2"
+
+
+def test_skip_decision_writes_bounded_diagnostic_without_decision_csv(tmp_path):
+    settings = settings_for(tmp_path)
+    broker = PaperBroker(settings)
+    result = EdgeResult("SKIP", 0.51, None, 0.0, 0.0, 0.0, "SKIP_WIDE_SPREAD: spread=0.30")
+
+    broker.log_decision(trade_market("m3"), result, "blocked by spread")
+
+    assert not Path(settings.decisions_csv_path).exists()
+    rows = Path(settings.skip_diagnostics_jsonl_path).read_text(encoding="utf-8").splitlines()
+    assert len(rows) == 1
+    row = json.loads(rows[0])
+    assert row["market_id"] == "m3"
+    assert row["side"] == "SKIP"
+    assert row["reason_code"] == "SKIP_WIDE_SPREAD"
+
+
+def test_skip_diagnostic_rotates_and_prunes_archives(tmp_path):
+    settings = Settings(
+        state_path=str(tmp_path / "paper_state.json"),
+        trades_csv_path=str(tmp_path / "paper_trades.csv"),
+        decisions_csv_path=str(tmp_path / "paper_decisions.csv"),
+        skip_diagnostics_jsonl_path=str(tmp_path / "paper_skip_diagnostics.jsonl"),
+        skip_diagnostics_max_bytes=1,
+        skip_diagnostics_archive_max_bytes=1,
+        portfolio_decisions_jsonl_path=str(tmp_path / "paper_event_portfolios.jsonl"),
+        raw_snapshots_path=str(tmp_path / "paper_raw_snapshots.jsonl"),
+    )
+    broker = PaperBroker(settings)
+    result = EdgeResult("SKIP", 0.51, None, 0.0, 0.0, 0.0, "SKIP_WIDE_SPREAD: spread=0.30")
+
+    broker.log_decision(trade_market("m4"), result, "blocked by spread")
+
+    assert Path(settings.skip_diagnostics_jsonl_path).read_text(encoding="utf-8") == ""
+    archives = list((tmp_path / "archive").glob("paper_skip_diagnostics.*.jsonl.gz"))
+    assert archives == []
 
 
 @pytest.mark.parametrize(

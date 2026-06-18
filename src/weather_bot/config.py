@@ -33,6 +33,8 @@ _POSITIVE_INTEGER_SETTINGS = (
     "raw_snapshots_max_bytes",
     "raw_snapshots_retention_days",
     "raw_snapshots_min_free_bytes",
+    "skip_diagnostics_max_bytes",
+    "skip_diagnostics_archive_max_bytes",
 )
 
 _MINIMUM_INTEGER_SETTINGS = (
@@ -112,6 +114,10 @@ class Settings:
     # SKIP rows are 95%+ of all writes and have zero analytical value.
     # Set DECISIONS_LOG_SKIP_ENABLED=true only for short debugging sessions.
     decisions_log_skip_enabled: bool = False
+    skip_diagnostics_enabled: bool = True
+    skip_diagnostics_jsonl_path: str = ""
+    skip_diagnostics_max_bytes: int = 100 * 1024 * 1024
+    skip_diagnostics_archive_max_bytes: int = 100 * 1024 * 1024
     portfolio_decisions_jsonl_path: str = "paper_event_portfolios.jsonl"
     # When False (default), paper_event_portfolios.jsonl is only written when
     # at least one trade is actually selected (not on every SKIP evaluation).
@@ -136,11 +142,11 @@ class Settings:
     dashboard_token: str = ""
 
     # Strategy thresholds
-    min_net_edge: float = 0.03
+    min_net_edge: float = 0.08
     exit_net_edge: float = 0.00
     # Exit policy: stop is probability-based; profit is model-fair-value based.
     probability_stop_drop_threshold: float = 0.10
-    min_profit_pct: float = 0.03
+    min_profit_pct: float = 0.08
     take_profit_to_fair_ratio: float = 0.70
     overheat_margin: float = 0.02
     edge_fade_max_loss_pct: float = 0.02
@@ -151,8 +157,8 @@ class Settings:
     # the city/date and total-exposure caps keep paper risk bounded.
     size_mode: str = "kelly"
     entry_fraction: float = 0.20
-    fractional_kelly: float = 0.25
-    max_single_market_fraction: float = 0.10
+    fractional_kelly: float = 0.50
+    max_single_market_fraction: float = 0.15
     max_total_exposure_fraction: float = 0.90
     bankroll_usd: float = 100.0
     min_order_usd: float = 10.0
@@ -170,11 +176,11 @@ class Settings:
     large_bankroll_event_date_exposure_fraction: float = 0.05
     event_date_exposure_transition_usd: float = 1000.0
     max_event_portfolio_legs: int = 2
-    daily_realized_loss_limit_fraction: float = 0.10
-    daily_unrealized_loss_limit_fraction: float = 0.15
+    daily_realized_loss_limit_fraction: float = 0.50
+    daily_unrealized_loss_limit_fraction: float = 0.50
     max_consecutive_losses: int = 3
     city_loss_cooldown_hours: float = 24.0
-    large_loss_threshold_fraction: float = 0.05
+    large_loss_threshold_fraction: float = 0.50
     large_loss_cooldown_hours: float = 24.0
 
     # Paper weather-fee default from the official category schedule.
@@ -186,7 +192,7 @@ class Settings:
     model_error_margin: float = 0.03
     resolution_error_margin: float = 0.01
     settlement_runner_enabled: bool = True
-    settlement_runner_max_fraction: float = 0.25
+    settlement_runner_max_fraction: float = 1.00
     settlement_runner_min_ev_margin_usd: float = 0.0
 
     # Probability model controls
@@ -362,6 +368,22 @@ def load_settings() -> Settings:
         decisions_csv_path=os.getenv("DECISIONS_CSV_PATH", Settings.decisions_csv_path),
         decisions_log_skip_enabled=_bool_env(
             "DECISIONS_LOG_SKIP_ENABLED", Settings.decisions_log_skip_enabled
+        ),
+        skip_diagnostics_enabled=_bool_env(
+            "SKIP_DIAGNOSTICS_ENABLED",
+            Settings.skip_diagnostics_enabled,
+        ),
+        skip_diagnostics_jsonl_path=os.getenv(
+            "SKIP_DIAGNOSTICS_JSONL_PATH",
+            Settings.skip_diagnostics_jsonl_path,
+        ),
+        skip_diagnostics_max_bytes=_int_env(
+            "SKIP_DIAGNOSTICS_MAX_BYTES",
+            Settings.skip_diagnostics_max_bytes,
+        ),
+        skip_diagnostics_archive_max_bytes=_int_env(
+            "SKIP_DIAGNOSTICS_ARCHIVE_MAX_BYTES",
+            Settings.skip_diagnostics_archive_max_bytes,
         ),
         portfolio_decisions_jsonl_path=os.getenv(
             "PORTFOLIO_DECISIONS_JSONL_PATH",

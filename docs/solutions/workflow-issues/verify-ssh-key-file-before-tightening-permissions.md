@@ -1,7 +1,7 @@
 ---
 title: Verify SSH key file before tightening permissions
 date: 2026-05-26
-last_updated: 2026-06-08
+last_updated: 2026-06-18
 category: workflow-issues
 module: vps_operations
 problem_type: workflow_issue
@@ -50,6 +50,14 @@ local stuck `ssh` processes created by timed-out attempts, wait briefly for
 remote unauthenticated connection slots to clear, and retry one short command
 with the already-known key path.
 
+A fifth version was a repeated Codex workflow mistake: an earlier escalated SSH
+command succeeded, but a later `scp` plus `ssh` command was first attempted in
+the normal workspace sandbox. The private key still lived outside the writable
+workspace under `Documents`, so the new command failed again with `Identity
+file ... not accessible: Permission denied`. Prior success does not move the
+key into the sandbox or guarantee that a different command shape inherits the
+same approval.
+
 ## 2. Why It Mattered
 
 Tightening permissions on the wrong path can leave SSH still failing while
@@ -85,6 +93,12 @@ Test-Path -LiteralPath $key -PathType Leaf
 If the directory exists but the sandbox reports access denied, do not keep
 trying path spellings. Request one escalated operation for the actual `scp` or
 `ssh` command and state that the key contents will not be printed.
+
+In Codex, once this key path has required escalation during the task, every
+later command that references `$key` must start with
+`sandbox_permissions="require_escalated"`. This includes `ssh`, `scp`, and
+combined transfer-and-run commands. Do not perform an un-escalated trial first,
+even if an earlier SSH command succeeded.
 
 When troubleshooting key permissions, inspect metadata only:
 
@@ -127,6 +141,9 @@ ssh -T -o BatchMode=yes -o ConnectTimeout=10 -i $key ubuntu@140.245.69.242 date
   directory object lookup fails.
 - If sandbox permissions block the key directory, request a single escalated
   `scp` or `ssh` command instead of repeating failed local path probes.
+- After the first sandbox denial for this key, mark SSH key access as
+  escalation-required for the rest of the task. Never retry a later `$key`
+  command in the normal sandbox first.
 - Validate access with a harmless remote command before doing operational work.
 - Avoid parallel SSH probes that reuse the same local identity file.
 - After `banner exchange` timeouts, do not keep rediscovering the key. Clean up

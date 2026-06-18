@@ -76,6 +76,35 @@ def test_take_profit_requires_after_fee_net_profit():
     assert "net_pnl" in assessment.reason
 
 
+def test_overheated_take_profit_requires_configured_min_profit_pct():
+    settings = Settings(
+        min_profit_pct=0.08,
+        overheat_margin=0.02,
+        take_profit_to_fair_ratio=0.70,
+        model_error_margin=0.0,
+        resolution_error_margin=0.0,
+        weather_taker_fee_rate=0.0,
+    )
+    pos = PaperPosition(
+        position_id="p1",
+        market_id="m1",
+        question="Will Seoul reach 21C?",
+        token_id="t1",
+        side="YES",
+        entry_price=0.50,
+        shares=100,
+        cost_usd=50.0,
+        opened_at=datetime.now(timezone.utc).isoformat(),
+        metadata={"entry_p_true": 0.50, "probability_stop_threshold": 0.40},
+    )
+    edge = EdgeResult("YES", 0.50, 0.525, 0.01, 0.0, 0.0, "latest")
+
+    assessment = assess_exit(pos, 0.525, edge, settings, 1.0)
+
+    assert not assessment.should_close
+    assert "net_pnl" in assessment.reason
+
+
 def test_probability_stop_closes_when_model_probability_drops():
     settings = Settings(probability_stop_drop_threshold=0.10)
     pos = PaperPosition(

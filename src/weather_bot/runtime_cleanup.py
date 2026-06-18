@@ -12,6 +12,7 @@ from typing import Iterable
 DEFAULT_MAX_ARCHIVE_BYTES = 100 * 1024 * 1024
 DIAGNOSTIC_ARCHIVE_PREFIXES = (
     "paper_raw_snapshots",
+    "paper_skip_diagnostics",
     "forecast_request_log",
     "station_nowcast_request_log",
     "paper_event_portfolios",
