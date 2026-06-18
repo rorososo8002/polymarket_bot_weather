@@ -1,7 +1,7 @@
 ---
 title: Surface nowcast evidence in open-position dashboard payloads
 date: 2026-06-12
-last_updated: 2026-06-16
+last_updated: 2026-06-19
 category: logic-errors
 module: weather_bot.dashboard
 problem_type: logic_error
@@ -24,7 +24,8 @@ temperature position even though the bot had already fetched AWC METAR nowcast
 data and recorded `observed_high_c=29.0` in the matching decision note.
 
 ## Symptoms
-- The operator could see forecast and probability badges, but no station badge.
+- The legacy operator view emphasized forecast and probability badges but did
+  not make official-station evidence the primary display.
 - `station_nowcast_request_log.jsonl` showed successful bulk METAR requests.
 - The latest decision row for the market contained `observed_high_c=29.0`, but
   the position object returned by `/api/status` had no `nowcast_high_c` key.
@@ -40,29 +41,32 @@ data and recorded `observed_high_c=29.0` in the matching decision note.
 Keep the dashboard template and API payload contract aligned. If
 `dashboard_template.py` renders `p.nowcast_high_c` or `p.nowcast_low_c`, then
 `dashboard.py::_position_payload()` must parse those values from the latest
-decision note and include them in each open-position object:
+decision note, including later `HOLD` rows rather than only the original entry
+row, and include them in each open-position object:
 
 ```python
 latest_note = latest_decision.get("note", "")
 "nowcast_high_c": _nowcast_c_from_note(latest_note, "observed_high_c"),
 "nowcast_low_c": _nowcast_c_from_note(latest_note, "observed_low_c"),
+"station_lock_strength": station_evidence["lock_strength"],
+"station_settlement_boundary_c": station_evidence["settlement_boundary_c"],
 ```
 
-Add a dashboard payload test with a decision note containing both forecast
-evidence and same-station nowcast evidence:
+Add a dashboard payload test with an entry row followed by a newer station
+decision:
 
 ```python
-assert payload["positions"][0]["forecast_c"] == pytest.approx(28.7)
-assert payload["positions"][0]["nowcast_high_c"] == pytest.approx(29.0)
-assert payload["positions"][0]["nowcast_low_c"] is None
+assert "forecast_c" not in payload["positions"][0]
+assert "p_true" not in payload["positions"][0]
+assert payload["positions"][0]["nowcast_high_c"] == pytest.approx(24.0)
+assert payload["positions"][0]["station_lock_strength"] == "strong_no"
 ```
 
 ## Why This Works
 The decision row is the durable bridge between strategy evidence and dashboard
-display. The station provider writes the nowcast evidence into the decision
-note, and the dashboard already uses that same note for forecast temperature.
-Parsing the observed value in the same payload-building step keeps the UI from
-inventing a separate source of truth.
+display. The station provider writes observation and lock evidence into the
+decision note. Parsing the newest market decision keeps the UI from inventing
+a separate source of truth or freezing the station view at entry time.
 
 This also makes the operator view honest: `station --` now means the latest
 decision did not contain a usable observed high/low value, not that the station
@@ -83,16 +87,15 @@ the right fallback for display-only station names.
 ## Prevention
 - When adding a dashboard badge, add a payload test that asserts the exact API
   key the template reads.
+- When the active strategy changes evidence source, remove obsolete visible
+  panels and public payload fields instead of merely hiding their labels.
 - Debug missing dashboard fields by checking each layer in order:
   runtime evidence, decision/trade ledger, payload builder, then template.
 - Show unavailable-nowcast reasons explicitly. A blank badge makes an intended
   fail-closed decision look like missing functionality.
-- For held-position nowcast exits, do not treat exact Celsius buckets as
-  rounded intervals. If Polymarket says the settlement source uses whole
-  degrees Celsius, the exact bucket is the displayed integer value itself. For
-  a 29C exact-high market, observed_high_c=29.1 is already above the 29C bucket
-  and should make held YES probability collapse to zero; observed_high_c=28.9
-  is not decisive because the day's high can still rise.
+- Whole-degree Celsius source display uses `[N.0C, N+1.0C)`. For a 29C
+  exact-high market, `29.1C` is still inside the displayed 29C bucket and
+  `30.0C` is the first decisive break above it.
 
 ## Related Issues
 - [Realtime nowcast signals must refresh on the nowcast TTL](./realtime-nowcast-signal-refresh-must-follow-nowcast-ttl.md)
