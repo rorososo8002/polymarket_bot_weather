@@ -1,165 +1,91 @@
 ---
-title: Exact Celsius NO entries need source-display probability
+title: Exact Celsius locks must use station-display boundaries
 date: 2026-06-16
-last_updated: 2026-06-18
+last_updated: 2026-06-19
 category: logic-errors
-module: weather_bot.live_paper_runner, weather_bot.probability
+module: weather_bot.station_signal, weather_bot.live_paper_runner
 problem_type: logic_error
 component: service_object
 symptoms:
-  - "The bot opened a 23C exact-bucket NO while the forecast mean was close to the selected Celsius value."
-  - "A later same-station nowcast entered the displayed exact bucket and triggered a loss-making NO close."
+  - "A new official-station lock signal was generated but the runner still treated it as a non-lock signal."
+  - "Exact whole-C markets risked using stale model-era assumptions instead of station-display boundaries."
 root_cause: logic_error
 resolution_type: code_fix
 severity: high
-tags: [paper-trading, exact-bucket, celsius, entry-guard, precision-risk]
+tags: [paper-trading, exact-bucket, celsius, station-locks, signal-source]
 ---
 
-# Exact Celsius NO entries need source-display probability
+# Exact Celsius locks must use station-display boundaries
 
 ## Problem
 
-An Amsterdam exact Celsius market opened a `NO` entry because the old
-probability model counted only ensemble members exactly equal to the displayed
-`23C` value. That was internally consistent with the exact-bucket settlement
-rule, but strategically unsafe when the settlement source itself displays
-whole-degree Celsius values.
+Whole-degree Celsius exact markets must follow the official settlement source's
+display boundary. A `23C` daily-high market is still alive at `23.7C`, but a
+recorded `24.0C` breaks the `23C` YES thesis. During the station-strategy
+rewrite, the new `official-station-lock-*` source names were not initially
+recognized by the runner's lock predicate.
 
 ## Symptoms
 
-- Entry reason showed `vote=0.000` and a strong NO edge.
-- The same market note also showed a forecast mean near the selected bucket,
-  such as `mean=73.1F` or `mean=74.6F` for a `23C` exact bucket.
-- The held NO later closed on `nowcast_bucket_lock_risk` when observed station
-  high entered the displayed exact bucket.
+- `station_signal.py` produced source values such as
+  `official-station-lock-strong_yes`.
+- `evaluate_market()` still blocked the signal with the entry-only safety gate
+  because `_is_official_nowcast_lock()` only recognized older lock names.
+- Generic portfolio and realtime tests skipped before order-book evaluation
+  even when their fixtures represented trusted station-lock signals.
 
 ## What Didn't Work
 
-- Widening exact buckets into hidden half-step intervals is not acceptable.
-  Existing rules intentionally keep exact buckets as displayed-value matches.
-- Relying only on `p_true=0.0` also failed. Zero exact-member votes said no
-  ensemble member matched the exact decimal value; they did not estimate the
-  chance that the official source would display the selected whole-degree
-  Celsius value.
-- Treating an Open-Meteo decimal forecast such as `23.7C` as the settlement
-  observation also failed. The settlement source can expose only an integer
-  Celsius display, so the target is not the model decimal itself.
+- Keeping only the old predicate names was not enough. A new signal source
+  namespace must be added to every gate that decides whether a signal is
+  tradeable.
+- Treating `23.9C` as a NO trigger was wrong. Under source-display integer
+  settlement, `23.9C` still displays as `23C`; the strong NO trigger starts at
+  `24.0C` for a daily-high `23C` exact market.
+- Leaving old model-language docs in place was unsafe because future agents
+  could reintroduce model-era entry logic.
 
-## Old Strategy
+## Solution
 
-The previous strategy was:
-
-```text
-P(bucket_c) = P(raw_forecast_decimal_c exactly equals bucket_c)
-```
-
-Then, because that probability was too often near zero, exact Celsius NO was
-blocked whenever the forecast mean sat within `1.0C` of the selected bucket.
-That avoided some bad NO entries, but it was too blunt: it blocked adjacent
-NO candidates even when the market price overestimated that adjacent bucket.
-
-## New Strategy
-
-The current strategy is:
-
-```text
-P(bucket_c) = P(source_displayed_integer_c == bucket_c)
-NO edge = (1 - P(bucket_c)) - executable_NO_price - fee - risk_margins
-```
-
-For a whole-degree `23C` bucket, the probability model estimates the chance
-that the settlement source displays `23C`. This is a probability model for a
-whole-degree display source, not a hidden settlement range. Current evidence
-shows the display bucket should be modeled as `[23.0C, 24.0C)`: `23.7C` still
-supports `23C`, while `24.0C` breaks it.
-
-Exact Celsius NO is now blocked only when the forecast mean maps to the same
-displayed integer bucket. In the Amsterdam example, a mean near `23.1C` maps
-to the `23C` modal bucket, so `23NO` is blocked. `22NO`, `24NO`, or tail NO
-can still be considered, but only if executable depth, after-fee edge,
-expected net return, and portfolio limits all pass.
-
-The active paper thresholds were also made less conservative for validation:
-`MIN_NET_EDGE=0.08` and `ENTRY_MIN_EXPECTED_NET_RETURN_PCT=0.04`. This should
-increase paper sample count while still rejecting negative after-fee expected
-value.
-
-## Regression Shape
-
-Keep settlement exactness literal, but model whole-degree display probability
-for exact Celsius forecast odds. Then apply a modal-bucket NO guard.
-
-The focused regression test should use the full entry evaluator, not only the
-probability helper:
+Move the exact whole-C entry signal into `weather_bot.station_signal` and make
+the runner recognize the new station-lock namespace:
 
 ```python
-def test_exact_celsius_no_entry_skips_only_forecast_mean_modal_bucket():
-    ...
-    result, per_side = evaluate_market(market, signal, client, settings, 200.0, "temperature")
-
-    assert per_side["NO"].side == "SKIP"
-    assert per_side["NO"].net_edge > settings.min_net_edge
-    assert "SKIP_EXACT_CELSIUS_MODAL_NO" in per_side["NO"].reason
-    assert result.side == "SKIP"
+def _is_official_nowcast_lock(signal: WeatherSignal) -> bool:
+    return (
+        signal.entry_size_fraction_override is not None
+        or "official_nowcast_lock=" in signal.note
+        or "official-nowcast-lock" in signal.source
+        or "official-station-lock" in signal.source
+    )
 ```
+
+Focused tests should cover both sides of the boundary:
+
+```python
+assert estimate_station_signal(... observed_high_c=23.9).source == "official-station-neutral"
+assert estimate_station_signal(... observed_high_c=24.0).source == "official-station-lock-strong_no"
+```
+
+Realtime and portfolio tests that intentionally exercise downstream sizing or
+liquidity math should mark their fixture signals as station locks, so they test
+the intended downstream behavior instead of the entry-only gate.
 
 ## Why This Works
 
-The settlement rule remains exact displayed value. The probability model now
-matches the source format better: if the official source reports whole-degree
-Celsius, the forecast probability should answer whether that official display
-will show the selected integer.
-
-That removes the false `p_true=0.0` confidence that caused the Amsterdam NO
-entry while avoiding the overly broad `within 1.0C` block that suppressed
-adjacent NO opportunities.
-
-## Settlement Investigation
-
-A 2026-06-10 through 2026-06-17 Gamma sweep found 391 closed temperature
-events: 265 Wunderground Celsius-source events, 91 Fahrenheit-range events,
-and 35 Celsius events where Gamma did not expose a Wunderground source URL.
-The Wunderground Celsius event text states that the source uses whole-degree
-Celsius precision.
-
-For Amsterdam on 2026-06-16, Gamma resolved `23C` YES to `1/0`. The
-Weather.com historical observation endpoint for `EHAM:9:NL` showed a metric
-daily max of `23C` at 13:55Z and 14:55Z, while the same endpoint in imperial
-units showed `73F`. That means the actionable target is the settlement source's
-displayed integer Celsius value, not an Open-Meteo decimal forecast value.
-
-The strategy formula now estimates:
-
-```text
-P(source_displayed_integer_c == bucket_c)
-```
-
-not:
-
-```text
-P(raw_forecast_decimal_c exactly equals bucket_c)
-```
-
-The old exact-member-only formula is retired for whole-degree Celsius exact
-buckets.
+The strategy now has one active source of entry evidence: official
+settlement-station observations. The signal generator owns the station-display
+boundary math, and the runner's predicate owns the tradeability gate. Updating
+both sides together prevents a valid station lock from being silently treated
+as an ordinary low-trust signal.
 
 ## Prevention
 
-- Separate settlement semantics from probability modeling. Settlement exactness
-  stays literal; forecast probability must still mirror the source display
-  precision.
-- When exact Celsius NO looks attractive, compare the market NO price with the
-  source-display integer probability, not exact decimal equality.
-- Test the modal bucket and an adjacent bucket together so the code proves it
-  blocks `23NO` near a `23C` modal forecast without blocking every nearby NO.
-- For Wunderground Celsius markets, replay the official displayed integer
-  outcome before changing entry thresholds. Do not infer settlement from
-  Open-Meteo decimal forecasts alone.
-- Deploy runner-behavior changes to the VPS and verify `phase=streaming`,
-  WebSocket freshness, and forecast worker errors after restart.
-
-## Related Issues
-
-- [Exact and range bucket nowcast must flag held NO exit risk](exact-range-nowcast-bucket-lock-risk.md)
-- [Temperature range buckets must preserve both endpoints](temperature-range-buckets-must-preserve-endpoints.md)
-- [Held-position exit evidence must not depend on entry bankroll](../best-practices/held-position-exit-evidence-must-not-depend-on-entry-bankroll.md)
+- When introducing a new `WeatherSignal.source` namespace, update the predicate
+  that decides whether the runner may trade it.
+- Add tests that prove the exact source string is accepted by the entry-only
+  gate.
+- For exact whole-C markets, test `N.9C` and `N+1.0C` separately. They are not
+  interchangeable.
+- Keep docs focused on official station observations; do not describe removed
+  model-entry paths as active strategy.
