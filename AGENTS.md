@@ -151,9 +151,9 @@ before continuing.
   the rate-limit cooldown to expire before resuming. Do not hammer failed
   cities.
 - Forecast freshness and nowcast freshness are different clocks. A forecast
-  signal may be refreshed from the 3-h Open-Meteo answer cache while nowcast is
-  refreshed every 5 min. Do not use `STATION_NOWCAST_CACHE_TTL_SECONDS` to mark
-  forecast signals stale.
+  signal may be refreshed from the 3-h Open-Meteo answer cache while AWC
+  nowcast may refresh every 60 seconds and HKO stays at 10 minutes. Do not use
+  `STATION_NOWCAST_CACHE_TTL_SECONDS` to mark forecast signals stale.
 - Use the Polymarket CLOB WebSocket market stream for executable order books by
   default. Do not silently replace realtime streaming with polling.
 - REST order-book snapshots are allowed only as a bounded verification/resync

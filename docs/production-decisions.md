@@ -154,7 +154,7 @@ This is the active paper-bot rule book; historical notes belong in focused `docs
 - Dashboard station views must expose the full supported settlement-station
   registry. Display-only alternates such as KMA Seoul ASOS 108 are reference
   context only unless Polymarket rules name that station.
-- Forecast freshness and nowcast freshness are separate. The 5-minute nowcast
+- Forecast freshness and nowcast freshness are separate. The shorter nowcast
   TTL must never be used to declare a forecast signal stale.
 - Dashboard views are official-station-first: hide forecast panels/badges and show station/source, observations, time, settlement boundary, lock strength, 20%/50% allocation, skip reason, bid-depth PnL, exit liquidity, and WS freshness. The
   side badge must be the plain Polymarket outcome label `Yes` or `No`; do not
