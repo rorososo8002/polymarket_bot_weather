@@ -154,9 +154,7 @@ This is the active paper-bot rule book; historical notes belong in focused `docs
   matches the AWC METAR provider floor and keeps held-position exits timely.
 - Forecast freshness and nowcast freshness are separate. The 5-minute nowcast
   TTL must never be used to declare a forecast signal stale.
-- Dashboard position cards must show event, selected bucket, side, station,
-  nowcast value or reason unavailable, bid-depth liquidation PnL as primary,
-  reference PnL as secondary, exit liquidity, and WS freshness in Korean. The
+- Dashboard views are official-station-first: hide forecast panels/badges and show station/source, observations, time, settlement boundary, lock strength, 20%/50% allocation, skip reason, bid-depth PnL, exit liquidity, and WS freshness. The
   side badge must be the plain Polymarket outcome label `Yes` or `No`; do not
   add `Long`, `Short`, or `보유` because the bot only buys outcome tokens and
   those words imply a separate margin direction that does not exist here.

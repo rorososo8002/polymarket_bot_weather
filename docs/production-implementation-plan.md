@@ -61,7 +61,7 @@ weather event discovery
   -> fee-aware YES/NO VWAP edge and expected net-return filter
   -> city-date portfolio selector
   -> PaperBroker risk checks, opens, exits, settlements, and ledgers
-  -> dashboard, runner status, and paper report
+  -> official-station-first dashboard, runner status, and paper report
 ```
 
 ## Code Map
@@ -281,7 +281,7 @@ active paper default holds the full position to settlement instead of selling a
 principal-recovery tranche first. Probability stop is different: it is a
 defensive close when the held side probability falls below its stored stop
 threshold, so dashboard wording must explain it as risk cleanup rather than as
-a normal profit-taking win.
+a normal profit-taking win. Visible dashboard panels omit forecast data and show official station observations, settlement boundaries, lock strength, allocation, station health, skip reasons, and executable books.
 
 If an actual exit signal fires but no executable close is available, the broker
 keeps the blocker action instead of pretending to sell. No executable bid depth

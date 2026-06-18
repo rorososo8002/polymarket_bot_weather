@@ -43,7 +43,8 @@ This phase excludes:
 - redeeming or claiming markets
 - copy trading
 - `LiveBroker`
-- advanced dashboard redesigns
+- advanced analytics dashboards; the operator dashboard may be realigned to
+  the active official-station strategy
 - Brier/LogLoss dashboards
 - calibration charts
 - region exposure optimizer

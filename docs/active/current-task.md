@@ -1,18 +1,20 @@
 # Current Task
 
-Status: none
+Status: active
 
 ## Objective
 
-No active unfinished task.
+Replace forecast-oriented dashboard data and UI with official-station strategy evidence.
 
 ## Current Scope
 
-None.
+- Remove visible/API forecast panels, badges, health, and per-city forecast logs.
+- Add station observations, settlement boundaries, lock strength, allocation, and skip diagnostics.
+- Test, commit, deploy to Oracle VPS, and verify authenticated dashboard behavior.
 
 ## Next Action
 
-None.
+Write failing dashboard tests for the official-station payload and UI contract.
 
 ## New Chat Prompt
 
