@@ -41,6 +41,7 @@ def test_station_audit_rows_expose_nowcast_quality_metadata():
         assert row["nowcast_confidence_grade"] in {"A", "B", "C", "D"}
         assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(row["last_verified_at"]))
         assert row["confidence_level"] in {"high", "medium", "low", "blocked"}
+        assert isinstance(row["display_station_references"], list)
 
 
 def test_station_without_rule_evidence_is_not_trading_ready():
@@ -97,6 +98,8 @@ def test_seoul_uses_enabled_metar_observation_provider():
     assert seoul["nowcast_source_type"] == "metar"
     assert seoul["nowcast_station_id"] == "RKSI"
     assert seoul["nowcast_provider_status"] == "provider_enabled"
+    assert seoul["display_station_references"][0]["station_id"] == "108"
+    assert "KMA Seoul ASOS" in seoul["display_station_references"][0]["station_name"]
 
 
 def test_hong_kong_is_not_treated_as_a_metar_candidate():

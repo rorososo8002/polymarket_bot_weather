@@ -19,13 +19,13 @@ AVIATIONWEATHER_METAR_SOURCE_URL = "https://aviationweather.gov/api/data/metar"
 HKO_MAXMIN_SOURCE_URL = "https://data.weather.gov.hk/weatherAPI/hko_data/regional-weather/latest_since_midnight_maxmin.csv"
 SEOUL_SETTLEMENT_SOURCE_URL = "https://www.wunderground.com/history/daily/kr/incheon/RKSI"
 AWC_METAR_UPDATE_CADENCE = (
-    "Aviation Weather Center current METAR cache is updated once per minute; station METARs are "
-    "normally hourly with special updates when conditions change."
+    "Aviation Weather Center METAR API requests are floored at one real request per minute; "
+    "station METARs are normally hourly with special updates when conditions change."
 )
 HKO_MAXMIN_UPDATE_CADENCE = (
     "Hong Kong Observatory regional maximum/minimum air temperature since midnight updates every 10 minutes."
 )
-AWC_METAR_MIN_REAL_REQUEST_INTERVAL_SECONDS = 5 * 60
+AWC_METAR_MIN_REAL_REQUEST_INTERVAL_SECONDS = 60
 HKO_MAXMIN_MIN_REAL_REQUEST_INTERVAL_SECONDS = 10 * 60
 
 
@@ -242,7 +242,7 @@ class AviationWeatherMetarNowcastProvider:
         http_get: Callable[..., Any] = requests.get,
         timeout: float = 20.0,
         freshness_seconds: int = 5400,
-        cache_ttl_seconds: int = 300,
+        cache_ttl_seconds: int = 60,
         request_log_path: str | Path | None = None,
         sources: dict[str, StationNowcastSource] | None = None,
     ) -> None:

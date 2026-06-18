@@ -29,7 +29,7 @@ def test_default_realtime_orderbook_rest_snapshot_is_bounded_verification():
 
 def test_default_station_nowcast_is_pilot_cached_and_freshness_bounded():
     assert Settings.station_nowcast_enabled is True
-    assert Settings.station_nowcast_cache_ttl_seconds == 300  # 5 min: matches AWC METAR floor
+    assert Settings.station_nowcast_cache_ttl_seconds == 60  # 1 min: matches AWC METAR documented API cadence
     assert Settings.station_nowcast_freshness_seconds == 5400
     assert Settings.station_nowcast_request_log_path == ""
 

@@ -22,6 +22,15 @@ CONFIDENCE_LEVEL_BY_GRADE = {
 
 
 @dataclass(frozen=True)
+class StationReference:
+    station_id: str
+    station_name: str
+    source: str
+    source_url: str
+    role: str
+
+
+@dataclass(frozen=True)
 class StationMeta:
     city: str
     station_id: str
@@ -46,6 +55,7 @@ class StationMeta:
     nowcast_source_type: str = "metar"
     nowcast_station_id: str = ""
     nowcast_provider_status: str = DEFAULT_NOWCAST_PROVIDER_STATUS
+    display_station_references: tuple[StationReference, ...] = ()
 
 
 def _confidence_level_for_grade(grade: str) -> str:
@@ -69,6 +79,7 @@ def _station(
     nowcast_confidence_grade: str | None = None,
     last_verified_at: str = DEFAULT_STATION_LAST_VERIFIED_AT,
     confidence_level: str | None = None,
+    display_station_references: tuple[StationReference, ...] = (),
 ) -> StationMeta:
     supports_same_station = (
         nowcast_provider_status == DEFAULT_NOWCAST_PROVIDER_STATUS
@@ -97,6 +108,7 @@ def _station(
         nowcast_source_type=nowcast_source_type,
         nowcast_station_id=nowcast_station_id or station_id,
         nowcast_provider_status=nowcast_provider_status,
+        display_station_references=display_station_references,
     )
 
 
@@ -162,6 +174,15 @@ _STATION_MAP_BASE: dict[str, StationMeta] = {
         7,
         nowcast_source_type="metar",
         nowcast_provider_status="provider_enabled",
+        display_station_references=(
+            StationReference(
+                station_id="108",
+                station_name="KMA Seoul ASOS 108",
+                source="kma-asos",
+                source_url="https://data.kma.go.kr/data/grnd/selectAsosRltmList.do",
+                role="display_only_reference",
+            ),
+        ),
     ),
     "shanghai": _station("shanghai", "ZSPD", "Shanghai Pudong International Airport Station", 31.1443, 121.8083, "Asia/Shanghai", 4),
     "shenzhen": _station("shenzhen", "ZGSZ", "Shenzhen Bao'an International Airport Station", 22.6393, 113.8107, "Asia/Shanghai", 4),
@@ -429,6 +450,16 @@ def station_audit_rows() -> list[dict[str, object]]:
             "nowcast_source_type": station.nowcast_source_type,
             "nowcast_station_id": station.nowcast_station_id,
             "nowcast_provider_status": station.nowcast_provider_status,
+            "display_station_references": [
+                {
+                    "station_id": reference.station_id,
+                    "station_name": reference.station_name,
+                    "source": reference.source,
+                    "source_url": reference.source_url,
+                    "role": reference.role,
+                }
+                for reference in station.display_station_references
+            ],
         }
         for station in STATION_MAP.values()
     ]

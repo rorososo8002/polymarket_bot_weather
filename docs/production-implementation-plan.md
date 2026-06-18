@@ -211,10 +211,10 @@ Drawdown breakers may stop new entries, but never settlement or exit handling; a
   priority reason, last success, last failure, and next eligible request time.
 - Nowcast refresh may be more frequent than forecast refresh, but provider
   request floors still apply: AWC METAR bulk fetches for enabled ICAO stations
-  must be at least 5 minutes apart, and HKO max/min requests must be at least
+  must be at least 60 seconds apart, and HKO max/min requests must be at least
   10 minutes apart. Cache hits are local reads and do not write request-log
   rows.
-- A 5-min nowcast refresh updates station evidence around cached forecasts, not forecast freshness; open-position dashboard payloads must include latest decision-note nowcast evidence when present.
+- A 1-min AWC nowcast refresh updates station evidence around cached forecasts, not forecast freshness; open-position dashboard payloads must include latest decision-note nowcast evidence when present. HKO remains 10-min because that provider has a slower floor.
 - Daily-high thresholds use `observed_high_c >= threshold_c`; exact/range held
   YES loses only above the upper endpoint, daily-low held YES only below the
   lower endpoint, and held NO gets `nowcast_bucket_lock_risk` inside the bucket.

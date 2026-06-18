@@ -39,7 +39,7 @@ def test_local_env_example_exposes_settlement_runner_defaults():
     assert "SKIP_DIAGNOSTICS_JSONL_PATH=paper_skip_diagnostics.jsonl" in text
     assert "SKIP_DIAGNOSTICS_MAX_BYTES=104857600" in text
     assert "SKIP_DIAGNOSTICS_ARCHIVE_MAX_BYTES=104857600" in text
-    assert "STATION_NOWCAST_CACHE_TTL_SECONDS=300" in text
+    assert "STATION_NOWCAST_CACHE_TTL_SECONDS=60" in text
     assert "STATION_NOWCAST_REQUEST_LOG_PATH=station_nowcast_request_log.jsonl" in text
     assert "SIZE_MODE=kelly" in text
     assert "FRACTIONAL_KELLY=0.50" in text
@@ -87,7 +87,7 @@ def test_vps_env_example_keeps_runtime_state_under_data_dir():
         in text
     )
     assert "STATION_NOWCAST_ENABLED=true" in text
-    assert "STATION_NOWCAST_CACHE_TTL_SECONDS=300" in text
+    assert "STATION_NOWCAST_CACHE_TTL_SECONDS=60" in text
     assert "STATION_NOWCAST_FRESHNESS_SECONDS=5400" in text
     assert "PORTFOLIO_DECISIONS_JSONL_PATH=/opt/polymarket-weather-bot/data/paper_event_portfolios.jsonl" in text
     assert "ORDERBOOK_STREAM_STALE_SECONDS=60" in text

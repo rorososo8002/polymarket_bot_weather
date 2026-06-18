@@ -149,6 +149,64 @@ def test_dashboard_payload_uses_official_station_monitoring_instead_of_forecast(
     assert scanner["recent_skips"][0]["reason_code"] == "SKIP_WIDE_SPREAD"
 
 
+def test_dashboard_payload_explains_official_nowcast_entry_only_skips_in_korean(tmp_path):
+    state_path = tmp_path / "state.json"
+    skip_log = tmp_path / "paper_skip_diagnostics.jsonl"
+    state_path.write_text(json.dumps({"cash_usd": 100.0, "positions": []}), encoding="utf-8")
+    skip_log.write_text(
+        json.dumps(
+            {
+                "ts": "2099-06-19T04:51:00+00:00",
+                "market_id": "m-chengdu-39",
+                "question": "Will the highest temperature in Chengdu be 39°C or higher on June 19?",
+                "side": "SKIP",
+                "city": "chengdu",
+                "station_id": "ZUUU",
+                "reason_code": "SKIP",
+                "reason": (
+                    "official-nowcast-entry-only: forecast-only entry blocked; "
+                    "waiting for same-station settlement-lock evidence [temperature]"
+                ),
+                "note": "observed_high_c=2.0; observed_at=2099-06-19T04:51:00+00:00",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = build_dashboard_payload(
+        Settings(
+            state_path=str(state_path),
+            skip_diagnostics_jsonl_path=str(skip_log),
+        )
+    )
+
+    skip = payload["scanner"]["recent_skips"][0]
+    assert skip["reason_ko"].startswith("예보만으로는 진입하지 않도록 막았습니다.")
+    assert "정산에 쓰이는 같은 공식 관측소" in skip["reason_ko"]
+    assert "forecast-only entry blocked" not in skip["reason_ko"]
+    assert skip["station_name"] == "Chengdu Shuangliu International Airport Station"
+
+
+def test_dashboard_payload_lists_supported_official_station_registry_with_provider_floors(tmp_path):
+    state_path = tmp_path / "state.json"
+    state_path.write_text(json.dumps({"cash_usd": 100.0, "positions": []}), encoding="utf-8")
+
+    payload = build_dashboard_payload(Settings(state_path=str(state_path)))
+
+    registry = payload["scanner"]["station_registry"]
+    assert len(registry) == 41
+    seoul = next(row for row in registry if row["city"] == "seoul")
+    assert seoul["station_id"] == "RKSI"
+    assert seoul["station_name"] == "Incheon Intl Airport Station"
+    assert seoul["nowcast_min_real_request_interval_seconds"] == 60
+    assert seoul["nowcast_call_rule_ko"].startswith("AWC METAR 공식 API는")
+    assert seoul["display_station_references"][0]["station_id"] == "108"
+    assert "표시용 참고" in seoul["display_station_references"][0]["usage_ko"]
+    hong_kong = next(row for row in registry if row["city"] == "hong kong")
+    assert hong_kong["nowcast_min_real_request_interval_seconds"] == 600
+    assert "10분" in hong_kong["nowcast_call_rule_ko"]
+
+
 def test_dashboard_html_is_official_station_first():
     assert "최근 예보 갱신" not in HTML
     assert "예보 상태 (Open-Meteo)" not in HTML
@@ -159,6 +217,9 @@ def test_dashboard_html_is_official_station_first():
     assert "정산 경계" in HTML
     assert "진입 비중" in HTML
     assert "최근 스킵" in HTML
+    assert "공식 관측소 목록" in HTML
+    assert "skip.reason_ko" in HTML
+    assert "stationRegistryCard" in HTML
 
 
 def test_dashboard_nowcast_status_keeps_last_success_when_latest_call_fails(tmp_path):

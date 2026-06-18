@@ -147,11 +147,13 @@ This is the active paper-bot rule book; historical notes belong in focused `docs
 
 - Same-station nowcast is allowed only from explicitly mapped official sources:
   AWC METAR for ICAO stations and HKO for Hong Kong.
-- Real AWC METAR bulk requests must be at least 5 minutes apart. Real HKO
-  max/min requests must be at least 10 minutes apart. Cache hits do not write
-  request-log rows.
-- `STATION_NOWCAST_CACHE_TTL_SECONDS=300` is the recommended nowcast TTL. It
-  matches the AWC METAR provider floor and keeps held-position exits timely.
+- Real AWC METAR bulk requests must be at least 60 seconds apart; real HKO
+  max/min requests stay at least 10 minutes apart. Cache hits do not write
+  request-log rows, and the dashboard must show these provider floors.
+- `STATION_NOWCAST_CACHE_TTL_SECONDS=60` is the recommended nowcast TTL; HKO stays protected by its 10-minute provider floor.
+- Dashboard station views must expose the full supported settlement-station
+  registry. Display-only alternates such as KMA Seoul ASOS 108 are reference
+  context only unless Polymarket rules name that station.
 - Forecast freshness and nowcast freshness are separate. The 5-minute nowcast
   TTL must never be used to declare a forecast signal stale.
 - Dashboard views are official-station-first: hide forecast panels/badges and show station/source, observations, time, settlement boundary, lock strength, 20%/50% allocation, skip reason, bid-depth PnL, exit liquidity, and WS freshness. The

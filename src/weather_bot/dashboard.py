@@ -15,7 +15,8 @@ from .config import Settings, load_settings
 from .dashboard_template import HTML
 from .edge import polymarket_taker_fee_usdc
 from .runner_status import read_runner_status
-from .stations import TRADING_READY_STATION_MAP
+from .nowcast import AWC_METAR_MIN_REAL_REQUEST_INTERVAL_SECONDS, HKO_MAXMIN_MIN_REAL_REQUEST_INTERVAL_SECONDS
+from .stations import TRADING_READY_STATION_MAP, station_audit_rows
 from .weather_client import parse_weather_question
 
 
@@ -884,20 +885,113 @@ def _recent_skip_rows(settings: Settings, limit: int = 80) -> list[dict[str, Any
     rows: list[dict[str, Any]] = []
     for row in _read_jsonl(path, limit):
         evidence = _official_station_evidence(row)
+        city = str(row.get("city") or _question_summary(str(row.get("question") or ""))["city"] or "")
+        station = TRADING_READY_STATION_MAP.get(city.lower())
         rows.append(
             {
                 "ts": str(row.get("ts") or ""),
                 "market_id": str(row.get("market_id") or ""),
                 "question": str(row.get("question") or ""),
                 "side": str(row.get("side") or ""),
-                "city": str(row.get("city") or ""),
-                "station_id": str(row.get("station_id") or ""),
+                "city": city,
+                "station_id": str(row.get("station_id") or (station.station_id if station else "") or ""),
+                "station_name": str(row.get("station_name") or (station.station_name if station else "") or ""),
                 "reason_code": str(row.get("reason_code") or ""),
                 "reason": str(row.get("reason") or ""),
+                "reason_ko": _skip_reason_ko(row),
                 **evidence,
             }
         )
     return _sorted_recent(rows, limit)
+
+
+def _skip_reason_ko(row: dict[str, Any]) -> str:
+    reason = str(row.get("reason") or "")
+    code = str(row.get("reason_code") or "").upper()
+    text = f"{code} {reason}".lower()
+    if "official-nowcast-entry-only" in text or "forecast-only entry blocked" in text:
+        return (
+            "예보만으로는 진입하지 않도록 막았습니다. 지금은 예보 신호만 있고, "
+            "정산에 쓰이는 같은 공식 관측소의 실제 관측값이 아직 승패를 충분히 "
+            "잠그지 못했습니다. 그래서 종이매매도 하지 않고 기다립니다."
+        )
+    if code == "SKIP_WIDE_SPREAD" or "spread" in text:
+        return (
+            "매수 호가와 매도 호가의 차이가 너무 커서 건너뛰었습니다. "
+            "이 차이가 크면 종이매매 수익이 실제보다 부풀려질 수 있습니다."
+        )
+    if code == "SKIP_RULE_MISMATCH" or "rule mismatch" in text:
+        return (
+            "시장 제목과 정산 규칙이 서로 맞지 않아 건너뛰었습니다. "
+            "어느 관측소와 어느 온도 기준으로 정산되는지 확실하지 않으면 추측하지 않습니다."
+        )
+    if "stale" in text:
+        return (
+            "필요한 데이터가 오래되어 건너뛰었습니다. 날씨값이나 주문장이 낡으면 "
+            "지금 들어갈 수 있는 가격과 실제 정산 근거를 믿을 수 없습니다."
+        )
+    if "liquidity" in text or "depth" in text:
+        return (
+            "주문장에 실제로 체결 가능한 물량이 부족해 건너뛰었습니다. "
+            "화면 가격만 있고 살 수 있는 물량이 없으면 가짜 체결이 됩니다."
+        )
+    if reason:
+        return "조건을 통과하지 못해 진입하지 않았습니다. 세부 원문 진단은 스킵 진단 로그에 보관했습니다."
+    return "조건을 통과하지 못해 진입하지 않았습니다."
+
+
+def _station_registry_rows() -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for row in station_audit_rows():
+        nowcast_source_type = str(row.get("nowcast_source_type") or "")
+        min_interval_seconds: int | None
+        call_rule_ko: str
+        if nowcast_source_type == "metar":
+            min_interval_seconds = AWC_METAR_MIN_REAL_REQUEST_INTERVAL_SECONDS
+            call_rule_ko = "AWC METAR 공식 API는 실제 HTTP 호출을 최소 60초 간격으로 제한합니다."
+        elif nowcast_source_type == "hko_maxmin_since_midnight":
+            min_interval_seconds = HKO_MAXMIN_MIN_REAL_REQUEST_INTERVAL_SECONDS
+            call_rule_ko = "HKO 공식 max/min 자료는 실제 HTTP 호출을 최소 10분 간격으로 제한합니다."
+        elif nowcast_source_type == "metar_unavailable":
+            min_interval_seconds = None
+            call_rule_ko = "공식 관측 제공자가 아직 검증되지 않아 호출하지 않습니다."
+        else:
+            min_interval_seconds = None
+            call_rule_ko = "지원하지 않는 관측 제공자라 호출하지 않습니다."
+
+        references = []
+        for reference in row.get("display_station_references") or []:
+            if not isinstance(reference, dict):
+                continue
+            role = str(reference.get("role") or "")
+            references.append(
+                {
+                    **reference,
+                    "usage_ko": (
+                        "표시용 참고 관측소입니다. 폴리마켓 정산 관측소가 아니므로 매매 판단에는 쓰지 않습니다."
+                        if role == "display_only_reference"
+                        else "참고 관측소입니다."
+                    ),
+                }
+            )
+
+        rows.append(
+            {
+                "city": str(row.get("city") or ""),
+                "station_id": str(row.get("station_id") or ""),
+                "station_name": str(row.get("station_name") or ""),
+                "timezone": str(row.get("timezone") or ""),
+                "trading_ready": bool(row.get("trading_ready")),
+                "nowcast_source_type": nowcast_source_type,
+                "nowcast_provider_status": str(row.get("nowcast_provider_status") or ""),
+                "nowcast_confidence_grade": str(row.get("nowcast_confidence_grade") or ""),
+                "nowcast_min_real_request_interval_seconds": min_interval_seconds,
+                "nowcast_call_rule_ko": call_rule_ko,
+                "polymarket_rule_station_text": str(row.get("polymarket_rule_station_text") or ""),
+                "display_station_references": references,
+            }
+        )
+    return sorted(rows, key=lambda item: item["city"])
 
 
 def _bucket_display_label(threshold_c: float | None, condition_label: str) -> str:
@@ -1503,6 +1597,7 @@ def build_dashboard_payload(settings: Settings | None = None, auth_required: boo
             "actual_closes": int(trade_totals["closes"]),
             "latest_station_at": station_health["last_success_at"],
             "station_observations": station_observations,
+            "station_registry": _station_registry_rows(),
             "station_signals": _station_signal_rows(decisions),
             "recent_skips": _recent_skip_rows(settings),
         },

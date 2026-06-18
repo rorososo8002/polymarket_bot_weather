@@ -49,11 +49,20 @@ sheet against the wrong exam.
 - Trading discovery and probability estimation now use the trading-ready subset,
   not the full 41-city registry.
 - 39 ICAO stations read same-day observed values through the Aviation Weather
-  Center METAR API and carry grade A station confidence.
+  Center METAR API and carry grade A station confidence. One bulk AWC request
+  covers the enabled ICAO set, and real AWC calls are floored at 60 seconds.
 - `hong kong/HKO` uses Hong Kong Observatory max/min temperature CSV data since
   midnight instead of METAR. Hong Kong max-temperature markets were high-volume
   during research, so this provider was implemented instead of skipping them.
-  It carries grade A station confidence.
+  It carries grade A station confidence. Real HKO calls stay floored at 10
+  minutes.
+- The dashboard should show every supported settlement station from this table,
+  not only stations that happened to appear in the latest request log. For
+  Seoul, the paper-trading settlement station remains `RKSI/Incheon Intl
+  Airport Station` because the stored Polymarket rule text names that station.
+  KMA Seoul ASOS 108 is a real official Seoul city station, but it is
+  display-only reference context unless a Polymarket rule explicitly settles on
+  it.
 - `karachi/OPMR` currently uses forecasts only because recent AWC METAR data was
   not available during verification. It carries grade D station confidence and
   remains excluded.

@@ -139,7 +139,7 @@ class Settings:
     forecast_request_log_path: str = ""
     forecast_rate_limit_state_path: str = ""
     station_nowcast_enabled: bool = True
-    station_nowcast_cache_ttl_seconds: int = 300  # 5 min: matches AWC METAR floor for timely exit signals
+    station_nowcast_cache_ttl_seconds: int = 60  # 1 min: matches AWC METAR documented API cadence
     station_nowcast_freshness_seconds: int = 5400
     station_nowcast_request_log_path: str = ""
     dashboard_host: str = "127.0.0.1"

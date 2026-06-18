@@ -45,7 +45,7 @@ def read_jsonl(path: Path) -> list[dict[str, object]]:
 def test_aviationweather_provider_default_cache_ttl_matches_provider_floor():
     provider = AviationWeatherMetarNowcastProvider(http_get=lambda *_args, **_kwargs: FakeResponse({}))
 
-    assert provider.cache_ttl_seconds == 300
+    assert provider.cache_ttl_seconds == 60
 
 
 def provider_for(
@@ -222,7 +222,7 @@ def test_aviationweather_request_log_records_external_fetch_not_cache_hit(tmp_pa
     assert rows[0]["requested_at"] == "2026-06-02T08:30:00+00:00"
 
 
-def test_aviationweather_bulk_request_floor_is_five_minutes_even_when_station_cache_is_short(tmp_path):
+def test_aviationweather_bulk_request_floor_is_one_minute_even_when_station_cache_is_short(tmp_path):
     request_log_path = tmp_path / "station_nowcast_request_log.jsonl"
     provider, calls = provider_for(
         load_fixture("aviationweather_rksi_fresh.json"),
@@ -238,19 +238,19 @@ def test_aviationweather_bulk_request_floor_is_five_minutes_even_when_station_ca
     provider.observed_high_so_far(
         STATION_MAP["seoul"],
         target_date=date(2026, 6, 2),
-        now=datetime(2026, 6, 2, 8, 32, tzinfo=timezone.utc),
+        now=datetime(2026, 6, 2, 8, 30, 30, tzinfo=timezone.utc),
     )
     provider.observed_high_so_far(
         STATION_MAP["seoul"],
         target_date=date(2026, 6, 2),
-        now=datetime(2026, 6, 2, 8, 36, tzinfo=timezone.utc),
+        now=datetime(2026, 6, 2, 8, 31, 1, tzinfo=timezone.utc),
     )
 
     rows = read_jsonl(request_log_path)
     assert len(calls) == 2
     assert len(rows) == 2
     assert rows[0]["requested_at"] == "2026-06-02T08:30:00+00:00"
-    assert rows[1]["requested_at"] == "2026-06-02T08:36:00+00:00"
+    assert rows[1]["requested_at"] == "2026-06-02T08:31:01+00:00"
 
 
 def test_aviationweather_provider_supports_verified_icao_station_beyond_seoul():

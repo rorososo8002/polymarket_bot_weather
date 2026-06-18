@@ -720,6 +720,10 @@ HTML = r"""<!doctype html>
           <div class="city-cards-title">공식 관측소 최근 호출</div>
           <div id="r-station-observations" class="city-cards-list"><div class="small muted">로딩 중…</div></div>
         </div>
+        <div class="city-cards-section">
+          <div class="city-cards-title">공식 관측소 목록</div>
+          <div id="r-station-registry" class="city-cards-list"><div class="small muted">로딩 중…</div></div>
+        </div>
           </div>
         </div>
 
@@ -1216,15 +1220,40 @@ function recentSkipCard(skip) {
   const observed = skip.observed_high_c != null
     ? `관측 최고 ${tempC(skip.observed_high_c)}`
     : (skip.observed_low_c != null ? `관측 최저 ${tempC(skip.observed_low_c)}` : "");
+  const station = [skip.station_name, skip.station_id].filter(Boolean).join(" · ");
+  const reasonKo = skip.reason_ko || "조건을 통과하지 못해 진입하지 않았습니다.";
   return `<div class="city-card warn">
     <div class="city-card-row">
       <span class="city-name">${esc(skip.city || skip.station_id || "?")}</span>
       <span class="city-status-fail">${esc(skip.reason_code || "SKIP")}</span>
     </div>
     <div class="city-card-detail">${esc(skip.question || "")}</div>
-    <div class="city-card-detail">${esc(skip.reason || "조건을 통과하지 못해 진입하지 않았습니다.")}</div>
+    ${station ? `<div class="city-card-detail">공식 관측소: ${esc(station)}</div>` : ""}
+    <div class="city-card-detail">${esc(skip.reason_ko || reasonKo)}</div>
     ${observed ? `<div class="city-card-detail">${esc(observed)}</div>` : ""}
     <div class="city-card-detail">${shortDateTime(skip.ts)}</div>
+  </div>`;
+}
+
+function stationRegistryCard(station) {
+  const ready = station.trading_ready === true;
+  const cls = ready ? "ok" : "warn";
+  const status = ready ? "매매 사용" : "제외";
+  const statusCls = ready ? "city-status-ok" : "city-status-fail";
+  const official = [station.station_name, station.station_id].filter(Boolean).join(" · ");
+  const refs = (station.display_station_references || []).map(ref => {
+    const label = [ref.station_name, ref.station_id].filter(Boolean).join(" · ");
+    return `<div class="city-card-detail">참고 관측소: ${esc(label)} · ${esc(ref.usage_ko || "표시용 참고")}</div>`;
+  }).join("");
+  return `<div class="city-card ${cls}">
+    <div class="city-card-row">
+      <span class="city-name">${esc(station.city || station.station_id || "?")}</span>
+      <span class="${statusCls}">${status}</span>
+    </div>
+    <div class="city-card-detail">정산 관측소: ${esc(official || "--")}</div>
+    <div class="city-card-detail">${esc(station.nowcast_call_rule_ko || "")}</div>
+    <div class="city-card-detail">관측 타입 ${esc(station.nowcast_source_type || "--")} · 신뢰등급 ${esc(station.nowcast_confidence_grade || "--")}</div>
+    ${refs}
   </div>`;
 }
 
@@ -1422,6 +1451,10 @@ function render(payload) {
   document.getElementById("r-station-observations").innerHTML = stationObservations.length
     ? stationObservations.map(cityNowcastCard).join("")
     : `<div class="small muted">관측소 호출 기록 없음</div>`;
+  const stationRegistry = (payload.scanner || {}).station_registry || [];
+  document.getElementById("r-station-registry").innerHTML = stationRegistry.length
+    ? stationRegistry.map(stationRegistryCard).join("")
+    : `<div class="small muted">공식 관측소 목록 없음</div>`;
   const stationSignals = (payload.scanner || {}).station_signals || [];
   document.getElementById("r-station-signals").innerHTML = stationSignals.length
     ? stationSignals.map(stationSignalCard).join("")
