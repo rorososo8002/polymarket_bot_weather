@@ -53,7 +53,7 @@ def test_runner_status_writes_use_unique_temp_paths(tmp_path, monkeypatch):
     monkeypatch.setattr(runner_status_module.os, "replace", record_replace)
 
     write_runner_status(settings, "discovering", message="first")
-    runner_status_module.update_runner_status_fields(settings, forecast_worker={"thread_alive": True})
+    runner_status_module.update_runner_status_fields(settings, realtime_evaluator={"thread_alive": True})
 
     assert len(replaced_sources) == 2
     assert replaced_sources[0] != replaced_sources[1]

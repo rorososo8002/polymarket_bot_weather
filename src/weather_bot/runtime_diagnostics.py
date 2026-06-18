@@ -265,12 +265,6 @@ def build_runtime_report(data_dir: Path | str, tail: int = 500) -> str:
         f"updated_at={status.get('updated_at', 'NA')} last_trade_ts={last_trade_ts} tail_rows={len(recent_trades)}",
         _websocket_line(status),
         (
-            "forecast_worker: "
-            f"thread_alive={_bool((status.get('forecast_worker') or {}).get('thread_alive'))} "
-            f"queue_depth={(status.get('forecast_worker') or {}).get('queue_depth', 'NA')} "
-            f"errors={(status.get('forecast_worker') or {}).get('error_count', 'NA')}"
-        ),
-        (
             "realtime_evaluator: "
             f"thread_alive={_bool((status.get('realtime_evaluator') or {}).get('thread_alive'))} "
             f"queue_depth={(status.get('realtime_evaluator') or {}).get('queue_depth', 'NA')} "

@@ -15,37 +15,27 @@ This is the active paper-bot rule book; historical notes belong in focused `docs
 - Public dashboard exposure requires a real `DASHBOARD_TOKEN` with at least 32 characters. Public `/api/status` must accept the token only through `X-Dashboard-Token`; URL query tokens leak through logs, history, and shares.
 - Boolean, numeric, integer, and choice settings fail closed at startup when malformed or outside safe ranges.
 
-## Market Universe And Forecasts
+## Market Universe And Station Evidence
 
 - `STATION_MAP` registers 49 cities; paper execution uses only the 48-city `TRADING_READY_STATION_MAP`. Karachi stays excluded until evidence is fixed.
-- Execute temperature markets only; non-temperature markets must not reach forecast calculation, order-book subscription, or paper trade logging.
+- Execute temperature markets only; non-temperature markets must not reach station-signal calculation, order-book subscription, or paper trade logging.
 - Unknown, stale, malformed, unsupported, suspicious, missing, or conflictful data means skip.
 - Market title parsing is not enough rule evidence. Preserve question, available rule/source text, station, unit, bucket shape, and station-local date window; title/rule conflicts mean skip.
-- Gamma discovery normalizes rule evidence into market metadata; city, high/low, unit, bucket, date, or explicit-station conflicts fail before forecast with `SKIP_RULE_MISMATCH`.
+- Gamma discovery normalizes rule evidence into market metadata; city, high/low, unit, bucket, date, or explicit-station conflicts fail before station evaluation with `SKIP_RULE_MISMATCH`.
 - Recurring temperature events may expose one title plus labels such as `28°C`; discovery must synthesize binary questions from title+label. Grouped event-level rules may describe station/source/precision/UI toggles rather than each bucket, so compare bucket shape/value only when rule text explicitly states the outcome condition.
 - Station metadata must keep unit, precision, same-station support, confidence grade, verification date, and confidence level explicit.
 - Only station confidence grades A/B may enter `TRADING_READY_STATION_MAP`; grades C/D, unsupported providers, inferred, nearby, or unverifiable sources remain excluded. Karachi stays excluded until station evidence is reconciled.
-- Market metadata must carry the station-local event date plus UTC start/end window. Forecast rows must match that local date exactly; nearby dates are not substitutes.
+- Market metadata must carry the station-local event date plus UTC start/end window. Station observations must match that local date exactly; nearby dates are not substitutes.
 - Temperature bucket settlement uses centralized millifahrenheit boundaries.
   Exact settlement means the displayed value only. Whole-degree Celsius exact
   strategy uses source-display band `[N.0C, N+1.0C)`: `23.7C` is still `23C`;
   `24.0C` breaks it.
-- `pre_forecast_tradeability_gate` rejects markets before Open-Meteo when they
+- `pre_station_tradeability_gate` rejects markets before station-signal work when they
   are not temperature-shaped, not trading-ready, or missing required date
   evidence. Undated markets always fail closed.
-- `WEATHER_BIAS_JSON` is optional calibration evidence. Empty means neutral
-  defaults; missing, unreadable, invalid, malformed, or non-numeric files
-  produce `forecast-unavailable` with zero confidence.
-- Open-Meteo real HTTP calls are protected by `FORECAST_CACHE_TTL_SECONDS=14400`
-  and serialized by `FORECAST_REQUEST_MIN_INTERVAL_SECONDS=15`. Budget:
-  48 cities x 6 batches/day x 31 units = 8,928 units/day, under the 10,000
-  daily limit.
-- On non-rate-limit forecast failure, skip that city and move to the next one.
-  Do not retry the same city within the same batch; retry after the cache TTL.
-- On 429 rate limit, stop the batch and wait for the rate-limit cooldown before
-  resuming. Do not hammer failed cities.
-- `forecast_cache.json` is an answer cache, not the call ledger. Real attempts
-  are recorded in `forecast_request_log.jsonl`.
+- Entry evidence comes from official settlement-station observations, not
+  external weather-model calls. Freshness is judged from station observation
+  timestamps and provider floors.
 
 ## Realtime Order Books
 
@@ -53,22 +43,14 @@ This is the active paper-bot rule book; historical notes belong in focused `docs
   replace realtime streaming with polling.
 - Zero streamable temperature tokens is WAITING/no-market, not WebSocket failure.
   Show executable-depth failure only for a real token or concrete WS error.
-- Realtime startup must not wait for every forecast: start WebSocket after the
-  temperature token set is known, then attach forecast/nowcast signals.
+- Realtime startup starts WebSocket after the temperature token set is known,
+  then attaches official-station observation signals from the evaluator path.
 - Polymarket category-page discovery may parse many event slugs, but detailed
   `/events/slug/...` fetches are capped at 80 per discovery cycle and lower
   explicit `max_pages * page_size` budgets must be honored.
-- Missing or stale forecast signals block new entries and queue a refresh; they
-  are not executable entry evidence.
-- Forecast scheduling has two lanes: normal round-robin plus priority for held
-  positions, near-close markets, nowcast-near-threshold markets, and live-price
-  opportunities. Priority changes which eligible city gets the next request
-  slot; it must not create duplicate, parallel, or burst Open-Meteo calls.
-- Signal refresh targets are 40 minutes for general cities, 30 minutes for
-  held-position cities, and 20 minutes for priority cities. These refresh
-  in-memory signals and may reuse cached Open-Meteo answers; they must not force
-  real HTTP calls before the 4-hour forecast cache expires.
-- WebSocket callbacks must not make forecast HTTP calls.
+- Missing or stale official-station signals block new entries until the
+  evaluator refreshes same-station nowcast evidence. WebSocket callbacks must
+  not make weather HTTP calls.
 - Keep token IDs for open positions subscribed even when discovery moves to
   newer markets.
 - Discovery maps YES/NO token IDs only from explicit outcome labels. If tokens
@@ -88,30 +70,29 @@ This is the active paper-bot rule book; historical notes belong in focused `docs
 
 ## Strategy, Risk, And Accounting
 
-- `DECISION YES` and `DECISION NO` are model/order-book judgments, not
+- `DECISION YES` and `DECISION NO` are station-signal/order-book judgments, not
   guaranteed opens. Broker exposure, hedge, confidence, liquidity, fee, and
   stale-data gates may still block entry.
 - A new entry must survive a final pre-trade check: fresh executable book,
   enough ask depth, configured absolute/percentage spread limits, still-positive
   after-fee edge, no conflict with held positions, exposure room, rule clarity,
-  and non-stale strategy inputs. A spread failure uses `SKIP_WIDE_SPREAD`.
+  and non-stale official-station inputs. A spread failure uses `SKIP_WIDE_SPREAD`.
 - Entry decisions are fee-aware: `p_exec` is executable VWAP, `size_usd` is the
   all-in paper budget, and `size_shares` is fee-adjusted. Defaults stay
   exploratory but positive-EV: `MIN_NET_EDGE=0.08`,
   `ENTRY_MIN_EXPECTED_NET_RETURN_PCT=0.04`.
-- Local defaults keep forecast-only caps conservative: 15% single-market, 20%
-  city, 10% city/date, 90% total. Active VPS official-lock paper overrides to
-  `BANKROLL_USD=200`, `$10` minimum, 50% single-market, 50% city/date, 90%
-  total.
-- Official same-station settlement-lock entries may override Kelly sizing to
-  20% for near-close exact-bucket YES survival or 50% for near-certain lock
-  signals. They still require depth, fees, spread, positive after-fee edge,
-  expected return, portfolio caps, and final pre-trade recheck.
-- Signal confidence is sizing evidence, not `p_true`: lower confidence scales
-  entry size down; stale forecasts block new entries while held exits still run.
+- Active paper defaults are official-lock-only: `BANKROLL_USD=200`, `$10`
+  minimum, 50% single-market, 50% city/date, 90% total.
+- Official same-station settlement-lock entries override Kelly sizing to 20%
+  for base near-close exact-bucket YES survival or 50% for strong lock signals.
+  They still require depth, fees, spread, positive after-fee edge, expected
+  return, portfolio caps, and final pre-trade recheck.
+- Signal confidence is sizing evidence, not a license to guess. Non-lock or
+  stale station signals block new entries while held exits and settlements
+  still run.
 - In Kelly mode, `ENTRY_FRACTION` is a per-event cap, not direct order size.
 - Same-market opposite-side entries remain blocked. Same-side add-ons are
-  allowed only when price, probability, edge, expected return, cash, and
+  allowed only when price, station-side probability, edge, expected return, cash, and
   exposure caps still pass.
 - City-date buckets share one correlated-risk budget: at most two
   complementary non-overlapping legs; hidden overlap and exact dust fail closed.
@@ -154,9 +135,7 @@ This is the active paper-bot rule book; historical notes belong in focused `docs
 - Dashboard station views must expose the full supported settlement-station
   registry. Display-only alternates such as KMA Seoul ASOS 108 are reference
   context only unless Polymarket rules name that station.
-- Forecast freshness and nowcast freshness are separate. The shorter nowcast
-  TTL must never be used to declare a forecast signal stale.
-- Dashboard views are official-station-first: hide forecast panels/badges and show station/source, observations, time, settlement boundary, lock strength, 20%/50% allocation, skip reason, bid-depth PnL, exit liquidity, and WS freshness. The
+- Dashboard views are official-station-first: show station/source, observations, time, settlement boundary, lock strength, 20%/50% allocation, skip reason, bid-depth PnL, exit liquidity, and WS freshness. The
   side badge must be the plain Polymarket outcome label `Yes` or `No`; do not
   add `Long`, `Short`, or `보유` because the bot only buys outcome tokens and
   those words imply a separate margin direction that does not exist here.
@@ -167,12 +146,10 @@ This is the active paper-bot rule book; historical notes belong in focused `docs
   and triggers held NO `nowcast_bucket_lock_risk`. Exact/range buckets use
   settlement text directly: exact is the displayed value only, range is the
   displayed inclusive endpoints; never widen exact to `28.5C-29.5C`.
-- Exact Celsius probability uses source-display integer modeling. For a
-  whole-degree `23C` bucket, the model estimates
-  `P(23.0C <= source_value < 24.0C)`. New exact Celsius NO entries are blocked
-  only when the forecast mean maps to that same displayed integer bucket;
-  adjacent or tail NO candidates may trade when executable price, edge, return,
-  liquidity, and portfolio gates pass.
+- Exact Celsius station evidence uses source-display integer settlement. For a
+  whole-degree `23C` bucket, the active strategy treats
+  `23.0C <= official_value < 24.0C` as the displayed `23C` outcome and treats
+  `24.0C` as the daily-high `23C` break point.
 - For official same-station nowcast on daily-high exact Celsius markets:
   `observed_high_c >= bucket_c + 1.0` makes the exact-bucket YES impossible and
   creates a strong NO settlement-lock signal. If the station remains inside

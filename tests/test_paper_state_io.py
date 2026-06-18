@@ -14,6 +14,7 @@ from weather_bot.paper import PaperBroker, PaperStateLoadError
 
 def settings_for(tmp_path: Path) -> Settings:
     return Settings(
+        bankroll_usd=100.0,
         state_path=str(tmp_path / "paper_state.json"),
         trades_csv_path=str(tmp_path / "paper_trades.csv"),
         decisions_csv_path=str(tmp_path / "paper_decisions.csv"),

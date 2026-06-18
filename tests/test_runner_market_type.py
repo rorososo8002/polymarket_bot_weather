@@ -48,7 +48,7 @@ def test_run_cycle_filters_non_temperature_before_probability_estimator(monkeypa
     assert [decision.market.market_id for decision in decisions] == ["temperature"]
 
 
-def test_run_cycle_skips_undated_temperature_market_before_forecast_request(monkeypatch, tmp_path):
+def test_run_cycle_skips_undated_temperature_market_before_station_signal(monkeypatch, tmp_path):
     question_without_date = "Will NYC reach 90 F?"
     markets = [
         RawMarket("undated-temperature", question_without_date, "undated-temperature", True, False, "yes", "no"),
@@ -61,7 +61,7 @@ def test_run_cycle_skips_undated_temperature_market_before_forecast_request(monk
         portfolio_decisions_jsonl_path=str(tmp_path / "portfolio.jsonl"),
         require_date_hint_for_trade=True,
     )
-    forecast_request_count = 0
+    station_signal_calls = 0
 
     class CycleClient:
         def __init__(self, *_args, **_kwargs):
@@ -76,17 +76,17 @@ def test_run_cycle_skips_undated_temperature_market_before_forecast_request(monk
         def get_market(self, market_id: str) -> RawMarket:
             return markets[0]
 
-    def forbidden_forecast_request(*_args, **_kwargs):
-        nonlocal forecast_request_count
-        forecast_request_count += 1
-        raise AssertionError("undated markets must skip before Open-Meteo request")
+    def forbidden_station_signal(*_args, **_kwargs):
+        nonlocal station_signal_calls
+        station_signal_calls += 1
+        raise AssertionError("undated markets must skip before station signal calculation")
 
     monkeypatch.setattr("weather_bot.live_paper_runner.PolymarketClient", CycleClient)
-    monkeypatch.setattr("weather_bot.probability.requests.get", forbidden_forecast_request)
+    monkeypatch.setattr("weather_bot.live_paper_runner.estimate_weather_probability", forbidden_station_signal)
 
     decisions = run_cycle(settings)
 
-    assert forecast_request_count == 0
+    assert station_signal_calls == 0
     assert len(decisions) == 1
     assert decisions[0].market.market_id == "undated-temperature"
     assert decisions[0].result.side == "SKIP"

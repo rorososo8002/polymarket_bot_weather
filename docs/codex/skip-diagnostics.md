@@ -94,14 +94,14 @@ Likely fixes:
 - Wait if the issue is temporary.
 - Keep skipping if the market is structurally thin.
 - Improve reporting so thin-liquidity SKIPs are counted separately from
-  forecast or parsing SKIPs.
+  station-evidence or parsing SKIPs.
 
 ### Weather Data Or Parsing
 
 Typical reasons:
 
 ```text
-forecast-unavailable
+official-station-unavailable
 confidence too low
 date_hint=None
 unsupported station
@@ -113,7 +113,7 @@ the exact city-date event.
 
 Check next:
 
-- Does the Open-Meteo response contain the exact target date?
+- Does the official station observation match the exact target date?
 - Is the parsed city in `TRADING_READY_STATION_MAP`?
 - Does the question shape match supported temperature-market parsing?
 - Is same-station nowcast missing, stale, or malformed?
@@ -122,7 +122,7 @@ Likely fixes:
 
 - Fix parsing only when the market is a real supported weather question.
 - Keep skipping unsupported cities or missing rule-evidence stations.
-- Do not substitute nearby forecast dates or nearby weather stations.
+- Do not substitute nearby dates or nearby weather stations.
 
 ### Strategy Threshold
 
@@ -223,7 +223,7 @@ Treat these as default triggers:
 - Same account-safety SKIP repeats for more than 3 consecutive cycles.
 - Any one SKIP reason dominates a 24-hour paper run.
 - A market that should be liquid repeatedly has no executable depth.
-- Forecast or parsing SKIPs increase after a code or station-registry change.
+- Station-evidence or parsing SKIPs increase after a code or station-registry change.
 - The dashboard shows the service is alive but decisions are mostly SKIP.
 
 ## Next Tooling To Build

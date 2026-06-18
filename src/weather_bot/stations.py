@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 
-FORECAST_SOURCE = "open-meteo-ensemble"
-FORECAST_LOCATION_SOURCE = "settlement_station_coordinates"
 DEFAULT_STATION_VERIFICATION_STATUS = "verified_from_existing_registry"
 DEFAULT_RULE_EVIDENCE_STATUS = "needs_rule_source_url"
 DEFAULT_NOWCAST_PROVIDER_STATUS = "provider_enabled"
@@ -40,8 +38,6 @@ class StationMeta:
     timezone: str = "auto"
     elevation_m: float | None = None
     note: str = ""
-    forecast_source: str = FORECAST_SOURCE
-    forecast_location_source: str = FORECAST_LOCATION_SOURCE
     station_verification_status: str = DEFAULT_STATION_VERIFICATION_STATUS
     rule_evidence_status: str = DEFAULT_RULE_EVIDENCE_STATUS
     polymarket_rule_url: str = ""
@@ -553,7 +549,7 @@ TRADING_READY_CITY_COUNT = len(TRADING_READY_STATION_MAP)
 
 
 def station_audit_rows() -> list[dict[str, object]]:
-    """Return a compact, user-auditable view of forecast and nowcast coverage."""
+    """Return a compact, user-auditable view of rule and nowcast coverage."""
     return [
         {
             "city": station.city,
@@ -562,8 +558,6 @@ def station_audit_rows() -> list[dict[str, object]]:
             "latitude": station.latitude,
             "longitude": station.longitude,
             "timezone": station.timezone,
-            "forecast_source": station.forecast_source,
-            "forecast_location_source": station.forecast_location_source,
             "station_verification_status": station.station_verification_status,
             "rule_evidence_status": station.rule_evidence_status,
             "polymarket_rule_url": station.polymarket_rule_url,

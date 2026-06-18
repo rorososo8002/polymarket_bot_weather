@@ -28,7 +28,6 @@ def test_runtime_report_separates_stream_and_token_stale_blocks(tmp_path):
                     "status_reason": "executable order book depth fresh; age=0s; reconnects=2",
                     "last_error": "",
                 },
-                "forecast_worker": {"thread_alive": True, "queue_depth": 0, "error_count": 0},
                 "realtime_evaluator": {
                     "thread_alive": True,
                     "queue_depth": 25,
@@ -114,7 +113,6 @@ def test_runtime_report_summarizes_zero_selection_portfolio_rejections(tmp_path)
                 "open_positions": 0,
                 "exposure_usd": 0,
                 "websocket": {"thread_alive": True, "stale": False},
-                "forecast_worker": {"thread_alive": True, "queue_depth": 0, "error_count": 0},
                 "realtime_evaluator": {"thread_alive": True, "queue_depth": 0, "error_count": 0},
             }
         ),

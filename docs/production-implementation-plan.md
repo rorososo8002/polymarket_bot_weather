@@ -3,8 +3,8 @@
 ## Goal
 
 Run a conservative paper-trading bot for Polymarket temperature markets using
-verified settlement stations, realtime executable order books, and reproducible
-paper accounting.
+official settlement-station observations, realtime executable order books, and
+reproducible paper accounting.
 
 ## Current Development Phase
 
@@ -16,7 +16,8 @@ Validation work has priority over new strategy features:
 - Entry uses ask-side executable VWAP, not midpoint or best-quote guesses.
 - Exit uses bid-side executable VWAP; no executable close depth means hold.
 - Fees, spread, slippage, stale data, partial liquidity, and official station
-  nowcast must flow into paper results; confidence scales size, not `p_true`.
+  observations must flow into paper results; confidence scales size, not a
+  model guess.
 - Minimum reports separate bid/ask-depth net PnL from reference midpoint PnL.
 - Live trading, advanced dashboards, calibration views, and complex optimizers
   stay deferred until paper validation gates pass.
@@ -30,10 +31,9 @@ Validation work has priority over new strategy features:
 - Skip unsupported cities, unsupported question shapes, stale data, missing
   order books, suspicious values, invalid parsed data, inactive markets, closed
   new-entry candidates, and unprovable YES/NO token mappings.
-- Forecast target dates must match exactly. Nearby Open-Meteo dates are not
+- Station observation target dates must match exactly. Nearby dates are not
   substitutes.
-- Real Open-Meteo forecast HTTP calls are globally serialized and drip-fed by
-  `FORECAST_REQUEST_MIN_INTERVAL_SECONDS=15`. Cache hits do not count as calls.
+- Paper-entry signals come from official settlement-station observations.
 - Use the Polymarket CLOB WebSocket stream for order books. Do not silently
   replace realtime streaming with polling.
 - Treat WebSocket `price_change` messages as deltas only. They may update
@@ -56,7 +56,7 @@ Validation work has priority over new strategy features:
 weather event discovery
   -> supported-city and temperature-only parser
   -> station-rule and trading-ready gate
-  -> exact-date forecast plus optional same-station nowcast
+  -> exact-date official settlement-station observation
   -> CLOB WebSocket executable order-book cache
   -> fee-aware YES/NO VWAP edge and expected net-return filter
   -> city-date portfolio selector
@@ -69,7 +69,7 @@ weather event discovery
 ```text
 src/weather_bot/stations.py           station registry and trading-ready subset
 src/weather_bot/weather_client.py     question parser
-src/weather_bot/probability.py        Open-Meteo ensemble probability
+src/weather_bot/station_signal.py     official station observation signals
 src/weather_bot/nowcast.py            same-station observed high/low providers
 src/weather_bot/polymarket_client.py  Gamma discovery and REST book parsing
 src/weather_bot/realtime_orderbook.py CLOB WebSocket order-book cache
@@ -98,8 +98,12 @@ net_edge > configured threshold
 expected_net_return >= ENTRY_MIN_EXPECTED_NET_RETURN_PCT
 ```
 
-Active paper thresholds are less conservative than before:
-`MIN_NET_EDGE=0.08` and `ENTRY_MIN_EXPECTED_NET_RETURN_PCT=0.04`. This is a paper-validation choice, not live-trading permission. Official same-station settlement-lock signals may remove forecast model/resolution margin from the edge calculation because the evidence is observed station state rather than a future forecast; fees, executable depth, spread, and expected net return still apply.
+Active paper thresholds are `MIN_NET_EDGE=0.08` and
+`ENTRY_MIN_EXPECTED_NET_RETURN_PCT=0.04`. This is a paper-validation choice,
+not live-trading permission. Official same-station settlement-lock signals
+remove model/resolution margin from the edge calculation because the
+evidence is observed station state rather than a future model output; fees,
+executable depth, spread, and expected net return still apply.
 
 `p_exec` is executable ask-side VWAP. It already includes spread/slippage
 through the actual book price, so do not subtract those twice.
@@ -123,8 +127,9 @@ only in paper mode when price has dropped enough, live probability remains
 above the position stop, edge and expected return stay positive, and cash plus
 exposure caps leave at least `MIN_ORDER_USD`.
 
-Signal confidence is a sizing multiplier after edge/liquidity checks. Stale
-forecast signals block new entries, but open-position exit management continues.
+Signal confidence is a sizing multiplier after edge/liquidity checks.
+Non-lock or stale station signals block new entries, but open-position exit
+management continues.
 Drawdown breakers may stop new entries, but never settlement or exit handling; active paper daily and large-loss stops are 50% of bankroll, not fixed dollars.
 
 ## Weather And Discovery Contract
@@ -136,20 +141,18 @@ Drawdown breakers may stop new entries, but never settlement or exit handling; a
 - Discovered markets carry normalized rule provenance from Gamma question,
   description, resolution/source text, event slug, parsed condition, station
   evidence, unit, date hint, and station timezone. A conflict between the
-  market title and exposed rule text is not a weak signal; it is a pre-forecast
+  market title and exposed rule text is not a weak signal; it is a pre-station
   `SKIP_RULE_MISMATCH`.
 - Category slug detail fetches are bounded at 80 per cycle and lower explicit
   `max_pages * page_size` budgets, so discovery cannot delay WebSocket startup.
 - Temperature bucket settlement boundaries use centralized millifahrenheit
   comparison; range endpoints and exact displayed values stay literal, with no
   hidden settlement interval such as `28.5C-29.5C`.
-- Exact Celsius changed from exact decimal member matches to whole-degree
-  source-display probability. For displayed `23C`, the strategy models
-  `[23.0C, 24.0C)`: `23.7C` still supports the `23C` bucket, while `24.0C`
-  breaks it. NO skips only on the forecast-mean modal integer bucket;
-  adjacent/tail NO still needs fee-aware edge, return, liquidity, and
-  portfolio approval.
-- Same-station nowcast may adjust probability only when station metadata marks
+- Exact Celsius strategy uses official source-display integer settlement. For
+  displayed `23C`, station observations in `[23.0C, 24.0C)` still support the
+  `23C` bucket, while `24.0C` breaks a daily-high `23C` YES and creates the
+  strong NO lock.
+- Same-station nowcast may create a strategy signal only when station metadata marks
   same-station support with confidence grade A/B. C/D, unsupported, inferred,
   or nearby providers cannot enter the execution universe.
 - Event-date metadata uses the station-local date plus UTC start/end window.
@@ -161,68 +164,30 @@ Drawdown breakers may stop new entries, but never settlement or exit handling; a
 - Real observation HTTP attempts are counted in
   `station_nowcast_request_log.jsonl`; cache hits do not write rows.
 - Missing, stale, malformed, future-date, unmapped, unsupported, or wrong
-  station data remains forecast-only or fail-closed depending on context.
-- `forecast_rate_limit_state.json` persists Open-Meteo cooldowns after HTTP
-  429. Daily quota and concurrent-request cooldowns are distinct.
-- `ReadTimeout` creates one logged real attempt and a temporary per-key miss; do
-  not hammer the same key immediately.
+  station data fails closed.
 
-## Realtime Forecast-Orchestration Contract
+## Realtime Station-Orchestration Contract
 
 - Start the CLOB WebSocket stream as soon as the temperature token subscription
-  set is known, including held-position tokens. Do not wait for every market's
-  forecast signal before streaming.
-- Early streaming is not forecast-free trading. A market may open a new
-  position only when it has both a fresh supported forecast/nowcast signal and
-  executable WebSocket order-book depth.
-- Realtime signals are a registry that fills as each forecast key becomes
-  ready. Missing or stale registry entries are explicit SKIPs for new entries,
-  not permission to fall back to guessed prices or forecast-free trading.
-- Forecast refresh uses two lanes. The priority lane is checked first and
-  includes held-position cities, near-close or settlement-sensitive cities,
-  nowcast-near-threshold cities, live-price opportunity cities, and stale
-  signals needed for active evaluation. The round-robin lane covers the normal
-  trading-ready city universe.
-- Priority only chooses which eligible city or forecast key gets the next
-  single real request slot. It must not create duplicate, parallel, or burst
-  Open-Meteo calls.
-- Target freshness for scheduling: general cities 40 minutes, held-position
-  cities 30 minutes, near-close or opportunity cities 20 minutes. These are
-  signal refresh priorities, not permission to bypass the 4-h Open-Meteo cache.
-- Forecast signal freshness targets are based on the last successful signal
-  refresh. Real Open-Meteo request freshness is separately enforced by
-  `FORECAST_CACHE_TTL_SECONDS=14400`.
-- Real Open-Meteo HTTP calls are globally serialized. Run at most one real
-  request at a time; while one is in flight, do not start a duplicate request or
-  another city's real request.
-- Open-Meteo forecast HTTP calls use batch mode. Within a batch, cities are fetched
-  sequentially with `FORECAST_REQUEST_MIN_INTERVAL_SECONDS=15` gaps. After all
-  active-market cities in the batch are processed, the bot waits until
-  `FORECAST_CACHE_TTL_SECONDS=14400` (4 h) expires before the next batch.
-  GFS updates every 6 h and takes 3-4 h to process; a 4-h cache remains useful
-  while keeping the larger execution universe inside quota. Budget:
-  48 trading-ready cities x 6 batches/day x 31 units = 8,928 < 10,000.
-- On a non-rate-limit failure, skip that city and move to the next. Do not retry
-  within the same batch. The failure cooldown equals the cache TTL.
-- On a 429 rate-limit response, stop the entire batch and wait for the rate-limit
-  cooldown to expire. Do not start a new batch or hammer failed cities.
-- Runner status must expose the forecast worker separately from the raw
-  Open-Meteo client health: pending key/city, in-flight key/city, queue depth,
-  priority reason, last success, last failure, and next eligible request time.
-- Nowcast refresh may be more frequent than forecast refresh, but provider
-  request floors still apply: AWC METAR bulk fetches for enabled ICAO stations
-  must be at least 60 seconds apart, and HKO max/min requests must be at least
-  10 minutes apart. Cache hits are local reads and do not write request-log
-  rows.
-- A 1-min AWC nowcast refresh updates station evidence around cached forecasts, not forecast freshness; open-position dashboard payloads must include latest decision-note nowcast evidence when present. HKO remains 10-min because that provider has a slower floor.
+  set is known, including held-position tokens.
+- A market may open a new position only when it has both a fresh supported
+  official-station signal and executable WebSocket order-book depth.
+- Realtime signals are refreshed by the bounded evaluator path. Missing or
+  stale station registry entries are explicit SKIPs
+  for new entries, not permission to fall back to guessed prices.
+- Station refresh uses provider floors: AWC METAR bulk fetches for enabled ICAO
+  stations must be at least 60 seconds apart, and HKO max/min requests must be
+  at least 10 minutes apart. Cache hits are local reads and do not write
+  request-log rows.
 - Daily-high thresholds use `observed_high_c >= threshold_c`; exact/range held
   YES loses only above the upper endpoint, daily-low held YES only below the
   lower endpoint, and held NO gets `nowcast_bucket_lock_risk` inside the bucket.
-- Forecast warmup must not run inside WebSocket receiver callbacks. Callbacks
-  update the order-book cache and enqueue bounded evaluation work only.
+- Weather HTTP calls must not run inside WebSocket receiver callbacks.
+  Callbacks update the order-book cache and enqueue bounded evaluation work
+  only.
 - `STREAM_CYCLE_INTERVAL_SECONDS=2400` is the market-discovery and WebSocket
   subscription rebuild interval. It should represent the intended streaming
-  window, not be consumed by a long pre-stream forecast warmup.
+  window, not be consumed by a long pre-stream weather warmup.
 - At a planned stream-cycle boundary, stop the realtime evaluator with `drain=False` before stopping the old WebSocket stream. Pending queue entries are old-window hints; the next stream window must re-evaluate from fresh executable depth instead of logging artificial `HOLD_STREAM_UNHEALTHY` rows.
 
 ## Portfolio And Risk Contract
@@ -281,7 +246,7 @@ active paper default holds the full position to settlement instead of selling a
 principal-recovery tranche first. Probability stop is different: it is a
 defensive close when the held side probability falls below its stored stop
 threshold, so dashboard wording must explain it as risk cleanup rather than as
-a normal profit-taking win. Visible dashboard panels omit forecast data and show official station observations, settlement boundaries, lock strength, allocation, station health, skip reasons, and executable books.
+a normal profit-taking win. Visible dashboard panels show official station observations, settlement boundaries, lock strength, allocation, station health, skip reasons, and executable books.
 
 If an actual exit signal fires but no executable close is available, the broker
 keeps the blocker action instead of pretending to sell. No executable bid depth
@@ -337,9 +302,9 @@ and code defaults live in `src/weather_bot/config.py`. Required production
 anchors are unchanged:
 
 - WebSocket order books are enabled by default.
-- Forecast cache TTL is 10 800 seconds and real forecast calls are drip-fed by
-  15-second minimum gaps.
-- Same-station nowcast is enabled with separate provider freshness clocks.
+- Official-station entry-only mode is enabled by default for deployed paper
+  runs.
+- Same-station nowcast is enabled with provider freshness floors.
 - Raw snapshots default to error-only and rotate before disk pressure.
 - Public dashboard hosts such as `0.0.0.0` or `::` require a random
   `DASHBOARD_TOKEN` of at least 32 characters sent through `X-Dashboard-Token`.

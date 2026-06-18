@@ -15,14 +15,12 @@ _POSITIVE_NUMBER_SETTINGS = (
     "orderbook_rest_snapshot_interval_seconds",
     "runner_health_status_interval_seconds",
     "stream_cycle_interval_seconds",
-    "forecast_cache_ttl_seconds",
     "station_nowcast_cache_ttl_seconds",
     "station_nowcast_freshness_seconds",
     "bankroll_usd",
     "min_order_usd",
     "event_date_exposure_transition_usd",
     "max_holding_hours",
-    "default_temperature_sigma_f",
 )
 
 _POSITIVE_INTEGER_SETTINGS = (
@@ -37,9 +35,7 @@ _POSITIVE_INTEGER_SETTINGS = (
     "skip_diagnostics_archive_max_bytes",
 )
 
-_MINIMUM_INTEGER_SETTINGS = (
-    ("forecast_request_min_interval_seconds", 10),  # hard floor; batch mode uses 15 s within-batch
-)
+_MINIMUM_INTEGER_SETTINGS = ()
 
 _TCP_PORT_SETTINGS = (
     "dashboard_port",
@@ -133,11 +129,6 @@ class Settings:
     raw_snapshots_retention_days: int = 7
     raw_snapshots_min_free_bytes: int = 1024 * 1024 * 1024
     raw_snapshots_max_disk_usage_pct: float = 0.90
-    forecast_cache_path: str = ""
-    forecast_cache_ttl_seconds: int = 14400  # 4 h: 48 trading-ready cities x 6 batches/day x 31 units = 8 928 < 10 000
-    forecast_request_min_interval_seconds: int = 15  # within-batch gap; cache TTL controls between-batch wait
-    forecast_request_log_path: str = ""
-    forecast_rate_limit_state_path: str = ""
     station_nowcast_enabled: bool = True
     station_nowcast_cache_ttl_seconds: int = 60  # 1 min: matches AWC METAR documented API cadence
     station_nowcast_freshness_seconds: int = 5400
@@ -149,7 +140,7 @@ class Settings:
     # Strategy thresholds
     min_net_edge: float = 0.08
     exit_net_edge: float = 0.00
-    # Exit policy: stop is probability-based; profit is model-fair-value based.
+    # Exit policy: stop is station-side-probability based; profit is model-fair-value based.
     probability_stop_drop_threshold: float = 0.10
     min_profit_pct: float = 0.08
     take_profit_to_fair_ratio: float = 0.70
@@ -158,14 +149,14 @@ class Settings:
     add_to_position_drop_pct: float = 0.10
     max_holding_hours: float = 96.0
 
-    # Risk / sizing. Fractional-Kelly lets high-confidence edges scale up while
-    # the city/date and total-exposure caps keep paper risk bounded.
+    # Risk / sizing. Official station locks use 20%/50% sizing while the
+    # city/date and total-exposure caps keep paper risk bounded.
     size_mode: str = "kelly"
     entry_fraction: float = 0.20
     fractional_kelly: float = 0.50
-    max_single_market_fraction: float = 0.15
+    max_single_market_fraction: float = 0.50
     max_total_exposure_fraction: float = 0.90
-    bankroll_usd: float = 100.0
+    bankroll_usd: float = 200.0
     min_order_usd: float = 10.0
 
     # City concentration cap. Related markets from the same weather event should
@@ -200,7 +191,7 @@ class Settings:
     settlement_runner_max_fraction: float = 1.00
     settlement_runner_min_ev_margin_usd: float = 0.0
     official_nowcast_lock_enabled: bool = True
-    official_nowcast_entry_only: bool = False
+    official_nowcast_entry_only: bool = True
     official_nowcast_lock_base_entry_fraction: float = 0.20
     official_nowcast_lock_strong_entry_fraction: float = 0.50
     official_nowcast_lock_near_close_hours: float = 3.0
@@ -210,10 +201,9 @@ class Settings:
     # Probability model controls
     probability_shrink_gamma: float = 0.65
     confidence_size_floor: float = 0.25
-    default_temperature_sigma_f: float = 4.5
     require_parse_for_trade: bool = True
     # Compatibility switch for older tests/env files. The paper runner still
-    # requires an explicit date before forecast or trade, even when this is False.
+    # requires an explicit date before station-signal work or trade, even when this is False.
     require_date_hint_for_trade: bool = True
     # Probability stop compares the current side probability with the entry-side
     # probability. YES uses p_true; NO uses 1 - p_true.
@@ -419,20 +409,6 @@ def load_settings() -> Settings:
             "RAW_SNAPSHOTS_MAX_DISK_USAGE_PCT",
             Settings.raw_snapshots_max_disk_usage_pct,
         ),
-        forecast_cache_path=os.getenv("FORECAST_CACHE_PATH", Settings.forecast_cache_path),
-        forecast_cache_ttl_seconds=_int_env("FORECAST_CACHE_TTL_SECONDS", Settings.forecast_cache_ttl_seconds),
-        forecast_request_min_interval_seconds=_int_env(
-            "FORECAST_REQUEST_MIN_INTERVAL_SECONDS",
-            Settings.forecast_request_min_interval_seconds,
-        ),
-        forecast_request_log_path=os.getenv(
-            "FORECAST_REQUEST_LOG_PATH",
-            Settings.forecast_request_log_path,
-        ),
-        forecast_rate_limit_state_path=os.getenv(
-            "FORECAST_RATE_LIMIT_STATE_PATH",
-            Settings.forecast_rate_limit_state_path,
-        ),
         station_nowcast_enabled=_bool_env("STATION_NOWCAST_ENABLED", Settings.station_nowcast_enabled),
         station_nowcast_cache_ttl_seconds=_int_env(
             "STATION_NOWCAST_CACHE_TTL_SECONDS",
@@ -516,7 +492,6 @@ def load_settings() -> Settings:
         ),
         probability_shrink_gamma=_float_env("PROBABILITY_SHRINK_GAMMA", Settings.probability_shrink_gamma),
         confidence_size_floor=_float_env("CONFIDENCE_SIZE_FLOOR", Settings.confidence_size_floor),
-        default_temperature_sigma_f=_float_env("DEFAULT_TEMPERATURE_SIGMA_F", Settings.default_temperature_sigma_f),
         require_parse_for_trade=_bool_env("REQUIRE_PARSE_FOR_TRADE", Settings.require_parse_for_trade),
         require_date_hint_for_trade=_bool_env("REQUIRE_DATE_HINT_FOR_TRADE", Settings.require_date_hint_for_trade),
         max_city_exposure_fraction=_float_env("MAX_CITY_EXPOSURE_FRACTION", Settings.max_city_exposure_fraction),

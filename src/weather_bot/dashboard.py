@@ -185,7 +185,7 @@ def _read_jsonl(path: Path, limit: int = 20) -> list[dict[str, Any]]:
 
 
 def _empty_decision_totals() -> dict[str, int]:
-    return {"decisions": 0, "forecast_unavailable": 0, "skips": 0, "entries": 0}
+    return {"decisions": 0, "skips": 0, "entries": 0}
 
 
 def _decision_totals_result(totals: dict[str, int], *, exact: bool, scope: str) -> dict[str, Any]:
@@ -206,11 +206,6 @@ def _decision_totals_from_cache(cache: dict[str, Any]) -> dict[str, Any]:
     )
 
 
-def _forecast_unavailable(row: dict[str, str]) -> bool:
-    text = f"{row.get('reason') or ''} {row.get('note') or ''}".lower()
-    return "forecast unavailable" in text or "no forecast" in text
-
-
 def _count_decision_row(totals: dict[str, int], row: dict[str, str]) -> None:
     if not any((value or "").strip() for value in row.values()):
         return
@@ -220,8 +215,6 @@ def _count_decision_row(totals: dict[str, int], row: dict[str, str]) -> None:
         totals["skips"] += 1
     elif side in {"YES", "NO"}:
         totals["entries"] += 1
-    if _forecast_unavailable(row):
-        totals["forecast_unavailable"] += 1
 
 
 def _decision_totals_from_rows(rows: list[dict[str, str]]) -> dict[str, int]:
@@ -909,7 +902,7 @@ def _skip_reason_ko(row: dict[str, Any]) -> str:
     reason = str(row.get("reason") or "")
     code = str(row.get("reason_code") or "").upper()
     text = f"{code} {reason}".lower()
-    if "official-nowcast-entry-only" in text or "forecast-only entry blocked" in text:
+    if "official-station-entry-only" in text or "non-lock entry blocked" in text:
         return (
             "예보만으로는 진입하지 않도록 막았습니다. 지금은 예보 신호만 있고, "
             "정산에 쓰이는 같은 공식 관측소의 실제 관측값이 아직 승패를 충분히 "
@@ -1066,62 +1059,12 @@ def _latest_decisions_by_market(decisions: list[dict[str, str]]) -> dict[str, di
     return latest
 
 
-def _latest_forecast_cache_at(settings: Settings) -> str:
-    path = Path(settings.forecast_cache_path) if settings.forecast_cache_path else Path(settings.state_path).with_name("forecast_cache.json")
-    raw = _read_json(path)
-    latest: datetime | None = None
-    for entry in raw.values():
-        if not isinstance(entry, dict):
-            continue
-        parsed = _parse_datetime(str(entry.get("created_at") or ""))
-        if parsed is not None and (latest is None or parsed > latest):
-            latest = parsed
-    return latest.replace(microsecond=0).isoformat() if latest is not None else ""
-
-
 def _live_age_seconds(timestamp: str, recorded_age: Any = None) -> int | None:
     parsed = _parse_datetime(timestamp)
     recorded = int(_float(recorded_age, -1))
     live = max(0, int((datetime.now(timezone.utc) - parsed).total_seconds())) if parsed is not None else -1
     age = max(recorded, live)
     return age if age >= 0 else None
-
-
-def _forecast_health(settings: Settings, runner_status: dict[str, Any]) -> dict[str, Any]:
-    raw = runner_status.get("forecast") if isinstance(runner_status.get("forecast"), dict) else {}
-    last_success_at = str(raw.get("last_success_at") or _latest_forecast_cache_at(settings))
-    cache_age_seconds = _live_age_seconds(last_success_at, raw.get("cache_age_seconds"))
-    last_attempt_at = str(raw.get("last_attempt_at") or "")
-    last_failure_reason = str(raw.get("last_failure_reason") or "")
-    persistence_error = str(raw.get("persistence_error") or "")
-    waiting_for_first_attempt = not (last_attempt_at or last_success_at or last_failure_reason or persistence_error)
-    stale = not waiting_for_first_attempt and (
-        bool(raw.get("stale")) or (
-            cache_age_seconds is not None and cache_age_seconds > settings.forecast_cache_ttl_seconds
-        )
-    )
-    if waiting_for_first_attempt:
-        status = "WAITING"
-    elif last_failure_reason and not last_success_at:
-        status = "FAILED"
-    elif stale:
-        status = "STALE"
-    elif persistence_error or last_failure_reason:
-        status = "DEGRADED"
-    elif last_success_at:
-        status = "HEALTHY"
-    else:
-        status = "WAITING"
-    return {
-        "status": status,
-        "last_attempt_at": last_attempt_at,
-        "last_success_at": last_success_at,
-        "last_failure_reason": last_failure_reason,
-        "cache_age_seconds": cache_age_seconds,
-        "cache_ttl_seconds": settings.forecast_cache_ttl_seconds,
-        "stale": stale,
-        "persistence_error": persistence_error,
-    }
 
 
 def _websocket_health(settings: Settings, runner_status: dict[str, Any]) -> dict[str, Any]:
@@ -1385,7 +1328,7 @@ def _bot_status(
         status = "LATE"
     else:
         status = "STALE"
-    primary_input = "station" if settings.official_nowcast_entry_only else "forecast"
+    primary_input = "station"
     component_statuses = {
         str(health.get(primary_input, {}).get("status") or ""),
         str(health.get("websocket", {}).get("status") or ""),
@@ -1529,10 +1472,7 @@ def build_dashboard_payload(settings: Settings | None = None, auth_required: boo
         "station": station_health,
         "websocket": websocket_health,
     }
-    bot_health = {
-        "forecast": _forecast_health(settings, runner_status),
-        **health,
-    }
+    bot_health = health
     positions = [
         _position_payload(
             p,

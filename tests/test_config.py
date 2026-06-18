@@ -11,16 +11,15 @@ def test_supported_city_allowlist_is_not_used_as_discovery_event_cap():
     assert Settings.discovery_page_size == 100
 
 
-def test_default_forecast_budget_batch_mode():
-    # Batch mode: 15 s within-batch gap, 14400 s (4 h) cache TTL between batches.
-    # Budget: 48 trading-ready cities x 6 batches/day x 31 units = 8 928 units/day < 10 000 limit.
+def test_default_station_strategy_is_official_lock_only():
     assert Settings.stream_cycle_interval_seconds == 2400
-    assert Settings.forecast_cache_ttl_seconds == 14400
-    assert Settings.forecast_request_min_interval_seconds == 15
-    assert Settings.forecast_rate_limit_state_path == ""
-    batches_per_day = 86400 // Settings.forecast_cache_ttl_seconds
-    assert 48 * batches_per_day * 31 == 8928
-    assert 48 * batches_per_day * 31 < 10000
+    assert not hasattr(Settings, "forecast_cache_ttl_seconds")
+    assert not hasattr(Settings, "forecast_request_min_interval_seconds")
+    assert not hasattr(Settings, "forecast_rate_limit_state_path")
+    assert Settings.bankroll_usd == 200.0
+    assert Settings.official_nowcast_entry_only is True
+    assert Settings.official_nowcast_lock_base_entry_fraction == 0.20
+    assert Settings.official_nowcast_lock_strong_entry_fraction == 0.50
 
 
 def test_default_realtime_orderbook_rest_snapshot_is_bounded_verification():
@@ -64,11 +63,11 @@ def test_default_settlement_runner_is_bounded_and_enabled():
 
 
 def test_default_city_date_portfolio_caps_shrink_after_one_thousand_dollars():
-    assert Settings.bankroll_usd == 100.0
+    assert Settings.bankroll_usd == 200.0
     assert Settings.size_mode == "kelly"
     assert Settings.entry_fraction == 0.20
     assert Settings.fractional_kelly == 0.50
-    assert Settings.max_single_market_fraction == 0.15
+    assert Settings.max_single_market_fraction == 0.50
     assert Settings.add_to_position_drop_pct == 0.10
     assert Settings.max_city_exposure_fraction == 0.20
     assert Settings.max_event_date_exposure_fraction == 0.10
@@ -81,7 +80,7 @@ def test_default_city_date_portfolio_caps_shrink_after_one_thousand_dollars():
     assert Settings.max_total_exposure_fraction == 0.90
     assert Settings.min_order_usd == 10.0
     assert Settings.official_nowcast_lock_enabled is True
-    assert Settings.official_nowcast_entry_only is False
+    assert Settings.official_nowcast_entry_only is True
     assert Settings.official_nowcast_lock_base_entry_fraction == 0.20
     assert Settings.official_nowcast_lock_strong_entry_fraction == 0.50
     assert Settings.official_nowcast_lock_near_close_hours == 3.0
@@ -92,7 +91,7 @@ def test_default_city_date_portfolio_caps_shrink_after_one_thousand_dollars():
 def test_default_settings_pass_numeric_range_validation():
     settings = Settings()
 
-    assert settings.bankroll_usd == 100.0
+    assert settings.bankroll_usd == 200.0
     assert settings.min_order_usd == 10.0
     assert settings.max_total_exposure_fraction == 0.90
 
@@ -127,27 +126,11 @@ def test_settings_rejects_dashboard_port_outside_tcp_range(dashboard_port):
     assert "between 1 and 65535" in str(exc_info.value)
 
 
-def test_settings_defaults_to_batch_mode_forecast_interval():
-    # Within-batch gap is 15 s; between-batch gap is controlled by cache TTL (14400 s).
-    settings = Settings()
-
-    assert settings.forecast_request_min_interval_seconds == 15
-
-
-@pytest.mark.parametrize("interval_seconds", [0, 5, 9])
-def test_settings_rejects_forecast_request_spacing_below_ten_seconds(interval_seconds):
-    with pytest.raises(ValueError, match="FORECAST_REQUEST_MIN_INTERVAL_SECONDS") as exc_info:
-        Settings(forecast_request_min_interval_seconds=interval_seconds)
-
-    assert "at least 10" in str(exc_info.value)
-
-
 @pytest.mark.parametrize(
     ("override", "expected_name"),
     [
         ({"bankroll_usd": 0.0}, "BANKROLL_USD"),
         ({"stream_cycle_interval_seconds": 0}, "STREAM_CYCLE_INTERVAL_SECONDS"),
-        ({"forecast_cache_ttl_seconds": 0}, "FORECAST_CACHE_TTL_SECONDS"),
         ({"orderbook_stream_stale_seconds": 0}, "ORDERBOOK_STREAM_STALE_SECONDS"),
     ],
 )
@@ -250,32 +233,6 @@ def test_load_settings_reads_conservative_strategy_controls(monkeypatch):
     assert settings.official_nowcast_lock_near_close_hours == 2.5
     assert settings.official_nowcast_lock_yes_base_buffer_c == 0.40
     assert settings.official_nowcast_lock_yes_strong_buffer_c == 0.80
-
-
-def test_load_settings_reads_forecast_cache_controls(monkeypatch):
-    monkeypatch.setenv("FORECAST_CACHE_PATH", "data/custom_forecast_cache.json")
-    monkeypatch.setenv("FORECAST_CACHE_TTL_SECONDS", "600")
-    monkeypatch.setenv("FORECAST_REQUEST_MIN_INTERVAL_SECONDS", "90")
-    monkeypatch.setenv("FORECAST_REQUEST_LOG_PATH", "data/custom_forecast_request_log.jsonl")
-    monkeypatch.setenv("FORECAST_RATE_LIMIT_STATE_PATH", "data/custom_forecast_rate_limit_state.json")
-
-    settings = load_settings()
-
-    assert settings.forecast_cache_path == "data/custom_forecast_cache.json"
-    assert settings.forecast_cache_ttl_seconds == 600
-    assert settings.forecast_request_min_interval_seconds == 90
-    assert settings.forecast_request_log_path == "data/custom_forecast_request_log.jsonl"
-    assert settings.forecast_rate_limit_state_path == "data/custom_forecast_rate_limit_state.json"
-
-
-@pytest.mark.parametrize("raw", ["0", "5", "9"])
-def test_load_settings_rejects_forecast_request_spacing_below_ten_seconds(monkeypatch, raw):
-    monkeypatch.setenv("FORECAST_REQUEST_MIN_INTERVAL_SECONDS", raw)
-
-    with pytest.raises(ValueError, match="FORECAST_REQUEST_MIN_INTERVAL_SECONDS") as exc_info:
-        load_settings()
-
-    assert "at least 10" in str(exc_info.value)
 
 
 def test_load_settings_reads_station_nowcast_controls(monkeypatch):

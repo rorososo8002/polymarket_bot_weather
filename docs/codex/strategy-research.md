@@ -1,13 +1,14 @@
 # Strategy Research And Trading Rules
 
-Read this file only for strategy changes, probability modeling, trading behavior, market discovery, risk, or realtime orderbook work.
+Read this file only for strategy changes, station-signal modeling, trading behavior, market discovery, risk, or realtime orderbook work.
 
 ## Mission
 
 - Improve risk-adjusted paper-trading returns over time, not merely service uptime.
 - Treat every strategy change as a research-backed hypothesis. State the motivating market behavior, math, empirical evidence, or paper and finance reference.
 - Prefer expected value, calibration, Kelly or fractional Kelly, liquidity, slippage, and drawdown-aware reasoning over ad hoc thresholds.
-- Use paper-trading data to study entries, exits, spreads, forecast error, station bias, market type, city, date horizon, and time to resolution.
+- Use paper-trading data to study entries, exits, spreads, station evidence,
+  market type, city, date horizon, and time to resolution.
 - Document strategy rules so a fresh AI can reimplement them from the repo alone.
 - When a trade behaves unexpectedly, update both code and production docs with the prevention rule before continuing strategy work.
 
@@ -18,14 +19,11 @@ Read this file only for strategy changes, probability modeling, trading behavior
 - Unknown markets and unknown stations are skips, not guesses or city-centroid fallbacks.
 - The current paper strategy is temperature-only. There is no environment
   switch that re-enables non-temperature weather markets.
-- Refresh forecast data through the Open-Meteo cache with
-  `FORECAST_CACHE_TTL_SECONDS=14400`. Real Open-Meteo forecast HTTP calls are
-  globally serialized by `FORECAST_REQUEST_MIN_INTERVAL_SECONDS=15`; cache hits
-  do not consume the Open-Meteo request budget.
-- Apply the forecast TTL to memory and disk cache entries alike. A reachable
-  dashboard is not proof of fresh forecast data; inspect the last successful
-  forecast time and cache age.
-- If Open-Meteo is rate-limited or ensemble data is unavailable, do not treat deterministic fallback as real forecast evidence. Mark strategy evaluation invalid or skipped.
+- Paper-entry signals come from official settlement-station observations.
+  A reachable dashboard is not proof of fresh station data; inspect the latest
+  station observation timestamp, provider cooldown, and request-log evidence.
+- If station observation data is missing, stale, malformed, or mapped to the
+  wrong station/date, mark the strategy evaluation skipped.
 - Realtime orderbook requirements mean the CLOB WebSocket stream by default. Do not silently replace realtime monitoring with polling.
 - Treat WebSocket process liveness, receiver-thread liveness, incoming-message
   freshness, and actual order-book price freshness as separate checks.
@@ -36,22 +34,21 @@ Read this file only for strategy changes, probability modeling, trading behavior
   entry spread and slippage; do not subtract them twice. Evaluate conservative
   settlement value separately so high prices are judged by remaining return,
   not rejected by a blanket cap.
-- Current exact Celsius strategy is source-display aware. The old rule counted
-  only exact decimal forecast-member equality, which made near-bucket NO look
-  falsely cheap. The new rule estimates the chance that the settlement source
-  displays the selected whole-degree Celsius integer, then blocks NO only on
-  the forecast-mean modal integer bucket. Adjacent or tail NO entries still need
+- Current exact Celsius strategy is source-display aware. For an exact whole-C
+  daily-high market, observed `23.9C` still belongs to the displayed `23C`
+  bucket, while observed `24.0C` breaks the `23C` YES thesis and creates a
+  strong NO lock. Near settlement, an observed value that remains safely inside
+  the bucket may create a base or strong YES lock. Any entry still needs
   executable depth, after-fee edge, expected return, and portfolio approval.
 - Discover weather events before binary submarkets. One city-date temperature
   event can contain lower-tail, exact, and upper-tail buckets. Expand every
   supported weather-category event found, compute bucket probabilities from
   shared non-overlapping boundaries, and report actual event, city, market, and
   token coverage. The 49-city station registry is not an event-count cutoff.
-- Use settlement-station nowcast only from explicitly mapped same-station
-  observation providers. Current providers derive observed high/low extrema
-  from one station-date response when possible. Missing, stale, malformed,
-  future-date, or unmapped observations keep the decision forecast-only and
-  skip nowcast-dependent logic.
+- Use settlement-station observations only from explicitly mapped same-station
+  providers. Current providers derive observed high/low extrema from one
+  station-date response when possible. Missing, stale, malformed, future-date,
+  or unmapped observations skip new entries.
 - Select entries at the city-date portfolio level. A small paper account below
   `$1,000` shares a 10% city-date budget across at most two complementary
   non-overlapping temperature buckets. At `$1,000` or more, shrink that shared

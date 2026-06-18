@@ -366,7 +366,7 @@ def parse_weather_question(question: str) -> ParsedWeatherQuestion:
     if date_hint:
         confidence += 0.05
     else:
-        notes.append("exact event date not parsed; using 7-day forecast horizon")
+        notes.append("exact event date not parsed; station target date must be inferred or skipped")
 
     return ParsedWeatherQuestion(
         city=city,

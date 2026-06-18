@@ -12,7 +12,7 @@ private keys, signing, real orders, redemption, claims, copy trading, or
 
 ## Experiment Version
 
-Every material strategy, parser, forecast, sizing, portfolio, settlement, or
+Every material strategy, parser, station-evidence, sizing, portfolio, settlement, or
 risk-rule change starts a new experiment version.
 
 Record the version label in the daily notes or report folder before judging the
@@ -57,7 +57,7 @@ planned.
    positive but bid/ask-depth net PnL is not, the gate fails.
 6. Liquidity check: no-liquidity exit blockers are counted and explained. A
    high or unexplained no-liquidity rate fails the gate.
-7. Stale-data check: stale forecasts, stale nowcast, and stale order books do
+7. Stale-data check: stale official-station observations and stale order books do
    not create fake entries, fake closes, or trusted PnL.
 8. Shape check: exact, range, threshold, daily-high, and daily-low results are
    separated before claiming strategy quality.

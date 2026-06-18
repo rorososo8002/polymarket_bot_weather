@@ -9,7 +9,6 @@ import pytest
 from weather_bot import live_paper_runner as runner_module
 from weather_bot.config import Settings
 from weather_bot.live_paper_runner import (
-    ForecastSignalScheduler,
     RealtimeEvaluationCoalescer,
     StreamBackedPolymarketClient,
     _stream_market_registry,
@@ -17,7 +16,7 @@ from weather_bot.live_paper_runner import (
 )
 from weather_bot.models import OrderBook, OrderLevel, PaperPosition, PaperState, RawMarket, WeatherSignal
 from weather_bot.nowcast import StationNowcastObservation
-from weather_bot.probability import OpenMeteoEnsembleClient, _today_for_timezone
+from weather_bot.station_signal import _today_for_timezone
 from weather_bot.weather_client import parse_weather_question
 
 
@@ -462,7 +461,7 @@ def test_realtime_forever_filters_non_temperature_before_probability_estimator(t
     assert set(stream_tokens) == {"temp-yes", "temp-no"}
 
 
-def test_realtime_forever_starts_websocket_before_forecast_signal_warmup(tmp_path, monkeypatch):
+def test_realtime_forever_starts_websocket_before_station_signal_evaluation(tmp_path, monkeypatch):
     questions = [
         "Will the highest temperature in Seoul be 27C or higher today?",
         "Will the highest temperature in Tokyo be 31C or higher today?",
@@ -472,7 +471,7 @@ def test_realtime_forever_starts_websocket_before_forecast_signal_warmup(tmp_pat
         RawMarket("tokyo", questions[1], "tokyo", True, False, "tokyo-yes", "tokyo-no"),
     ]
     probability_calls: list[str] = []
-    forecast_calls_seen_by_stream: list[str] = []
+    station_calls_seen_by_stream: list[str] = []
 
     class FakeClient:
         def __init__(self, *_args, **_kwargs):
@@ -489,7 +488,7 @@ def test_realtime_forever_starts_websocket_before_forecast_signal_warmup(tmp_pat
             pass
 
         def start(self, token_ids):
-            forecast_calls_seen_by_stream.extend(probability_calls)
+            station_calls_seen_by_stream.extend(probability_calls)
             assert set(token_ids) == {"seoul-yes", "seoul-no", "tokyo-yes", "tokyo-no"}
             raise RuntimeError("stop after early stream start")
 
@@ -523,12 +522,12 @@ def test_realtime_forever_starts_websocket_before_forecast_signal_warmup(tmp_pat
     with pytest.raises(RuntimeError, match="stop after error backoff"):
         runner_module.run_realtime_forever(settings)
 
-    assert forecast_calls_seen_by_stream == []
+    assert station_calls_seen_by_stream == []
     assert probability_calls == []
 
 
 def test_realtime_cycle_discards_pending_evaluations_before_stopping_stream(tmp_path, monkeypatch):
-    question = "Will the highest temperature in Seoul be 27C or higher today?"
+    question = "Will the highest temperature in Seoul be 27C today?"
     market = RawMarket("seoul", question, "seoul", True, False, "yes", "no", event_id="seoul-today")
     call_order: list[str] = []
     discovery_calls = 0
@@ -563,19 +562,6 @@ def test_realtime_cycle_discards_pending_evaluations_before_stopping_stream(tmp_
         def status_snapshot(self):
             return {"thread_alive": True, "queue_depth": 1}
 
-    class RecordingForecastWorker:
-        def __init__(self, **_kwargs):
-            pass
-
-        def start(self):
-            call_order.append("forecast.start")
-
-        def stop(self):
-            call_order.append("forecast.stop")
-
-        def status_snapshot(self):
-            return {"thread_alive": True}
-
     class RecordingStream:
         def __init__(self, *_args, **_kwargs):
             pass
@@ -592,7 +578,6 @@ def test_realtime_cycle_discards_pending_evaluations_before_stopping_stream(tmp_
 
     monkeypatch.setattr(runner_module, "PolymarketClient", FakeClient)
     monkeypatch.setattr(runner_module, "RealtimeEvaluationCoalescer", RecordingEvaluator)
-    monkeypatch.setattr(runner_module, "RealtimeForecastSignalWorker", RecordingForecastWorker)
     monkeypatch.setattr(runner_module, "OrderBookMarketStream", RecordingStream)
 
     class PlannedCycleDateTime:
@@ -629,14 +614,12 @@ def test_realtime_cycle_discards_pending_evaluations_before_stopping_stream(tmp_
     with pytest.raises(RuntimeError, match="stop after error backoff"):
         runner_module.run_realtime_forever(settings)
 
-    assert call_order[:5] == [
+    assert call_order[:3] == [
         "evaluator.start",
         "stream.start",
-        "forecast.start",
         "evaluator.stop(drain=False)",
-        "forecast.stop",
     ]
-    assert call_order[5] == "stream.stop"
+    assert call_order[3] == "stream.stop"
 
 
 def test_realtime_update_without_signal_fails_closed_without_order_book_lookup(tmp_path):
@@ -645,7 +628,7 @@ def test_realtime_update_without_signal_fails_closed_without_order_book_lookup(t
 
     class FakeClient:
         def get_order_book(self, token_id):
-            raise AssertionError(f"forecast-pending market must not read order book for {token_id}")
+            raise AssertionError(f"non-lock station market must not read order book for {token_id}")
 
     settings = Settings(
         state_path=str(tmp_path / "state.json"),
@@ -673,121 +656,8 @@ def test_realtime_update_without_signal_fails_closed_without_order_book_lookup(t
     with (tmp_path / "decisions.csv").open(newline="", encoding="utf-8") as f:
         rows = list(csv.DictReader(f))
     assert rows[0]["side"] == "SKIP"
-    assert "forecast signal pending" in rows[0]["reason"]
+    assert "official-station-entry-only" in rows[0]["reason"]
     assert broker.state.positions == []
-
-
-def test_forecast_signal_scheduler_uses_priority_then_resumes_round_robin():
-    seoul = RawMarket(
-        "seoul",
-        "Will the highest temperature in Seoul be 27C or higher today?",
-        "seoul",
-        True,
-        False,
-        "seoul-yes",
-        "seoul-no",
-    )
-    tokyo = RawMarket(
-        "tokyo",
-        "Will the highest temperature in Tokyo be 31C or higher today?",
-        "tokyo",
-        True,
-        False,
-        "tokyo-yes",
-        "tokyo-no",
-    )
-    now = datetime(2026, 6, 2, 12, 0, tzinfo=timezone.utc)
-    scheduler = ForecastSignalScheduler([seoul, tokyo], open_market_ids={"seoul"})
-    scheduler.mark_success(tokyo, now - timedelta(minutes=41))
-    scheduler.mark_success(seoul, now - timedelta(minutes=31))
-    scheduler.enqueue_priority(seoul, "HELD_POSITION", now=now)
-    scheduler.enqueue_priority(seoul, "ACTIVE_EVALUATION_STALE_SIGNAL", now=now)
-
-    first = scheduler.next_task(now)
-    assert first is not None
-    assert first.lane == "priority"
-    assert first.market_ids == ["seoul"]
-    assert first.priority_reason == "HELD_POSITION,ACTIVE_EVALUATION_STALE_SIGNAL"
-
-    scheduler.mark_success(seoul, now)
-    second = scheduler.next_task(now)
-
-    assert second is not None
-    assert second.lane == "round_robin"
-    assert second.market_ids == ["tokyo"]
-
-
-def test_realtime_signal_stale_uses_forecast_scheduler_ttl_not_nowcast_cache_ttl():
-    market = RawMarket(
-        "seoul",
-        "Will the highest temperature in Seoul be 27C or higher today?",
-        "seoul",
-        True,
-        False,
-        "seoul-yes",
-        "seoul-no",
-    )
-    now = datetime(2026, 6, 2, 12, 0, tzinfo=timezone.utc)
-    scheduler = ForecastSignalScheduler(
-        [market],
-        general_ttl_seconds=40 * 60,
-        held_ttl_seconds=30 * 60,
-        priority_ttl_seconds=20 * 60,
-    )
-    scheduler.mark_success(market, now - timedelta(minutes=6))
-    settings = Settings(station_nowcast_cache_ttl_seconds=300)
-
-    stale = runner_module._realtime_signal_is_stale(
-        market,
-        settings,
-        {market.market_id: now - timedelta(minutes=6)},
-        forecast_scheduler=scheduler,
-        now=now,
-    )
-
-    assert stale is False
-
-
-def test_forecast_worker_marks_signal_refresh_time_not_cached_forecast_time():
-    market = RawMarket(
-        "seoul",
-        "Will the highest temperature in Seoul be 27C or higher today?",
-        "seoul",
-        True,
-        False,
-        "seoul-yes",
-        "seoul-no",
-    )
-    scheduler = ForecastSignalScheduler([market])
-    task = scheduler.next_task(datetime(2026, 6, 2, 12, 0, tzinfo=timezone.utc))
-    assert task is not None
-    cached_forecast_at = datetime(2026, 6, 2, 9, 0, tzinfo=timezone.utc)
-
-    class CachedForecastClient:
-        def health_snapshot(self):
-            return {"last_success_at": cached_forecast_at.isoformat()}
-
-    worker = runner_module.RealtimeForecastSignalWorker(
-        scheduler=scheduler,
-        settings=Settings(),
-        signals_by_market={},
-        signal_refreshed_at_by_market={},
-        market_types={},
-        enqueue_tokens=lambda _tokens: None,
-        probability_estimator=lambda question, **_kwargs: WeatherSignal(
-            0.70,
-            0.90,
-            "cached-forecast+fresh-nowcast",
-            "fresh signal from cached forecast answer",
-            parse_weather_question(question),
-        ),
-        ensemble_client=CachedForecastClient(),
-    )
-
-    result = worker._process_task(task)
-
-    assert result.success_at > cached_forecast_at
-    assert (datetime.now(timezone.utc) - result.success_at).total_seconds() < 5
 
 
 def test_realtime_forever_records_missing_websocket_dependency_in_status(tmp_path, monkeypatch):
@@ -859,47 +729,26 @@ def test_realtime_forever_records_missing_websocket_dependency_in_status(tmp_pat
     assert "No module named 'websocket'" in status["websocket"]["status_reason"]
 
 
-def test_realtime_update_refreshes_nowcast_signal_after_station_cache_ttl_without_refetching_forecast(tmp_path, monkeypatch):
-    target = _today_for_timezone("Asia/Seoul")
-    question = "Will the highest temperature in Seoul be 27C or higher today?"
+def test_realtime_update_refreshes_station_signal_after_nowcast_cache_ttl(tmp_path):
+    signal_refreshed_at = datetime(2026, 6, 2, 13, 0, tzinfo=timezone.utc)
+    target = _today_for_timezone("Asia/Seoul", now=signal_refreshed_at)
+    question = "Will the highest temperature in Seoul be 27C today?"
     market = RawMarket("seoul-27c", question, "seoul-27c", True, False, "yes", "no", event_id="seoul-today")
-    http_calls = 0
-
-    class FakeForecastResponse:
-        status_code = 200
-
-        def raise_for_status(self):
-            return None
-
-        def json(self):
-            return {
-                "daily": {
-                    "time": [target.isoformat()],
-                    "temperature_2m_max": [78.0],
-                    "temperature_2m_max_member01": [79.0],
-                    "temperature_2m_max_member02": [80.0],
-                    "temperature_2m_max_member03": [81.0],
-                }
-            }
-
-    def fake_forecast_get(*_args, **_kwargs):
-        nonlocal http_calls
-        http_calls += 1
-        return FakeForecastResponse()
 
     class ChangingNowcastProvider:
         def __init__(self):
             self.calls = 0
 
         def observed_high_so_far(self, station, *, target_date, now=None):
+            assert target_date == target
             self.calls += 1
-            observed_high_c = 25.0 if self.calls == 1 else 27.0
+            observed_high_c = 27.4 if self.calls == 1 else 27.2
             return StationNowcastObservation(
                 station_id=station.station_id,
                 station_name=station.station_name,
                 observed_high_c=observed_high_c,
-                observed_at=datetime(2026, 6, 2, 8, 0, tzinfo=timezone.utc),
-                high_observed_at=datetime(2026, 6, 2, 8, 0, tzinfo=timezone.utc),
+                observed_at=now,
+                high_observed_at=now,
                 source="aviationweather-metar",
                 source_url="https://aviationweather.gov/api/data/metar",
                 settlement_source_url="https://www.wunderground.com/history/daily/kr/incheon/RKSI",
@@ -917,28 +766,23 @@ def test_realtime_update_refreshes_nowcast_signal_after_station_cache_ttl_withou
                 asks=[OrderLevel(0.50, 100)],
             )
 
-    monkeypatch.setattr("weather_bot.probability.requests.get", fake_forecast_get)
     settings = Settings(
         state_path=str(tmp_path / "state.json"),
         trades_csv_path=str(tmp_path / "trades.csv"),
         decisions_csv_path=str(tmp_path / "decisions.csv"),
         raw_snapshots_path=str(tmp_path / "raw.jsonl"),
         portfolio_decisions_jsonl_path=str(tmp_path / "portfolio.jsonl"),
-        forecast_cache_path=str(tmp_path / "forecast_cache.json"),
-        forecast_cache_ttl_seconds=2400,
         station_nowcast_cache_ttl_seconds=900,
         min_net_edge=0.99,
     )
-    ensemble_client = OpenMeteoEnsembleClient.from_settings(settings)
     nowcast_provider = ChangingNowcastProvider()
     initial_signal = runner_module._call_probability_estimator(
         runner_module.estimate_weather_probability,
         question,
         settings=settings,
-        ensemble_client=ensemble_client,
         observation_provider=nowcast_provider,
+        now=signal_refreshed_at,
     )
-    signal_refreshed_at = datetime(2026, 6, 2, 0, 0, tzinfo=timezone.utc)
     broker = runner_module.PaperBroker(settings)
     signals_by_market = {market.market_id: initial_signal}
 
@@ -952,15 +796,14 @@ def test_realtime_update_refreshes_nowcast_signal_after_station_cache_ttl_withou
         {market.market_id: "temperature"},
         {},
         signal_refreshed_at_by_market={market.market_id: signal_refreshed_at},
-        ensemble_client=ensemble_client,
         observation_provider=nowcast_provider,
         now=signal_refreshed_at + timedelta(seconds=settings.station_nowcast_cache_ttl_seconds + 1),
     )
 
     assert nowcast_provider.calls == 2
-    assert http_calls == 1
-    assert signals_by_market[market.market_id].nowcast["observed_high_c"] == 27.0
-    assert "evidence=forecast-plus-nowcast" in signals_by_market[market.market_id].note
+    assert signals_by_market[market.market_id].nowcast["observed_high_c"] == 27.2
+    assert signals_by_market[market.market_id].source == "official-station-lock-strong_yes"
+    assert "evidence=official-station" in signals_by_market[market.market_id].note
 
 
 def test_realtime_update_computes_held_exit_edge_with_fresh_signal(tmp_path):
@@ -1018,7 +861,13 @@ def test_realtime_update_computes_held_exit_edge_with_fresh_signal(tmp_path):
         )
     ]
     signals_by_market = {
-        market.market_id: WeatherSignal(0.20, 0.90, "test", "fresh signal", parse_weather_question(question))
+        market.market_id: WeatherSignal(
+            0.20,
+            0.90,
+            "official-station-lock-test",
+            "official_nowcast_lock=test; fresh signal",
+            parse_weather_question(question),
+        )
     }
     latest_edges: dict[tuple[str, str], runner_module.EdgeResult] = {}
 

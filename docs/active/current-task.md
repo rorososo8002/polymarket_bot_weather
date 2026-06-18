@@ -4,25 +4,33 @@ Status: active
 
 ## Objective
 
-Register the eight verified Polymarket temperature settlement stations missing
-from the local registry and deploy the expanded paper-execution universe.
+Replace the model-led paper strategy with an official settlement-station
+observation strategy, deploy it, and reset the paper experiment to a fresh
+$200 account.
 
 ## Current Scope
 
-- Add Austin/KAUS, Denver/KBKF, Houston/KHOU, Kuala Lumpur/WMKK,
-  Lucknow/VILK, Mexico City/MMMX, San Francisco/KSFO, and Sao Paulo/SBGR.
-- Target 49 registered cities and 48 trading-ready cities; Karachi remains
-  excluded.
-- Raise the Open-Meteo answer-cache TTL from 3 hours to 4 hours so
-  48 x 6 x 31 = 8,928 daily units remains below the 10,000-unit limit.
-- Keep paper-only execution and same-station fail-closed behavior.
+- Remove model-only new-entry behavior from the active runner.
+- Use only explicit official settlement-station nowcast/observation evidence
+  for new entries.
+- Whole-degree Celsius exact buckets use source-display integer settlement:
+  `23.7C` remains in the `23C` bucket; `24.0C` breaks a daily-high `23C`
+  YES and creates the strong NO lock.
+- Official station lock sizing is 20% for base lock and 50% for strong lock,
+  still subject to executable depth, fees, spread, expected return, and
+  exposure caps.
+- Keep execution paper-only. Do not add wallet, key, signing, real orders, or
+  live trading paths.
+- Deploy the strategy to the Oracle VPS after local verification and reset
+  runtime ledgers/archives for a fresh $200 paper experiment.
 
 ## Next Action
 
-Write and run focused failing tests for registry metadata, AWC bulk coverage,
-dashboard counts, and the four-hour forecast budget.
+Complete local verification, deploy the official settlement-station strategy to
+the Oracle VPS, and reset runtime ledgers/archives for a fresh $200 experiment.
 
 ## New Chat Prompt
 
-Continue `docs/superpowers/plans/2026-06-19-expand-temperature-stations.md`
-from the focused failing-test step.
+Continue the official settlement-station strategy conversion. Keep the bot
+paper-only, deploy after verification, then reset server runtime ledgers and
+archives for a fresh $200 paper account.

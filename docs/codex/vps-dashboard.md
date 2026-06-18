@@ -21,7 +21,7 @@ below when the first command fails or when a task needs more detail.
 
 - Before diagnosing live bot behavior, identify the authoritative runtime source.
 - If a dashboard is reached through `127.0.0.1`, an SSH tunnel, or a public VPS URL, verify whether its data comes from local files or `/opt/polymarket-weather-bot/data` on the VPS.
-- Do not treat dashboard liveness as bot correctness. Check `systemctl status`, `paper_runner_status.json`, recent `paper_decisions.csv`, recent `paper_trades.csv`, forecast cache freshness, and relevant env values.
+- Do not treat dashboard liveness as bot correctness. Check `systemctl status`, `paper_runner_status.json`, recent `paper_decisions.csv`, recent `paper_trades.csv`, station observation freshness, and relevant env values.
 
 ## Dashboard Access
 

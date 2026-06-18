@@ -6,7 +6,7 @@ paper-trading dashboard.
 ## Purpose
 
 The dashboard is an operator surface. It should show whether the paper bot is
-alive, whether forecast/order-book data is fresh, what positions are open, and
+alive, whether station/order-book data is fresh, what positions are open, and
 what realized paper PnL has been recorded. It must not behave like an expensive
 offline analytics job on every refresh.
 
@@ -30,7 +30,7 @@ paper_state.json
 paper_trades.csv
 paper_decisions.csv
 paper_event_portfolios.jsonl
-forecast_cache.json
+station_nowcast_request_log.jsonl
 paper_runner_status.json
 ```
 
@@ -51,10 +51,10 @@ bounded tail read; do not load the entire file per refresh.
 - Account summary: cash, open position count, total entry cost, realized profit,
   realized loss, and portfolio/equity indicators.
 - Open positions: market title/link, side, shares, entry price, mark price,
-  unrealized PnL, city/date hint, and latest forecast context when available.
+  unrealized PnL, city/date hint, and latest station context when available.
 - Realized PnL: closed/settled/partial-close rows sorted newest first by parsed
   close time.
-- Scanner/status: runner phase, forecast health, WebSocket health, recent
+- Scanner/status: runner phase, station health, WebSocket health, recent
   market-evaluation errors, and latest event-portfolio decision summary.
 
 ## Performance Contract

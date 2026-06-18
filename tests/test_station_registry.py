@@ -32,10 +32,8 @@ def test_station_audit_rows_cover_every_supported_city():
     assert {row["city"] for row in rows} == set(STATION_MAP)
 
 
-def test_station_audit_rows_explain_forecast_and_rule_evidence_status():
+def test_station_audit_rows_explain_rule_evidence_status():
     for row in station_audit_rows():
-        assert row["forecast_source"] == "open-meteo-ensemble"
-        assert row["forecast_location_source"] == "settlement_station_coordinates"
         assert row["station_verification_status"] == "verified_from_existing_registry"
         if row["trading_ready"]:
             assert row["rule_evidence_status"] == "verified_rule_source"

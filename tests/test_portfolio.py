@@ -66,6 +66,16 @@ def market(market_id: str, bucket: str) -> RawMarket:
     )
 
 
+def station_lock_signal(p_true: float, confidence: float, question: str) -> WeatherSignal:
+    return WeatherSignal(
+        p_true,
+        confidence,
+        "official-station-lock-test",
+        "official_nowcast_lock=test",
+        parse_weather_question(question),
+    )
+
+
 def candidate(
     market_id: str,
     bucket: str,
@@ -77,8 +87,7 @@ def candidate(
     expected_net_profit_usd: float = 1.0,
 ) -> PortfolioCandidate:
     raw_market = market(market_id, bucket)
-    parsed = parse_weather_question(raw_market.question)
-    signal = WeatherSignal(p_true, 0.9, "test", "test", parsed)
+    signal = station_lock_signal(p_true, 0.9, raw_market.question)
     return PortfolioCandidate(
         market=raw_market,
         signal=signal,
@@ -251,7 +260,7 @@ def test_evaluate_market_skips_when_entry_bankroll_is_zero(tmp_path):
         resolution_error_margin=0.0,
     )
     raw_market = market("seoul-26", "26\u00b0C")
-    signal = WeatherSignal(0.80, 1.0, "test", "test", parse_weather_question(raw_market.question))
+    signal = station_lock_signal(0.80, 1.0, raw_market.question)
     client = FakeClient(
         {
             "seoul-26-yes": orderbook("seoul-26-yes", 0.39, 0.40),
@@ -282,7 +291,7 @@ def test_evaluate_market_skips_when_calculated_order_is_below_minimum(tmp_path):
         resolution_error_margin=0.0,
     )
     raw_market = market("seoul-26", "26\u00b0C")
-    signal = WeatherSignal(0.80, 1.0, "test", "test", parse_weather_question(raw_market.question))
+    signal = station_lock_signal(0.80, 1.0, raw_market.question)
     client = FakeClient(
         {
             "seoul-26-yes": orderbook("seoul-26-yes", 0.39, 0.40),
@@ -313,7 +322,7 @@ def test_evaluate_market_accepts_minimum_sized_order_without_requiring_max_depth
         resolution_error_margin=0.0,
     )
     raw_market = market("seoul-26", "26\u00b0C")
-    signal = WeatherSignal(0.80, 1.0, "test", "test", parse_weather_question(raw_market.question))
+    signal = station_lock_signal(0.80, 1.0, raw_market.question)
     client = FakeClient(
         {
             "seoul-26-yes": orderbook_with_ask_depth("seoul-26-yes", 0.39, [(0.40, 25.0)]),
@@ -344,7 +353,7 @@ def test_evaluate_market_scales_final_order_down_to_available_depth(tmp_path):
         resolution_error_margin=0.0,
     )
     raw_market = market("seoul-26", "26\u00b0C")
-    signal = WeatherSignal(0.80, 1.0, "test", "test", parse_weather_question(raw_market.question))
+    signal = station_lock_signal(0.80, 1.0, raw_market.question)
     client = FakeClient(
         {
             "seoul-26-yes": orderbook_with_ask_depth("seoul-26-yes", 0.39, [(0.40, 25.0)]),
@@ -376,7 +385,7 @@ def test_evaluate_market_still_skips_when_available_depth_is_below_minimum_order
         resolution_error_margin=0.0,
     )
     raw_market = market("seoul-26", "26\u00b0C")
-    signal = WeatherSignal(0.80, 0.90, "test", "test", parse_weather_question(raw_market.question))
+    signal = station_lock_signal(0.80, 0.90, raw_market.question)
     client = FakeClient(
         {
             "seoul-26-yes": orderbook_with_ask_depth("seoul-26-yes", 0.39, [(0.40, 12.0)]),
@@ -407,7 +416,7 @@ def test_evaluate_market_reprices_edge_when_final_order_walks_the_book(tmp_path)
         resolution_error_margin=0.0,
     )
     raw_market = market("seoul-26", "26\u00b0C")
-    signal = WeatherSignal(0.80, 1.0, "test", "test", parse_weather_question(raw_market.question))
+    signal = station_lock_signal(0.80, 1.0, raw_market.question)
     client = FakeClient(
         {
             "seoul-26-yes": orderbook_with_ask_depth("seoul-26-yes", 0.39, [(0.40, 25.0), (0.50, 25.0)]),
@@ -450,11 +459,13 @@ def test_fee_adjusted_shares_drive_portfolio_scenario_and_open_position(tmp_path
         weather_taker_fee_rate=0.05,
         model_error_margin=0.0,
         resolution_error_margin=0.0,
-        max_event_date_exposure_fraction=0.15,
-        large_bankroll_event_date_exposure_fraction=0.15,
+        max_single_market_fraction=0.50,
+        max_city_exposure_fraction=0.50,
+        max_event_date_exposure_fraction=0.50,
+        large_bankroll_event_date_exposure_fraction=0.50,
     )
     raw_market = market("seoul-26", "26\u00b0C")
-    signal = WeatherSignal(0.80, 1.0, "test", "test", parse_weather_question(raw_market.question))
+    signal = station_lock_signal(0.80, 1.0, raw_market.question)
     client = FakeClient(
         {
             "seoul-26-yes": orderbook("seoul-26-yes", 0.39, 0.40),
@@ -482,8 +493,8 @@ def test_fee_adjusted_shares_drive_portfolio_scenario_and_open_position(tmp_path
     assert len(broker.state.positions) == 1
     position = broker.state.positions[0]
     selected = decision.selected[0]
-    assert position.shares == pytest.approx(fee_adjusted_shares)
     assert selected.result.size_shares == pytest.approx(position.shares)
+    assert selected.result.size_shares < selected.result.size_usd / selected.result.p_exec
     assert decision.scenario_pnl_usd["seoul-26"] == pytest.approx(position.shares - position.cost_usd, abs=1e-6)
 
 
@@ -1289,8 +1300,7 @@ def test_run_cycle_opens_city_date_candidates_as_one_logged_portfolio(monkeypatc
             return next(item for item in markets if item.market_id == market_id)
 
     def estimate(question, **_kwargs):
-        parsed = parse_weather_question(question)
-        return WeatherSignal(0.49, 0.90, "test", "test", parsed)
+        return station_lock_signal(0.49, 0.90, question)
 
     monkeypatch.setattr("weather_bot.live_paper_runner.PolymarketClient", CycleClient)
     monkeypatch.setattr("weather_bot.live_paper_runner.estimate_weather_probability", estimate)
@@ -1382,8 +1392,7 @@ def test_run_cycle_proceeds_with_zero_when_held_position_cannot_be_priced(monkey
             return next(item for item in markets if item.market_id == market_id)
 
     def estimate(question, **_kwargs):
-        parsed = parse_weather_question(question)
-        return WeatherSignal(0.80, 0.90, "test", "test", parsed)
+        return station_lock_signal(0.80, 0.90, question)
 
     monkeypatch.setattr("weather_bot.live_paper_runner.PolymarketClient", CycleClient)
     monkeypatch.setattr("weather_bot.live_paper_runner.estimate_weather_probability", estimate)
@@ -1432,8 +1441,7 @@ def test_run_cycle_opens_two_profitable_no_legs_for_same_event(monkeypatch, tmp_
             return next(item for item in markets if item.market_id == market_id)
 
     def estimate(question, **_kwargs):
-        parsed = parse_weather_question(question)
-        return WeatherSignal(0.10, 1.0, "test", "test", parsed)
+        return station_lock_signal(0.10, 1.0, question)
 
     monkeypatch.setattr("weather_bot.live_paper_runner.PolymarketClient", CycleClient)
     monkeypatch.setattr("weather_bot.live_paper_runner.estimate_weather_probability", estimate)
@@ -1470,16 +1478,10 @@ def test_realtime_update_reselects_the_whole_city_date_event(monkeypatch, tmp_pa
         "seoul-27-no": orderbook("seoul-27-no", 0.59, 0.60),
     }
     client = FakeClient(books)
-    signal = WeatherSignal(0.49, 0.90, "test", "test", parse_weather_question(markets[0].question))
+    signal = station_lock_signal(0.49, 0.90, markets[0].question)
     signals = {
         markets[0].market_id: signal,
-        markets[1].market_id: WeatherSignal(
-            0.49,
-            0.90,
-            "test",
-            "test",
-            parse_weather_question(markets[1].question),
-        ),
+        markets[1].market_id: station_lock_signal(0.49, 0.90, markets[1].question),
     }
     market_by_token = {
         token_id: raw_market

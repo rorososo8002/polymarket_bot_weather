@@ -8,7 +8,7 @@ This document is a handoff plan for a future live-trading project after the
 paper strategy is mature enough.
 
 The live project must not redesign the trading strategy. Entry logic, exit
-logic, fee math, risk limits, supported cities, settlement stations, forecast
+logic, fee math, risk limits, supported cities, settlement stations, station
 validation, and order-book evaluation should reuse the strategy already proven
 in the paper bot.
 
@@ -40,11 +40,9 @@ them:
   evidence are eligible for trading. `src/weather_bot/stations.py` and
   `STATION_MAP` are the station metadata source of truth, while
   `TRADING_READY_STATION_MAP` is the executable subset.
-- Open-Meteo forecasts use the paper bot's current forecast budget rules:
-  `FORECAST_CACHE_TTL_SECONDS=14400` for the forecast answer-sheet freshness
-  window, plus `FORECAST_REQUEST_MIN_INTERVAL_SECONDS=15` so real forecast HTTP
-  calls are one-at-a-time and spaced after the previous request finishes or
-  times out.
+- Paper entries use official settlement-station observations. Exact whole-C
+  markets use the source-display integer boundary: `23.7C` remains inside the
+  `23C` bucket, while `24.0C` breaks a daily-high `23C` YES thesis.
 - The bot uses the Polymarket CLOB market WebSocket for realtime order books and
   diagnoses dead receiver threads and stale books.
 - Expected net-return filtering includes entry VWAP, spread, slippage, and the

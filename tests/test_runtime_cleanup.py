@@ -15,7 +15,7 @@ def _write_bytes(path: Path, size: int, *, mtime: int) -> None:
 def test_prune_runtime_archive_deletes_oldest_diagnostic_archives_over_budget(tmp_path):
     archive = tmp_path / "archive"
     old = archive / "paper_event_portfolios.jsonl.1.zst"
-    middle = archive / "forecast_request_log.jsonl.1.zst"
+    middle = archive / "station_nowcast_request_log.jsonl.1.zst"
     newest = archive / "paper_raw_snapshots.29990101T000000Z.jsonl.gz"
     unknown = archive / "operator-note.txt"
     _write_bytes(old, 50, mtime=100)
@@ -32,6 +32,17 @@ def test_prune_runtime_archive_deletes_oldest_diagnostic_archives_over_budget(tm
     assert middle.exists()
     assert newest.exists()
     assert unknown.exists()
+
+
+def test_prune_runtime_archive_ignores_removed_forecast_archives(tmp_path):
+    archive_file = tmp_path / "archive" / "forecast_request_log.jsonl.1.zst"
+    _write_bytes(archive_file, 120, mtime=100)
+
+    summary = prune_runtime_archive(tmp_path, max_archive_bytes=50)
+
+    assert summary.deleted_files == []
+    assert summary.before_bytes == 0
+    assert archive_file.exists()
 
 
 def test_prune_runtime_archive_never_deletes_active_ledgers(tmp_path):

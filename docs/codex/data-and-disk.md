@@ -15,13 +15,11 @@ Everything else is noise that wastes disk and makes analysis harder.
   caused paper_state.json to grow unboundedly each cycle.
 
 ### Keep (7 days rolling)
-- `forecast_request_log.jsonl` — Open-Meteo call receipts; useful for rate-limit audits
-- `station_nowcast_request_log.jsonl` — METAR call receipts
+- `station_nowcast_request_log.jsonl` — official-station observation call receipts
 
 ### Archive on rotation
 - `paper_raw_snapshots.jsonl` — 100 MB internal cap plus logrotate
 - `paper_skip_diagnostics.jsonl` — 100 MB internal cap plus logrotate
-- `forecast_request_log.jsonl` — 10 MB logrotate
 - `station_nowcast_request_log.jsonl` — 10 MB logrotate
 - `paper_event_portfolios.jsonl` — 10 MB logrotate, only selections by default
 
@@ -82,7 +80,6 @@ It deletes only known diagnostic archive names:
 
 - `paper_raw_snapshots*`
 - `paper_skip_diagnostics*`
-- `forecast_request_log*`
 - `station_nowcast_request_log*`
 - `paper_event_portfolios*`
 
@@ -121,8 +118,10 @@ All runtime files live under `/opt/polymarket-weather-bot/data/`, not the app ro
 sudo systemctl stop polymarket-weather-bot
 cd /opt/polymarket-weather-bot/data
 sudo rm -f paper_state.json paper_trades.csv paper_decisions.csv \
-           paper_raw_snapshots.jsonl forecast_rate_limit_state.json \
-           forecast_cache.json paper_event_portfolios.jsonl
+           paper_raw_snapshots.jsonl paper_event_portfolios.jsonl \
+           paper_skip_diagnostics.jsonl station_nowcast_request_log.jsonl \
+           paper_runner_status.json
+sudo find archive -type f -delete
 sudo systemctl start polymarket-weather-bot
 ```
 

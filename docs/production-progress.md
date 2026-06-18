@@ -15,7 +15,7 @@ This file is an optional compact board. The default resume source is
 1. Use `docs/active/current-task.md` for unfinished work.
 2. Use `docs/production-decisions.md` for active safety and trading rules.
 3. Use `docs/production-implementation-plan.md` when changing strategy,
-   forecast, order-book, portfolio, accounting, settlement, dashboard runtime,
+   station evidence, order-book, portfolio, accounting, settlement, dashboard runtime,
    or runner behavior.
 4. Use `docs/codex/known-good-commands.md` before local pytest, VPS/SSH,
    deployment, or dashboard verification.

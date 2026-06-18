@@ -24,10 +24,10 @@ This phase includes:
 - no fake close when bid depth is absent
 - partial close and partial liquidity behavior
 - fee, spread, and slippage reflected in paper PnL
-- stale order books, stale forecasts, and stale nowcast failing closed
+- stale order books and stale official-station observations failing closed
 - exact, range, and threshold settlement logic that follows Polymarket text
 - daily-high and daily-low nowcast risk handled in opposite directions
-- official settlement-station nowcast evidence, not generic weather feeds
+- official settlement-station observation evidence, not generic weather feeds
 - local event date and timezone correctness
 - compact validation logs that explain why entries, exits, skips, and holds
   happened
@@ -89,14 +89,13 @@ The bot is not ready for live-trading planning until all P0 gates are true.
 3. No successful `CLOSE` is logged when executable bid depth is absent.
 4. Partial liquidity becomes scaled entry, `PARTIAL_CLOSE`, or a hold blocker.
 5. Fees, spread, and slippage are reflected before PnL is trusted.
-6. Stale order books block new entries and pause exits with observable reasons.
+6. Stale order books and stale official-station observations block new entries
+   and pause exits with observable reasons.
 7. Exact bucket settlement checks are exact displayed values; no hidden
    half-step settlement intervals.
-8. Whole-degree Celsius exact-bucket probability estimates the settlement
-   source's displayed integer band as `[N.0C, N+1.0C)`. Exact Celsius NO
-   entries fail closed on the forecast-mean modal integer bucket, while
-   adjacent or tail NO entries may trade only when normal executable edge and
-   return gates pass.
+8. Whole-degree Celsius exact-bucket station evidence uses the settlement
+   source's displayed integer band as `[N.0C, N+1.0C)`. For daily-high exact
+   `23C`, `23.7C` still supports YES and `24.0C` creates the strong NO lock.
 9. Range buckets preserve displayed inclusive endpoints.
 10. Threshold markets follow the exact rule wording.
 11. Daily-high markets use observed high; daily-low markets use observed low.
@@ -120,7 +119,7 @@ Use these files as the map before changing behavior:
 ```text
 src/weather_bot/stations.py           station registry and trading-ready subset
 src/weather_bot/weather_client.py     market question parser and bucket shape
-src/weather_bot/probability.py        forecast probability and nowcast effects
+src/weather_bot/station_signal.py     official station observation signals
 src/weather_bot/nowcast.py            same-station observed high/low providers
 src/weather_bot/realtime_orderbook.py executable WebSocket order-book cache
 src/weather_bot/edge.py               VWAP, fees, slippage, expected return
@@ -160,7 +159,7 @@ Current protected baseline as of 2026-06-14:
 - exact buckets no longer use hidden half-step intervals
 - range buckets preserve displayed inclusive endpoints
 - daily-high/daily-low nowcast risk direction is protected by tests
-- Open-Meteo cache, 429 cooldown, and no retry bombing are protected by tests
+- Same-station provider floors and no retry bombing are protected by tests
 
 Future work should first verify this baseline, then fill the remaining gaps in
 rule provenance, station-local windows, replayable evidence, reporting,
@@ -208,11 +207,10 @@ Goal: make market-rule and station evidence impossible to misread.
 Required behavior:
 
 - exact Celsius/Fahrenheit bucket means the displayed value only
-- whole-degree exact Celsius probability estimates
-  `P(source_displayed_integer_c == bucket_c)` instead of exact decimal member
-  equality
-- exact Celsius NO entry skips when the forecast mean maps to the same
-  displayed integer bucket, not merely because it is within 1.0C
+- whole-degree exact Celsius station evidence treats
+  `[bucket_c, bucket_c + 1.0C)` as the displayed integer bucket
+- exact Celsius daily-high NO becomes strong only when the official observed
+  high reaches the next integer, not while it remains at `23.xC`
 - official same-station nowcast treats `23.7C` as still inside the displayed
   `23C` bucket and treats `24.0C` as the break point for daily-high `23C`
   exact markets
@@ -229,7 +227,7 @@ Key files:
 
 ```text
 src/weather_bot/weather_client.py
-src/weather_bot/probability.py
+src/weather_bot/station_signal.py
 src/weather_bot/nowcast.py
 src/weather_bot/live_paper_runner.py
 ```
@@ -245,7 +243,8 @@ Required fields or equivalent evidence:
 - selected side, probability, executable entry VWAP, executable exit VWAP
 - best bid, best ask, spread, depth status, and stale status
 - fee rate, size, shares, cash effect, and after-fee proceeds
-- signal source: forecast-only, nowcast-confirmed, or settlement evidence
+- signal source: official-station-neutral, base lock, strong lock, or
+  settlement evidence
 - station evidence grade and observed high/low when used
 - reason code for YES, NO, SKIP, HOLD, CLOSE, PARTIAL_CLOSE, or SETTLED
 
@@ -263,7 +262,7 @@ The report must show:
 - midpoint/reference PnL separately labeled as reference only
 - no-liquidity hold rate
 - stale-data block counts
-- forecast-only vs nowcast-confirmed performance
+- official-station lock-strength performance
 - exact/range/threshold performance
 - daily-high vs daily-low performance
 - city breakdown
@@ -285,7 +284,7 @@ Required run protocol:
   experiment
 - review daily report, minimum performance report, and ledger consistency
 - record no-liquidity, stale-data, nowcast, and settlement anomalies
-- separate forecast-only profit from nowcast-confirmed profit
+- separate base-lock profit from strong-lock profit
 
 Pass criteria before live planning:
 

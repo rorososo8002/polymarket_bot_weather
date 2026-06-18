@@ -164,7 +164,7 @@ def test_dashboard_payload_explains_official_nowcast_entry_only_skips_in_korean(
                 "station_id": "ZUUU",
                 "reason_code": "SKIP",
                 "reason": (
-                    "official-nowcast-entry-only: forecast-only entry blocked; "
+                    "official-station-entry-only: non-lock entry blocked; "
                     "waiting for same-station settlement-lock evidence [temperature]"
                 ),
                 "note": "observed_high_c=2.0; observed_at=2099-06-19T04:51:00+00:00",
@@ -183,7 +183,7 @@ def test_dashboard_payload_explains_official_nowcast_entry_only_skips_in_korean(
     skip = payload["scanner"]["recent_skips"][0]
     assert skip["reason_ko"].startswith("예보만으로는 진입하지 않도록 막았습니다.")
     assert "정산에 쓰이는 같은 공식 관측소" in skip["reason_ko"]
-    assert "forecast-only entry blocked" not in skip["reason_ko"]
+    assert "non-lock entry blocked" not in skip["reason_ko"]
     assert skip["station_name"] == "Chengdu Shuangliu International Airport Station"
 
 
@@ -540,7 +540,7 @@ def test_dashboard_payload_summarizes_state_trades_and_decisions(tmp_path):
                 "target_exit_price": "",
                 "market_heat_score": "",
                 "reason": "confidence too low",
-                "note": "Ensemble forecast unavailable: rate limited",
+                "note": "official station observation unavailable: rate limited",
             },
         ],
     )
@@ -697,7 +697,7 @@ def test_dashboard_scanner_totals_include_appended_decisions(tmp_path):
                 "ts": "2026-05-24T10:01:00+00:00",
                 "side": "YES",
                 "reason": "edge ok",
-                "note": "no forecast fallback available",
+                "note": "no station fallback available",
             }
         )
     second_payload = build_dashboard_payload(settings)
@@ -1321,11 +1321,10 @@ def test_dashboard_open_position_link_strips_condition_suffix_from_weather_slug(
     )
 
 
-def test_dashboard_summary_reports_profit_loss_without_forecast_cache_time(tmp_path):
+def test_dashboard_summary_reports_profit_loss_without_external_weather_cache_time(tmp_path):
     state_path = tmp_path / "state.json"
     trades_path = tmp_path / "trades.csv"
     decisions_path = tmp_path / "decisions.csv"
-    forecast_cache_path = tmp_path / "forecast_cache.json"
     state_path.write_text(json.dumps({"cash_usd": 1008.0, "realized_pnl_usd": 8.0, "positions": []}), encoding="utf-8")
     write_csv(
         trades_path,
@@ -1385,22 +1384,11 @@ def test_dashboard_summary_reports_profit_loss_without_forecast_cache_time(tmp_p
             }
         ],
     )
-    forecast_cache_path.write_text(
-        json.dumps(
-            {
-                "old": {"created_at": "2026-05-29T08:00:00+00:00", "data": {}},
-                "new": {"created_at": "2026-05-30T09:30:00+00:00", "data": {}},
-            }
-        ),
-        encoding="utf-8",
-    )
-
     payload = build_dashboard_payload(
         Settings(
             state_path=str(state_path),
             trades_csv_path=str(trades_path),
             decisions_csv_path=str(decisions_path),
-            forecast_cache_path=str(forecast_cache_path),
         )
     )
 
@@ -1536,14 +1524,6 @@ def test_dashboard_payload_surfaces_station_and_websocket_health(tmp_path):
                 "updated_at": "2026-06-01T00:01:00+00:00",
                 "phase": "stream_error",
                 "message": "websocket thread stopped",
-                "forecast": {
-                    "last_attempt_at": "2026-06-01T00:00:00+00:00",
-                    "last_success_at": "2026-06-01T00:00:00+00:00",
-                    "last_failure_reason": "RuntimeError: rate limited",
-                    "cache_age_seconds": 1801,
-                    "stale": True,
-                    "persistence_error": "OSError: disk full",
-                },
                 "websocket": {
                     "thread_alive": False,
                     "reconnect_count": 3,
@@ -1589,13 +1569,6 @@ def test_dashboard_health_waits_when_no_station_observation_or_stream_tokens(tmp
                 "markets_total": 0,
                 "events_total": 0,
                 "cities_total": 0,
-                "forecast": {
-                    "last_attempt_at": "",
-                    "last_success_at": "",
-                    "last_failure_reason": "",
-                    "cache_age_seconds": None,
-                    "stale": True,
-                },
                 "websocket": {
                     "thread_alive": False,
                     "reconnect_count": 0,

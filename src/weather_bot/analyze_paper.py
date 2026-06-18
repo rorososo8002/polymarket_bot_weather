@@ -118,10 +118,12 @@ def _signal_label(row: dict[str, str]) -> str:
             row.get("reason", ""),
         )
     ).lower()
-    if "nowcast" in text or "forecast-plus" in text:
-        return "nowcast-confirmed"
-    if "forecast" in text:
-        return "forecast-only"
+    if "official_nowcast_lock=strong" in text or "official-station-lock-strong" in text:
+        return "station-strong-lock"
+    if "official_nowcast_lock=base" in text or "official-station-lock-base" in text:
+        return "station-base-lock"
+    if "official-station" in text or "nowcast" in text:
+        return "station-observation"
     return "unknown"
 
 

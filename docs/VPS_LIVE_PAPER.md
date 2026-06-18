@@ -1,7 +1,7 @@
 # VPS Live Paper Deployment
 
-This deployment is **paper only**. It reads live Polymarket and Open-Meteo data,
-simulates entries and exits locally, and writes CSV/JSONL state files. It does
+This deployment is **paper only**. It reads live Polymarket and official
+settlement-station observation data, simulates entries and exits locally, and writes CSV/JSONL state files. It does
 not connect a wallet, sign orders, submit orders, or redeem resolved markets on
 chain.
 
@@ -163,8 +163,9 @@ Before letting it run unattended:
 - `/opt/polymarket-weather-bot/data/paper_decisions.csv` is growing.
 - `/opt/polymarket-weather-bot/data/paper_raw_snapshots.jsonl` is growing.
 - `systemctl status polymarket-weather-dashboard` shows `active (running)`.
-- Dashboard `Forecast Health` shows a recent successful forecast or an explicit stale
-  warning. Do not treat an old cached forecast as healthy.
+- Dashboard `Station Health` shows recent official-station observation evidence
+  or an explicit stale warning. Do not treat a reachable dashboard as proof that
+  settlement-station evidence is fresh.
 - Dashboard `WebSocket Health` shows that the receiver thread is alive and that
   the last real order-book update is recent. A reachable dashboard page alone
   is not proof that the stream is healthy.

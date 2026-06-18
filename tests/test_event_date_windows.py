@@ -6,7 +6,7 @@ from weather_bot.config import Settings
 from weather_bot.event_dates import event_date_window_from_hint
 from weather_bot.market_rules import build_market_rule_provenance
 from weather_bot.nowcast import StationNowcastObservation
-from weather_bot.probability import estimate_weather_probability
+from weather_bot.station_signal import estimate_station_signal
 
 
 def test_event_date_window_normalizes_new_york_dst_day():
@@ -70,24 +70,9 @@ def test_rule_provenance_carries_station_local_date_window():
     assert provenance.event_end_utc == "2026-06-16T04:00:00+00:00"
 
 
-def test_forecast_and_nowcast_share_station_local_today_window():
+def test_station_signal_uses_station_local_today_window():
     now_utc = datetime(2026, 6, 15, 1, 0, tzinfo=timezone.utc)
     seen: dict[str, object] = {}
-
-    class FakeEnsembleClient:
-        models = "fake"
-
-        def forecast_daily_ensemble(self, *_args, **kwargs):
-            seen["forecast_timezone"] = kwargs["timezone"]
-            return {
-                "daily": {
-                    "time": ["2026-06-14"],
-                    "temperature_2m_max": [91.0],
-                    "temperature_2m_max_member01": [92.0],
-                    "temperature_2m_max_member02": [93.0],
-                    "temperature_2m_max_member03": [94.0],
-                }
-            }
 
     class RecordingNowcastProvider:
         def observed_high_so_far(self, station, *, target_date, now=None):
@@ -107,17 +92,15 @@ def test_forecast_and_nowcast_share_station_local_today_window():
                 unavailable_reason="fixture-no-observation",
             )
 
-    signal = estimate_weather_probability(
+    signal = estimate_station_signal(
         "Will NYC reach 90 F today?",
         settings=Settings(),
-        ensemble_client=FakeEnsembleClient(),
         observation_provider=RecordingNowcastProvider(),
         now=now_utc,
     )
 
-    assert signal.source == "open-meteo-ensemble-station"
+    assert signal.source == "official-station-unavailable"
     assert "target_date=2026-06-14" in signal.note
-    assert seen["forecast_timezone"] == "America/New_York"
     assert seen["nowcast_station"] == "KLGA"
     assert seen["nowcast_target_date"] == date(2026, 6, 14)
     assert seen["nowcast_now"] == now_utc

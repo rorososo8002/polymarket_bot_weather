@@ -130,14 +130,14 @@ fragile. Write the remote logic into a small local `.sh` file, copy it to
 Example local script path:
 
 ```text
-.deploy_tmp/update_forecast_env_1800.sh
+.deploy_tmp/update_station_strategy_env.sh
 ```
 
 Copy and run it after the key lookup block:
 
 ```powershell
-scp -i $key .deploy_tmp\update_forecast_env_1800.sh "${oracle}:/tmp/update_forecast_env_1800.sh"
-ssh -i $key $oracle bash /tmp/update_forecast_env_1800.sh
+scp -i $key .deploy_tmp\update_station_strategy_env.sh "${oracle}:/tmp/update_station_strategy_env.sh"
+ssh -i $key $oracle bash /tmp/update_station_strategy_env.sh
 ```
 
 The script should be narrow and auditable: one job, explicit paths, no private
@@ -166,19 +166,22 @@ All paper runtime files live under `data/`, **not** the app root:
 /opt/polymarket-weather-bot/data/paper_trades.csv
 /opt/polymarket-weather-bot/data/paper_decisions.csv
 /opt/polymarket-weather-bot/data/paper_raw_snapshots.jsonl
-/opt/polymarket-weather-bot/data/forecast_rate_limit_state.json
-/opt/polymarket-weather-bot/data/forecast_cache.json
+/opt/polymarket-weather-bot/data/station_nowcast_request_log.jsonl
+/opt/polymarket-weather-bot/data/paper_skip_diagnostics.jsonl
 /opt/polymarket-weather-bot/data/paper_event_portfolios.jsonl
 ```
 
-To reset the paper account (stop bot first, then delete from `data/`, then restart):
+To reset the paper account for a new experiment (stop bot first, delete from
+`data/` and `data/archive/`, then restart):
 
 ```bash
 sudo systemctl stop polymarket-weather-bot
 cd /opt/polymarket-weather-bot/data
 sudo rm -f paper_state.json paper_trades.csv paper_decisions.csv \
-           paper_raw_snapshots.jsonl forecast_rate_limit_state.json \
-           forecast_cache.json paper_event_portfolios.jsonl
+           paper_raw_snapshots.jsonl paper_event_portfolios.jsonl \
+           paper_skip_diagnostics.jsonl station_nowcast_request_log.jsonl \
+           paper_runner_status.json
+sudo find archive -type f -delete
 sudo systemctl start polymarket-weather-bot
 ```
 

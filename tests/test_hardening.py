@@ -15,7 +15,7 @@ from weather_bot.live_paper_runner import (
     _refresh_held_exit_edges_from_signal,
     _sleep_seconds_until_next_cycle,
     evaluate_market,
-    pre_forecast_tradeability_gate,
+    pre_station_tradeability_gate,
     refresh_open_position_edges,
     run_cycle,
 )
@@ -31,8 +31,8 @@ from weather_bot.models import (
 )
 from weather_bot.paper import PaperBroker, maybe_close_positions, maybe_settle_resolved_positions
 from weather_bot.polymarket_client import PolymarketClient
-from weather_bot.probability import _target_date_from_hint
 from weather_bot.runner_status import runner_status_path, write_runner_status
+from weather_bot.station_signal import _target_date_from_hint
 from weather_bot.weather_client import parse_weather_question
 
 
@@ -63,16 +63,22 @@ def book(token_id: str, bid: float, ask: float, bid_size: float = 100.0, ask_siz
 
 def temp_signal(p_true: float = 0.2) -> WeatherSignal:
     parsed = parse_weather_question("Will NYC reach 90°F on May 25?")
-    return WeatherSignal(p_true=p_true, confidence=0.9, source="test", note="", parsed=parsed)
+    return WeatherSignal(
+        p_true=p_true,
+        confidence=0.9,
+        source="official-station-lock-test",
+        note="official_nowcast_lock=test",
+        parsed=parsed,
+    )
 
 
-def unavailable_forecast_signal() -> WeatherSignal:
+def unavailable_station_signal() -> WeatherSignal:
     parsed = parse_weather_question("Will NYC reach 90°F on May 25?")
     return WeatherSignal(
         p_true=0.5,
         confidence=0.0,
-        source="forecast-unavailable",
-        note="ensemble forecast unavailable",
+        source="official-station-unavailable",
+        note="official station observation unavailable",
         parsed=parsed,
     )
 
@@ -559,7 +565,7 @@ def test_discovery_keeps_range_temperature_bucket():
     )
 
 
-def test_pre_forecast_gate_skips_rule_unit_mismatch_before_forecast():
+def test_pre_station_gate_skips_rule_unit_mismatch_before_station_signal():
     client = FakePolymarketClient()
     market = client._parse_market(
         {
@@ -572,7 +578,7 @@ def test_pre_forecast_gate_skips_rule_unit_mismatch_before_forecast():
         }
     )
 
-    gated = pre_forecast_tradeability_gate(market, Settings(), "temperature")
+    gated = pre_station_tradeability_gate(market, Settings(), "temperature")
 
     assert gated is not None
     signal, result = gated
@@ -582,7 +588,7 @@ def test_pre_forecast_gate_skips_rule_unit_mismatch_before_forecast():
     assert "unit mismatch" in result.reason
 
 
-def test_pre_forecast_gate_skips_rule_station_mismatch_before_forecast():
+def test_pre_station_gate_skips_rule_station_mismatch_before_station_signal():
     client = FakePolymarketClient()
     market = client._parse_market(
         {
@@ -595,7 +601,7 @@ def test_pre_forecast_gate_skips_rule_station_mismatch_before_forecast():
         }
     )
 
-    gated = pre_forecast_tradeability_gate(market, Settings(), "temperature")
+    gated = pre_station_tradeability_gate(market, Settings(), "temperature")
 
     assert gated is not None
     _signal, result = gated
@@ -604,7 +610,7 @@ def test_pre_forecast_gate_skips_rule_station_mismatch_before_forecast():
     assert "station mismatch" in result.reason
 
 
-def test_pre_forecast_gate_allows_matching_rule_provenance():
+def test_pre_station_gate_allows_matching_rule_provenance():
     client = FakePolymarketClient()
     market = client._parse_market(
         {
@@ -617,10 +623,10 @@ def test_pre_forecast_gate_allows_matching_rule_provenance():
         }
     )
 
-    assert pre_forecast_tradeability_gate(market, Settings(), "temperature") is None
+    assert pre_station_tradeability_gate(market, Settings(), "temperature") is None
 
 
-def test_pre_forecast_gate_allows_grouped_event_rules_with_unit_toggle_text():
+def test_pre_station_gate_allows_grouped_event_rules_with_unit_toggle_text():
     client = FakePolymarketClient()
     event = {
         "id": "event-seoul",
@@ -644,10 +650,10 @@ def test_pre_forecast_gate_allows_grouped_event_rules_with_unit_toggle_text():
     )
 
     assert market.question == "Will the highest temperature in Seoul be 28\u00b0C on June 16?"
-    assert pre_forecast_tradeability_gate(market, Settings(), "temperature") is None
+    assert pre_station_tradeability_gate(market, Settings(), "temperature") is None
 
 
-def test_pre_forecast_gate_allows_grouped_event_rules_with_precision_numbers():
+def test_pre_station_gate_allows_grouped_event_rules_with_precision_numbers():
     client = FakePolymarketClient()
     event = {
         "id": "event-hk",
@@ -671,10 +677,10 @@ def test_pre_forecast_gate_allows_grouped_event_rules_with_precision_numbers():
     )
 
     assert market.question == "Will the highest temperature in Hong Kong be 29\u00b0C on June 16?"
-    assert pre_forecast_tradeability_gate(market, Settings(), "temperature") is None
+    assert pre_station_tradeability_gate(market, Settings(), "temperature") is None
 
 
-def test_pre_forecast_gate_still_skips_explicit_grouped_bucket_rule_mismatch():
+def test_pre_station_gate_still_skips_explicit_grouped_bucket_rule_mismatch():
     client = FakePolymarketClient()
     event = {
         "id": "event-seoul",
@@ -696,7 +702,7 @@ def test_pre_forecast_gate_still_skips_explicit_grouped_bucket_rule_mismatch():
         event=event,
     )
 
-    gated = pre_forecast_tradeability_gate(market, Settings(), "temperature")
+    gated = pre_station_tradeability_gate(market, Settings(), "temperature")
 
     assert gated is not None
     _signal, result = gated
@@ -901,8 +907,8 @@ def test_entry_size_scales_down_with_lower_signal_confidence():
             "no": book("no", bid=0.86, ask=0.87, bid_size=1000.0, ask_size=1000.0),
         }
     )
-    high_signal = WeatherSignal(0.25, 0.95, "forecast-plus-nowcast", "high confidence", parsed)
-    low_signal = WeatherSignal(0.25, 0.55, "forecast-only", "low confidence", parsed)
+    high_signal = WeatherSignal(0.25, 0.95, "official-station-lock-strong_yes", "high confidence", parsed)
+    low_signal = WeatherSignal(0.25, 0.55, "official-station-lock-base_yes", "low confidence", parsed)
 
     high_result, _high_sides = evaluate_market(market, high_signal, client, settings, 1000.0, "temperature")
     low_result, _low_sides = evaluate_market(market, low_signal, client, settings, 1000.0, "temperature")
@@ -945,97 +951,6 @@ def test_evaluate_market_refuses_undated_signal_even_when_date_hint_requirement_
     assert result.side == "SKIP"
     assert per_side == {}
     assert "date_hint=None" in result.reason
-
-
-def test_exact_celsius_no_entry_skips_forecast_mean_modal_bucket():
-    settings = Settings(
-        min_net_edge=0.01,
-        min_order_usd=1.0,
-        entry_min_expected_net_return_pct=0.0,
-        weather_taker_fee_rate=0.0,
-        model_error_margin=0.0,
-        resolution_error_margin=0.0,
-        require_date_hint_for_trade=True,
-    )
-    question = "Will the highest temperature in Amsterdam be 23C on June 16?"
-    market = RawMarket(
-        market_id="amsterdam-23c",
-        question=question,
-        slug="amsterdam-23c",
-        active=True,
-        closed=False,
-        yes_token_id="yes",
-        no_token_id="no",
-    )
-    signal = WeatherSignal(
-        p_true=0.0,
-        confidence=0.95,
-        source="open-meteo-ensemble-station",
-        note=(
-            "Amsterdam Airport Schiphol Station [EHAM] target_date=2026-06-16; "
-            "bucket=exact; ==23.0C/73.4F; members=31; vote=0.000; "
-            "mean=73.6F; spread=1.64F"
-        ),
-        parsed=parse_weather_question(question),
-    )
-    client = FakePolymarketClient(
-        books={
-            "yes": book("yes", bid=0.45, ask=0.46, bid_size=1000.0, ask_size=1000.0),
-            "no": book("no", bid=0.53, ask=0.54, bid_size=1000.0, ask_size=1000.0),
-        }
-    )
-
-    result, per_side = evaluate_market(market, signal, client, settings, 200.0, "temperature")
-
-    assert per_side["NO"].side == "SKIP"
-    assert per_side["NO"].net_edge > settings.min_net_edge
-    assert "SKIP_EXACT_CELSIUS_MODAL_NO" in per_side["NO"].reason
-    assert result.side == "SKIP"
-
-
-def test_exact_celsius_no_entry_allows_adjacent_non_modal_bucket_when_edge_passes():
-    settings = Settings(
-        min_net_edge=0.01,
-        min_order_usd=1.0,
-        entry_min_expected_net_return_pct=0.0,
-        weather_taker_fee_rate=0.0,
-        model_error_margin=0.0,
-        resolution_error_margin=0.0,
-        require_date_hint_for_trade=True,
-    )
-    question = "Will the highest temperature in Amsterdam be 22C on June 16?"
-    market = RawMarket(
-        market_id="amsterdam-22c",
-        question=question,
-        slug="amsterdam-22c",
-        active=True,
-        closed=False,
-        yes_token_id="yes",
-        no_token_id="no",
-    )
-    signal = WeatherSignal(
-        p_true=0.10,
-        confidence=0.95,
-        source="open-meteo-ensemble-station",
-        note=(
-            "Amsterdam Airport Schiphol Station [EHAM] target_date=2026-06-16; "
-            "bucket=exact; ==22.0C/71.6F; members=31; vote=0.100; "
-            "mean=73.6F; spread=1.64F"
-        ),
-        parsed=parse_weather_question(question),
-    )
-    client = FakePolymarketClient(
-        books={
-            "yes": book("yes", bid=0.28, ask=0.29, bid_size=1000.0, ask_size=1000.0),
-            "no": book("no", bid=0.69, ask=0.70, bid_size=1000.0, ask_size=1000.0),
-        }
-    )
-
-    result, per_side = evaluate_market(market, signal, client, settings, 200.0, "temperature")
-
-    assert per_side["NO"].side == "NO"
-    assert "SKIP_EXACT_CELSIUS_MODAL_NO" not in per_side["NO"].reason
-    assert result.side == "NO"
 
 
 def test_entry_net_return_filter_rejects_thin_high_price_trade(tmp_path):
@@ -1192,7 +1107,7 @@ def test_entry_spread_guard_rejects_high_relative_spread():
     assert "spread_pct=62.50% > max_pct=50.00%" in per_side["YES"].reason
 
 
-def test_unavailable_forecast_signals_do_not_trade():
+def test_unavailable_station_signals_do_not_trade():
     settings = Settings(
         min_net_edge=0.01,
         min_order_usd=1.0,
@@ -1210,7 +1125,7 @@ def test_unavailable_forecast_signals_do_not_trade():
 
     result, per_side = evaluate_market(
         temp_market(),
-        unavailable_forecast_signal(),
+        unavailable_station_signal(),
         client,
         settings,
         1000.0,
@@ -1219,7 +1134,7 @@ def test_unavailable_forecast_signals_do_not_trade():
 
     assert result.side == "SKIP"
     assert per_side == {}
-    assert "confidence too low" in result.reason
+    assert "official-station-entry-only" in result.reason
 
 
 def test_indicative_best_bid_only_does_not_mark_or_close_position(tmp_path):
@@ -1941,7 +1856,7 @@ def test_nowcast_inside_exact_or_range_bucket_flags_no_exit_risk(tmp_path, quest
         p_true=0.35,
         confidence=0.95,
         source="test+nowcast",
-        note="forecast-plus-nowcast",
+        note="official-station-lock-risk",
         parsed=parsed,
         nowcast={"observed_high_c": observed_high_c, "observed_high_f": observed_high_c * 9.0 / 5.0 + 32.0},
     )
@@ -2012,7 +1927,7 @@ def test_nowcast_above_exact_bucket_closes_held_yes_by_probability_stop(tmp_path
         p_true=0.0,
         confidence=0.95,
         source="test+nowcast",
-        note="forecast-plus-nowcast; observed-high-above-exact-bucket; observed_high_c=29.1",
+        note="official-station-lock-risk; observed-high-above-exact-bucket; observed_high_c=29.1",
         parsed=parsed,
         nowcast={"observed_high_c": 29.1, "observed_high_f": 84.38},
     )
@@ -2034,7 +1949,7 @@ def test_nowcast_above_exact_bucket_closes_held_yes_by_probability_stop(tmp_path
     assert "probability stop" in rows[0]["reason"]
 
 
-def test_run_cycle_reuses_one_ensemble_client_for_all_markets(monkeypatch, tmp_path):
+def test_run_cycle_reuses_one_station_observation_provider_for_all_markets(monkeypatch, tmp_path):
     settings = Settings(
         state_path=str(tmp_path / "state.json"),
         trades_csv_path=str(tmp_path / "trades.csv"),
@@ -2048,7 +1963,7 @@ def test_run_cycle_reuses_one_ensemble_client_for_all_markets(monkeypatch, tmp_p
         RawMarket("m1", "Will NYC reach 90 F on May 25?", "m1", True, False, "yes1", "no1"),
         RawMarket("m2", "Will NYC reach 80 F on May 25?", "m2", True, False, "yes2", "no2"),
     ]
-    ensemble_ids: list[int] = []
+    provider_ids: list[int] = []
 
     class FakeClient:
         def __init__(self, *_args, **_kwargs):
@@ -2063,21 +1978,30 @@ def test_run_cycle_reuses_one_ensemble_client_for_all_markets(monkeypatch, tmp_p
         def get_market(self, market_id: str) -> RawMarket:
             return next(m for m in markets if m.market_id == market_id)
 
-    def fake_estimator(question, settings=None, client=None, ensemble_client=None):
-        assert ensemble_client is not None
-        ensemble_ids.append(id(ensemble_client))
+    class FakeObservationProvider:
+        pass
+
+    provider = FakeObservationProvider()
+
+    def fake_estimator(question, settings=None, observation_provider=None, **_kwargs):
+        assert observation_provider is provider
+        provider_ids.append(id(observation_provider))
         return temp_signal(p_true=0.5)
 
     monkeypatch.setattr("weather_bot.live_paper_runner.PolymarketClient", FakeClient)
+    monkeypatch.setattr(
+        "weather_bot.live_paper_runner.AviationWeatherMetarNowcastProvider.from_settings",
+        lambda settings: provider,
+    )
     monkeypatch.setattr("weather_bot.live_paper_runner.estimate_weather_probability", fake_estimator)
 
     run_cycle(settings)
 
-    assert len(ensemble_ids) == 2
-    assert len(set(ensemble_ids)) == 1
+    assert len(provider_ids) == 2
+    assert len(set(provider_ids)) == 1
 
 
-def test_run_cycle_skips_undated_market_before_forecast_when_date_hint_requirement_disabled(monkeypatch, tmp_path):
+def test_run_cycle_skips_undated_market_before_station_signal_when_date_hint_requirement_disabled(monkeypatch, tmp_path):
     settings = Settings(
         state_path=str(tmp_path / "state.json"),
         trades_csv_path=str(tmp_path / "trades.csv"),
@@ -2095,7 +2019,7 @@ def test_run_cycle_skips_undated_market_before_forecast_when_date_hint_requireme
         "undated-yes",
         "undated-no",
     )
-    forecast_calls: list[str] = []
+    station_calls: list[str] = []
 
     class FakeClient:
         def __init__(self, *_args, **_kwargs):
@@ -2112,15 +2036,15 @@ def test_run_cycle_skips_undated_market_before_forecast_when_date_hint_requireme
             return market
 
     def forbidden_estimator(question, **_kwargs):
-        forecast_calls.append(question)
-        raise AssertionError("undated markets must skip before forecast estimation")
+        station_calls.append(question)
+        raise AssertionError("undated markets must skip before station signal calculation")
 
     monkeypatch.setattr("weather_bot.live_paper_runner.PolymarketClient", FakeClient)
     monkeypatch.setattr("weather_bot.live_paper_runner.estimate_weather_probability", forbidden_estimator)
 
     decisions = run_cycle(settings)
 
-    assert forecast_calls == []
+    assert station_calls == []
     assert len(decisions) == 1
     assert decisions[0].market.market_id == market.market_id
     assert decisions[0].result.side == "SKIP"
@@ -2189,7 +2113,7 @@ def test_run_cycle_drawdown_blocks_new_entries_but_still_closes_positions(monkey
         resolution_error_margin=0.0,
         require_date_hint_for_trade=True,
     )
-    forecast_calls: list[str] = []
+    station_calls: list[str] = []
 
     class FakeClient:
         def __init__(self, *_args, **_kwargs):
@@ -2208,9 +2132,9 @@ def test_run_cycle_drawdown_blocks_new_entries_but_still_closes_positions(monkey
             return held_market
 
     def fake_estimator(question, **_kwargs):
-        forecast_calls.append(question)
+        station_calls.append(question)
         if question == new_market.question:
-            raise AssertionError("drawdown must block new entry before forecast estimation")
+            raise AssertionError("drawdown must block new entry before station signal calculation")
         return WeatherSignal(0.20, 0.90, "test", "held exit signal", parse_weather_question(question))
 
     monkeypatch.setattr("weather_bot.live_paper_runner.PolymarketClient", FakeClient)
@@ -2218,7 +2142,7 @@ def test_run_cycle_drawdown_blocks_new_entries_but_still_closes_positions(monkey
 
     decisions = run_cycle(settings)
 
-    assert new_market.question not in forecast_calls
+    assert new_market.question not in station_calls
     assert decisions[0].market.market_id == "new"
     assert decisions[0].result.side == "SKIP"
     assert "DAILY_LOSS_LIMIT_HIT" in decisions[0].result.reason
@@ -2262,7 +2186,7 @@ def test_run_cycle_logs_market_evaluation_exception_as_skip_error(monkeypatch, t
             return market
 
     def failing_estimator(*_args, **_kwargs):
-        raise RuntimeError("forecast decoder exploded")
+        raise RuntimeError("station signal decoder exploded")
 
     monkeypatch.setattr("weather_bot.live_paper_runner.PolymarketClient", FakeClient)
     monkeypatch.setattr("weather_bot.live_paper_runner.estimate_weather_probability", failing_estimator)
@@ -2273,7 +2197,7 @@ def test_run_cycle_logs_market_evaluation_exception_as_skip_error(monkeypatch, t
         rows = list(csv.DictReader(f))
     assert len(rows) == 1
     assert rows[0]["side"] == "SKIP_ERROR"
-    assert "forecast decoder exploded" in rows[0]["reason"]
+    assert "station signal decoder exploded" in rows[0]["reason"]
     assert decisions[0].result.side == "SKIP_ERROR"
 
     raw_rows = (tmp_path / "raw.jsonl").read_text(encoding="utf-8").splitlines()
@@ -2285,7 +2209,7 @@ def test_run_cycle_logs_market_evaluation_exception_as_skip_error(monkeypatch, t
     status = json.loads(runner_status_path(settings).read_text(encoding="utf-8"))
     assert status["market_error_count"] == 1
     assert status["last_market_error"]["market_id"] == market.market_id
-    assert "forecast decoder exploded" in status["last_market_error"]["message"]
+    assert "station signal decoder exploded" in status["last_market_error"]["message"]
 
 
 def test_paper_round_trip_cash_and_pnl_include_taker_fees(tmp_path):
@@ -2768,7 +2692,7 @@ def test_decision_log_compacts_verbose_text_fields(tmp_path):
         reason="reason " + ("verbose rejection detail " * 120),
     )
 
-    broker.log_decision(market, result, "note " + ("verbose forecast detail " * 120))
+    broker.log_decision(market, result, "note " + ("verbose station detail " * 120))
 
     with (tmp_path / "decisions.csv").open(newline="", encoding="utf-8") as f:
         row = next(csv.DictReader(f))

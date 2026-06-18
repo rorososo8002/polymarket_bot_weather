@@ -97,9 +97,9 @@ def test_build_report_separates_trusted_pnl_reference_pnl_and_validation_breakdo
         "\n".join(
             [
                 "ts,market_id,slug,question,market_type,side,p_true,p_exec,net_edge,size_usd,size_shares,entry_fraction,probability_stop_threshold,model_fair_price,target_exit_price,market_heat_score,reason,note,reason_code,signal_source,condition_type,city",
-                "2026-01-01T00:00:00+00:00,m1,s,Will the highest temperature in NYC be 90F or higher?,temperature,YES,0.700000,0.500000,0.120000,50,100,,,,,,YES edge,evidence=forecast-only,YES,forecast,upper_threshold,nyc",
-                "2026-01-01T00:01:00+00:00,m2,s,Will the highest temperature in Seoul be 27-28C?,temperature,YES,0.620000,0.440000,0.090000,20,45,,,,,,YES edge,evidence=forecast-plus-nowcast,YES,forecast+nowcast,range,seoul",
-                "2026-01-01T00:02:00+00:00,m3,s,Will the lowest temperature in Tokyo be 20C or lower?,temperature,SKIP,0.510000,,0.000000,0,0,,,,,,forecast signal stale,evidence=forecast-only,SKIP_STALE_FORECAST,forecast,lower_threshold,tokyo",
+                "2026-01-01T00:00:00+00:00,m1,s,Will the highest temperature in NYC be 90F or higher?,temperature,YES,0.700000,0.500000,0.120000,50,100,,,,,,YES edge,evidence=official-station; official_nowcast_lock=strong_yes,YES,official-station-lock-strong_yes,upper_threshold,nyc",
+                "2026-01-01T00:01:00+00:00,m2,s,Will the highest temperature in Seoul be 27-28C?,temperature,YES,0.620000,0.440000,0.090000,20,45,,,,,,YES edge,evidence=official-station; official_nowcast_lock=base_yes,YES,official-station-lock-base_yes,range,seoul",
+                "2026-01-01T00:02:00+00:00,m3,s,Will the lowest temperature in Tokyo be 20C or lower?,temperature,SKIP,0.510000,,0.000000,0,0,,,,,,station signal stale,evidence=official-station,SKIP_STALE_STATION,official-station-neutral,lower_threshold,tokyo",
             ]
         )
         + "\n",
@@ -109,11 +109,11 @@ def test_build_report_separates_trusted_pnl_reference_pnl_and_validation_breakdo
         "\n".join(
             [
                 "ts,action,market_id,slug,question,market_type,side,token_id,shares,price,cash_delta_or_pnl,reason,reference_pnl_usd,signal_source,condition_type,city",
-                "2026-01-01T00:00:02+00:00,OPEN,m1,s,Will the highest temperature in NYC be 90F or higher?,temperature,YES,yes,100,0.5,-50,entry,,forecast,upper_threshold,nyc",
-                "2026-01-02T00:00:00+00:00,CLOSE,m1,s,Will the highest temperature in NYC be 90F or higher?,temperature,YES,yes,100,0.7,10.00,take profit,11.50,forecast,upper_threshold,nyc",
-                "2026-01-02T00:01:00+00:00,PARTIAL_CLOSE,m2,s,Will the highest temperature in Seoul be 27-28C?,temperature,YES,yes,50,0.3,-2.50,exit_trigger=probability_stop,,forecast+nowcast,range,seoul",
-                "2026-01-02T00:02:00+00:00,HOLD_NO_LIQUIDITY,m2,s,Will the highest temperature in Seoul be 27-28C?,temperature,YES,yes,50,0.0,0.0,exit_trigger=probability_stop; no executable bid depth,,forecast+nowcast,range,seoul",
-                "2026-01-02T00:03:00+00:00,HOLD_STREAM_UNHEALTHY,m4,s,Will the highest temperature in London be 70F or higher?,temperature,NO,no,30,0.0,0.0,websocket order book stale,,forecast,upper_threshold,london",
+                "2026-01-01T00:00:02+00:00,OPEN,m1,s,Will the highest temperature in NYC be 90F or higher?,temperature,YES,yes,100,0.5,-50,entry,,official-station-lock-strong_yes,upper_threshold,nyc",
+                "2026-01-02T00:00:00+00:00,CLOSE,m1,s,Will the highest temperature in NYC be 90F or higher?,temperature,YES,yes,100,0.7,10.00,take profit,11.50,official-station-lock-strong_yes,upper_threshold,nyc",
+                "2026-01-02T00:01:00+00:00,PARTIAL_CLOSE,m2,s,Will the highest temperature in Seoul be 27-28C?,temperature,YES,yes,50,0.3,-2.50,exit_trigger=probability_stop,,official-station-lock-base_yes,range,seoul",
+                "2026-01-02T00:02:00+00:00,HOLD_NO_LIQUIDITY,m2,s,Will the highest temperature in Seoul be 27-28C?,temperature,YES,yes,50,0.0,0.0,exit_trigger=probability_stop; no executable bid depth,,official-station-lock-base_yes,range,seoul",
+                "2026-01-02T00:03:00+00:00,HOLD_STREAM_UNHEALTHY,m4,s,Will the highest temperature in London be 70F or higher?,temperature,NO,no,30,0.0,0.0,websocket order book stale,,official-station-neutral,upper_threshold,london",
             ]
         )
         + "\n",
@@ -129,8 +129,8 @@ def test_build_report_separates_trusted_pnl_reference_pnl_and_validation_breakdo
     assert "- no_liquidity_holds=1 exit_attempt_rate=25.0%" in report
     assert "- stale_blocks=2" in report
     assert "signal_performance:" in report
-    assert "- forecast-only: pnl=$+10.00 n=1" in report
-    assert "- nowcast-confirmed: pnl=$-2.50 n=1" in report
+    assert "- station-strong-lock: pnl=$+10.00 n=1" in report
+    assert "- station-base-lock: pnl=$-2.50 n=1" in report
     assert "market_shape_performance:" in report
     assert "- upper_threshold: pnl=$+10.00 n=1" in report
     assert "- range: pnl=$-2.50 n=1" in report

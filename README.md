@@ -31,8 +31,8 @@ Routine local, VPS, SSH, and dashboard commands live in
   and private data collection are out of scope unless a separate live-trading
   safety project is explicitly approved.
 - Temperature markets only. Rain, snow, precipitation, wind, humidity, and
-  every other non-temperature weather market must fail closed before forecast,
-  order-book subscription, or paper trade logging.
+  every other non-temperature weather market must fail closed before station
+  evidence, order-book subscription, or paper trade logging.
 - `STATION_MAP` is the registered city/station registry. `TRADING_READY_STATION_MAP`
   is the actual execution universe. Karachi stays registered but excluded until
   station-rule evidence is reconciled.
@@ -49,8 +49,8 @@ Routine local, VPS, SSH, and dashboard commands live in
 Polymarket weather discovery
   -> supported city/date/temperature parser
   -> trading-ready station gate
-  -> exact-date Open-Meteo ensemble forecast
-  -> optional same-station nowcast
+  -> official settlement-station observation
+  -> exact source-display integer boundary lock
   -> CLOB WebSocket executable order-book cache
   -> fee-aware YES/NO edge and expected-return filter
   -> city-date portfolio selector
@@ -63,7 +63,7 @@ Polymarket weather discovery
 ```text
 src/weather_bot/stations.py           station registry and trading-ready subset
 src/weather_bot/weather_client.py     weather-question parser
-src/weather_bot/probability.py        Open-Meteo probability model and forecast cache
+src/weather_bot/station_signal.py     official-station settlement-lock signal
 src/weather_bot/nowcast.py            same-station observed high/low providers
 src/weather_bot/polymarket_client.py  Polymarket Gamma and CLOB public data
 src/weather_bot/realtime_orderbook.py CLOB WebSocket order-book cache
@@ -85,8 +85,7 @@ paper_trades.csv              executed paper-action receipt ledger
 paper_decisions.csv           strategy-decision evidence ledger
 paper_event_portfolios.jsonl  city-date portfolio-selection diagnostics
 paper_raw_snapshots.jsonl     bounded error/debug evidence, not an account book
-forecast_cache.json           forecast answer cache, not an API call ledger
-forecast_request_log.jsonl    real Open-Meteo request ledger
+station_nowcast_request_log.jsonl official-station observation request ledger
 paper_runner_status.json      current runner heartbeat/status
 data/                         production runtime data directory
 ```
@@ -111,7 +110,7 @@ docs/solutions/                       durable mistake-prevention notes
 ## Important Defaults
 
 ```text
-BANKROLL_USD=100
+BANKROLL_USD=200
 SIZE_MODE=kelly
 FRACTIONAL_KELLY=0.25
 ENTRY_FRACTION=0.20
@@ -124,8 +123,9 @@ MAX_CITY_EXPOSURE_FRACTION=0.20
 MAX_EVENT_DATE_EXPOSURE_FRACTION=0.10
 LARGE_BANKROLL_EVENT_DATE_EXPOSURE_FRACTION=0.05
 MAX_EVENT_PORTFOLIO_LEGS=2
-FORECAST_REQUEST_MIN_INTERVAL_SECONDS=15
-FORECAST_CACHE_TTL_SECONDS=14400
+OFFICIAL_NOWCAST_ENTRY_ONLY=true
+OFFICIAL_NOWCAST_LOCK_BASE_ENTRY_FRACTION=0.20
+OFFICIAL_NOWCAST_LOCK_STRONG_ENTRY_FRACTION=0.50
 STREAM_CYCLE_INTERVAL_SECONDS=2400
 ORDERBOOK_STREAM_ENABLED=true
 ORDERBOOK_REST_SNAPSHOT_ENABLED=true
