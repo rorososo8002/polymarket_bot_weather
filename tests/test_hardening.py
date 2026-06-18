@@ -974,7 +974,7 @@ def test_exact_celsius_no_entry_skips_forecast_mean_modal_bucket():
         note=(
             "Amsterdam Airport Schiphol Station [EHAM] target_date=2026-06-16; "
             "bucket=exact; ==23.0C/73.4F; members=31; vote=0.000; "
-            "mean=73.1F; spread=1.64F"
+            "mean=73.6F; spread=1.64F"
         ),
         parsed=parse_weather_question(question),
     )
@@ -1020,7 +1020,7 @@ def test_exact_celsius_no_entry_allows_adjacent_non_modal_bucket_when_edge_passe
         note=(
             "Amsterdam Airport Schiphol Station [EHAM] target_date=2026-06-16; "
             "bucket=exact; ==22.0C/71.6F; members=31; vote=0.100; "
-            "mean=73.1F; spread=1.64F"
+            "mean=73.6F; spread=1.64F"
         ),
         parsed=parse_weather_question(question),
     )

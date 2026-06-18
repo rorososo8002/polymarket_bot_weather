@@ -26,12 +26,10 @@ This is the active paper-bot rule book; historical notes belong in focused `docs
 - Station metadata must keep unit, precision, same-station support, confidence grade, verification date, and confidence level explicit.
 - Only station confidence grades A/B may enter `TRADING_READY_STATION_MAP`; grades C/D, unsupported providers, inferred, nearby, or unverifiable sources remain excluded. Karachi stays excluded until station evidence is reconciled.
 - Market metadata must carry the station-local event date plus UTC start/end window. Forecast rows must match that local date exactly; nearby dates are not substitutes.
-- Temperature bucket settlement comparisons use centralized millifahrenheit
-  boundaries. Exact settlement still means the displayed value only, but
-  whole-degree Celsius exact-bucket probabilities now estimate the chance that
-  the settlement source displays that integer Celsius value. This replaces the
-  old exact-member-only strategy and must not be reused as a hidden settlement
-  range.
+- Temperature bucket settlement uses centralized millifahrenheit boundaries.
+  Exact settlement means the displayed value only. Whole-degree Celsius exact
+  strategy uses source-display band `[N.0C, N+1.0C)`: `23.7C` is still `23C`;
+  `24.0C` breaks it.
 - `pre_forecast_tradeability_gate` rejects markets before Open-Meteo when they
   are not temperature-shaped, not trading-ready, or missing required date
   evidence. Undated markets always fail closed.
@@ -97,33 +95,31 @@ This is the active paper-bot rule book; historical notes belong in focused `docs
   enough ask depth, configured absolute/percentage spread limits, still-positive
   after-fee edge, no conflict with held positions, exposure room, rule clarity,
   and non-stale strategy inputs. A spread failure uses `SKIP_WIDE_SPREAD`.
-- Entry decisions are fee-aware. `p_exec` is executable VWAP; `size_usd` is the
-  all-in paper-entry budget; `size_shares` is the fee-adjusted share count.
-  The active paper strategy is intentionally more exploratory than the earlier
-  conservative baseline: default entry edge is `MIN_NET_EDGE=0.08` and default
-  expected net return is `ENTRY_MIN_EXPECTED_NET_RETURN_PCT=0.04` so the paper
-  run can collect more executable NO samples while still requiring positive
-  after-fee expected value.
-- Sizing defaults: `SIZE_MODE=kelly`, `FRACTIONAL_KELLY=0.50`, `ENTRY_FRACTION=0.20`,
-  `MAX_TOTAL_EXPOSURE_FRACTION=0.90`, `MAX_CITY_EXPOSURE_FRACTION=0.20`; active VPS paper uses `BANKROLL_USD=200`, `MIN_ORDER_USD=10.00`, a 15% single-market cap, and a 90% total-exposure cap so smaller high-edge candidates can clear the minimum order while single-market exposure stays capped near $30.
+- Entry decisions are fee-aware: `p_exec` is executable VWAP, `size_usd` is the
+  all-in paper budget, and `size_shares` is fee-adjusted. Defaults stay
+  exploratory but positive-EV: `MIN_NET_EDGE=0.08`,
+  `ENTRY_MIN_EXPECTED_NET_RETURN_PCT=0.04`.
+- Local defaults keep forecast-only caps conservative: 15% single-market, 20%
+  city, 10% city/date, 90% total. Active VPS official-lock paper overrides to
+  `BANKROLL_USD=200`, `$10` minimum, 50% single-market, 50% city/date, 90%
+  total.
+- Official same-station settlement-lock entries may override Kelly sizing to
+  20% for near-close exact-bucket YES survival or 50% for near-certain lock
+  signals. They still require depth, fees, spread, positive after-fee edge,
+  expected return, portfolio caps, and final pre-trade recheck.
 - Signal confidence is sizing evidence, not `p_true`: lower confidence scales
   entry size down; stale forecasts block new entries while held exits still run.
-- In Kelly mode, `ENTRY_FRACTION` is a per-event cap, not the direct order size.
-  Do not switch back to `fixed_fraction` without resetting the fraction and
-  documenting the risk tradeoff.
+- In Kelly mode, `ENTRY_FRACTION` is a per-event cap, not direct order size.
 - Same-market opposite-side entries remain blocked. Same-side add-ons are
   allowed only when price, probability, edge, expected return, cash, and
   exposure caps still pass.
-- City-date weather buckets share one correlated-risk budget. At most two
-  complementary non-overlapping legs per event; hidden overlap fails closed,
-  logs audit scenarios, and exact dust cannot become a fake 100% tail outcome.
+- City-date buckets share one correlated-risk budget: at most two
+  complementary non-overlapping legs; hidden overlap and exact dust fail closed.
 - Exit decisions use after-fee liquidation PnL, not raw token-price movement.
   Allowed exits: probability stop, take profit, overheated profit, edge faded,
   max hold, settlement, and nowcast bucket-lock risk.
-- Profit-taking exits require at least `MIN_PROFIT_PCT=0.08` after exit fees.
-  Probability stop remains a defensive exit and may close a small win or loss
-  when the model probability breaks below the stored stop line; dashboard copy
-  must label that as defensive cleanup, not as take-profit.
+- Profit-taking exits require `MIN_PROFIT_PCT=0.08` after fees. Probability
+  stop is defensive cleanup, not take-profit.
 - Nowcast bucket-lock risk blocks new entry as well as triggering exit. If it
   fires before order placement, convert the candidate to SKIP.
 - If an exit signal fires but the close cannot execute, log the blocker and
@@ -133,24 +129,20 @@ This is the active paper-bot rule book; historical notes belong in focused `docs
 - Drawdown circuit breakers block new entries only; held exits and settlements
   must continue. Active paper daily and large-loss stops are 50% of bankroll,
   not a fixed $20 stop.
-- Profit exits may keep the full position as a settlement runner when
-  conservative settlement value beats fee-adjusted sell-now value. The active
-  paper default is `SETTLEMENT_RUNNER_MAX_FRACTION=1.00`, so this path does not
-  sell a principal-recovery tranche first. Lowering the max fraction is an
-  explicit risk-control override, not the default profit path.
+- Profit exits may hold the full position as a settlement runner when
+  conservative settlement value beats sell-now value; active default is
+  `SETTLEMENT_RUNNER_MAX_FRACTION=1.00`.
 - Resolved paper settlement requires a proven binary winner. Ambiguous closed
   prices are not guessed.
 - `paper_state.json` is the account book, not a disposable cache. Existing
   corrupt, structurally invalid, or unsafe state fails closed instead of reset.
 - `paper_state.json` and `paper_trades.csv` are paired ledgers. Startup replays
   executed trade rows against `BANKROLL_USD` and fails closed on mismatch.
-- New decision and trade rows must carry compact replay evidence: token/city,
-  station-local date, market shape, station evidence, signal source, entry VWAP,
-  expected net return, reason code, and model/config version. Existing old
-  ledger rows stay readable and are not rewritten.
+- New decision/trade rows must carry compact replay evidence: token/city,
+  station-local date, shape, station evidence, signal, VWAP, return, reason,
+  and model/config version. Old ledger rows stay readable.
 - Normal SKIP spam stays suppressed by default, but reports should aggregate
   stable reason codes such as `SKIP_WIDE_SPREAD`.
-
 ## Nowcast And Station Evidence
 
 - Same-station nowcast is allowed only from explicitly mapped official sources:
@@ -175,12 +167,19 @@ This is the active paper-bot rule book; historical notes belong in focused `docs
   and triggers held NO `nowcast_bucket_lock_risk`. Exact/range buckets use
   settlement text directly: exact is the displayed value only, range is the
   displayed inclusive endpoints; never widen exact to `28.5C-29.5C`.
-- Exact Celsius probability has switched from exact-member-only voting to
-  source-display integer modeling. For a whole-degree `23C` bucket, the model
-  estimates `P(source_displayed_integer_c == 23)`. New exact Celsius NO entries
-  are blocked only when the forecast mean maps to that same displayed integer
-  bucket; adjacent or tail NO candidates may trade when executable price,
-  edge, return, liquidity, and portfolio gates pass.
+- Exact Celsius probability uses source-display integer modeling. For a
+  whole-degree `23C` bucket, the model estimates
+  `P(23.0C <= source_value < 24.0C)`. New exact Celsius NO entries are blocked
+  only when the forecast mean maps to that same displayed integer bucket;
+  adjacent or tail NO candidates may trade when executable price, edge, return,
+  liquidity, and portfolio gates pass.
+- For official same-station nowcast on daily-high exact Celsius markets:
+  `observed_high_c >= bucket_c + 1.0` makes the exact-bucket YES impossible and
+  creates a strong NO settlement-lock signal. If the station remains inside
+  `[bucket_c, bucket_c + 1.0)` near the local event close, YES may become a
+  settlement-lock signal: 20% when there is enough buffer to the next integer
+  and 50% when the buffer is strong. The daily-low version is symmetric around
+  the lower displayed integer.
 - For daily-high exact/range held YES positions, same-station nowcast makes
   YES impossible only after the observed high is above the exact value or range
   upper endpoint; a lower observed high is not decisive. For daily-low

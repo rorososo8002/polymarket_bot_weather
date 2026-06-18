@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, replace
-from decimal import Decimal, ROUND_HALF_UP
 import inspect
 from datetime import datetime, timedelta, timezone
 import math
@@ -345,7 +344,43 @@ def _forecast_mean_f_from_note(note: str) -> float | None:
 
 
 def _source_display_integer_c(value_c: float) -> int:
-    return int(Decimal(str(value_c)).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+    return math.floor(value_c)
+
+
+def _is_official_nowcast_lock(signal: WeatherSignal) -> bool:
+    return (
+        signal.entry_size_fraction_override is not None
+        or "official_nowcast_lock=" in signal.note
+        or "official-nowcast-lock" in signal.source
+    )
+
+
+def _side_probability(side: str, p_true_yes: float) -> float:
+    p_yes = max(0.0, min(1.0, p_true_yes))
+    return p_yes if side == "YES" else 1.0 - p_yes
+
+
+def _edge_error_margins(signal: WeatherSignal, settings: Settings) -> tuple[float, float]:
+    if _is_official_nowcast_lock(signal):
+        return 0.0, 0.0
+    return settings.model_error_margin, settings.resolution_error_margin
+
+
+def _conservative_settlement_value_for_signal(side: str, signal: WeatherSignal, settings: Settings) -> float:
+    if _is_official_nowcast_lock(signal):
+        return _side_probability(side, signal.p_true)
+    return conservative_settlement_value(side, signal.p_true, settings)
+
+
+def _model_fair_price_for_signal(side: str, signal: WeatherSignal, settings: Settings) -> float:
+    if not _is_official_nowcast_lock(signal):
+        return model_fair_price(side, signal.p_true, settings)
+    settlement_value = _conservative_settlement_value_for_signal(side, signal, settings)
+    fair = settlement_value - polymarket_taker_fee_per_share(
+        settlement_value,
+        settings.weather_taker_fee_rate,
+    )
+    return max(0.01, min(0.99, fair))
 
 
 def _exact_celsius_no_entry_modal_risk_reason(
@@ -870,7 +905,9 @@ def position_size_usd(
     min_confidence: float = 0.50,
 ) -> float:
     """Return target paper order size in USD."""
-    if settings.size_mode.lower() == "kelly":
+    if entry_fraction_override is not None:
+        frac = min(max(0.0, entry_fraction_override), settings.max_single_market_fraction)
+    elif settings.size_mode.lower() == "kelly":
         frac = fractional_kelly_binary(
             side_probability,
             p_eff,
@@ -981,21 +1018,23 @@ def _side_edge_metrics(
 ) -> tuple[float, float, float]:
     entry_fee_per_share = polymarket_taker_fee_per_share(p_exec, settings.weather_taker_fee_rate)
     if side == "YES":
+        model_error_margin, resolution_error_margin = _edge_error_margins(signal, settings)
         edge = yes_net_edge(
             signal.p_true,
             p_exec,
             entry_fee_per_share,
-            settings.model_error_margin,
-            settings.resolution_error_margin,
+            model_error_margin,
+            resolution_error_margin,
         )
         side_probability = signal.p_true
     else:
+        model_error_margin, resolution_error_margin = _edge_error_margins(signal, settings)
         edge = no_net_edge(
             signal.p_true,
             p_exec,
             entry_fee_per_share,
-            settings.model_error_margin,
-            settings.resolution_error_margin,
+            model_error_margin,
+            resolution_error_margin,
         )
         side_probability = 1.0 - signal.p_true
     return entry_fee_per_share, edge, side_probability
@@ -1040,12 +1079,17 @@ def _side_result(
     for _attempt in range(4):
         entry_fee_per_share, edge, side_probability = _side_edge_metrics(side, signal, p_exec, settings)
         p_eff = p_exec + entry_fee_per_share
+        size_fraction_override = (
+            signal.entry_size_fraction_override
+            if signal.entry_size_fraction_override is not None
+            else entry_fraction_override
+        )
         size_usd = position_size_usd(
             side_probability,
             p_eff,
             settings,
             bankroll_before_entry,
-            entry_fraction_override,
+            size_fraction_override,
             net_edge=edge,
             min_edge=min_edge,
             confidence=signal.confidence,
@@ -1123,7 +1167,7 @@ def _side_result(
 
     estimate_shares = fee_adjusted_entry_shares(size_usd, p_exec, settings.weather_taker_fee_rate)
     spread = max(0.0, (book.best_ask or p_exec) - (book.best_bid or p_exec))
-    fair = model_fair_price(side, signal.p_true, settings)
+    fair = _model_fair_price_for_signal(side, signal, settings)
     expected_exit = target_exit_price(p_exec, fair, settings)
     expected_exit_estimate = estimate_executable_net_return(
         shares=estimate_shares,
@@ -1136,7 +1180,7 @@ def _side_result(
     settlement_estimate = estimate_executable_net_return(
         shares=estimate_shares,
         entry_vwap=p_exec,
-        expected_exit_price=conservative_settlement_value(side, signal.p_true, settings),
+        expected_exit_price=_conservative_settlement_value_for_signal(side, signal, settings),
         fee_rate=settings.weather_taker_fee_rate,
         hold_to_settlement=True,
     )
@@ -1154,6 +1198,12 @@ def _side_result(
         min_confidence=min_confidence,
         floor=settings.confidence_size_floor,
     )
+    official_lock_note = ""
+    if _is_official_nowcast_lock(signal):
+        official_lock_note = (
+            f", official_nowcast_lock=true, entry_size_reason={signal.entry_size_reason}, "
+            f"entry_size_fraction_override={(signal.entry_size_fraction_override or 0.0):.2f}"
+        )
     reason = (
         f"{side} edge={edge:.4f}, p_exec_vwap={p_exec:.4f}, route={return_estimate.route}, "
         f"expected_exit={return_estimate.expected_exit_price:.4f}, "
@@ -1166,7 +1216,7 @@ def _side_result(
         f"best_bid={(book.best_bid or 0.0):.4f}, best_ask={(book.best_ask or 0.0):.4f}, "
         f"spread_audit={spread:.4f}, slip_audit={slip:.4f}, "
         f"confidence_size_multiplier={confidence_multiplier:.3f}"
-        f"{partial_fill_reason}{rejection} [{market_type}]"
+        f"{official_lock_note}{partial_fill_reason}{rejection} [{market_type}]"
     )
     return EdgeResult(
         side=side if is_trade else "SKIP",
@@ -1230,7 +1280,7 @@ def _final_pre_trade_entry_result(
     )
     _unused, min_edge, _unused_entry_fraction = _market_params(settings, market_type)
     spread = max(0.0, (book.best_ask or checked_p_exec) - (book.best_bid or checked_p_exec))
-    fair = model_fair_price(result.side, signal.p_true, settings)
+    fair = _model_fair_price_for_signal(result.side, signal, settings)
     expected_exit = target_exit_price(checked_p_exec, fair, settings)
     expected_exit_estimate = estimate_executable_net_return(
         shares=checked_shares,
@@ -1243,7 +1293,7 @@ def _final_pre_trade_entry_result(
     settlement_estimate = estimate_executable_net_return(
         shares=checked_shares,
         entry_vwap=checked_p_exec,
-        expected_exit_price=conservative_settlement_value(result.side, signal.p_true, settings),
+        expected_exit_price=_conservative_settlement_value_for_signal(result.side, signal, settings),
         fee_rate=settings.weather_taker_fee_rate,
         hold_to_settlement=True,
     )
@@ -1415,6 +1465,22 @@ def evaluate_market(
 
     if signal.parsed is not None and signal.parsed.date_hint is None:
         result = EdgeResult("SKIP", signal.p_true, None, -999.0, 0.0, 0.0, f"date_hint=None: refusing undated market [{market_type}]")
+        return result, {}
+
+    if settings.official_nowcast_entry_only and not _is_official_nowcast_lock(signal):
+        result = EdgeResult(
+            "SKIP",
+            signal.p_true,
+            None,
+            -999.0,
+            0.0,
+            0.0,
+            (
+                "official-nowcast-entry-only: forecast-only entry blocked; "
+                "waiting for same-station settlement-lock evidence "
+                f"[{market_type}]"
+            ),
+        )
         return result, {}
 
     if bankroll_before_entry <= 0:

@@ -20,7 +20,7 @@ from weather_bot.probability import (
     load_bias_table,
 )
 from weather_bot.live_paper_runner import evaluate_market
-from weather_bot.models import RawMarket
+from weather_bot.models import OrderBook, OrderLevel, RawMarket, WeatherSignal
 from weather_bot.nowcast import StationNowcastObservation
 from weather_bot.weather_client import c_to_f, parse_weather_question, temperature_bucket_interval_bounds_f
 
@@ -979,7 +979,7 @@ def test_range_temperature_bucket_uses_exact_converted_celsius_bounds_without_ro
 
 def test_exact_celsius_bucket_probability_uses_source_display_integer_model():
     parsed = parse_weather_question("Will the highest temperature in Singapore be 29C today?")
-    member_values_f = [c_to_f(value_c) for value_c in [28.499, 28.5, 29.0, 29.499, 29.5]]
+    member_values_f = [c_to_f(value_c) for value_c in [28.999, 29.0, 29.5, 29.999, 30.0]]
 
     _probability, empirical_p = _temperature_bucket_probability(
         parsed,
@@ -1003,6 +1003,24 @@ def test_exact_high_nowcast_below_displayed_value_is_not_decisive():
 
     assert adjusted_p == 0.62
     assert adjustment == "observed-high-not-decisive"
+
+
+def test_exact_high_nowcast_inside_source_display_integer_bucket_is_not_decisive():
+    parsed = parse_weather_question("Will the highest temperature in Singapore be 29C today?")
+
+    adjusted_p, adjustment = _nowcast_threshold_adjustment(parsed, 0.62, c_to_f(29.7))
+
+    assert adjusted_p == 0.62
+    assert adjustment == "observed-high-inside-source-display-integer-bucket"
+
+
+def test_exact_high_nowcast_reaching_next_integer_breaks_yes_bucket():
+    parsed = parse_weather_question("Will the highest temperature in Singapore be 29C today?")
+
+    adjusted_p, adjustment = _nowcast_threshold_adjustment(parsed, 0.62, c_to_f(30.0))
+
+    assert adjusted_p == 0.0
+    assert adjustment == "observed-high-reached-next-source-display-integer"
 
 
 def test_range_high_nowcast_above_upper_endpoint_makes_yes_probability_zero():
@@ -1129,7 +1147,7 @@ def test_exact_bucket_nowcast_just_above_displayed_value_keeps_yes_probability_z
             return StationNowcastObservation(
                 station_id="HKO",
                 station_name=station.station_name,
-                observed_high_c=30.1,
+                observed_high_c=31.0,
                 observed_at=datetime(2026, 6, 2, 8, 0, tzinfo=timezone.utc),
                 high_observed_at=datetime(2026, 6, 2, 8, 0, tzinfo=timezone.utc),
                 source="hko-maxmin-since-midnight",
@@ -1149,7 +1167,90 @@ def test_exact_bucket_nowcast_just_above_displayed_value_keeps_yes_probability_z
     )
 
     assert signal.p_true == 0.0
-    assert "observed-high-above-exact-bucket" in signal.note
+    assert "observed-high-reached-next-source-display-integer" in signal.note
+
+
+def test_official_nowcast_lock_strong_no_uses_half_bankroll_size(tmp_path):
+    market = RawMarket(
+        market_id="singapore-29",
+        question="Will the highest temperature in Singapore be 29C today?",
+        slug="singapore-29",
+        active=True,
+        closed=False,
+        yes_token_id="yes",
+        no_token_id="no",
+    )
+    signal = WeatherSignal(
+        p_true=0.005,
+        confidence=1.0,
+        source="open-meteo-ensemble-station+official-nowcast-lock",
+        note="official_nowcast_lock=strong_no",
+        parsed=parse_weather_question(market.question),
+        entry_size_fraction_override=0.50,
+    )
+    books = {
+        "yes": OrderBook("yes", bids=[OrderLevel(0.09, 1000)], asks=[OrderLevel(0.10, 1000)]),
+        "no": OrderBook("no", bids=[OrderLevel(0.89, 1000)], asks=[OrderLevel(0.90, 1000)]),
+    }
+
+    class FakeClient:
+        def get_order_book(self, token_id):
+            return books[token_id]
+
+    settings = Settings(
+        state_path=str(tmp_path / "state.json"),
+        trades_csv_path=str(tmp_path / "trades.csv"),
+        decisions_csv_path=str(tmp_path / "decisions.csv"),
+        raw_snapshots_path=str(tmp_path / "raw.jsonl"),
+        bankroll_usd=200.0,
+        min_net_edge=0.08,
+        max_single_market_fraction=0.50,
+        entry_min_expected_net_return_pct=0.04,
+    )
+
+    result, per_side = evaluate_market(market, signal, FakeClient(), settings, 200.0)
+
+    assert result.side == "NO"
+    assert result.size_usd == pytest.approx(100.0)
+    assert per_side["NO"].size_usd == pytest.approx(100.0)
+    assert "official_nowcast_lock" in result.reason
+
+
+def test_official_nowcast_entry_only_blocks_forecast_only_entries(tmp_path):
+    market = RawMarket(
+        market_id="singapore-29",
+        question="Will the highest temperature in Singapore be 29C today?",
+        slug="singapore-29",
+        active=True,
+        closed=False,
+        yes_token_id="yes",
+        no_token_id="no",
+    )
+    signal = WeatherSignal(
+        p_true=0.90,
+        confidence=1.0,
+        source="open-meteo-ensemble-station",
+        note="forecast-only",
+        parsed=parse_weather_question(market.question),
+    )
+
+    class ExplodingClient:
+        def get_order_book(self, token_id):
+            raise AssertionError("forecast-only entry should skip before book fetch")
+
+    settings = Settings(
+        state_path=str(tmp_path / "state.json"),
+        trades_csv_path=str(tmp_path / "trades.csv"),
+        decisions_csv_path=str(tmp_path / "decisions.csv"),
+        raw_snapshots_path=str(tmp_path / "raw.jsonl"),
+        official_nowcast_entry_only=True,
+    )
+
+    result, per_side = evaluate_market(market, signal, ExplodingClient(), settings, 200.0)
+
+    assert result.side == "SKIP"
+    assert per_side == {}
+    assert "official-nowcast-entry-only" in result.reason
 
 
 def test_exact_daily_low_bucket_does_not_use_observed_high_nowcast():

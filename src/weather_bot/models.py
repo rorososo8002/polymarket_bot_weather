@@ -121,6 +121,8 @@ class WeatherSignal:
     note: str
     parsed: ParsedWeatherQuestion | None = None
     nowcast: dict[str, Any] | None = None
+    entry_size_fraction_override: float | None = None
+    entry_size_reason: str = ""
 
 
 @dataclass(frozen=True)

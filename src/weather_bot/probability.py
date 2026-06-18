@@ -6,8 +6,8 @@ import os
 import statistics
 import threading
 import time
-from dataclasses import replace
-from datetime import date, datetime, timedelta, timezone
+from dataclasses import dataclass, replace
+from datetime import date, datetime, time as datetime_time, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable
 from zoneinfo import ZoneInfo
@@ -225,8 +225,127 @@ def _source_display_integer_celsius_bounds_f(parsed: ParsedWeatherQuestion) -> t
     """
     if not _is_whole_celsius_exact_bucket(parsed):
         return None
-    bucket_c = float(parsed.threshold_original)
-    return c_to_f(bucket_c - 0.5), c_to_f(bucket_c + 0.5)
+    bucket_c = float(round(parsed.threshold_original))
+    return c_to_f(bucket_c), c_to_f(bucket_c + 1.0)
+
+
+@dataclass(frozen=True)
+class _OfficialNowcastLock:
+    p_true: float
+    adjustment: str
+    entry_fraction: float
+    size_reason: str
+
+
+def _event_end_utc(target: date, timezone_name: str) -> datetime:
+    try:
+        zone = ZoneInfo(timezone_name if timezone_name and timezone_name != "auto" else "UTC")
+    except Exception:
+        zone = timezone.utc
+    local_end = datetime.combine(target + timedelta(days=1), datetime_time.min, tzinfo=zone)
+    return local_end.astimezone(timezone.utc)
+
+
+def _hours_until_event_end(target: date, timezone_name: str, now: datetime | None) -> float:
+    current = now or _utc_now()
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    return (_event_end_utc(target, timezone_name) - current.astimezone(timezone.utc)).total_seconds() / 3600.0
+
+
+def _whole_celsius_exact_bucket(parsed: ParsedWeatherQuestion) -> int | None:
+    if not _is_whole_celsius_exact_bucket(parsed):
+        return None
+    return int(round(float(parsed.threshold_original)))
+
+
+def _official_nowcast_lock(
+    parsed: ParsedWeatherQuestion,
+    observed_value_c: float | None,
+    target: date,
+    timezone_name: str,
+    settings: Settings,
+    now: datetime | None,
+) -> _OfficialNowcastLock | None:
+    if not settings.official_nowcast_lock_enabled or observed_value_c is None:
+        return None
+    bucket_c = _whole_celsius_exact_bucket(parsed)
+    if bucket_c is None:
+        return None
+
+    lower_c = float(bucket_c)
+    upper_c = float(bucket_c + 1)
+    hours_to_close = _hours_until_event_end(target, timezone_name, now)
+    near_close = 0.0 <= hours_to_close <= settings.official_nowcast_lock_near_close_hours
+
+    if parsed.temperature_metric == "min":
+        if observed_value_c < lower_c:
+            return _OfficialNowcastLock(
+                p_true=0.0,
+                adjustment="official-lock-observed-low-below-source-display-integer",
+                entry_fraction=settings.official_nowcast_lock_strong_entry_fraction,
+                size_reason=(
+                    f"official_nowcast_lock=strong_no; observed_low_c={observed_value_c:.1f} "
+                    f"< displayed_bucket_lower_c={lower_c:.1f}"
+                ),
+            )
+        if near_close and lower_c <= observed_value_c < upper_c:
+            buffer_c = observed_value_c - lower_c
+            if buffer_c >= settings.official_nowcast_lock_yes_strong_buffer_c:
+                return _OfficialNowcastLock(
+                    p_true=0.985,
+                    adjustment="official-lock-near-close-low-inside-strong-buffer",
+                    entry_fraction=settings.official_nowcast_lock_strong_entry_fraction,
+                    size_reason=(
+                        f"official_nowcast_lock=strong_yes; observed_low_c={observed_value_c:.1f}; "
+                        f"buffer_to_lower_c={buffer_c:.1f}; hours_to_close={hours_to_close:.2f}"
+                    ),
+                )
+            if buffer_c >= settings.official_nowcast_lock_yes_base_buffer_c:
+                return _OfficialNowcastLock(
+                    p_true=0.94,
+                    adjustment="official-lock-near-close-low-inside-base-buffer",
+                    entry_fraction=settings.official_nowcast_lock_base_entry_fraction,
+                    size_reason=(
+                        f"official_nowcast_lock=base_yes; observed_low_c={observed_value_c:.1f}; "
+                        f"buffer_to_lower_c={buffer_c:.1f}; hours_to_close={hours_to_close:.2f}"
+                    ),
+                )
+        return None
+
+    if observed_value_c >= upper_c:
+        return _OfficialNowcastLock(
+            p_true=0.0,
+            adjustment="observed-high-reached-next-source-display-integer",
+            entry_fraction=settings.official_nowcast_lock_strong_entry_fraction,
+            size_reason=(
+                f"official_nowcast_lock=strong_no; observed_high_c={observed_value_c:.1f} "
+                f">= next_displayed_integer_c={upper_c:.1f}"
+            ),
+        )
+    if near_close and lower_c <= observed_value_c < upper_c:
+        buffer_c = upper_c - observed_value_c
+        if buffer_c >= settings.official_nowcast_lock_yes_strong_buffer_c:
+            return _OfficialNowcastLock(
+                p_true=0.985,
+                adjustment="official-lock-near-close-high-inside-strong-buffer",
+                entry_fraction=settings.official_nowcast_lock_strong_entry_fraction,
+                size_reason=(
+                    f"official_nowcast_lock=strong_yes; observed_high_c={observed_value_c:.1f}; "
+                    f"buffer_to_next_integer_c={buffer_c:.1f}; hours_to_close={hours_to_close:.2f}"
+                ),
+            )
+        if buffer_c >= settings.official_nowcast_lock_yes_base_buffer_c:
+            return _OfficialNowcastLock(
+                p_true=0.94,
+                adjustment="official-lock-near-close-high-inside-base-buffer",
+                entry_fraction=settings.official_nowcast_lock_base_entry_fraction,
+                size_reason=(
+                    f"official_nowcast_lock=base_yes; observed_high_c={observed_value_c:.1f}; "
+                    f"buffer_to_next_integer_c={buffer_c:.1f}; hours_to_close={hours_to_close:.2f}"
+                ),
+            )
+    return None
 
 
 def _temperature_bucket_probability(
@@ -1076,6 +1195,14 @@ def _nowcast_threshold_adjustment(
 
     threshold_f = parsed.threshold_f
     if parsed.temperature_bucket == "exact":
+        display_bounds = _source_display_integer_celsius_bounds_f(parsed)
+        if display_bounds is not None:
+            lower_f, upper_f = display_bounds
+            if temperature_gte_f(observed_high_f, upper_f):
+                return 0.0, "observed-high-reached-next-source-display-integer"
+            if temperature_gte_f(observed_high_f, lower_f):
+                return forecast_probability, "observed-high-inside-source-display-integer-bucket"
+            return forecast_probability, "observed-high-not-decisive"
         bounds = temperature_bucket_interval_bounds_f(parsed)
         if bounds is None:
             return forecast_probability, "no-threshold"
@@ -1128,6 +1255,14 @@ def _nowcast_low_threshold_adjustment(
 
     threshold_f = parsed.threshold_f
     if parsed.temperature_bucket == "exact":
+        display_bounds = _source_display_integer_celsius_bounds_f(parsed)
+        if display_bounds is not None:
+            lower_f, upper_f = display_bounds
+            if temperature_lt_f(observed_low_f, lower_f):
+                return 0.0, "observed-low-below-source-display-integer"
+            if temperature_lt_f(observed_low_f, upper_f):
+                return forecast_probability, "observed-low-inside-source-display-integer-bucket"
+            return forecast_probability, "observed-low-not-decisive"
         bounds = temperature_bucket_interval_bounds_f(parsed)
         if bounds is None:
             return forecast_probability, "no-threshold"
@@ -1237,7 +1372,26 @@ def _with_temperature_nowcast(
         adjusted_p, adjustment = _nowcast_threshold_adjustment(parsed, signal.p_true, observed_value_f)
         observed_label = "observed_high_c"
         observed_value_c = observation.observed_high_c
+    lock = _official_nowcast_lock(
+        parsed,
+        observed_value_c,
+        target,
+        station.timezone,
+        settings,
+        now,
+    )
+    entry_size_fraction_override = signal.entry_size_fraction_override
+    entry_size_reason = signal.entry_size_reason
+    source_suffix = "+nowcast"
+    if lock is not None:
+        adjusted_p = lock.p_true
+        adjustment = lock.adjustment
+        entry_size_fraction_override = lock.entry_fraction
+        entry_size_reason = lock.size_reason
+        source_suffix = "+official-nowcast-lock"
     confidence = max(signal.confidence, 0.95) if adjusted_p != signal.p_true else signal.confidence
+    if lock is not None:
+        confidence = 1.0
     note = (
         f"{signal.note}; evidence=forecast-plus-nowcast; nowcast_adjustment={adjustment}; "
         f"{observed_label}={observed_value_c:.1f}; "
@@ -1245,13 +1399,17 @@ def _with_temperature_nowcast(
         f"freshness_seconds={observation.freshness_seconds}; "
         f"nowcast_source={observation.source}"
     )
+    if entry_size_reason:
+        note = f"{note}; {entry_size_reason}; entry_size_fraction_override={entry_size_fraction_override:.2f}"
     return replace(
         signal,
         p_true=clamp_probability(adjusted_p),
         confidence=confidence,
-        source=f"{signal.source}+nowcast",
+        source=f"{signal.source}{source_suffix}",
         note=note,
         nowcast=payload,
+        entry_size_fraction_override=entry_size_fraction_override,
+        entry_size_reason=entry_size_reason,
     )
 
 # ---------------------------------------------------------------------------

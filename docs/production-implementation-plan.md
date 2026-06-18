@@ -99,7 +99,7 @@ expected_net_return >= ENTRY_MIN_EXPECTED_NET_RETURN_PCT
 ```
 
 Active paper thresholds are less conservative than before:
-`MIN_NET_EDGE=0.08` and `ENTRY_MIN_EXPECTED_NET_RETURN_PCT=0.04`. This is a paper-validation choice, not live-trading permission.
+`MIN_NET_EDGE=0.08` and `ENTRY_MIN_EXPECTED_NET_RETURN_PCT=0.04`. This is a paper-validation choice, not live-trading permission. Official same-station settlement-lock signals may remove forecast model/resolution margin from the edge calculation because the evidence is observed station state rather than a future forecast; fees, executable depth, spread, and expected net return still apply.
 
 `p_exec` is executable ask-side VWAP. It already includes spread/slippage
 through the actual book price, so do not subtract those twice.
@@ -144,9 +144,11 @@ Drawdown breakers may stop new entries, but never settlement or exit handling; a
   comparison; range endpoints and exact displayed values stay literal, with no
   hidden settlement interval such as `28.5C-29.5C`.
 - Exact Celsius changed from exact decimal member matches to whole-degree
-  display probability, e.g. `P(source_displayed_integer_c == 23)`. NO skips
-  only on the forecast-mean modal integer bucket; adjacent/tail NO still needs
-  fee-aware edge, return, liquidity, and portfolio approval.
+  source-display probability. For displayed `23C`, the strategy models
+  `[23.0C, 24.0C)`: `23.7C` still supports the `23C` bucket, while `24.0C`
+  breaks it. NO skips only on the forecast-mean modal integer bucket;
+  adjacent/tail NO still needs fee-aware edge, return, liquidity, and
+  portfolio approval.
 - Same-station nowcast may adjust probability only when station metadata marks
   same-station support with confidence grade A/B. C/D, unsupported, inferred,
   or nearby providers cannot enter the execution universe.
@@ -239,14 +241,9 @@ new entries. If one held position cannot be priced because its token is
 illiquid, missing, or settling, the bot values that position at $0 for
 `liquidation_bankroll` instead of blocking all unrelated new entries.
 
-Default portfolio limits:
-
-```text
-BANKROLL_USD=200; SIZE_MODE=kelly; FRACTIONAL_KELLY=0.50; ENTRY_FRACTION=0.20
-MIN_ORDER_USD=10.00; MAX_SINGLE_MARKET_FRACTION=0.15; MAX_EVENT_PORTFOLIO_LEGS=2
-MAX_EVENT_DATE_EXPOSURE_FRACTION=0.10; LARGE_BANKROLL_EVENT_DATE_EXPOSURE_FRACTION=0.05; EVENT_DATE_EXPOSURE_TRANSITION_USD=1000
-MAX_CITY_EXPOSURE_FRACTION=0.20; MAX_TOTAL_EXPOSURE_FRACTION=0.90
-```
+Active VPS official-lock limits: `BANKROLL_USD=200`, `$10` min order, 50%
+single-market/city/date caps, 90% total cap, 20% base lock size, 50% strong
+lock size, 3h near-close window, YES buffers `0.50C/0.75C`.
 
 For one city-date event, the selector compares one-leg and at-most-two-leg
 `YES+YES`, `YES+NO`, and `NO+NO` combinations across non-overlapping settlement
@@ -256,6 +253,10 @@ scenario maps. Allocation-size candidates are capped for large ranges while
 keeping the minimum order, allowed maximum, and any affordable preferred size.
 Exhaustive-looking buckets normalize only from credible raw mass; exact dust fails closed instead of stretching into fake 100% tails.
 
+Official-station lock sizing overrides Kelly only for exact whole-degree
+Celsius markets with fresh same-station nowcast: daily-high NO is 50% after the
+next integer is reached; near-close YES is 20%/50% based on buffer; daily-low is
+symmetric; all normal depth, spread, return, cap, and pre-trade gates still run.
 ## Accounting And Exit Contract
 
 `paper_state.json` is the paper account book. It is saved by complete temp-file
@@ -268,15 +269,8 @@ and clear it only after both the state save and trade row append finish. A
 leftover journal or obvious state/trade mismatch stops startup for operator
 reconciliation.
 
-Open positions close only through:
-
-- probability stop
-- model-target take profit
-- overheated take profit
-- valid edge-faded exit
-- nowcast bucket-lock risk for held NO exact/range buckets
-- max holding time
-- resolved settlement
+Open positions close only through probability stop, model/overheated profit,
+valid edge fade, nowcast bucket-lock risk, max hold, or resolved settlement.
 
 Exit triggers use after-fee liquidation PnL. Evaluation failure sentinels such
 as `net_edge=-999` with no executable `p_exec` are not exit signals.

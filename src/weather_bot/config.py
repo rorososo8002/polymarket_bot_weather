@@ -62,6 +62,8 @@ _RATIO_SETTINGS = (
     "max_event_date_exposure_fraction",
     "large_bankroll_event_date_exposure_fraction",
     "entry_min_expected_net_return_pct",
+    "official_nowcast_lock_base_entry_fraction",
+    "official_nowcast_lock_strong_entry_fraction",
     "daily_realized_loss_limit_fraction",
     "daily_unrealized_loss_limit_fraction",
     "large_loss_threshold_fraction",
@@ -77,6 +79,9 @@ _RATIO_SETTINGS = (
 
 _NON_NEGATIVE_NUMBER_SETTINGS = (
     "settlement_runner_min_ev_margin_usd",
+    "official_nowcast_lock_near_close_hours",
+    "official_nowcast_lock_yes_base_buffer_c",
+    "official_nowcast_lock_yes_strong_buffer_c",
     "city_loss_cooldown_hours",
     "large_loss_cooldown_hours",
 )
@@ -194,6 +199,13 @@ class Settings:
     settlement_runner_enabled: bool = True
     settlement_runner_max_fraction: float = 1.00
     settlement_runner_min_ev_margin_usd: float = 0.0
+    official_nowcast_lock_enabled: bool = True
+    official_nowcast_entry_only: bool = False
+    official_nowcast_lock_base_entry_fraction: float = 0.20
+    official_nowcast_lock_strong_entry_fraction: float = 0.50
+    official_nowcast_lock_near_close_hours: float = 3.0
+    official_nowcast_lock_yes_base_buffer_c: float = 0.50
+    official_nowcast_lock_yes_strong_buffer_c: float = 0.75
 
     # Probability model controls
     probability_shrink_gamma: float = 0.65
@@ -473,6 +485,34 @@ def load_settings() -> Settings:
         settlement_runner_min_ev_margin_usd=_float_env(
             "SETTLEMENT_RUNNER_MIN_EV_MARGIN_USD",
             Settings.settlement_runner_min_ev_margin_usd,
+        ),
+        official_nowcast_lock_enabled=_bool_env(
+            "OFFICIAL_NOWCAST_LOCK_ENABLED",
+            Settings.official_nowcast_lock_enabled,
+        ),
+        official_nowcast_entry_only=_bool_env(
+            "OFFICIAL_NOWCAST_ENTRY_ONLY",
+            Settings.official_nowcast_entry_only,
+        ),
+        official_nowcast_lock_base_entry_fraction=_float_env(
+            "OFFICIAL_NOWCAST_LOCK_BASE_ENTRY_FRACTION",
+            Settings.official_nowcast_lock_base_entry_fraction,
+        ),
+        official_nowcast_lock_strong_entry_fraction=_float_env(
+            "OFFICIAL_NOWCAST_LOCK_STRONG_ENTRY_FRACTION",
+            Settings.official_nowcast_lock_strong_entry_fraction,
+        ),
+        official_nowcast_lock_near_close_hours=_float_env(
+            "OFFICIAL_NOWCAST_LOCK_NEAR_CLOSE_HOURS",
+            Settings.official_nowcast_lock_near_close_hours,
+        ),
+        official_nowcast_lock_yes_base_buffer_c=_float_env(
+            "OFFICIAL_NOWCAST_LOCK_YES_BASE_BUFFER_C",
+            Settings.official_nowcast_lock_yes_base_buffer_c,
+        ),
+        official_nowcast_lock_yes_strong_buffer_c=_float_env(
+            "OFFICIAL_NOWCAST_LOCK_YES_STRONG_BUFFER_C",
+            Settings.official_nowcast_lock_yes_strong_buffer_c,
         ),
         probability_shrink_gamma=_float_env("PROBABILITY_SHRINK_GAMMA", Settings.probability_shrink_gamma),
         confidence_size_floor=_float_env("CONFIDENCE_SIZE_FLOOR", Settings.confidence_size_floor),

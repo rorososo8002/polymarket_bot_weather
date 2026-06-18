@@ -78,6 +78,13 @@ def test_default_city_date_portfolio_caps_shrink_after_one_thousand_dollars():
     assert Settings.large_loss_threshold_fraction == 0.50
     assert Settings.max_total_exposure_fraction == 0.90
     assert Settings.min_order_usd == 10.0
+    assert Settings.official_nowcast_lock_enabled is True
+    assert Settings.official_nowcast_entry_only is False
+    assert Settings.official_nowcast_lock_base_entry_fraction == 0.20
+    assert Settings.official_nowcast_lock_strong_entry_fraction == 0.50
+    assert Settings.official_nowcast_lock_near_close_hours == 3.0
+    assert Settings.official_nowcast_lock_yes_base_buffer_c == 0.50
+    assert Settings.official_nowcast_lock_yes_strong_buffer_c == 0.75
 
 
 def test_default_settings_pass_numeric_range_validation():
@@ -215,6 +222,13 @@ def test_load_settings_reads_conservative_strategy_controls(monkeypatch):
     monkeypatch.setenv("SETTLEMENT_RUNNER_ENABLED", "false")
     monkeypatch.setenv("SETTLEMENT_RUNNER_MAX_FRACTION", "0.20")
     monkeypatch.setenv("SETTLEMENT_RUNNER_MIN_EV_MARGIN_USD", "1.25")
+    monkeypatch.setenv("OFFICIAL_NOWCAST_LOCK_ENABLED", "false")
+    monkeypatch.setenv("OFFICIAL_NOWCAST_ENTRY_ONLY", "true")
+    monkeypatch.setenv("OFFICIAL_NOWCAST_LOCK_BASE_ENTRY_FRACTION", "0.21")
+    monkeypatch.setenv("OFFICIAL_NOWCAST_LOCK_STRONG_ENTRY_FRACTION", "0.49")
+    monkeypatch.setenv("OFFICIAL_NOWCAST_LOCK_NEAR_CLOSE_HOURS", "2.5")
+    monkeypatch.setenv("OFFICIAL_NOWCAST_LOCK_YES_BASE_BUFFER_C", "0.40")
+    monkeypatch.setenv("OFFICIAL_NOWCAST_LOCK_YES_STRONG_BUFFER_C", "0.80")
 
     settings = load_settings()
 
@@ -227,6 +241,13 @@ def test_load_settings_reads_conservative_strategy_controls(monkeypatch):
     assert settings.settlement_runner_enabled is False
     assert settings.settlement_runner_max_fraction == 0.20
     assert settings.settlement_runner_min_ev_margin_usd == 1.25
+    assert settings.official_nowcast_lock_enabled is False
+    assert settings.official_nowcast_entry_only is True
+    assert settings.official_nowcast_lock_base_entry_fraction == 0.21
+    assert settings.official_nowcast_lock_strong_entry_fraction == 0.49
+    assert settings.official_nowcast_lock_near_close_hours == 2.5
+    assert settings.official_nowcast_lock_yes_base_buffer_c == 0.40
+    assert settings.official_nowcast_lock_yes_strong_buffer_c == 0.80
 
 
 def test_load_settings_reads_forecast_cache_controls(monkeypatch):

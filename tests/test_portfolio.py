@@ -450,6 +450,8 @@ def test_fee_adjusted_shares_drive_portfolio_scenario_and_open_position(tmp_path
         weather_taker_fee_rate=0.05,
         model_error_margin=0.0,
         resolution_error_margin=0.0,
+        max_event_date_exposure_fraction=0.15,
+        large_bankroll_event_date_exposure_fraction=0.15,
     )
     raw_market = market("seoul-26", "26\u00b0C")
     signal = WeatherSignal(0.80, 1.0, "test", "test", parse_weather_question(raw_market.question))

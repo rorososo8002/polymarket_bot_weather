@@ -92,9 +92,10 @@ The bot is not ready for live-trading planning until all P0 gates are true.
 7. Exact bucket settlement checks are exact displayed values; no hidden
    half-step settlement intervals.
 8. Whole-degree Celsius exact-bucket probability estimates the settlement
-   source's displayed integer value. Exact Celsius NO entries fail closed on
-   the forecast-mean modal integer bucket, while adjacent or tail NO entries
-   may trade only when normal executable edge and return gates pass.
+   source's displayed integer band as `[N.0C, N+1.0C)`. Exact Celsius NO
+   entries fail closed on the forecast-mean modal integer bucket, while
+   adjacent or tail NO entries may trade only when normal executable edge and
+   return gates pass.
 9. Range buckets preserve displayed inclusive endpoints.
 10. Threshold markets follow the exact rule wording.
 11. Daily-high markets use observed high; daily-low markets use observed low.
@@ -211,6 +212,9 @@ Required behavior:
   equality
 - exact Celsius NO entry skips when the forecast mean maps to the same
   displayed integer bucket, not merely because it is within 1.0C
+- official same-station nowcast treats `23.7C` as still inside the displayed
+  `23C` bucket and treats `24.0C` as the break point for daily-high `23C`
+  exact markets
 - range bucket means displayed inclusive endpoints
 - threshold market follows its own above/below/inclusive wording
 - daily-high YES risk checks observed high
