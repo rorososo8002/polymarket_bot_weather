@@ -141,9 +141,9 @@ before continuing.
 - Open-Meteo forecast HTTP calls use cache-protected batch mode:
   trading-ready cities are evaluated one forecast key at a time with
   `FORECAST_REQUEST_MIN_INTERVAL_SECONDS=15` gaps between real cache misses.
-  The answer cache must keep `FORECAST_CACHE_TTL_SECONDS=10800` (3 h), so a
-  full 40-city execution universe costs at most 40 x 8 batches/day x 31 units =
-  9,920 units/day, just under the 10,000 unit limit.
+  The answer cache must keep `FORECAST_CACHE_TTL_SECONDS=14400` (4 h), so the
+  full 48-city execution universe costs at most 48 x 6 batches/day x 31 units =
+  8,928 units/day, below the 10,000 unit limit.
 - On a non-rate-limit forecast failure, skip that city and move to the next one.
   Do not retry the same city within the same batch. The failure cooldown equals
   the cache TTL so the city is only retried in the next batch.
@@ -151,7 +151,7 @@ before continuing.
   the rate-limit cooldown to expire before resuming. Do not hammer failed
   cities.
 - Forecast freshness and nowcast freshness are different clocks. A forecast
-  signal may be refreshed from the 3-h Open-Meteo answer cache while AWC
+  signal may be refreshed from the 4-h Open-Meteo answer cache while AWC
   nowcast may refresh every 60 seconds and HKO stays at 10 minutes. Do not use
   `STATION_NOWCAST_CACHE_TTL_SECONDS` to mark forecast signals stale.
 - Use the Polymarket CLOB WebSocket market stream for executable order books by

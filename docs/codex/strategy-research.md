@@ -19,7 +19,7 @@ Read this file only for strategy changes, probability modeling, trading behavior
 - The current paper strategy is temperature-only. There is no environment
   switch that re-enables non-temperature weather markets.
 - Refresh forecast data through the Open-Meteo cache with
-  `FORECAST_CACHE_TTL_SECONDS=10800`. Real Open-Meteo forecast HTTP calls are
+  `FORECAST_CACHE_TTL_SECONDS=14400`. Real Open-Meteo forecast HTTP calls are
   globally serialized by `FORECAST_REQUEST_MIN_INTERVAL_SECONDS=15`; cache hits
   do not consume the Open-Meteo request budget.
 - Apply the forecast TTL to memory and disk cache entries alike. A reachable
@@ -46,7 +46,7 @@ Read this file only for strategy changes, probability modeling, trading behavior
   event can contain lower-tail, exact, and upper-tail buckets. Expand every
   supported weather-category event found, compute bucket probabilities from
   shared non-overlapping boundaries, and report actual event, city, market, and
-  token coverage. The 41-city station allowlist is not an event-count cutoff.
+  token coverage. The 49-city station registry is not an event-count cutoff.
 - Use settlement-station nowcast only from explicitly mapped same-station
   observation providers. Current providers derive observed high/low extrema
   from one station-date response when possible. Missing, stale, malformed,

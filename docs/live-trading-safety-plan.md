@@ -41,7 +41,7 @@ them:
   `STATION_MAP` are the station metadata source of truth, while
   `TRADING_READY_STATION_MAP` is the executable subset.
 - Open-Meteo forecasts use the paper bot's current forecast budget rules:
-  `FORECAST_CACHE_TTL_SECONDS=10800` for the forecast answer-sheet freshness
+  `FORECAST_CACHE_TTL_SECONDS=14400` for the forecast answer-sheet freshness
   window, plus `FORECAST_REQUEST_MIN_INTERVAL_SECONDS=15` so real forecast HTTP
   calls are one-at-a-time and spaced after the previous request finishes or
   times out.

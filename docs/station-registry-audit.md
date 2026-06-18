@@ -1,7 +1,7 @@
 # Station Registry Audit
 
 This checklist shows which forecast coordinates and nowcast station candidates
-are used for the 41 supported cities.
+are used for the 49 registered cities.
 
 Beginner explanation: a weather market is settled by a specific official
 station, not by a vague city-center weather reading. For example, a Seoul market
@@ -39,16 +39,16 @@ sheet against the wrong exam.
 
 ## Current Conclusion
 
-- All 41 cities remain in `STATION_MAP` as the station registry.
-- 40 cities are trading-ready because code now stores an official Polymarket
+- All 49 cities remain in `STATION_MAP` as the station registry.
+- 48 cities are trading-ready because code now stores an official Polymarket
   rule URL and station wording for them.
 - `karachi/OPMR` is not trading-ready. The Polymarket rule evidence found for
   Karachi names Masroor Airbase Station, but its resolution-source URL uses
   `OPKC`, while the current registry uses `OPMR`. The bot excludes this city
   until that conflict is resolved from a primary source.
 - Trading discovery and probability estimation now use the trading-ready subset,
-  not the full 41-city registry.
-- 39 ICAO stations read same-day observed values through the Aviation Weather
+  not the full 49-city registry.
+- 47 ICAO stations read same-day observed values through the Aviation Weather
   Center METAR API and carry grade A station confidence. One bulk AWC request
   covers the enabled ICAO set, and real AWC calls are floored at 60 seconds.
 - `hong kong/HKO` uses Hong Kong Observatory max/min temperature CSV data since
@@ -69,11 +69,31 @@ sheet against the wrong exam.
 - Original Polymarket rule URLs and rule wording are stored in
   `src/weather_bot/stations.py`.
 
+## June 19 Expansion Evidence
+
+These eight stations were named by the current Polymarket resolution text and
+returned matching live rows from the official AWC METAR API on June 19, 2026.
+The timezone is the station's local clock used to decide which calendar day
+the market is asking about. The unit is the value Polymarket displays and uses
+for settlement buckets.
+
+| city | station | coordinates | timezone | settlement unit | AWC METAR |
+| --- | --- | --- | --- | --- | --- |
+| austin | KAUS | 30.1831, -97.6806 | America/Chicago | whole Fahrenheit | verified |
+| denver | KBKF | 39.7130, -104.7580 | America/Denver | whole Fahrenheit | verified |
+| houston | KHOU | 29.6458, -95.2821 | America/Chicago | whole Fahrenheit | verified |
+| kuala lumpur | WMKK | 2.7470, 101.7140 | Asia/Kuala_Lumpur | whole Celsius | verified |
+| lucknow | VILK | 26.7610, 80.8890 | Asia/Kolkata | whole Celsius | verified |
+| mexico city | MMMX | 19.4360, -99.0720 | America/Mexico_City | whole Celsius | verified |
+| san francisco | KSFO | 37.6196, -122.3656 | America/Los_Angeles | whole Fahrenheit | verified |
+| sao paulo | SBGR | -23.4320, -46.4690 | America/Sao_Paulo | whole Celsius | verified |
+
 | city | settlement station | station name | forecast coordinates | forecast_source | nowcast_station | nowcast type | nowcast status | rule evidence | trading-ready |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | amsterdam | EHAM | Amsterdam Airport Schiphol Station | 52.3086, 4.7639 | open-meteo-ensemble | EHAM | metar | provider_enabled | verified_rule_source | yes |
 | ankara | LTAC | Esenboga Intl Airport Station | 40.1281, 32.9951 | open-meteo-ensemble | LTAC | metar | provider_enabled | verified_rule_source | yes |
 | atlanta | KATL | Hartsfield-Jackson International Airport Station | 33.6407, -84.4277 | open-meteo-ensemble | KATL | metar | provider_enabled | verified_rule_source | yes |
+| austin | KAUS | Austin-Bergstrom International Airport Station | 30.1831, -97.6806 | open-meteo-ensemble | KAUS | metar | provider_enabled | verified_rule_source | yes |
 | beijing | ZBAA | Beijing Capital International Airport Station | 40.0801, 116.5846 | open-meteo-ensemble | ZBAA | metar | provider_enabled | verified_rule_source | yes |
 | buenos aires | SAEZ | Minister Pistarini Intl Airport Station | -34.8222, -58.5358 | open-meteo-ensemble | SAEZ | metar | provider_enabled | verified_rule_source | yes |
 | busan | RKPK | Gimhae Intl Airport Station | 35.1795, 128.9382 | open-meteo-ensemble | RKPK | metar | provider_enabled | verified_rule_source | yes |
@@ -82,16 +102,21 @@ sheet against the wrong exam.
 | chicago | KORD | Chicago O'Hare Intl Airport Station | 41.9742, -87.9073 | open-meteo-ensemble | KORD | metar | provider_enabled | verified_rule_source | yes |
 | chongqing | ZUCK | Chongqing Jiangbei International Airport Station | 29.7192, 106.6417 | open-meteo-ensemble | ZUCK | metar | provider_enabled | verified_rule_source | yes |
 | dallas | KDAL | Dallas Love Field Station | 32.8471, -96.8518 | open-meteo-ensemble | KDAL | metar | provider_enabled | verified_rule_source | yes |
+| denver | KBKF | Buckley Space Force Base Station | 39.7130, -104.7580 | open-meteo-ensemble | KBKF | metar | provider_enabled | verified_rule_source | yes |
 | guangzhou | ZGGG | Guangzhou Baiyun International Airport Station | 23.3924, 113.2988 | open-meteo-ensemble | ZGGG | metar | provider_enabled | verified_rule_source | yes |
 | helsinki | EFHK | Helsinki Vantaa Airport Station | 60.3172, 24.9633 | open-meteo-ensemble | EFHK | metar | provider_enabled | verified_rule_source | yes |
 | hong kong | HKO | Hong Kong Observatory | 22.3022, 114.1744 | open-meteo-ensemble | HKO | hko_maxmin_since_midnight | provider_enabled | verified_rule_source | yes |
+| houston | KHOU | William P. Hobby Airport Station | 29.6458, -95.2821 | open-meteo-ensemble | KHOU | metar | provider_enabled | verified_rule_source | yes |
 | istanbul | LTFM | Istanbul Airport | 41.2613, 28.7419 | open-meteo-ensemble | LTFM | metar | provider_enabled | verified_rule_source | yes |
 | jeddah | OEJN | King Abdulaziz International Airport Station | 21.6796, 39.1565 | open-meteo-ensemble | OEJN | metar | provider_enabled | verified_rule_source | yes |
 | karachi | OPMR | Masroor Airbase Station | 24.8936, 66.9388 | open-meteo-ensemble | OPMR | metar_unavailable | provider_unavailable | rule_station_id_conflict | no |
+| kuala lumpur | WMKK | Kuala Lumpur Intl Airport Station | 2.7470, 101.7140 | open-meteo-ensemble | WMKK | metar | provider_enabled | verified_rule_source | yes |
 | london | EGLC | London City Airport Station | 51.5053, 0.0553 | open-meteo-ensemble | EGLC | metar | provider_enabled | verified_rule_source | yes |
+| lucknow | VILK | Chaudhary Charan Singh Intl Airport Station | 26.7610, 80.8890 | open-meteo-ensemble | VILK | metar | provider_enabled | verified_rule_source | yes |
 | los angeles | KLAX | Los Angeles International Airport Station | 33.9416, -118.4085 | open-meteo-ensemble | KLAX | metar | provider_enabled | verified_rule_source | yes |
 | madrid | LEMD | Adolfo Suarez Madrid-Barajas Airport Station | 40.4983, -3.5676 | open-meteo-ensemble | LEMD | metar | provider_enabled | verified_rule_source | yes |
 | manila | RPLL | Ninoy Aquino International Airport Station | 14.5086, 121.0196 | open-meteo-ensemble | RPLL | metar | provider_enabled | verified_rule_source | yes |
+| mexico city | MMMX | Benito Juarez International Airport Station | 19.4360, -99.0720 | open-meteo-ensemble | MMMX | metar | provider_enabled | verified_rule_source | yes |
 | miami | KMIA | Miami Intl Airport Station | 25.7959, -80.2870 | open-meteo-ensemble | KMIA | metar | provider_enabled | verified_rule_source | yes |
 | milan | LIMC | Malpensa Intl Airport Station | 45.6306, 8.7281 | open-meteo-ensemble | LIMC | metar | provider_enabled | verified_rule_source | yes |
 | moscow | UUWW | Vnukovo International Airport | 55.5915, 37.2615 | open-meteo-ensemble | UUWW | metar | provider_enabled | verified_rule_source | yes |
@@ -100,6 +125,8 @@ sheet against the wrong exam.
 | panama city | MPMG | Marcos A. Gelabert Intl Airport Station | 8.9733, -79.5556 | open-meteo-ensemble | MPMG | metar | provider_enabled | verified_rule_source | yes |
 | paris | LFPB | Paris-Le Bourget Airport Station | 48.9694, 2.4414 | open-meteo-ensemble | LFPB | metar | provider_enabled | verified_rule_source | yes |
 | qingdao | ZSQD | Qingdao Jiaodong International Airport Station | 36.3619, 120.0881 | open-meteo-ensemble | ZSQD | metar | provider_enabled | verified_rule_source | yes |
+| san francisco | KSFO | San Francisco International Airport Station | 37.6196, -122.3656 | open-meteo-ensemble | KSFO | metar | provider_enabled | verified_rule_source | yes |
+| sao paulo | SBGR | Sao Paulo-Guarulhos International Airport Station | -23.4320, -46.4690 | open-meteo-ensemble | SBGR | metar | provider_enabled | verified_rule_source | yes |
 | seattle | KSEA | Seattle-Tacoma International Airport Station | 47.4502, -122.3088 | open-meteo-ensemble | KSEA | metar | provider_enabled | verified_rule_source | yes |
 | seoul | RKSI | Incheon Intl Airport Station | 37.4602, 126.4407 | open-meteo-ensemble | RKSI | metar | provider_enabled | verified_rule_source | yes |
 | shanghai | ZSPD | Shanghai Pudong International Airport Station | 31.1443, 121.8083 | open-meteo-ensemble | ZSPD | metar | provider_enabled | verified_rule_source | yes |

@@ -17,7 +17,7 @@ This is the active paper-bot rule book; historical notes belong in focused `docs
 
 ## Market Universe And Forecasts
 
-- `STATION_MAP` registers 41 cities; paper execution uses only the 40-city `TRADING_READY_STATION_MAP`. Karachi stays excluded until evidence is fixed.
+- `STATION_MAP` registers 49 cities; paper execution uses only the 48-city `TRADING_READY_STATION_MAP`. Karachi stays excluded until evidence is fixed.
 - Execute temperature markets only; non-temperature markets must not reach forecast calculation, order-book subscription, or paper trade logging.
 - Unknown, stale, malformed, unsupported, suspicious, missing, or conflictful data means skip.
 - Market title parsing is not enough rule evidence. Preserve question, available rule/source text, station, unit, bucket shape, and station-local date window; title/rule conflicts mean skip.
@@ -36,9 +36,9 @@ This is the active paper-bot rule book; historical notes belong in focused `docs
 - `WEATHER_BIAS_JSON` is optional calibration evidence. Empty means neutral
   defaults; missing, unreadable, invalid, malformed, or non-numeric files
   produce `forecast-unavailable` with zero confidence.
-- Open-Meteo real HTTP calls are protected by `FORECAST_CACHE_TTL_SECONDS=10800`
+- Open-Meteo real HTTP calls are protected by `FORECAST_CACHE_TTL_SECONDS=14400`
   and serialized by `FORECAST_REQUEST_MIN_INTERVAL_SECONDS=15`. Budget:
-  40 cities x 8 batches/day x 31 units = 9,920 units/day, under the 10,000
+  48 cities x 6 batches/day x 31 units = 8,928 units/day, under the 10,000
   daily limit.
 - On non-rate-limit forecast failure, skip that city and move to the next one.
   Do not retry the same city within the same batch; retry after the cache TTL.
@@ -67,7 +67,7 @@ This is the active paper-bot rule book; historical notes belong in focused `docs
 - Signal refresh targets are 40 minutes for general cities, 30 minutes for
   held-position cities, and 20 minutes for priority cities. These refresh
   in-memory signals and may reuse cached Open-Meteo answers; they must not force
-  real HTTP calls before the 3-hour forecast cache expires.
+  real HTTP calls before the 4-hour forecast cache expires.
 - WebSocket callbacks must not make forecast HTTP calls.
 - Keep token IDs for open positions subscribed even when discovery moves to
   newer markets.

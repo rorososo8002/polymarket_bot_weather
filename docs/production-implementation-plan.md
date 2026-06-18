@@ -25,7 +25,7 @@ Validation work has priority over new strategy features:
 
 - Keep execution paper-only unless live trading is explicitly approved through
   `docs/live-trading-safety-plan.md`.
-- Execute only temperature markets for the 40 `TRADING_READY_STATION_MAP`
+- Execute only temperature markets for the 48 `TRADING_READY_STATION_MAP`
   cities. `STATION_MAP` is the registry; it is not proof that a city may trade.
 - Skip unsupported cities, unsupported question shapes, stale data, missing
   order books, suspicious values, invalid parsed data, inactive markets, closed
@@ -132,7 +132,7 @@ Drawdown breakers may stop new entries, but never settlement or exit handling; a
 - A weather event is one city-date question; a market is one tradable binary
   result inside that event.
 - Discovery expands supported temperature binary markets inside trading-ready
-  weather-category events, not by stopping at the 41-city station count.
+  weather-category events, not by stopping at the 49-city station count.
 - Discovered markets carry normalized rule provenance from Gamma question,
   description, resolution/source text, event slug, parsed condition, station
   evidence, unit, date hint, and station timezone. A conflict between the
@@ -188,20 +188,20 @@ Drawdown breakers may stop new entries, but never settlement or exit handling; a
   Open-Meteo calls.
 - Target freshness for scheduling: general cities 40 minutes, held-position
   cities 30 minutes, near-close or opportunity cities 20 minutes. These are
-  signal refresh priorities, not permission to bypass the 3-h Open-Meteo cache.
+  signal refresh priorities, not permission to bypass the 4-h Open-Meteo cache.
 - Forecast signal freshness targets are based on the last successful signal
   refresh. Real Open-Meteo request freshness is separately enforced by
-  `FORECAST_CACHE_TTL_SECONDS=10800`.
+  `FORECAST_CACHE_TTL_SECONDS=14400`.
 - Real Open-Meteo HTTP calls are globally serialized. Run at most one real
   request at a time; while one is in flight, do not start a duplicate request or
   another city's real request.
 - Open-Meteo forecast HTTP calls use batch mode. Within a batch, cities are fetched
   sequentially with `FORECAST_REQUEST_MIN_INTERVAL_SECONDS=15` gaps. After all
   active-market cities in the batch are processed, the bot waits until
-  `FORECAST_CACHE_TTL_SECONDS=10800` (3 h) expires before the next batch.
-  GFS updates every 6 h and takes 3-4 h to process; a 3-h cache captures each
-  new model run. Budget: 40 trading-ready cities × 8 batches/day × 31 units =
-  9 920 < 10 000.
+  `FORECAST_CACHE_TTL_SECONDS=14400` (4 h) expires before the next batch.
+  GFS updates every 6 h and takes 3-4 h to process; a 4-h cache remains useful
+  while keeping the larger execution universe inside quota. Budget:
+  48 trading-ready cities x 6 batches/day x 31 units = 8,928 < 10,000.
 - On a non-rate-limit failure, skip that city and move to the next. Do not retry
   within the same batch. The failure cooldown equals the cache TTL.
 - On a 429 rate-limit response, stop the entire batch and wait for the rate-limit
