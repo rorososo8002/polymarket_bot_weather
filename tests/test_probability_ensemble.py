@@ -126,15 +126,37 @@ def test_broken_explicit_bias_table_blocks_temperature_entry(monkeypatch, tmp_pa
 
 
 def test_station_map_contains_only_verified_polymarket_cities():
-    assert len(STATION_MAP) == 41
+    assert len(STATION_MAP) == 49
     assert STATION_MAP["seoul"].station_id == "RKSI"
     assert STATION_MAP["london"].station_id == "EGLC"
     assert STATION_MAP["nyc"].station_id == "KLGA"
     assert STATION_MAP["hong kong"].station_name == "Hong Kong Observatory"
 
 
+@pytest.mark.parametrize(
+    "city",
+    [
+        "Austin",
+        "Denver",
+        "Houston",
+        "Kuala Lumpur",
+        "Lucknow",
+        "Mexico City",
+        "San Francisco",
+        "Sao Paulo",
+    ],
+)
+def test_new_station_city_names_are_parsed_and_mapped_for_trading(city):
+    parsed = parse_weather_question(
+        f"Will the highest temperature in {city} be 39 C or higher on June 19?"
+    )
+
+    assert parsed.city == city.lower()
+    assert _station_for(parsed) is STATION_MAP[city.lower()]
+
+
 def test_unverified_city_is_not_parsed_or_mapped_for_trading():
-    parsed = parse_weather_question("Will Austin be 92 F or higher on May 25?")
+    parsed = parse_weather_question("Will Berlin be 92 F or higher on May 25?")
 
     assert parsed.city is None
     assert _station_for(parsed) is None

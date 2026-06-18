@@ -1416,10 +1416,10 @@ def _bot_status(
 def _per_city_nowcast_status(settings: Settings, limit: int = 300) -> list[dict[str, Any]]:
     """Latest METAR nowcast call status per city (from request log).
 
-    AWC METAR fetches all 38 METAR stations in a single bulk HTTP request and
+    AWC METAR fetches the enabled METAR station set in a single bulk HTTP request and
     logs it as city='bulk-metar'. Only Hong Kong uses a separate per-city API
     (HKO maxmin). This function now includes the latest bulk-metar entry so
-    the dashboard can show when all 38 stations were last queried.
+    the dashboard can show when the enabled METAR station set was last queried.
     """
     path_str = getattr(settings, "station_nowcast_request_log_path", "") or str(Path(settings.state_path).with_name("station_nowcast_request_log.jsonl"))
     rows = _read_jsonl(Path(path_str), limit)

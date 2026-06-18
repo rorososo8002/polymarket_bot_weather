@@ -134,7 +134,7 @@ class Settings:
     raw_snapshots_min_free_bytes: int = 1024 * 1024 * 1024
     raw_snapshots_max_disk_usage_pct: float = 0.90
     forecast_cache_path: str = ""
-    forecast_cache_ttl_seconds: int = 10800  # 3 h: 40 trading-ready cities x 8 batches/day x 31 units = 9 920 < 10 000
+    forecast_cache_ttl_seconds: int = 14400  # 4 h: 48 trading-ready cities x 6 batches/day x 31 units = 8 928 < 10 000
     forecast_request_min_interval_seconds: int = 15  # within-batch gap; cache TTL controls between-batch wait
     forecast_request_log_path: str = ""
     forecast_rate_limit_state_path: str = ""

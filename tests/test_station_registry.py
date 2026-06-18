@@ -13,10 +13,22 @@ def _row_for(city: str) -> dict[str, object]:
     return {row["city"]: row for row in station_audit_rows()}[city]
 
 
+EXPECTED_NEW_STATIONS = {
+    "austin": ("KAUS", 30.1831, -97.6806, "America/Chicago", "fahrenheit", "1F"),
+    "denver": ("KBKF", 39.7130, -104.7580, "America/Denver", "fahrenheit", "1F"),
+    "houston": ("KHOU", 29.6458, -95.2821, "America/Chicago", "fahrenheit", "1F"),
+    "kuala lumpur": ("WMKK", 2.7470, 101.7140, "Asia/Kuala_Lumpur", "celsius", "1C"),
+    "lucknow": ("VILK", 26.7610, 80.8890, "Asia/Kolkata", "celsius", "1C"),
+    "mexico city": ("MMMX", 19.4360, -99.0720, "America/Mexico_City", "celsius", "1C"),
+    "san francisco": ("KSFO", 37.6196, -122.3656, "America/Los_Angeles", "fahrenheit", "1F"),
+    "sao paulo": ("SBGR", -23.4320, -46.4690, "America/Sao_Paulo", "celsius", "1C"),
+}
+
+
 def test_station_audit_rows_cover_every_supported_city():
     rows = station_audit_rows()
 
-    assert len(rows) == 41
+    assert len(rows) == 49
     assert {row["city"] for row in rows} == set(STATION_MAP)
 
 
@@ -35,8 +47,8 @@ def test_station_audit_rows_explain_forecast_and_rule_evidence_status():
 
 def test_station_audit_rows_expose_nowcast_quality_metadata():
     for row in station_audit_rows():
-        assert row["temperature_unit"] == "celsius"
-        assert row["reporting_precision"] in {"1C", "0.1C"}
+        assert row["temperature_unit"] in {"celsius", "fahrenheit"}
+        assert row["reporting_precision"] in {"1C", "0.1C", "1F"}
         assert isinstance(row["same_station_nowcast_supported"], bool)
         assert row["nowcast_confidence_grade"] in {"A", "B", "C", "D"}
         assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(row["last_verified_at"]))
@@ -91,6 +103,28 @@ def test_karachi_stays_excluded_until_station_evidence_is_reconciled():
     assert not station_is_trading_ready(karachi)
 
 
+def test_new_polymarket_stations_have_verified_execution_metadata():
+    for city, expected in EXPECTED_NEW_STATIONS.items():
+        station_id, latitude, longitude, timezone_name, unit, precision = expected
+        station = STATION_MAP[city]
+
+        assert station.station_id == station_id
+        assert station.latitude == latitude
+        assert station.longitude == longitude
+        assert station.timezone == timezone_name
+        assert station.temperature_unit == unit
+        assert station.reporting_precision == precision
+        assert station.nowcast_source_type == "metar"
+        assert station.nowcast_provider_status == "provider_enabled"
+        assert station.nowcast_confidence_grade == "A"
+        assert station.last_verified_at == "2026-06-19"
+        assert station.polymarket_rule_url == (
+            f"https://polymarket.com/event/highest-temperature-in-{city.replace(' ', '-')}-on-june-19-2026"
+        )
+        assert station.polymarket_rule_station_text
+        assert city in TRADING_READY_STATION_MAP
+
+
 def test_seoul_uses_enabled_metar_observation_provider():
     seoul = _row_for("seoul")
 
@@ -132,6 +166,7 @@ def test_trading_ready_nowcast_sources_are_metar_bulk_plus_single_hko_csv():
         for station in TRADING_READY_STATION_MAP.values()
     ]
 
-    assert trading_ready_sources.count("metar") == 39
+    assert len(TRADING_READY_STATION_MAP) == 48
+    assert trading_ready_sources.count("metar") == 47
     assert trading_ready_sources.count("hko_maxmin_since_midnight") == 1
     assert "metar_unavailable" not in trading_ready_sources

@@ -194,7 +194,7 @@ def test_dashboard_payload_lists_supported_official_station_registry_with_provid
     payload = build_dashboard_payload(Settings(state_path=str(state_path)))
 
     registry = payload["scanner"]["station_registry"]
-    assert len(registry) == 41
+    assert len(registry) == 49
     seoul = next(row for row in registry if row["city"] == "seoul")
     assert seoul["station_id"] == "RKSI"
     assert seoul["station_name"] == "Incheon Intl Airport Station"

@@ -1270,7 +1270,7 @@ function cityNowcastCard(c) {
   const lastSuccess = c.last_success_at ? shortDateTime(c.last_success_at) : "";
   const lastFailure = c.last_failure_at ? shortDateTime(c.last_failure_at) : "";
   const lastFailureError = c.last_failure_error || err;
-  // bulk-metar: AWC METAR one-shot request covering all 38 METAR-source stations
+  // bulk-metar: one AWC request covering the current enabled METAR station set
   const isBulk = (c.city || "") === "bulk-metar" || String(c.request_mode || "").includes("bulk");
   if (isBulk) {
     const stationCount = c.requested_station_count || 38;

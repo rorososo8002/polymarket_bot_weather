@@ -5,20 +5,22 @@ from weather_bot.stations import SUPPORTED_CITY_COUNT
 
 
 def test_supported_city_allowlist_is_not_used_as_discovery_event_cap():
-    assert SUPPORTED_CITY_COUNT == 41
+    assert SUPPORTED_CITY_COUNT == 49
     assert not hasattr(Settings, "max_events")
     assert Settings.discovery_max_pages == 8
     assert Settings.discovery_page_size == 100
 
 
 def test_default_forecast_budget_batch_mode():
-    # Batch mode: 15 s within-batch gap, 10800 s (3 h) cache TTL between batches.
-    # GFS updates every 6 h (processed in 3-4 h); 3 h cache captures each new run.
-    # Budget: 40 trading-ready cities x 8 batches/day x 31 units = 9 920 units/day < 10 000 limit.
+    # Batch mode: 15 s within-batch gap, 14400 s (4 h) cache TTL between batches.
+    # Budget: 48 trading-ready cities x 6 batches/day x 31 units = 8 928 units/day < 10 000 limit.
     assert Settings.stream_cycle_interval_seconds == 2400
-    assert Settings.forecast_cache_ttl_seconds == 10800
+    assert Settings.forecast_cache_ttl_seconds == 14400
     assert Settings.forecast_request_min_interval_seconds == 15
     assert Settings.forecast_rate_limit_state_path == ""
+    batches_per_day = 86400 // Settings.forecast_cache_ttl_seconds
+    assert 48 * batches_per_day * 31 == 8928
+    assert 48 * batches_per_day * 31 < 10000
 
 
 def test_default_realtime_orderbook_rest_snapshot_is_bounded_verification():
@@ -126,7 +128,7 @@ def test_settings_rejects_dashboard_port_outside_tcp_range(dashboard_port):
 
 
 def test_settings_defaults_to_batch_mode_forecast_interval():
-    # Within-batch gap is 15 s; between-batch gap is controlled by cache TTL (10800 s).
+    # Within-batch gap is 15 s; between-batch gap is controlled by cache TTL (14400 s).
     settings = Settings()
 
     assert settings.forecast_request_min_interval_seconds == 15

@@ -31,7 +31,7 @@ def test_local_env_example_exposes_settlement_runner_defaults():
     assert "SETTLEMENT_RUNNER_MIN_EV_MARGIN_USD=0.00" in text
     assert "ORDERBOOK_REST_SNAPSHOT_ENABLED=true" in text
     assert "ORDERBOOK_REST_SNAPSHOT_INTERVAL_SECONDS=60" in text
-    assert "FORECAST_CACHE_TTL_SECONDS=10800" in text
+    assert "FORECAST_CACHE_TTL_SECONDS=14400" in text
     assert "FORECAST_REQUEST_LOG_PATH=forecast_request_log.jsonl" in text
     assert "FORECAST_REQUEST_MIN_INTERVAL_SECONDS=15" in text
     assert "FORECAST_RATE_LIMIT_STATE_PATH=forecast_rate_limit_state.json" in text
@@ -94,7 +94,7 @@ def test_vps_env_example_keeps_runtime_state_under_data_dir():
     assert "RUNNER_HEALTH_STATUS_INTERVAL_SECONDS=5" in text
     assert "STREAM_CYCLE_INTERVAL_SECONDS=2400" in text
     assert ("FORECAST_" + "REFRESH_INTERVAL_SECONDS") not in text
-    assert "FORECAST_CACHE_TTL_SECONDS=10800" in text
+    assert "FORECAST_CACHE_TTL_SECONDS=14400" in text
     assert "ORDERBOOK_REST_SNAPSHOT_ENABLED=true" in text
     assert "ORDERBOOK_REST_SNAPSHOT_INTERVAL_SECONDS=60" in text
     assert "DISCOVERY_MAX_PAGES=8" in text
@@ -213,7 +213,7 @@ def test_dashboard_env_requires_token_and_data_paths():
     assert "refuses to start on public hosts" in text
     assert "long random token" in text
     assert "STATE_PATH=/opt/polymarket-weather-bot/data/paper_state.json" in text
-    assert "FORECAST_CACHE_TTL_SECONDS=10800" in text
+    assert "FORECAST_CACHE_TTL_SECONDS=14400" in text
     assert "ORDERBOOK_STREAM_STALE_SECONDS=60" in text
     assert "POLYMARKET_PRIVATE_KEY" not in text
 

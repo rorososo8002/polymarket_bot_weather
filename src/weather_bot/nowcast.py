@@ -668,7 +668,7 @@ class AviationWeatherMetarNowcastProvider:
             return self._unavailable(station, "malformed-observation-payload", source, raw_count=len(payload))
 
         if any(observed_at > now for observed_at, _temp in observations):
-            return self._unavailable(station, "future-observation", source, raw_count=len(payload))
+            return self._unavailable(station, "future-observation", source, raw_count=len(observations))
 
         latest_at = max(observed_at for observed_at, _temp in observations)
         high_at, high_c = max(observations, key=lambda item: item[1])
@@ -686,7 +686,7 @@ class AviationWeatherMetarNowcastProvider:
             settlement_source_url=source.settlement_source_url,
             freshness_seconds=freshness_seconds,
             unavailable_reason=reason,
-            raw_observation_count=len(payload),
+            raw_observation_count=len(observations),
             update_cadence=source.update_cadence,
             observed_low_c=round(low_c, 3),
             low_observed_at=low_at,

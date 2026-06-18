@@ -163,6 +163,42 @@ def test_aviationweather_provider_prefetches_multiple_metar_stations_once_per_re
     assert {"KLGA", "KATL", "RKSI"}.issubset(requested_ids)
 
 
+def test_aviationweather_bulk_request_includes_new_verified_station_ids():
+    provider, _calls = provider_for([])
+
+    station_ids = set(provider._awc_metar_bulk_station_ids())
+
+    assert {"KAUS", "KBKF", "KHOU", "WMKK", "VILK", "MMMX", "KSFO", "SBGR"}.issubset(station_ids)
+
+
+def test_aviationweather_provider_accepts_matching_new_station_and_rejects_other_station():
+    payload = [
+        {
+            "icaoId": "KAUS",
+            "obsTime": "2026-06-19T20:00:00.000Z",
+            "temp": 35.6,
+            "rawOb": "KAUS 192000Z 17010KT 10SM FEW060 36/22 A2990",
+        },
+        {
+            "icaoId": "KHOU",
+            "obsTime": "2026-06-19T20:00:00.000Z",
+            "temp": 34.4,
+            "rawOb": "KHOU 192000Z 18008KT 10SM FEW050 34/24 A2991",
+        },
+    ]
+    provider, _calls = provider_for(payload)
+
+    observation = provider.observed_temperature_extremes_so_far(
+        STATION_MAP["austin"],
+        target_date=date(2026, 6, 19),
+        now=datetime(2026, 6, 19, 20, 30, tzinfo=timezone.utc),
+    )
+
+    assert observation.usable is True
+    assert observation.observed_high_c == 35.6
+    assert observation.raw_observation_count == 1
+
+
 def test_aviationweather_provider_rejects_bulk_row_without_station_id():
     payload = [
         {

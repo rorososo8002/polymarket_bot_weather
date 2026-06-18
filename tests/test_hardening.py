@@ -706,7 +706,7 @@ def test_pre_forecast_gate_still_skips_explicit_grouped_bucket_rule_mismatch():
 
 def test_discovery_rejects_weather_markets_outside_verified_station_set():
     assert not PolymarketClient._is_weather_market(
-        {"question": "Will the highest temperature in Austin be 34\u00b0C or higher on May 25?"}
+        {"question": "Will the highest temperature in Berlin be 34\u00b0C or higher on May 25?"}
     )
 
 
