@@ -1,39 +1,19 @@
 # Current Task
 
-Status: active
+Status: none
 
 ## Objective
 
-Replace the model-led paper strategy with an official settlement-station
-observation strategy, deploy it, and reset the paper experiment to a fresh
-$200 account.
+None.
 
 ## Current Scope
 
-- Remove model-only new-entry behavior from the active runner.
-- Use only explicit official settlement-station nowcast/observation evidence
-  for new entries.
-- Whole-degree Celsius exact buckets use source-display integer settlement:
-  `23.7C` remains in the `23C` bucket; `24.0C` breaks a daily-high `23C`
-  YES and creates the strong NO lock.
-- Official station lock sizing is 20% for base lock and 50% for strong lock,
-  still subject to executable depth, fees, spread, expected return, and
-  exposure caps.
-- Keep execution paper-only. Do not add wallet, key, signing, real orders, or
-  live trading paths.
-- Deploy the strategy to the Oracle VPS after local verification and reset
-  runtime ledgers/archives for a fresh $200 paper experiment.
+None.
 
 ## Next Action
 
-Resume once SSH execution is available: deploy the committed official
-settlement-station strategy to the Oracle VPS, then reset runtime
-ledgers/archives for a fresh $200 experiment.
+None.
 
 ## New Chat Prompt
 
-Continue the official settlement-station strategy conversion from commit
-`6b7b2ca`. Local verification passed with 468 tests. SSH execution was blocked
-by the app approval/usage limit, so resume with Oracle VPS deploy, service
-restart, dashboard/API verification, and runtime ledger/archive deletion for a
-fresh $200 paper account.
+None.
