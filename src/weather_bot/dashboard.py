@@ -904,7 +904,7 @@ def _skip_reason_ko(row: dict[str, Any]) -> str:
     text = f"{code} {reason}".lower()
     if "official-station-entry-only" in text or "non-lock entry blocked" in text:
         return (
-            "예보만으로는 진입하지 않도록 막았습니다. 지금은 예보 신호만 있고, "
+            "공식 관측소 잠금 신호 없이는 진입하지 않도록 막았습니다. "
             "정산에 쓰이는 같은 공식 관측소의 실제 관측값이 아직 승패를 충분히 "
             "잠그지 못했습니다. 그래서 종이매매도 하지 않고 기다립니다."
         )

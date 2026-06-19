@@ -1993,7 +1993,7 @@ def test_run_cycle_reuses_one_station_observation_provider_for_all_markets(monke
         "weather_bot.live_paper_runner.AviationWeatherMetarNowcastProvider.from_settings",
         lambda settings: provider,
     )
-    monkeypatch.setattr("weather_bot.live_paper_runner.estimate_weather_probability", fake_estimator)
+    monkeypatch.setattr("weather_bot.live_paper_runner.estimate_station_probability", fake_estimator)
 
     run_cycle(settings)
 
@@ -2040,7 +2040,7 @@ def test_run_cycle_skips_undated_market_before_station_signal_when_date_hint_req
         raise AssertionError("undated markets must skip before station signal calculation")
 
     monkeypatch.setattr("weather_bot.live_paper_runner.PolymarketClient", FakeClient)
-    monkeypatch.setattr("weather_bot.live_paper_runner.estimate_weather_probability", forbidden_estimator)
+    monkeypatch.setattr("weather_bot.live_paper_runner.estimate_station_probability", forbidden_estimator)
 
     decisions = run_cycle(settings)
 
@@ -2138,7 +2138,7 @@ def test_run_cycle_drawdown_blocks_new_entries_but_still_closes_positions(monkey
         return WeatherSignal(0.20, 0.90, "test", "held exit signal", parse_weather_question(question))
 
     monkeypatch.setattr("weather_bot.live_paper_runner.PolymarketClient", FakeClient)
-    monkeypatch.setattr("weather_bot.live_paper_runner.estimate_weather_probability", fake_estimator)
+    monkeypatch.setattr("weather_bot.live_paper_runner.estimate_station_probability", fake_estimator)
 
     decisions = run_cycle(settings)
 
@@ -2189,7 +2189,7 @@ def test_run_cycle_logs_market_evaluation_exception_as_skip_error(monkeypatch, t
         raise RuntimeError("station signal decoder exploded")
 
     monkeypatch.setattr("weather_bot.live_paper_runner.PolymarketClient", FakeClient)
-    monkeypatch.setattr("weather_bot.live_paper_runner.estimate_weather_probability", failing_estimator)
+    monkeypatch.setattr("weather_bot.live_paper_runner.estimate_station_probability", failing_estimator)
 
     decisions = run_cycle(settings)
 

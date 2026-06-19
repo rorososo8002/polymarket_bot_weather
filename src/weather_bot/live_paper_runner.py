@@ -39,7 +39,7 @@ from .station_signal import estimate_station_signal
 from .stations import TRADING_READY_STATION_MAP
 from .weather_client import parse_weather_question, temperature_bucket_interval_bounds_f
 
-estimate_weather_probability = estimate_station_signal
+estimate_station_probability = estimate_station_signal
 
 
 ENTRY_BANKROLL_FAIL_CLOSED_REASON = "기존 포지션을 안전하게 평가할 수 없어 신규 진입 차단"
@@ -1192,7 +1192,7 @@ def refresh_open_position_edges(
     settings: Settings,
     latest_edges: dict[tuple[str, str], EdgeResult],
     market_by_id: dict[str, RawMarket],
-    probability_estimator=estimate_weather_probability,
+    probability_estimator=estimate_station_probability,
     ensemble_client: Any | None = None,
     observation_provider: Any | None = None,
 ) -> None:
@@ -1384,7 +1384,7 @@ def run_cycle(settings: Settings | None = None) -> list[MarketDecision]:
                         per_side = {}
                     else:
                         signal = _call_probability_estimator(
-                            estimate_weather_probability,
+                            estimate_station_probability,
                             market.question,
                             settings=settings,
                             observation_provider=observation_provider,
@@ -1674,7 +1674,7 @@ def _evaluate_realtime_update(
     latest_edges: dict[tuple[str, str], EdgeResult],
     *,
     signal_refreshed_at_by_market: dict[str, datetime] | None = None,
-    probability_estimator: Any = estimate_weather_probability,
+    probability_estimator: Any = estimate_station_probability,
     ensemble_client: Any | None = None,
     observation_provider: Any | None = None,
     now: datetime | None = None,
@@ -1811,7 +1811,7 @@ def _refresh_realtime_signal_if_needed(
     signals_by_market: dict[str, WeatherSignal],
     signal_refreshed_at_by_market: dict[str, datetime] | None,
     *,
-    probability_estimator: Any = estimate_weather_probability,
+    probability_estimator: Any = estimate_station_probability,
     ensemble_client: Any | None = None,
     observation_provider: Any | None = None,
     now: datetime | None = None,

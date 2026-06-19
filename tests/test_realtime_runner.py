@@ -435,7 +435,7 @@ def test_realtime_forever_filters_non_temperature_before_probability_estimator(t
 
     monkeypatch.setattr(runner_module, "PolymarketClient", FakeClient)
     monkeypatch.setattr(runner_module, "OrderBookMarketStream", StopStream)
-    monkeypatch.setattr(runner_module, "estimate_weather_probability", estimate)
+    monkeypatch.setattr(runner_module, "estimate_station_probability", estimate)
 
     def stop_after_error_backoff(_seconds):
         raise RuntimeError("stop after error backoff")
@@ -504,7 +504,7 @@ def test_realtime_forever_starts_websocket_before_station_signal_evaluation(tmp_
 
     monkeypatch.setattr(runner_module, "PolymarketClient", FakeClient)
     monkeypatch.setattr(runner_module, "OrderBookMarketStream", StopStream)
-    monkeypatch.setattr(runner_module, "estimate_weather_probability", estimate)
+    monkeypatch.setattr(runner_module, "estimate_station_probability", estimate)
 
     def stop_after_error_backoff(_seconds):
         raise RuntimeError("stop after error backoff")
@@ -702,7 +702,7 @@ def test_realtime_forever_records_missing_websocket_dependency_in_status(tmp_pat
 
     monkeypatch.setattr(runner_module, "PolymarketClient", FakeClient)
     monkeypatch.setattr(runner_module, "OrderBookMarketStream", MissingWebsocketStream)
-    monkeypatch.setattr(runner_module, "estimate_weather_probability", estimate)
+    monkeypatch.setattr(runner_module, "estimate_station_probability", estimate)
 
     def stop_after_error_backoff(_seconds):
         raise RuntimeError("stop after error backoff")
@@ -777,7 +777,7 @@ def test_realtime_update_refreshes_station_signal_after_nowcast_cache_ttl(tmp_pa
     )
     nowcast_provider = ChangingNowcastProvider()
     initial_signal = runner_module._call_probability_estimator(
-        runner_module.estimate_weather_probability,
+        runner_module.estimate_station_probability,
         question,
         settings=settings,
         observation_provider=nowcast_provider,

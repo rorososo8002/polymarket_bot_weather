@@ -181,7 +181,7 @@ def test_dashboard_payload_explains_official_nowcast_entry_only_skips_in_korean(
     )
 
     skip = payload["scanner"]["recent_skips"][0]
-    assert skip["reason_ko"].startswith("예보만으로는 진입하지 않도록 막았습니다.")
+    assert skip["reason_ko"].startswith("공식 관측소 잠금 신호 없이는 진입하지 않도록 막았습니다.")
     assert "정산에 쓰이는 같은 공식 관측소" in skip["reason_ko"]
     assert "non-lock entry blocked" not in skip["reason_ko"]
     assert skip["station_name"] == "Chengdu Shuangliu International Airport Station"
@@ -989,7 +989,7 @@ def test_dashboard_realized_row_exposes_probability_stop_trigger(tmp_path):
                 "shares": "33.39",
                 "price": "0.59",
                 "cash_delta_or_pnl": "-19.71",
-                "reason": "entry: model_p=0.166, side=NO, p_exec=0.5900, target_exit=0.7272",
+                "reason": "entry: station_p=0.166, side=NO, p_exec=0.5900, target_exit=0.7272",
             },
             {
                 "ts": "2026-06-18T06:23:00+00:00",
@@ -1045,7 +1045,7 @@ def test_dashboard_realized_row_exposes_probability_stop_trigger(tmp_path):
 
 def test_dashboard_template_explains_probability_stop_as_defensive_close():
     assert "방어청산" in HTML
-    assert "예보 확률이 보유 방향과 반대로 꺾여" in HTML
+    assert "관측소 잠금 점수가 보유 방향과 반대로 약해져" in HTML
     assert "수익을 키우는 익절이 아니라" in HTML
 
 

@@ -44,7 +44,7 @@ def side_true_probability(side: Literal["YES", "NO"] | str, p_true_yes: float) -
 
 
 def model_fair_price(side: Literal["YES", "NO"] | str, p_true_yes: float, settings: Settings) -> float:
-    """Conservative model fair price for the token side."""
+    """Conservative station-lock fair price for the token side."""
     settlement_value = conservative_settlement_value(side, p_true_yes, settings)
     fair = settlement_value - polymarket_taker_fee_per_share(
         settlement_value,
@@ -111,7 +111,7 @@ def build_entry_plan(
     fraction = result.size_usd / bankroll_before if bankroll_before > 0 else 0.0
     stop_threshold = probability_stop_threshold(result.side, result.p_true, settings)
     rationale = (
-        f"entry: model_p={result.p_true:.3f}, side={result.side}, p_exec={result.p_exec:.4f}, "
+        f"entry: station_p={result.p_true:.3f}, side={result.side}, p_exec={result.p_exec:.4f}, "
         f"net_edge={result.net_edge:.4f}, bankroll=${bankroll_before:.2f}, "
         f"entry_fraction={fraction:.2%}, probability_stop={stop_threshold:.3f}, "
         f"model_fair={fair:.4f}, target_exit={target:.4f}, heat={heat:.2%}"
@@ -187,7 +187,7 @@ def assess_exit(
     if mark_price >= target and pnl.net_pct >= settings.min_profit_pct:
         return ExitAssessment(
             True,
-            f"take profit: market reached model target {target:.4f} ({_pnl_reason(pnl)})",
+            f"take profit: market reached station target {target:.4f} ({_pnl_reason(pnl)})",
             fair,
             target,
             heat,

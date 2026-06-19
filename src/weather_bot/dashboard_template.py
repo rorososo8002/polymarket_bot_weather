@@ -966,9 +966,9 @@ function closeReasonParts(reason) {
   } else if (trigger) {
     if (trigger === "probability_stop") {
       if (sideProb) {
-        summary = `진입 때 이 포지션 방향의 예보 확률은 ${probPct(sideProb[1])}였는데, 최신 예보에서 ${probPct(sideProb[2])}까지 내려갔습니다. 방어선 ${probPct(stopThreshold)} 이하라서 수익을 키우는 익절이 아니라 더 큰 손실을 막기 위한 방어청산입니다.`;
+        summary = `진입 때 이 포지션 방향의 관측소 잠금 점수는 ${probPct(sideProb[1])}였는데, 최신 관측소 근거에서 ${probPct(sideProb[2])}까지 내려갔습니다. 방어선 ${probPct(stopThreshold)} 이하라서 수익을 키우는 익절이 아니라 더 큰 손실을 막기 위한 방어청산입니다.`;
       } else {
-        summary = "예보 확률이 보유 방향과 반대로 꺾여 방어선 아래로 내려갔습니다. 수익을 키우는 익절이 아니라 더 큰 손실을 막기 위한 방어청산입니다.";
+        summary = "관측소 잠금 점수가 보유 방향과 반대로 약해져 방어선 아래로 내려갔습니다. 수익을 키우는 익절이 아니라 더 큰 손실을 막기 위한 방어청산입니다.";
       }
     } else if (trigger === "take_profit") {
       summary = "가격이 봇이 계산한 목표익절가에 도달했고, 수수료를 뺀 순수익률이 최소 익절 기준을 넘어 포지션을 정리했습니다.";
@@ -984,7 +984,7 @@ function closeReasonParts(reason) {
   }
   if (observedHigh !== undefined) facts.push(`관측 최고 ${tempC(parseFloat(observedHigh))}`);
   if (observedLow !== undefined) facts.push(`관측 최저 ${tempC(parseFloat(observedLow))}`);
-  if (pTrue !== undefined) facts.push(`모델 YES 확률 ${(parseFloat(pTrue) * 100).toFixed(1)}%`);
+  if (pTrue !== undefined) facts.push(`관측소 YES 점수 ${(parseFloat(pTrue) * 100).toFixed(1)}%`);
   if (sideProb) facts.push(`포지션 방향확률 ${probPct(sideProb[1])} → ${probPct(sideProb[2])}`);
   if (stopThreshold !== undefined) facts.push(`방어선 ${probPct(stopThreshold)}`);
   if (probabilityDrop !== undefined) facts.push(`확률하락 ${probPct(probabilityDrop)}`);
@@ -1122,7 +1122,7 @@ function _buildReasonKo(reason) {
   // Only parse the entry: section
   const entryPart = (reason.match(/entry:([^;]*)/i) || [])[1] || reason;
   const lines = [];
-  const mp = entryPart.match(/model_p=([\d.]+)/);
+  const mp = entryPart.match(/station_p=([\d.]+)/);
   const pe = entryPart.match(/p_exec=([\d.]+)/);
   const ne = entryPart.match(/net_edge=([\d.]+)/);
   const br = entryPart.match(/bankroll=\$([\d.]+)/);
@@ -1132,12 +1132,12 @@ function _buildReasonKo(reason) {
   const te = entryPart.match(/target_exit=([\d.]+)/);
   const feeM = entryPart.match(/entry_fee=\$([\d.]+)/);
   const heat = entryPart.match(/heat=([\d.\-]+)%/);
-  if (mp) lines.push(`YES확률 ${(parseFloat(mp[1])*100).toFixed(1)}%`);
+  if (mp) lines.push(`관측소 YES점수 ${(parseFloat(mp[1])*100).toFixed(1)}%`);
   if (pe) lines.push(`체결가 ${(parseFloat(pe[1])*100).toFixed(1)}¢`);
-  if (mf) lines.push(`봇공정가 ${(parseFloat(mf[1])*100).toFixed(1)}¢`);
+  if (mf) lines.push(`정산기준가 ${(parseFloat(mf[1])*100).toFixed(1)}¢`);
   if (ne) lines.push(`엣지 ${(parseFloat(ne[1])*100).toFixed(1)}%`);
   if (te) lines.push(`목표익절 ${(parseFloat(te[1])*100).toFixed(1)}¢`);
-  if (ps) lines.push(`손절기준확률 ${(parseFloat(ps[1])*100).toFixed(1)}%`);
+  if (ps) lines.push(`방어선 ${(parseFloat(ps[1])*100).toFixed(1)}%`);
   // 진입금액 계산: bankroll × fraction
   if (br && ef) {
     const amt = parseFloat(br[1]) * parseFloat(ef[1]) / 100;

@@ -1303,7 +1303,7 @@ def test_run_cycle_opens_city_date_candidates_as_one_logged_portfolio(monkeypatc
         return station_lock_signal(0.49, 0.90, question)
 
     monkeypatch.setattr("weather_bot.live_paper_runner.PolymarketClient", CycleClient)
-    monkeypatch.setattr("weather_bot.live_paper_runner.estimate_weather_probability", estimate)
+    monkeypatch.setattr("weather_bot.live_paper_runner.estimate_station_probability", estimate)
 
     run_cycle(cfg)
 
@@ -1395,7 +1395,7 @@ def test_run_cycle_proceeds_with_zero_when_held_position_cannot_be_priced(monkey
         return station_lock_signal(0.80, 0.90, question)
 
     monkeypatch.setattr("weather_bot.live_paper_runner.PolymarketClient", CycleClient)
-    monkeypatch.setattr("weather_bot.live_paper_runner.estimate_weather_probability", estimate)
+    monkeypatch.setattr("weather_bot.live_paper_runner.estimate_station_probability", estimate)
 
     decisions = run_cycle(cfg)
 
@@ -1444,7 +1444,7 @@ def test_run_cycle_opens_two_profitable_no_legs_for_same_event(monkeypatch, tmp_
         return station_lock_signal(0.10, 1.0, question)
 
     monkeypatch.setattr("weather_bot.live_paper_runner.PolymarketClient", CycleClient)
-    monkeypatch.setattr("weather_bot.live_paper_runner.estimate_weather_probability", estimate)
+    monkeypatch.setattr("weather_bot.live_paper_runner.estimate_station_probability", estimate)
 
     run_cycle(cfg)
 

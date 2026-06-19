@@ -128,7 +128,7 @@ def drawdown_entry_block_reason(
 
 
 def shrink_probability(p_true: float, gamma: float = 0.65) -> float:
-    """Shrink model probability toward 0.5 to reduce overconfidence."""
+    """Shrink station-lock score toward 0.5 to reduce overconfidence."""
     p = clamp_probability(p_true)
     if not 0 <= gamma <= 1:
         raise ValueError("gamma must be between 0 and 1")

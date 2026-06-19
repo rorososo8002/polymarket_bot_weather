@@ -40,7 +40,7 @@ def test_run_cycle_filters_non_temperature_before_probability_estimator(monkeypa
         return WeatherSignal(0.5, 0.9, "test", "test", parse_weather_question(question))
 
     monkeypatch.setattr("weather_bot.live_paper_runner.PolymarketClient", CycleClient)
-    monkeypatch.setattr("weather_bot.live_paper_runner.estimate_weather_probability", estimate)
+    monkeypatch.setattr("weather_bot.live_paper_runner.estimate_station_probability", estimate)
 
     decisions = run_cycle(settings)
 
@@ -82,7 +82,7 @@ def test_run_cycle_skips_undated_temperature_market_before_station_signal(monkey
         raise AssertionError("undated markets must skip before station signal calculation")
 
     monkeypatch.setattr("weather_bot.live_paper_runner.PolymarketClient", CycleClient)
-    monkeypatch.setattr("weather_bot.live_paper_runner.estimate_weather_probability", forbidden_station_signal)
+    monkeypatch.setattr("weather_bot.live_paper_runner.estimate_station_probability", forbidden_station_signal)
 
     decisions = run_cycle(settings)
 

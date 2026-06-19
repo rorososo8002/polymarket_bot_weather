@@ -198,15 +198,15 @@ class Settings:
     official_nowcast_lock_yes_base_buffer_c: float = 0.50
     official_nowcast_lock_yes_strong_buffer_c: float = 0.75
 
-    # Probability model controls
+    # Station-lock score controls
     probability_shrink_gamma: float = 0.65
     confidence_size_floor: float = 0.25
     require_parse_for_trade: bool = True
     # Compatibility switch for older tests/env files. The paper runner still
     # requires an explicit date before station-signal work or trade, even when this is False.
     require_date_hint_for_trade: bool = True
-    # Probability stop compares the current side probability with the entry-side
-    # probability. YES uses p_true; NO uses 1 - p_true.
+    # Defensive close compares the current station-lock side score with the
+    # entry-side score. YES uses p_true; NO uses 1 - p_true.
 
     def __post_init__(self) -> None:
         _validate_positive_numbers(self, _POSITIVE_NUMBER_SETTINGS)

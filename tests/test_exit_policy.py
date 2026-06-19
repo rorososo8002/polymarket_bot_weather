@@ -19,7 +19,7 @@ def test_entry_plan_records_probability_stop_threshold():
     assert plan.target_exit_price < plan.model_fair_price
 
 
-def test_take_profit_when_mark_reaches_model_target():
+def test_take_profit_when_mark_reaches_station_target():
     settings = Settings(min_profit_pct=0.03)
     pos = PaperPosition(
         position_id="p1",
@@ -38,7 +38,7 @@ def test_take_profit_when_mark_reaches_model_target():
     target = target_exit_price(0.52, fair, settings)
     assessment = assess_exit(pos, target, edge, settings, 1.0)
     assert assessment.should_close
-    assert "model target" in assessment.reason
+    assert "station target" in assessment.reason
 
 
 def test_take_profit_requires_after_fee_net_profit():
@@ -105,7 +105,7 @@ def test_overheated_take_profit_requires_configured_min_profit_pct():
     assert "net_pnl" in assessment.reason
 
 
-def test_probability_stop_closes_when_model_probability_drops():
+def test_probability_stop_closes_when_station_score_drops():
     settings = Settings(probability_stop_drop_threshold=0.10)
     pos = PaperPosition(
         position_id="p1",

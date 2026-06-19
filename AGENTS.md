@@ -97,7 +97,7 @@ the default resume source.
 
 Conditional reads:
 
-- Strategy, trading-risk, forecast, order book, portfolio, paper accounting,
+- Strategy, trading-risk, station signal, order book, portfolio, paper accounting,
   settlement, nowcast, runner behavior, or performance validation:
   `docs/production-implementation-plan.md` and
   `docs/strategy-validation-roadmap.md`
@@ -131,29 +131,21 @@ before continuing.
   approval.
 - Execute the paper strategy only on temperature markets. Rain, snow,
   precipitation, wind, humidity, and all other non-temperature weather markets
-  must fail closed before forecast probability calculation, order-book
+  must fail closed before station-signal calculation, order-book
   subscription, or paper trade logging.
 - Trade only cities listed in `src/weather_bot/stations.py`. Treat
   `STATION_MAP` as the station registry and `TRADING_READY_STATION_MAP` as the
   execution universe.
 - Unknown, missing, stale, malformed, unsupported, suspicious, invalid, or
   conflictful data means skip, not guess.
-- Open-Meteo forecast HTTP calls use cache-protected batch mode:
-  trading-ready cities are evaluated one forecast key at a time with
-  `FORECAST_REQUEST_MIN_INTERVAL_SECONDS=15` gaps between real cache misses.
-  The answer cache must keep `FORECAST_CACHE_TTL_SECONDS=14400` (4 h), so the
-  full 48-city execution universe costs at most 48 x 6 batches/day x 31 units =
-  8,928 units/day, below the 10,000 unit limit.
-- On a non-rate-limit forecast failure, skip that city and move to the next one.
-  Do not retry the same city within the same batch. The failure cooldown equals
-  the cache TTL so the city is only retried in the next batch.
-- On a 429 rate-limit response, stop the entire batch immediately and wait for
-  the rate-limit cooldown to expire before resuming. Do not hammer failed
-  cities.
-- Forecast freshness and nowcast freshness are different clocks. A forecast
-  signal may be refreshed from the 4-h Open-Meteo answer cache while AWC
-  nowcast may refresh every 60 seconds and HKO stays at 10 minutes. Do not use
-  `STATION_NOWCAST_CACHE_TTL_SECONDS` to mark forecast signals stale.
+- The strategy is official settlement-station observation first. Do not enter
+  from weather-model predictions. Enter only when same-station observed
+  high/low evidence locks or nearly locks the displayed temperature bucket.
+- Station observation providers keep their own request floors: AWC METAR may
+  refresh every 60 seconds and HKO stays protected by its 10-minute floor. Do
+  not hammer a provider after stale, malformed, or failed station evidence.
+- If station evidence is missing, stale, unsupported, conflictful, or cannot be
+  tied to the settlement station, skip the market instead of guessing.
 - Use the Polymarket CLOB WebSocket market stream for executable order books by
   default. Do not silently replace realtime streaming with polling.
 - REST order-book snapshots are allowed only as a bounded verification/resync
@@ -181,8 +173,8 @@ before continuing.
   entry-bankroll math instead of blocking every new market.
 - Fees, spread, and slippage must be reflected before paper PnL is treated as
   useful validation evidence.
-- Stale order books, stale forecasts, stale nowcast, unsupported station data,
-  and ambiguous settlement data fail closed.
+- Stale order books, stale station observations, unsupported station data, and
+  ambiguous settlement data fail closed.
 - Exact temperature buckets mean the displayed value only. Do not invent hidden
   half-step ranges such as `28.5C-29.5C`.
 - Range buckets preserve the displayed inclusive endpoints.
