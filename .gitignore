@@ -36,3 +36,4 @@ runtime/
 .vscode/
 .investigate_tmp/
 .deploy_tmp/
+.station_residual_cache/
