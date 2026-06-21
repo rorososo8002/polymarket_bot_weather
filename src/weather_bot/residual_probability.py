@@ -75,6 +75,7 @@ class ResidualProfileStore:
     source: str = ""
     generation_years: tuple[int, ...] = ()
     concentrated_sizing_eligible_by_station: Mapping[str, bool] = MappingProxyType({})
+    formation_windows: Mapping[str, Mapping[str, object]] = MappingProxyType({})
     min_sample_days: int = MIN_SAMPLE_DAYS
     load_reason_code: str = ""
     load_reason: str = ""
@@ -86,6 +87,11 @@ class ResidualProfileStore:
             self,
             "concentrated_sizing_eligible_by_station",
             MappingProxyType(dict(self.concentrated_sizing_eligible_by_station)),
+        )
+        object.__setattr__(
+            self,
+            "formation_windows",
+            MappingProxyType(dict(self.formation_windows)),
         )
 
     @classmethod
@@ -111,15 +117,17 @@ class ResidualProfileStore:
                 f"Residual profile JSON is malformed: {exc}",
             )
 
+        eligibility, formation_windows = _load_verified_manifest_metadata(
+            profile_path,
+            profile_bytes,
+        )
         return cls(
             profiles=profiles,
             schema_version=schema_version,
             source=source,
             generation_years=years,
-            concentrated_sizing_eligible_by_station=_load_concentrated_sizing_eligibility(
-                profile_path,
-                profile_bytes,
-            ),
+            concentrated_sizing_eligible_by_station=eligibility,
+            formation_windows=formation_windows,
         )
 
     @classmethod
@@ -154,6 +162,46 @@ class ResidualProfileStore:
             bucket_upper=bucket_upper,
             unit=unit,
         )
+
+    def formation_window(
+        self,
+        *,
+        station_id: str,
+        month: int,
+        direction: Direction,
+    ) -> Mapping[str, object] | None:
+        if not isinstance(station_id, str) or not station_id.strip():
+            return None
+        if not isinstance(month, int) or isinstance(month, bool) or not 1 <= month <= 12:
+            return None
+        if direction not in {"high", "low"}:
+            return None
+        return self.formation_windows.get(
+            f"{station_id.strip()}|month:{month:02d}|{direction}"
+        )
+
+    def movement_probability(
+        self,
+        *,
+        station_id: str,
+        month: int,
+        local_minute: int,
+        direction: Direction,
+        unit: TemperatureUnit,
+    ) -> float | None:
+        if self.load_reason_code:
+            return None
+        profile, _unavailable = self._find_usable_profile(
+            station_id=station_id,
+            month=month,
+            local_minute=local_minute,
+            direction=direction,
+            unit=unit,
+        )
+        if profile is None or profile.sample_days <= 0:
+            return None
+        moving_days = sum(count for residual, count in profile.histogram if residual > 0.0)
+        return moving_days / profile.sample_days
 
     def estimate_bucket(
         self,
@@ -288,11 +336,11 @@ class ResidualProfileStore:
         )
 
 
-def _load_concentrated_sizing_eligibility(
+def _load_verified_manifest_metadata(
     profile_path: Path,
     profile_bytes: bytes,
-) -> dict[str, bool]:
-    """Load the fail-closed station eligibility map from the verified sibling manifest."""
+) -> tuple[dict[str, bool], dict[str, Mapping[str, object]]]:
+    """Load fail-closed station sizing and formation metadata from the verified manifest."""
     manifest_path = profile_path.with_name(f"{profile_path.stem}.manifest.json")
     try:
         manifest = json.loads(
@@ -300,27 +348,64 @@ def _load_concentrated_sizing_eligibility(
             parse_constant=_reject_non_finite_json,
         )
     except (OSError, json.JSONDecodeError, TypeError, ValueError):
-        return {}
+        return {}, {}
     if not isinstance(manifest, dict):
-        return {}
+        return {}, {}
     expected_hash = manifest.get("profile_artifact_sha256")
     if not isinstance(expected_hash, str):
-        return {}
+        return {}, {}
     if hashlib.sha256(profile_bytes).hexdigest() != expected_hash.lower():
-        return {}
+        return {}, {}
     stations = manifest.get("stations")
     if not isinstance(stations, dict):
-        return {}
+        return {}, {}
 
     eligibility: dict[str, bool] = {}
+    formation_windows: dict[str, Mapping[str, object]] = {}
     for station_payload in stations.values():
         if not isinstance(station_payload, dict):
-            return {}
+            return {}, {}
         station_id = station_payload.get("station_id")
         eligible = station_payload.get("concentrated_sizing_eligible")
         if not isinstance(station_id, str) or not station_id.strip() or not isinstance(eligible, bool):
-            return {}
-        eligibility[station_id.strip()] = eligible
+            return {}, {}
+        normalized_station_id = station_id.strip()
+        eligibility[normalized_station_id] = eligible
+        raw_windows = station_payload.get("monitoring_windows")
+        if raw_windows is None:
+            continue
+        if not isinstance(raw_windows, dict):
+            return {}, {}
+        for scope_direction, raw_window in raw_windows.items():
+            if not isinstance(scope_direction, str) or not isinstance(raw_window, dict):
+                return {}, {}
+            if not scope_direction.startswith("month:") or "|" not in scope_direction:
+                continue
+            scope, direction = scope_direction.rsplit("|", 1)
+            if direction not in {"high", "low"}:
+                continue
+            try:
+                month = int(scope.split(":", 1)[1])
+                monitoring_start = int(raw_window["monitoring_start_local_minute"])
+            except (KeyError, TypeError, ValueError):
+                return {}, {}
+            if not 1 <= month <= 12 or not 0 <= monitoring_start < 24 * 60:
+                return {}, {}
+            high_stats = raw_window.get("first_final_high_local_minute")
+            low_stats = raw_window.get("first_final_low_local_minute")
+            if not isinstance(high_stats, dict) or not isinstance(low_stats, dict):
+                return {}, {}
+            formation_windows[f"{normalized_station_id}|month:{month:02d}|{direction}"] = MappingProxyType(
+                dict(raw_window)
+            )
+    return eligibility, formation_windows
+
+
+def _load_concentrated_sizing_eligibility(
+    profile_path: Path,
+    profile_bytes: bytes,
+) -> dict[str, bool]:
+    eligibility, _windows = _load_verified_manifest_metadata(profile_path, profile_bytes)
     return eligibility
 
 

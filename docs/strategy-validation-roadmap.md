@@ -92,7 +92,7 @@ The bot is not ready for live-trading planning until these are all true.
 
 1. Historical settlement audit table exists for HKO and other decimal/ambiguous sources.
 2. 24-72 hour paper run shows strategy-mode PnL, skip reasons, and liquidity blockers.
-3. Regional high/low filters are compared by city group.
+3. Station/month/direction formation windows are compared with residual probabilities.
 4. Abnormal price entries are reviewed separately from normal intraday entries.
 5. HKO `needs_audit` positions do not dominate risk.
 
@@ -197,9 +197,10 @@ src/weather_bot/live_paper_runner.py
 Required outcome:
 
 ```text
-Asia/India/Oceania high strategy allowed.
-Europe/Middle East/Africa high YES only local 15:00+.
-Americas low strategy preferred before local 15:00.
+Verified station/month/direction monitoring_start_local_minute gates ordinary entries.
+Final high/low formation q25/median/q75 and remaining-movement probability are auditable.
+HKO midnight carryover and same-day monotonicity violations fail closed.
+CLOB-provided close time can block a high strategy that cannot reach its formation window.
 Intraday side probability must be at least 0.90.
 ```
 

@@ -658,6 +658,14 @@ def _position_payload(
     observed_at = _note_token(latest_note, "observed_at")
     bucket_label = _bucket_display_label(summary["threshold_c"], summary["condition_label"])
     station_evidence = _official_station_evidence(latest_decision)
+    stored_station_audit = (
+        metadata.get("station_audit")
+        if isinstance(metadata.get("station_audit"), dict)
+        else {}
+    )
+    for key, value in stored_station_audit.items():
+        if key in station_evidence and value not in (None, ""):
+            station_evidence[key] = value
     probability_audit = _probability_audit_payload(metadata, latest_decision)
     return {
         "position_id": pos.get("position_id", ""),
@@ -711,6 +719,21 @@ def _position_payload(
         "station_settlement_boundary_c": station_evidence["settlement_boundary_c"],
         "station_buffer_c": station_evidence["buffer_c"],
         "station_hours_to_close": station_evidence["hours_to_close"],
+        **{
+            key: value
+            for key, value in station_evidence.items()
+            if key not in {
+                "lock_strength",
+                "allocation_fraction",
+                "settlement_boundary_c",
+                "buffer_c",
+                "hours_to_close",
+                "observed_high_c",
+                "observed_low_c",
+                "observed_at",
+                "station_source",
+            }
+        },
     }
 
 
@@ -883,6 +906,7 @@ def _first_optional_float(*values: Any) -> float | None:
 
 def _official_station_evidence(row: dict[str, Any]) -> dict[str, Any]:
     note = str(row.get("note") or "")
+    nested_audit = row.get("station_audit") if isinstance(row.get("station_audit"), dict) else {}
     boundary = _first_optional_float(
         _note_token(note, "next_displayed_integer_c"),
         _note_token(note, "displayed_bucket_lower_c"),
@@ -894,6 +918,28 @@ def _official_station_evidence(row: dict[str, Any]) -> dict[str, Any]:
     )
     allocation = _optional_float(_note_token(note, "entry_size_fraction_override"))
     lock_strength = _note_token(note, "official_nowcast_lock")
+    audit_keys = (
+        "station_timezone",
+        "target_date_local",
+        "station_local_date",
+        "station_local_time",
+        "strategy_direction",
+        "formation_monitoring_status",
+        "monitoring_start_local_minute",
+        "first_final_high_local_minute_q25",
+        "first_final_high_local_minute_median",
+        "first_final_high_local_minute_q75",
+        "first_final_low_local_minute_q25",
+        "first_final_low_local_minute_median",
+        "first_final_low_local_minute_q75",
+        "remaining_movement_probability",
+        "midnight_reset_status",
+        "data_block_reason",
+        "clob_accepting_orders",
+        "clob_enable_order_book",
+        "clob_end_date_iso",
+        "strategy_allowed_reason",
+    )
     return {
         "lock_strength": lock_strength,
         "allocation_fraction": allocation,
@@ -904,6 +950,14 @@ def _official_station_evidence(row: dict[str, Any]) -> dict[str, Any]:
         "observed_low_c": _nowcast_c_from_note(note, "observed_low_c"),
         "observed_at": _note_token(note, "observed_at"),
         "station_source": _note_token(note, "nowcast_source"),
+        **{
+            key: row.get(key)
+            if row.get(key) not in (None, "")
+            else nested_audit.get(key)
+            if nested_audit.get(key) not in (None, "")
+            else _note_token(note, key)
+            for key in audit_keys
+        },
     }
 
 

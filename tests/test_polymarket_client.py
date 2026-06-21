@@ -53,6 +53,7 @@ class _ClobInfoClient(PolymarketClient):
             "enable_order_book": "true",
             "ready": 1,
             "funded": "false",
+            "end_date_iso": "2026-06-20T18:00:00Z",
         }
 
 
@@ -155,6 +156,7 @@ def test_get_clob_market_tradability_parses_response_and_uses_cache() -> None:
     assert first.ready is True
     assert first.funded is False
     assert first.condition_id == "condition-1"
+    assert first.end_date_iso == "2026-06-20T18:00:00Z"
     assert first.source == "clob"
     assert second is first
     assert client.calls == ["https://clob.example/clob-markets/condition-1"]

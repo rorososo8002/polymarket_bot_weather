@@ -156,6 +156,7 @@ class Settings:
     station_nowcast_cache_ttl_seconds: int = 60  # 1 min: matches AWC METAR documented API cadence
     station_nowcast_freshness_seconds: int = 5400
     station_nowcast_request_log_path: str = ""
+    hko_rollover_state_path: str = ""
     station_residual_probability_enabled: bool = True
     station_residual_profile_path: str = "strategy_data/station_residual_profiles.json"
     station_residual_min_sample_days: int = 60
@@ -229,6 +230,9 @@ class Settings:
     intraday_abnormal_price_entry_fraction: float = 0.35
     intraday_abnormal_min_net_edge: float = 0.20
     intraday_hko_needs_audit_fraction_multiplier: float = 0.25
+    # Deprecated input compatibility only. Formation timing comes from the
+    # verified station/month/direction manifest and these values are not used
+    # by the active strategy.
     intraday_high_confirm_local_hour: int = 15
     intraday_low_confirm_local_hour: int = 8
     intraday_us_high_disabled_before_local_hour: int = 15
@@ -526,6 +530,10 @@ def load_settings() -> Settings:
         station_nowcast_request_log_path=os.getenv(
             "STATION_NOWCAST_REQUEST_LOG_PATH",
             Settings.station_nowcast_request_log_path,
+        ),
+        hko_rollover_state_path=os.getenv(
+            "HKO_ROLLOVER_STATE_PATH",
+            Settings.hko_rollover_state_path,
         ),
         station_residual_probability_enabled=_bool_env(
             "STATION_RESIDUAL_PROBABILITY_ENABLED",

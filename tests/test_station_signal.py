@@ -39,9 +39,29 @@ def _residual_estimate(
 
 
 class FakeResidualProfileStore:
-    def __init__(self, estimate: ResidualProbabilityEstimate) -> None:
+    def __init__(
+        self,
+        estimate: ResidualProbabilityEstimate,
+        *,
+        monitoring_start_local_minute: int = 0,
+        movement_probability: float = 0.35,
+    ) -> None:
         self.estimate = estimate
         self.calls: list[dict] = []
+        self.monitoring_start_local_minute = monitoring_start_local_minute
+        self.remaining_movement_probability = movement_probability
+
+    def formation_window(self, **_kwargs):
+        return {
+            "monitoring_start_local_minute": self.monitoring_start_local_minute,
+            "first_final_high_local_minute": {"q25": 750.0, "median": 810.0, "q75": 870.0},
+            "first_final_low_local_minute": {"q25": 60.0, "median": 180.0, "q75": 300.0},
+            "occurrence_sample_days": 150,
+            "station_timezone": "Asia/Seoul",
+        }
+
+    def movement_probability(self, **_kwargs):
+        return self.remaining_movement_probability
 
     def estimate_bucket(self, **kwargs):
         self.calls.append(kwargs)
@@ -214,6 +234,121 @@ def test_residual_high_exact_96_percent_gets_50_tier_and_calibration_metadata() 
             "unit": "C",
         }
     ]
+    assert signal.nowcast["formation_monitoring_status"] == "started"
+    assert signal.nowcast["remaining_movement_probability"] == pytest.approx(0.35)
+    assert signal.nowcast["station_local_date"] == "2026-06-19"
+    assert signal.nowcast["station_local_time"] == "15:30"
+
+
+def test_city_month_high_is_blocked_before_profile_monitoring_start() -> None:
+    store = FakeResidualProfileStore(
+        _residual_estimate(raw=0.97, yes=0.96, no=0.02),
+        monitoring_start_local_minute=13 * 60,
+    )
+
+    signal = estimate_station_signal(
+        "Will the highest temperature in Seoul be 23C today?",
+        settings=Settings(),
+        observation_provider=ExactTemperatureProvider(observed_high_c=23.4),
+        now=datetime(2026, 6, 19, 3, 30, tzinfo=timezone.utc),
+        residual_profile_store=store,
+    )
+
+    assert signal.p_true == pytest.approx(0.5)
+    assert signal.source == "official-station-formation-window"
+    assert signal.nowcast["formation_monitoring_status"] == "before_start"
+    assert signal.nowcast["monitoring_start_local_minute"] == 780
+    assert store.calls == []
+
+
+def test_city_month_high_is_evaluated_at_profile_monitoring_start() -> None:
+    store = FakeResidualProfileStore(
+        _residual_estimate(raw=0.97, yes=0.96, no=0.02),
+        monitoring_start_local_minute=13 * 60,
+    )
+
+    signal = estimate_station_signal(
+        "Will the highest temperature in Seoul be 23C today?",
+        settings=Settings(),
+        observation_provider=ExactTemperatureProvider(observed_high_c=23.4),
+        now=datetime(2026, 6, 19, 4, 0, tzinfo=timezone.utc),
+        residual_profile_store=store,
+    )
+
+    assert signal.source == "official-station-residual-high-yes"
+    assert signal.nowcast["formation_monitoring_status"] == "started"
+    assert store.calls[0]["local_minute"] == 780
+
+
+def test_city_month_low_changes_from_before_to_after_monitoring_start() -> None:
+    estimate = _residual_estimate(
+        raw=0.98,
+        yes=0.97,
+        no=0.01,
+        profile_key="RKSI|month:06|0180|low|C",
+    )
+    store = FakeResidualProfileStore(estimate, monitoring_start_local_minute=3 * 60)
+    provider = ExactTemperatureProvider(observed_low_c=20.0)
+
+    before = estimate_station_signal(
+        "Will the lowest temperature in Seoul be 20C or below today?",
+        settings=Settings(),
+        observation_provider=provider,
+        now=datetime(2026, 6, 18, 17, 30, tzinfo=timezone.utc),
+        residual_profile_store=store,
+    )
+    after = estimate_station_signal(
+        "Will the lowest temperature in Seoul be 20C or below today?",
+        settings=Settings(),
+        observation_provider=provider,
+        now=datetime(2026, 6, 18, 18, 0, tzinfo=timezone.utc),
+        residual_profile_store=store,
+    )
+
+    assert before.source == "official-station-formation-window"
+    assert before.nowcast["formation_monitoring_status"] == "before_start"
+    assert after.source == "official-station-residual-low-yes"
+    assert after.nowcast["formation_monitoring_status"] == "started"
+
+
+def test_hko_carryover_observation_cannot_create_strong_no() -> None:
+    provider = ExactTemperatureProvider(observed_high_c=33.1)
+    original = provider.observed_temperature_extremes_so_far
+
+    def blocked(station, *, target_date, now=None):
+        return replace(
+            original(station, target_date=target_date, now=now),
+            unavailable_reason="hko-midnight-reset-pending",
+            midnight_reset_status="pending_previous_day_match",
+        )
+
+    provider.observed_temperature_extremes_so_far = blocked
+    signal = estimate_station_signal(
+        "Will the highest temperature in Hong Kong be 32C today?",
+        settings=Settings(),
+        observation_provider=provider,
+        now=datetime(2026, 6, 21, 16, 10, tzinfo=timezone.utc),
+    )
+
+    assert signal.p_true == pytest.approx(0.5)
+    assert signal.entry_size_fraction_override is None
+    assert signal.source == "official-station-unavailable"
+    assert "hko-midnight-reset-pending" in signal.note
+
+
+def test_hko_reset_verified_strong_no_is_capped_because_settlement_needs_audit() -> None:
+    signal = estimate_station_signal(
+        "Will the highest temperature in Hong Kong be 32C today?",
+        settings=Settings(),
+        observation_provider=ExactTemperatureProvider(observed_high_c=33.1),
+        now=datetime(2026, 6, 22, 12, 0, tzinfo=timezone.utc),
+    )
+
+    assert signal.source == "official-station-lock-strong_no"
+    assert signal.p_true == pytest.approx(0.03)
+    assert signal.entry_size_fraction_override == pytest.approx(0.125)
+    assert "hko_needs_audit_probability_cap=0.97" in signal.note
+    assert "hko_needs_audit_multiplier=0.25" in signal.note
 
 
 @pytest.mark.parametrize(

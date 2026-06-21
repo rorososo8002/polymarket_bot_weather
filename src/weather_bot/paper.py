@@ -72,6 +72,31 @@ class SettlementRunnerDecision:
 PROFIT_RUNNER_TRIGGERS = {"take_profit", "overheated_take_profit"}
 PAPER_MODEL_VERSION = "weather-paper-v1"
 
+STATION_AUDIT_KEYS = (
+    "station_timezone",
+    "target_date_local",
+    "station_local_date",
+    "station_local_time",
+    "strategy_direction",
+    "formation_monitoring_status",
+    "monitoring_start_local_minute",
+    "first_final_high_local_minute_q25",
+    "first_final_high_local_minute_median",
+    "first_final_high_local_minute_q75",
+    "first_final_low_local_minute_q25",
+    "first_final_low_local_minute_median",
+    "first_final_low_local_minute_q75",
+    "remaining_movement_probability",
+    "midnight_reset_status",
+    "data_block_reason",
+    "clob_accepting_orders",
+    "clob_enable_order_book",
+    "clob_active",
+    "clob_closed",
+    "clob_end_date_iso",
+    "strategy_allowed_reason",
+)
+
 TRADE_CSV_FIELDNAMES = [
     "ts",
     "action",
@@ -174,6 +199,7 @@ DECISION_CSV_FIELDNAMES = [
     "expected_net_profit_usd",
     "model_version",
     "config_version",
+    *STATION_AUDIT_KEYS,
 ]
 
 DECISION_QUESTION_MAX_CHARS = 240
@@ -341,7 +367,7 @@ def _market_replay_metadata(market: RawMarket, *, city: str = "", date_hint: str
     }
 
 
-def _signal_replay_metadata(signal: Any | None) -> dict[str, str]:
+def _signal_replay_metadata(signal: Any | None) -> dict[str, Any]:
     if signal is None:
         return {
             "signal_source": "",
@@ -357,6 +383,7 @@ def _signal_replay_metadata(signal: Any | None) -> dict[str, str]:
             "calibration_profile_key": "",
             "calibration_status": "",
             "event_cap_override_fraction": "",
+            "station_audit": {},
         }
     nowcast = getattr(signal, "nowcast", None)
     nowcast = nowcast if isinstance(nowcast, dict) else {}
@@ -387,6 +414,7 @@ def _signal_replay_metadata(signal: Any | None) -> dict[str, str]:
         "event_cap_override_fraction": _format_optional_csv_float(
             getattr(signal, "event_cap_override_fraction", None)
         ),
+        "station_audit": {key: nowcast.get(key) for key in STATION_AUDIT_KEYS if key in nowcast},
     }
 
 
@@ -437,7 +465,7 @@ def _result_replay_metadata(result: EdgeResult) -> dict[str, str]:
 
 
 def _strategy_replay_metadata(
-    signal_metadata: dict[str, str],
+    signal_metadata: dict[str, Any],
     result_metadata: dict[str, str],
 ) -> dict[str, str]:
     result_anomaly = result_metadata.get("price_anomaly", "")
@@ -1723,6 +1751,10 @@ class PaperBroker:
                 "expected_net_profit_usd": strategy_replay["expected_net_profit_usd"],
                 "model_version": PAPER_MODEL_VERSION,
                 "config_version": _config_version(self.settings),
+                **{
+                    key: _format_optional_text(signal_replay["station_audit"].get(key))
+                    for key in STATION_AUDIT_KEYS
+                },
             })
         return ts
 
@@ -1801,6 +1833,7 @@ class PaperBroker:
             ),
             "model_version": PAPER_MODEL_VERSION,
             "config_version": _config_version(self.settings),
+            **signal_replay["station_audit"],
         }
         with path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")

@@ -365,32 +365,34 @@ Abnormal price opportunities may size larger, but still obey all exposure caps.
 
 ---
 
-## 10. Regional Strategy Profile
+## 10. Station Formation-Time Strategy Profile
 
-Asia / India / Oceania:
-
-```text
-high intraday allowed
-watch local 12:00-16:00 and later
-strong NO allowed immediately once a high bucket is broken
-```
-
-Europe / Middle East / Africa:
+Do not use one world-wide confirmation hour or a guessed provider-specific
+hour. Read the verified sibling manifest for the station, target month, and
+high/low direction:
 
 ```text
-high intraday YES only from local 15:00 or later
-strong NO allowed immediately once a bucket is broken
+monitoring_start_local_minute
+first_final_high_local_minute q25 / median / q75
+first_final_low_local_minute q25 / median / q75
+remaining movement probability from the matching residual histogram
 ```
 
-Americas:
+Before `monitoring_start_local_minute`, ordinary residual-probability entries
+are blocked. A same-day, reset-verified observation that has irreversibly
+broken an exact bucket may still produce strong NO. Missing or hash-mismatched
+formation metadata fails closed. HKO remains `needs_audit` and cannot use the
+verified residual path.
 
-```text
-low strategy preferred before local 15:00
-high intraday YES blocked before local 15:00
-low-tail YES and exact-low broken-bucket NO preferred
-```
+The final entry check must still verify current CLOB `accepting_orders` and
+`enable_order_book`. When the CLOB response itself supplies a close time and it
+precedes the city's historical high-formation window, block the high residual
+strategy. Gamma `endDate` alone is not this evidence.
 
-These regional defaults are risk filters, not settlement rules.
+HKO additionally requires a persistent midnight handoff state. Missing prior-
+day baseline, an unchanged prior-day pair after midnight, a same-day high
+decrease, or a same-day low increase blocks the source before probability
+calculation. No fixed “allow after HH:MM” exception exists.
 
 ---
 
@@ -399,7 +401,7 @@ These regional defaults are risk filters, not settlement rules.
 Recommended active paper defaults for this upgrade:
 
 ```text
-BANKROLL_USD=200
+BANKROLL_USD=1000
 SIZE_MODE=kelly
 FRACTIONAL_KELLY=0.25
 ENTRY_FRACTION=0.20
@@ -421,9 +423,7 @@ INTRADAY_STRONG_ENTRY_FRACTION=0.25
 INTRADAY_ABNORMAL_PRICE_ENTRY_FRACTION=0.35
 INTRADAY_ABNORMAL_MIN_NET_EDGE=0.20
 INTRADAY_HKO_NEEDS_AUDIT_FRACTION_MULTIPLIER=0.25
-INTRADAY_HIGH_CONFIRM_LOCAL_HOUR=15
-INTRADAY_LOW_CONFIRM_LOCAL_HOUR=8
-INTRADAY_US_HIGH_DISABLED_BEFORE_LOCAL_HOUR=15
+HKO_ROLLOVER_STATE_PATH=data/hko_rollover_state.json
 ```
 
 These values are paper-experiment defaults, not live-trading settings.

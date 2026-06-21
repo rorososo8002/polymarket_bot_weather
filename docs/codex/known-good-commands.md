@@ -181,6 +181,7 @@ All paper runtime files live under `data/`, **not** the app root:
 /opt/polymarket-weather-bot/data/paper_decisions.csv
 /opt/polymarket-weather-bot/data/paper_raw_snapshots.jsonl
 /opt/polymarket-weather-bot/data/station_nowcast_request_log.jsonl
+/opt/polymarket-weather-bot/data/hko_rollover_state.json
 /opt/polymarket-weather-bot/data/paper_skip_diagnostics.jsonl
 /opt/polymarket-weather-bot/data/paper_event_portfolios.jsonl
 ```
@@ -194,6 +195,7 @@ cd /opt/polymarket-weather-bot/data
 sudo rm -f paper_state.json paper_trades.csv paper_decisions.csv \
            paper_raw_snapshots.jsonl paper_event_portfolios.jsonl \
            paper_skip_diagnostics.jsonl station_nowcast_request_log.jsonl \
+           hko_rollover_state.json \
            paper_runner_status.json
 sudo find archive -type f -delete
 sudo systemctl start polymarket-weather-bot

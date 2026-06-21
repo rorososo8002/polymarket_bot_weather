@@ -29,7 +29,7 @@ from weather_bot.models import (
     RawMarket,
     WeatherSignal,
 )
-from weather_bot.paper import PaperBroker, maybe_close_positions, maybe_settle_resolved_positions
+from weather_bot.paper import DECISION_CSV_FIELDNAMES, PaperBroker, maybe_close_positions, maybe_settle_resolved_positions
 from weather_bot.polymarket_client import PolymarketClient
 from weather_bot.runner_status import runner_status_path, write_runner_status
 from weather_bot.station_signal import _target_date_from_hint
@@ -2625,59 +2625,7 @@ def test_decision_log_writes_header_when_existing_file_is_empty(tmp_path):
 
     with decisions_path.open(newline="", encoding="utf-8") as f:
         rows = list(csv.reader(f))
-    assert rows[0] == [
-        "ts",
-        "market_id",
-        "slug",
-        "question",
-        "market_type",
-        "side",
-        "p_true",
-        "p_exec",
-        "net_edge",
-        "size_usd",
-        "size_shares",
-        "entry_fraction",
-        "probability_stop_threshold",
-        "model_fair_price",
-        "target_exit_price",
-        "market_heat_score",
-        "reason",
-        "note",
-        "token_id",
-        "city",
-        "event_date_local",
-        "condition_type",
-        "market_shape",
-        "station_id",
-        "signal_source",
-        "signal_confidence",
-        "strategy_mode",
-        "signal_family",
-        "price_anomaly",
-        "settlement_precision_confidence",
-        "entry_vwap",
-        "expected_net_return_pct",
-        "best_bid",
-        "best_ask",
-        "spread",
-            "orderbook_status",
-            "reason_code",
-            "raw_selected_side_probability",
-            "selected_side_probability",
-            "probability_tier",
-            "calibration_sample_days",
-            "calibration_profile_key",
-            "calibration_status",
-            "requested_size_usd",
-            "executable_size_usd",
-            "event_cap_override_fraction",
-            "fee_rate",
-            "entry_fee_usdc",
-            "expected_net_profit_usd",
-            "model_version",
-            "config_version",
-        ]
+    assert rows[0] == DECISION_CSV_FIELDNAMES
     assert rows[1][1] == "m1"
 
 

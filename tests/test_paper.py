@@ -197,6 +197,45 @@ def test_decision_records_structured_probability_and_sizing_audit_fields(tmp_pat
     assert row["expected_net_profit_usd"] == "28.000000"
 
 
+def test_decision_records_station_formation_audit_without_relying_on_truncated_note(tmp_path):
+    broker = PaperBroker(_settings(tmp_path))
+    signal = WeatherSignal(
+        **{
+            **_audit_signal().__dict__,
+            "nowcast": {
+                "station_timezone": "Asia/Seoul",
+                "target_date_local": "2026-06-22",
+                "station_local_date": "2026-06-22",
+                "station_local_time": "15:30",
+                "strategy_direction": "high",
+                "formation_monitoring_status": "started",
+                "monitoring_start_local_minute": 780,
+                "first_final_high_local_minute_q25": 750.0,
+                "first_final_high_local_minute_median": 810.0,
+                "first_final_high_local_minute_q75": 870.0,
+                "remaining_movement_probability": 0.35,
+                "midnight_reset_status": "verified",
+                "data_block_reason": "",
+                "clob_accepting_orders": True,
+                "clob_enable_order_book": True,
+                "strategy_allowed_reason": "residual probability passed",
+            },
+        }
+    )
+
+    broker.log_decision(_market(), _audit_result(), "x" * 1000, signal=signal)
+
+    with (tmp_path / "decisions.csv").open(newline="", encoding="utf-8") as handle:
+        row = next(csv.DictReader(handle))
+    assert len(row["note"]) == 500
+    assert row["station_local_date"] == "2026-06-22"
+    assert row["station_local_time"] == "15:30"
+    assert row["formation_monitoring_status"] == "started"
+    assert row["remaining_movement_probability"] == "0.35"
+    assert row["clob_accepting_orders"] == "True"
+    assert row["strategy_allowed_reason"] == "residual probability passed"
+
+
 def test_no_open_trade_uses_explicit_conservative_no_probability_without_double_inversion(tmp_path):
     broker = PaperBroker(_settings(tmp_path))
     market = _market()

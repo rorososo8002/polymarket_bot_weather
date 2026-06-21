@@ -24,6 +24,34 @@ def test_event_date_window_normalizes_new_york_dst_day():
     assert window.event_end_utc.isoformat() == "2026-06-16T04:00:00+00:00"
 
 
+def test_new_york_local_day_is_23_hours_when_dst_starts():
+    window = event_date_window_from_hint(
+        "march 8",
+        "America/New_York",
+        now=datetime(2026, 3, 1, 12, 0, tzinfo=timezone.utc),
+        source_texts=("highest-temperature-in-nyc-on-march-8-2026",),
+    )
+
+    assert window is not None
+    assert window.event_start_utc.isoformat() == "2026-03-08T05:00:00+00:00"
+    assert window.event_end_utc.isoformat() == "2026-03-09T04:00:00+00:00"
+    assert (window.event_end_utc - window.event_start_utc).total_seconds() == 23 * 3600
+
+
+def test_new_york_local_day_is_25_hours_when_dst_ends():
+    window = event_date_window_from_hint(
+        "november 1",
+        "America/New_York",
+        now=datetime(2026, 10, 1, 12, 0, tzinfo=timezone.utc),
+        source_texts=("highest-temperature-in-nyc-on-november-1-2026",),
+    )
+
+    assert window is not None
+    assert window.event_start_utc.isoformat() == "2026-11-01T04:00:00+00:00"
+    assert window.event_end_utc.isoformat() == "2026-11-02T05:00:00+00:00"
+    assert (window.event_end_utc - window.event_start_utc).total_seconds() == 25 * 3600
+
+
 def test_event_date_window_normalizes_seoul_local_day():
     window = event_date_window_from_hint(
         "june 15",

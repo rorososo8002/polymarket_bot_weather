@@ -4,11 +4,12 @@ import argparse
 from collections.abc import Callable, Mapping
 from dataclasses import replace
 import inspect
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 import math
 import threading
 import time
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .config import Settings, load_settings
 from .edge import (
@@ -24,7 +25,7 @@ from .edge import (
 )
 from .exit_policy import conservative_settlement_value, model_fair_price, target_exit_price
 from .market_rules import market_rule_mismatch_reason
-from .models import EdgeResult, MarketDecision, OrderBook, PaperPosition, RawMarket, WeatherSignal
+from .models import EdgeResult, MarketDecision, MarketTradability, OrderBook, PaperPosition, RawMarket, WeatherSignal
 from .nowcast import AviationWeatherMetarNowcastProvider
 from .paper import PaperBroker, maybe_close_positions, maybe_settle_resolved_positions
 from .polymarket_client import PolymarketClient
@@ -606,6 +607,7 @@ def _market_tradability_skip_reason(
     *,
     final_pre_trade: bool,
     market_type: str,
+    signal: WeatherSignal | None = None,
 ) -> str | None:
     suffix = f"final_pre_trade={str(final_pre_trade).lower()} [{market_type}]"
     if not market.active:
@@ -663,6 +665,67 @@ def _market_tradability_skip_reason(
         return f"SKIP_ORDERBOOK_DISABLED: CLOB market order book is disabled; {suffix}"
     if active is not True or closed is not False or accepting_orders is not True or enable_order_book is not True:
         return f"SKIP_TRADABILITY_UNKNOWN: required CLOB tradability fields are unknown; {suffix}"
+    if signal is not None:
+        if isinstance(signal.nowcast, dict):
+            signal.nowcast.update(
+                {
+                    "clob_accepting_orders": accepting_orders,
+                    "clob_enable_order_book": enable_order_book,
+                    "clob_active": active,
+                    "clob_closed": closed,
+                    "clob_end_date_iso": getattr(tradability, "end_date_iso", None),
+                }
+            )
+        feasibility_reason = _high_formation_clob_close_reason(signal, tradability, market_type)
+        if feasibility_reason:
+            return feasibility_reason
+    return None
+
+
+def _parse_iso_datetime(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _high_formation_clob_close_reason(
+    signal: WeatherSignal,
+    tradability: MarketTradability,
+    market_type: str,
+) -> str | None:
+    if not str(signal.source or "").startswith("official-station-residual-high-"):
+        return None
+    nowcast = signal.nowcast if isinstance(signal.nowcast, dict) else {}
+    timezone_name = str(nowcast.get("station_timezone") or "")
+    target_date_text = str(nowcast.get("target_date_local") or "")
+    close_at = _parse_iso_datetime(getattr(tradability, "end_date_iso", None))
+    try:
+        target_date = date.fromisoformat(target_date_text)
+        first_final_q25 = int(float(nowcast.get("first_final_high_local_minute_q25")))
+        zone = ZoneInfo(timezone_name)
+    except (TypeError, ValueError, ZoneInfoNotFoundError):
+        return None
+    if close_at is None:
+        return None
+    close_local = close_at.astimezone(zone)
+    close_local_minute = close_local.hour * 60 + close_local.minute
+    if close_local.date() < target_date or (
+        close_local.date() == target_date and close_local_minute < first_final_q25
+    ):
+        nowcast["data_block_reason"] = "clob-closes-before-high-formation"
+        nowcast["strategy_allowed_reason"] = "blocked because CLOB closes before high formation"
+        return (
+            "SKIP_HIGH_FORMATION_AFTER_CLOB_CLOSE: verified CLOB close precedes the "
+            f"historical high-formation window; clob_close_local={close_local.isoformat()}; "
+            f"first_final_high_q25_minute={first_final_q25}; final_pre_trade=true [{market_type}]"
+        )
     return None
 
 
@@ -1028,6 +1091,7 @@ def _final_pre_trade_entry_result(
         settings,
         final_pre_trade=True,
         market_type=market_type,
+        signal=signal,
     )
     if tradability_reason:
         return _skip_entry_result(result, tradability_reason)

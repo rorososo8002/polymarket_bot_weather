@@ -5,6 +5,7 @@ import re
 import csv
 import io
 import json
+import os
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
@@ -56,6 +57,10 @@ class StationNowcastObservation:
     update_cadence: str = ""
     observed_low_c: float | None = None
     low_observed_at: datetime | None = None
+    station_local_date: str = ""
+    station_local_time: str = ""
+    midnight_reset_status: str = ""
+    data_block_reason: str = ""
 
     @property
     def usable(self) -> bool:
@@ -95,6 +100,10 @@ class StationNowcastObservation:
             "unavailable_reason": self.unavailable_reason,
             "raw_observation_count": self.raw_observation_count,
             "update_cadence": self.update_cadence,
+            "station_local_date": self.station_local_date,
+            "station_local_time": self.station_local_time,
+            "midnight_reset_status": self.midnight_reset_status,
+            "data_block_reason": self.data_block_reason,
         }
 
 
@@ -244,6 +253,7 @@ class AviationWeatherMetarNowcastProvider:
         freshness_seconds: int = 5400,
         cache_ttl_seconds: int = 60,
         request_log_path: str | Path | None = None,
+        hko_rollover_state_path: str | Path | None = None,
         sources: dict[str, StationNowcastSource] | None = None,
     ) -> None:
         self.http_get = http_get
@@ -251,21 +261,148 @@ class AviationWeatherMetarNowcastProvider:
         self.freshness_seconds = max(0, int(freshness_seconds))
         self.cache_ttl_seconds = max(0, int(cache_ttl_seconds))
         self.request_log_path = Path(request_log_path) if request_log_path else None
+        self.hko_rollover_state_path = Path(hko_rollover_state_path) if hko_rollover_state_path else None
         self._request_log_error = ""
         self.sources = sources or PILOT_NOWCAST_SOURCES
         self._cache: dict[tuple[str, str], tuple[datetime, StationNowcastObservation]] = {}
         self._awc_metar_bulk_cache: _MetarBulkCacheEntry | None = None
+        self._hko_rollover_state = self._load_hko_rollover_state()
 
     @classmethod
     def from_settings(cls, settings: Any) -> "AviationWeatherMetarNowcastProvider":
         request_log_path = settings.station_nowcast_request_log_path or str(
             Path(settings.state_path).with_name("station_nowcast_request_log.jsonl")
         )
+        hko_rollover_state_path = getattr(settings, "hko_rollover_state_path", "") or str(
+            Path(settings.state_path).with_name("hko_rollover_state.json")
+        )
         return cls(
             freshness_seconds=settings.station_nowcast_freshness_seconds,
             cache_ttl_seconds=settings.station_nowcast_cache_ttl_seconds,
             request_log_path=request_log_path,
+            hko_rollover_state_path=hko_rollover_state_path,
         )
+
+    def _load_hko_rollover_state(self) -> dict[str, Any]:
+        if self.hko_rollover_state_path is None:
+            return {}
+        try:
+            payload = json.loads(self.hko_rollover_state_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            return {}
+        if not isinstance(payload, dict) or payload.get("schema_version") != 1:
+            return {}
+        return payload
+
+    def _write_hko_rollover_state(self) -> None:
+        path = self.hko_rollover_state_path
+        if path is None:
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+        try:
+            tmp.write_text(
+                json.dumps(self._hko_rollover_state, ensure_ascii=False, sort_keys=True),
+                encoding="utf-8",
+            )
+            os.replace(tmp, path)
+        finally:
+            tmp.unlink(missing_ok=True)
+
+    def _validate_hko_rollover(
+        self,
+        *,
+        observed_date: date,
+        high_c: float,
+        low_c: float,
+    ) -> tuple[str, str]:
+        if self.hko_rollover_state_path is None:
+            return "not_configured", ""
+
+        state = dict(self._hko_rollover_state)
+        current_date_text = str(state.get("current_date") or "")
+        try:
+            current_date = date.fromisoformat(current_date_text) if current_date_text else None
+        except ValueError:
+            current_date = None
+
+        if current_date is None:
+            self._hko_rollover_state = {
+                "schema_version": 1,
+                "station_id": "HKO",
+                "current_date": observed_date.isoformat(),
+                "current_high_c": high_c,
+                "current_low_c": low_c,
+                "reset_verified": False,
+                "blocked_reason": "hko-rollover-baseline-missing",
+            }
+            self._write_hko_rollover_state()
+            return "blocked_baseline_missing", "hko-rollover-baseline-missing"
+
+        if observed_date < current_date:
+            return "blocked_date_regression", "hko-observation-date-regressed"
+
+        if observed_date > current_date:
+            previous_is_yesterday = observed_date - current_date == timedelta(days=1)
+            state = {
+                "schema_version": 1,
+                "station_id": "HKO",
+                "previous_date": current_date.isoformat(),
+                "previous_high_c": state.get("current_high_c"),
+                "previous_low_c": state.get("current_low_c"),
+                "current_date": observed_date.isoformat(),
+                "current_high_c": high_c,
+                "current_low_c": low_c,
+                "reset_verified": False,
+                "blocked_reason": "",
+            }
+            if not previous_is_yesterday:
+                state["blocked_reason"] = "hko-rollover-baseline-missing"
+            self._hko_rollover_state = state
+
+        state = self._hko_rollover_state
+        if bool(state.get("reset_verified")):
+            previous_high = _parse_hko_temperature_c(state.get("current_high_c"))
+            previous_low = _parse_hko_temperature_c(state.get("current_low_c"))
+            reason = str(state.get("blocked_reason") or "")
+            if reason:
+                return "blocked_same_day_monotonicity", reason
+            if previous_high is not None and high_c < previous_high - 1e-9:
+                reason = "hko-same-day-high-decreased"
+            elif previous_low is not None and low_c > previous_low + 1e-9:
+                reason = "hko-same-day-low-increased"
+            if reason:
+                state["blocked_reason"] = reason
+                self._write_hko_rollover_state()
+                return "blocked_same_day_monotonicity", reason
+            state["current_high_c"] = max(high_c, previous_high if previous_high is not None else high_c)
+            state["current_low_c"] = min(low_c, previous_low if previous_low is not None else low_c)
+            self._write_hko_rollover_state()
+            return "verified", ""
+
+        previous_high = _parse_hko_temperature_c(state.get("previous_high_c"))
+        previous_low = _parse_hko_temperature_c(state.get("previous_low_c"))
+        if previous_high is None or previous_low is None:
+            state["current_high_c"] = high_c
+            state["current_low_c"] = low_c
+            state["blocked_reason"] = "hko-rollover-baseline-missing"
+            self._write_hko_rollover_state()
+            return "blocked_baseline_missing", "hko-rollover-baseline-missing"
+
+        nested_range = high_c <= previous_high + 1e-9 and low_c >= previous_low - 1e-9
+        strictly_reset = high_c < previous_high - 1e-9 or low_c > previous_low + 1e-9
+        state["current_high_c"] = high_c
+        state["current_low_c"] = low_c
+        if nested_range and strictly_reset:
+            state["reset_verified"] = True
+            state["blocked_reason"] = ""
+            self._write_hko_rollover_state()
+            return "verified", ""
+        state["blocked_reason"] = "hko-midnight-reset-pending"
+        self._write_hko_rollover_state()
+        if abs(high_c - previous_high) <= 1e-9 and abs(low_c - previous_low) <= 1e-9:
+            return "pending_previous_day_match", "hko-midnight-reset-pending"
+        return "pending_reset_unproven", "hko-midnight-reset-pending"
 
     def observed_high_so_far(
         self,
@@ -690,6 +827,8 @@ class AviationWeatherMetarNowcastProvider:
             update_cadence=source.update_cadence,
             observed_low_c=round(low_c, 3),
             low_observed_at=low_at,
+            station_local_date=latest_at.astimezone(zone).date().isoformat(),
+            station_local_time=latest_at.astimezone(zone).strftime("%H:%M"),
         )
 
     def _parse_hko_payload(
@@ -724,6 +863,16 @@ class AviationWeatherMetarNowcastProvider:
                 observed_at.astimezone(_zone(station.timezone)).date() != target_date
                 or freshness_seconds > self.freshness_seconds
             ) else ""
+            midnight_reset_status = ""
+            data_block_reason = ""
+            if not reason:
+                midnight_reset_status, data_block_reason = self._validate_hko_rollover(
+                    observed_date=observed_at.astimezone(_zone(station.timezone)).date(),
+                    high_c=high_c,
+                    low_c=low_c,
+                )
+                reason = data_block_reason
+            local_observed = observed_at.astimezone(_zone(station.timezone))
             return StationNowcastObservation(
                 station_id=station.station_id,
                 station_name=station.station_name,
@@ -739,6 +888,10 @@ class AviationWeatherMetarNowcastProvider:
                 update_cadence=source.update_cadence,
                 observed_low_c=round(low_c, 3),
                 low_observed_at=None,
+                station_local_date=local_observed.date().isoformat(),
+                station_local_time=local_observed.strftime("%H:%M"),
+                midnight_reset_status=midnight_reset_status,
+                data_block_reason=data_block_reason,
             )
 
         return self._unavailable(station, "malformed-observation-payload", source, raw_count=len(rows))

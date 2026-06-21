@@ -1180,6 +1180,7 @@ def _tradability(**overrides) -> MarketTradability:
         "condition_id": "condition-1",
         "source": "clob",
         "raw": {},
+        "end_date_iso": None,
     }
     values.update(overrides)
     return MarketTradability(**values)
@@ -1723,6 +1724,44 @@ def test_final_pre_trade_does_not_block_only_because_end_date_is_past(tmp_path):
 
     assert final_result.side == "YES"
     assert len(broker.state.positions) == 1
+
+
+def test_final_pre_trade_blocks_high_when_clob_closes_before_formation_window(tmp_path):
+    broker = runner_module.PaperBroker(_entry_gate_settings(tmp_path))
+    client = _FinalGateClient(
+        _tradability(end_date_iso="2026-05-25T16:00:00Z")
+    )
+    question = "Will the highest temperature in NYC be 90F on May 25?"
+    signal = WeatherSignal(
+        0.96,
+        1.0,
+        "official-station-residual-high-yes",
+        "signal_family=intraday_observation_edge",
+        parse_weather_question(question),
+        nowcast={
+            "station_timezone": "America/New_York",
+            "target_date_local": "2026-05-25",
+            "strategy_direction": "high",
+            "first_final_high_local_minute_q25": 13 * 60,
+        },
+        signal_family="intraday_observation_edge",
+    )
+
+    final_result = runner_module._open_position_if_needed(
+        broker,
+        _entry_gate_market(question=question),
+        signal,
+        _selected_entry_result(),
+        "temperature",
+        client=client,
+    )
+
+    assert final_result.side == "SKIP"
+    assert "SKIP_HIGH_FORMATION_AFTER_CLOB_CLOSE" in final_result.reason
+    assert signal.nowcast["data_block_reason"] == "clob-closes-before-high-formation"
+    assert signal.nowcast["strategy_allowed_reason"] == "blocked because CLOB closes before high formation"
+    assert client.book_calls == []
+    assert broker.state.positions == []
 
 
 def test_open_position_if_needed_rechecks_fresh_spread_before_broker_open(tmp_path):

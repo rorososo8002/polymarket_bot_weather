@@ -14,7 +14,6 @@ from .nowcast import StationNowcastObservation
 from .residual_probability import ResidualProbabilityEstimate
 from .settlement_precision import SettlementPrecisionProfile, settlement_precision_profile_for_station
 from .stations import StationMeta, TRADING_READY_STATION_MAP
-from .strategy_profiles import CityStrategyProfile, strategy_profile_for_city
 from .weather_client import parse_weather_question
 
 
@@ -178,6 +177,117 @@ def _floor_local_minute_30m(now: datetime, timezone_name: str) -> int:
     return local.hour * 60 + (local.minute // 30) * 30
 
 
+def _formation_audit_evidence(
+    payload: dict[str, Any],
+    *,
+    parsed: ParsedWeatherQuestion,
+    station: StationMeta,
+    target: date,
+    now: datetime,
+    residual_profile_store: Any | None,
+    precision_profile: SettlementPrecisionProfile,
+) -> str:
+    local = now.astimezone(_zone(station.timezone))
+    direction = "low" if parsed.temperature_metric == "min" else "high"
+    local_minute = local.hour * 60 + local.minute
+    payload.update(
+        {
+            "station_timezone": station.timezone,
+            "target_date_local": target.isoformat(),
+            "station_local_date": local.date().isoformat(),
+            "station_local_time": local.strftime("%H:%M"),
+            "strategy_direction": direction,
+            "current_local_minute": local_minute,
+        }
+    )
+    formation_method = getattr(residual_profile_store, "formation_window", None)
+    if residual_profile_store is None or not callable(formation_method):
+        payload["formation_monitoring_status"] = "not_available"
+        return (
+            f"station_timezone={station.timezone}; target_date_local={target.isoformat()}; "
+            f"station_local_date={local.date().isoformat()}; station_local_time={local.strftime('%H:%M')}; "
+            f"strategy_direction={direction}; formation_monitoring_status=not_available"
+        )
+
+    window = formation_method(
+        station_id=station.station_id,
+        month=target.month,
+        direction=direction,
+    )
+    if not isinstance(window, Mapping):
+        payload["formation_monitoring_status"] = "missing"
+        payload["data_block_reason"] = "formation-window-missing"
+        payload["strategy_allowed_reason"] = "verified formation metadata is unavailable"
+        return (
+            f"station_timezone={station.timezone}; target_date_local={target.isoformat()}; "
+            f"station_local_date={local.date().isoformat()}; station_local_time={local.strftime('%H:%M')}; "
+            f"strategy_direction={direction}; formation_monitoring_status=missing; "
+            "data_block_reason=formation-window-missing; "
+            "strategy_allowed_reason=verified formation metadata is unavailable"
+        )
+
+    try:
+        monitoring_start = int(window["monitoring_start_local_minute"])
+    except (KeyError, TypeError, ValueError):
+        payload["formation_monitoring_status"] = "missing"
+        return "formation_monitoring_status=missing"
+    status = "started" if local_minute >= monitoring_start else "before_start"
+    high_stats = window.get("first_final_high_local_minute")
+    low_stats = window.get("first_final_low_local_minute")
+    high_stats = high_stats if isinstance(high_stats, Mapping) else {}
+    low_stats = low_stats if isinstance(low_stats, Mapping) else {}
+    payload.update(
+        {
+            "formation_monitoring_status": status,
+            "monitoring_start_local_minute": monitoring_start,
+            "first_final_high_local_minute_q25": high_stats.get("q25"),
+            "first_final_high_local_minute_median": high_stats.get("median"),
+            "first_final_high_local_minute_q75": high_stats.get("q75"),
+            "first_final_low_local_minute_q25": low_stats.get("q25"),
+            "first_final_low_local_minute_median": low_stats.get("median"),
+            "first_final_low_local_minute_q75": low_stats.get("q75"),
+            "formation_sample_days": window.get("occurrence_sample_days"),
+        }
+    )
+    movement_method = getattr(residual_profile_store, "movement_probability", None)
+    movement_probability = None
+    if callable(movement_method):
+        movement_probability = movement_method(
+            station_id=station.station_id,
+            month=target.month,
+            local_minute=_floor_local_minute_30m(now, station.timezone),
+            direction=direction,
+            unit=precision_profile.unit,
+        )
+    payload["remaining_movement_probability"] = movement_probability
+    if status == "before_start":
+        payload["data_block_reason"] = "formation-monitoring-not-started"
+        payload["strategy_allowed_reason"] = "station-local formation monitoring has not started"
+    else:
+        payload.setdefault("data_block_reason", "")
+        payload["strategy_allowed_reason"] = "formation monitoring started; residual probability required"
+    return "; ".join(
+        [
+            f"station_timezone={station.timezone}",
+            f"target_date_local={target.isoformat()}",
+            f"station_local_date={local.date().isoformat()}",
+            f"station_local_time={local.strftime('%H:%M')}",
+            f"strategy_direction={direction}",
+            f"formation_monitoring_status={status}",
+            f"monitoring_start_local_minute={monitoring_start}",
+            f"first_final_high_local_minute_q25={high_stats.get('q25')}",
+            f"first_final_high_local_minute_median={high_stats.get('median')}",
+            f"first_final_high_local_minute_q75={high_stats.get('q75')}",
+            f"first_final_low_local_minute_q25={low_stats.get('q25')}",
+            f"first_final_low_local_minute_median={low_stats.get('median')}",
+            f"first_final_low_local_minute_q75={low_stats.get('q75')}",
+            f"remaining_movement_probability={movement_probability}",
+            f"data_block_reason={payload.get('data_block_reason', '')}",
+            f"strategy_allowed_reason={payload.get('strategy_allowed_reason', '')}",
+        ]
+    )
+
+
 def _residual_bucket_request(
     parsed: ParsedWeatherQuestion,
     precision_profile: SettlementPrecisionProfile,
@@ -293,6 +403,25 @@ def _residual_observation_edge_signal(
             precision_profile=precision_profile,
         )
 
+    formation_status = str(payload.get("formation_monitoring_status") or "")
+    if formation_status in {"missing", "before_start"}:
+        reason = (
+            "verified formation window is missing"
+            if formation_status == "missing"
+            else "current station-local time is before the monitoring start"
+        )
+        return _residual_neutral_signal(
+            parsed,
+            source="official-station-formation-window",
+            note=(
+                f"{base_note}; signal_family=intraday_observation_edge; "
+                f"formation_monitoring_status={formation_status}; {reason}"
+            ),
+            payload=payload,
+            settings=settings,
+            precision_profile=precision_profile,
+        )
+
     bucket = _residual_bucket_request(parsed, precision_profile)
     if bucket is None:
         return None
@@ -396,15 +525,6 @@ def _residual_observation_edge_signal(
     )
 
 
-def _intraday_profile(station: StationMeta, settings: Settings) -> CityStrategyProfile:
-    return strategy_profile_for_city(
-        station.city,
-        high_confirm_local_hour=settings.intraday_high_confirm_local_hour,
-        low_confirm_local_hour=settings.intraday_low_confirm_local_hour,
-        us_high_disabled_before_local_hour=settings.intraday_us_high_disabled_before_local_hour,
-    )
-
-
 def _intraday_observation_edge(
     parsed: ParsedWeatherQuestion,
     observed_value_c: float,
@@ -419,9 +539,8 @@ def _intraday_observation_edge(
     if settings.strategy_mode not in {"intraday_observation_edge", "hybrid_observation_edge"}:
         return None
 
-    profile = _intraday_profile(station, settings)
     observed_value = _observed_value_in_source_unit(observed_value_c, precision_profile.unit)
-    if observed_value is None or profile.region_group == "unknown":
+    if observed_value is None:
         return None
     local_hour = now.astimezone(_zone(station.timezone)).hour
 
@@ -429,7 +548,6 @@ def _intraday_observation_edge(
         edge = _intraday_low_edge(
             parsed,
             observed_value,
-            profile=profile,
             precision_profile=precision_profile,
             settings=settings,
             local_hour=local_hour,
@@ -438,7 +556,6 @@ def _intraday_observation_edge(
         edge = _intraday_high_edge(
             parsed,
             observed_value,
-            profile=profile,
             precision_profile=precision_profile,
             settings=settings,
             local_hour=local_hour,
@@ -458,7 +575,6 @@ def _intraday_high_edge(
     parsed: ParsedWeatherQuestion,
     observed_value: float,
     *,
-    profile: CityStrategyProfile,
     precision_profile: SettlementPrecisionProfile,
     settings: Settings,
     local_hour: int,
@@ -487,7 +603,6 @@ def _intraday_low_edge(
     parsed: ParsedWeatherQuestion,
     observed_value: float,
     *,
-    profile: CityStrategyProfile,
     precision_profile: SettlementPrecisionProfile,
     settings: Settings,
     local_hour: int,
@@ -507,16 +622,6 @@ def _intraday_low_edge(
                     f"bucket_lower_{unit.lower()}={lower:.2f}; local_hour={local_hour}"
                 ),
             )
-        exact_low_yes_enabled = settings.intraday_exact_low_yes_enabled or (
-            profile.region_group == "americas" and settings.intraday_us_exact_low_yes_enabled
-        )
-        if (
-            exact_low_yes_enabled
-            and profile.allow_low_intraday
-            and local_hour >= profile.low_confirm_local_hour
-            and lower <= observed_value < upper
-        ):
-            return None
         return None
 
     return None
@@ -629,6 +734,11 @@ def estimate_station_signal(
         f"observed_at={payload.get('observed_at')}; freshness_seconds={observation.freshness_seconds}; "
         f"nowcast_source={observation.source}; {precision_note}"
     )
+    if observation.midnight_reset_status:
+        base_note += (
+            f"; midnight_reset_status={observation.midnight_reset_status}; "
+            f"data_block_reason={observation.data_block_reason}"
+        )
     if not observation.station_id or observation.station_id.upper() != station.station_id.upper():
         return replace(
             _neutral_signal(
@@ -666,6 +776,17 @@ def estimate_station_signal(
             settlement_precision_confidence=precision_profile.confidence,
         )
 
+    formation_note = _formation_audit_evidence(
+        payload,
+        parsed=parsed,
+        station=station,
+        target=target,
+        now=current,
+        residual_profile_store=residual_profile_store,
+        precision_profile=precision_profile,
+    )
+    base_note = f"{base_note}; {formation_note}"
+
     lock = None
     if settings.strategy_mode in {"lock_only", "intraday_observation_edge", "hybrid_observation_edge"}:
         lock = _official_station_exact_lock(
@@ -677,19 +798,33 @@ def estimate_station_signal(
             now=current,
         )
     if lock is not None:
+        lock_probability = lock.p_true
+        lock_fraction = lock.entry_fraction
+        lock_size_reason = lock.size_reason
+        if precision_profile.confidence == "needs_audit":
+            strong_probability = settings.intraday_strong_side_probability
+            lock_probability = 1.0 - strong_probability
+            lock_fraction *= settings.intraday_hko_needs_audit_fraction_multiplier
+            lock_size_reason += (
+                f"; hko_needs_audit_probability_cap={strong_probability:.2f}; "
+                f"hko_needs_audit_multiplier={settings.intraday_hko_needs_audit_fraction_multiplier:.2f}"
+            )
+        payload["data_block_reason"] = ""
+        payload["strategy_allowed_reason"] = "verified same-day observation irreversibly broke the bucket"
+        base_note += "; data_block_reason=; strategy_allowed_reason=verified bucket break"
         return WeatherSignal(
-            p_true=lock.p_true,
+            p_true=lock_probability,
             confidence=1.0,
             source=f"official-station-lock-{lock.lock_name}",
             note=(
                 f"{base_note}; strategy_mode={settings.strategy_mode}; signal_family=lock_only; "
                 f"station_adjustment={lock.adjustment}; "
-                f"{lock.size_reason}; entry_size_fraction_override={lock.entry_fraction:.2f}"
+                f"{lock_size_reason}; entry_size_fraction_override={lock_fraction:.4f}"
             ),
             parsed=parsed,
             nowcast=payload,
-            entry_size_fraction_override=lock.entry_fraction,
-            entry_size_reason=lock.size_reason,
+            entry_size_fraction_override=lock_fraction,
+            entry_size_reason=lock_size_reason,
             strategy_mode=settings.strategy_mode,
             signal_family="lock_only",
             settlement_precision_confidence=precision_profile.confidence,

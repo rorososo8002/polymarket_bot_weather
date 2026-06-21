@@ -222,6 +222,55 @@ def test_dashboard_html_is_official_station_first():
     assert "stationRegistryCard" in HTML
 
 
+def test_dashboard_template_displays_probability_calibration_and_executable_size():
+    assert "function probabilityAuditLine(row)" in HTML
+    assert "원확률" in HTML
+    assert "보정확률" in HTML
+    assert "신뢰등급" in HTML
+    assert "표본" in HTML
+    assert "요청금액" in HTML
+    assert "체결가능" in HTML
+    assert "${probabilityAuditLine(p)}" in HTML
+    assert "${probabilityAuditLine(signal)}" in HTML
+
+
+def test_dashboard_template_displays_station_clock_formation_rollover_and_clob_state():
+    assert "관측소 현지 날짜" in HTML
+    assert "관측소 현지 시각" in HTML
+    assert "전략 관찰" in HTML
+    assert "최종 최고 형성" in HTML
+    assert "최종 최저 형성" in HTML
+    assert "추가 움직임 확률" in HTML
+    assert "자정 초기화" in HTML
+    assert "자료 차단 이유" in HTML
+    assert "CLOB 주문" in HTML
+    assert "전략 허용 근거" in HTML
+
+
+def test_dashboard_station_evidence_preserves_formation_and_rollover_fields():
+    evidence = dashboard_module._official_station_evidence(
+        {
+            "note": (
+                "station_local_date=2026-06-22; station_local_time=03:30; "
+                "formation_monitoring_status=started; monitoring_start_local_minute=780; "
+                "first_final_high_local_minute_q25=750; first_final_high_local_minute_median=810; "
+                "first_final_high_local_minute_q75=870; remaining_movement_probability=0.35; "
+                "midnight_reset_status=verified; data_block_reason=; "
+                "clob_accepting_orders=true; clob_enable_order_book=true; "
+                "strategy_allowed_reason=residual probability passed"
+            )
+        }
+    )
+
+    assert evidence["station_local_date"] == "2026-06-22"
+    assert evidence["station_local_time"] == "03:30"
+    assert evidence["formation_monitoring_status"] == "started"
+    assert evidence["remaining_movement_probability"] == "0.35"
+    assert evidence["midnight_reset_status"] == "verified"
+    assert evidence["clob_accepting_orders"] == "true"
+    assert evidence["strategy_allowed_reason"] == "residual probability passed"
+
+
 def test_dashboard_nowcast_status_keeps_last_success_when_latest_call_fails(tmp_path):
     state_path = tmp_path / "state.json"
     nowcast_log = tmp_path / "station_nowcast_request_log.jsonl"

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import FrozenInstanceError
+import hashlib
 import json
 import math
 from pathlib import Path
@@ -83,6 +84,56 @@ def test_profile_store_preserves_validated_provenance_and_is_immutable() -> None
         store.profiles["new"] = store.profiles[estimate.profile_key]  # type: ignore[index]
     with pytest.raises(FrozenInstanceError):
         estimate.usable = False  # type: ignore[misc]
+
+
+def test_verified_manifest_exposes_formation_window_and_remaining_movement(tmp_path: Path) -> None:
+    profile_path = tmp_path / "station_residual_profiles.json"
+    profile_bytes = FIXTURE_PATH.read_bytes()
+    profile_path.write_bytes(profile_bytes)
+    manifest = {
+        "profile_artifact_sha256": hashlib.sha256(profile_bytes).hexdigest(),
+        "stations": {
+            "seoul": {
+                "station_id": "RKSI",
+                "concentrated_sizing_eligible": False,
+                "monitoring_windows": {
+                    "month:06|high": {
+                        "monitoring_start_local_minute": 780,
+                        "first_final_high_local_minute": {"q25": 750.0, "median": 810.0, "q75": 870.0},
+                        "first_final_low_local_minute": {"q25": 60.0, "median": 180.0, "q75": 300.0},
+                        "occurrence_sample_days": 150,
+                        "station_timezone": "Asia/Seoul",
+                    }
+                },
+            }
+        },
+    }
+    profile_path.with_name("station_residual_profiles.manifest.json").write_text(
+        json.dumps(manifest), encoding="utf-8"
+    )
+
+    store = ResidualProfileStore.from_path(profile_path)
+
+    window = store.formation_window(station_id="RKSI", month=6, direction="high")
+    movement = store.movement_probability(
+        station_id="RKSI", month=6, local_minute=870, direction="high", unit="C"
+    )
+    assert window["monitoring_start_local_minute"] == 780
+    assert window["first_final_high_local_minute"]["median"] == 810.0
+    assert movement == pytest.approx(0.60)
+
+
+def test_manifest_hash_mismatch_hides_formation_evidence(tmp_path: Path) -> None:
+    profile_path = tmp_path / "station_residual_profiles.json"
+    profile_path.write_bytes(FIXTURE_PATH.read_bytes())
+    profile_path.with_name("station_residual_profiles.manifest.json").write_text(
+        json.dumps({"profile_artifact_sha256": "0" * 64, "stations": {}}),
+        encoding="utf-8",
+    )
+
+    store = ResidualProfileStore.from_path(profile_path)
+
+    assert store.formation_window(station_id="RKSI", month=6, direction="high") is None
 
 
 def test_profile_store_fails_closed_when_station_month_time_is_missing() -> None:

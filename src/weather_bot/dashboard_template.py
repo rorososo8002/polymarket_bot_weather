@@ -1008,6 +1008,59 @@ function probPct(value) {
   return Number.isFinite(n) ? `${(n * 100).toFixed(1)}%` : "--";
 }
 
+function probabilityAuditLine(row) {
+  const parts = [];
+  const rawProbability = Number(row.raw_selected_side_probability);
+  const calibratedProbability = Number(row.selected_side_probability);
+  const hasRawProbability = row.raw_selected_side_probability != null && Number.isFinite(rawProbability);
+  const hasCalibratedProbability = row.selected_side_probability != null && Number.isFinite(calibratedProbability);
+  if (hasRawProbability || hasCalibratedProbability) {
+    parts.push(`원확률 ${hasRawProbability ? probPct(rawProbability) : "--"} → 보정확률 ${hasCalibratedProbability ? probPct(calibratedProbability) : "--"}`);
+  }
+  const tier = String(row.probability_tier || "").trim();
+  if (tier && tier.toLowerCase() !== "unknown") parts.push(`신뢰등급 ${tier}`);
+  const sampleDays = Number(row.calibration_sample_days);
+  if (Number.isFinite(sampleDays) && sampleDays > 0) parts.push(`표본 ${Math.trunc(sampleDays)}일`);
+  const requestedSize = Number(row.requested_size_usd);
+  const executableSize = Number(row.executable_size_usd);
+  const hasRequestedSize = row.requested_size_usd != null && Number.isFinite(requestedSize);
+  const hasExecutableSize = row.executable_size_usd != null && Number.isFinite(executableSize);
+  if (hasRequestedSize || hasExecutableSize) {
+    parts.push(`요청금액 ${hasRequestedSize ? money(requestedSize) : "--"} → 체결가능 ${hasExecutableSize ? money(executableSize) : "--"}`);
+  }
+  return parts.length ? `<div class="detail-line"><strong>확률 보정</strong> ${esc(parts.join(" · "))}</div>` : "";
+}
+
+function minuteOfDay(value) {
+  const minute = Number(value);
+  if (!Number.isFinite(minute)) return "--";
+  const normalized = Math.max(0, Math.min(1439, Math.round(minute)));
+  return `${String(Math.floor(normalized / 60)).padStart(2, "0")}:${String(normalized % 60).padStart(2, "0")}`;
+}
+
+function stationStrategyAuditLine(row) {
+  const localDate = String(row.station_local_date || row.target_date_local || "--");
+  const localTime = String(row.station_local_time || "--");
+  const monitoring = String(row.formation_monitoring_status || "not_available");
+  const monitoringKo = monitoring === "started" ? "시작 후" : monitoring === "before_start" ? "시작 전" : monitoring === "missing" ? "자료 없음" : "미확인";
+  const highRange = [row.first_final_high_local_minute_q25, row.first_final_high_local_minute_median, row.first_final_high_local_minute_q75].map(minuteOfDay).join(" / ");
+  const lowRange = [row.first_final_low_local_minute_q25, row.first_final_low_local_minute_median, row.first_final_low_local_minute_q75].map(minuteOfDay).join(" / ");
+  const movement = row.remaining_movement_probability == null || row.remaining_movement_probability === "" ? "--" : probPct(row.remaining_movement_probability);
+  const reset = String(row.midnight_reset_status || "해당 없음");
+  const blocker = String(row.data_block_reason || "없음");
+  const accepting = String(row.clob_accepting_orders ?? "unknown").toLowerCase();
+  const orderbook = String(row.clob_enable_order_book ?? "unknown").toLowerCase();
+  const clob = accepting === "true" && orderbook === "true" ? "허용" : accepting === "false" || orderbook === "false" ? "차단" : "미확인";
+  const strategyReason = String(row.strategy_allowed_reason || (monitoring === "started" ? "형성시간 관찰 시작 후 확률 검토" : monitoring === "before_start" ? "형성시간 관찰 시작 전이라 차단" : "검증 자료를 기다리는 중"));
+  return `<div class="detail-line strategy-audit">
+    <strong>관측소 현지 날짜</strong> ${esc(localDate)} · <strong>관측소 현지 시각</strong> ${esc(localTime)}<br>
+    <strong>전략 관찰</strong> ${esc(monitoringKo)} (${minuteOfDay(row.monitoring_start_local_minute)}부터) · <strong>추가 움직임 확률</strong> ${esc(movement)}<br>
+    <strong>최종 최고 형성</strong> ${esc(highRange)} · <strong>최종 최저 형성</strong> ${esc(lowRange)} (25% / 중앙 / 75%)<br>
+    <strong>자정 초기화</strong> ${esc(reset)} · <strong>자료 차단 이유</strong> ${esc(blocker)}<br>
+    <strong>CLOB 주문</strong> ${esc(clob)} · <strong>전략 허용 근거</strong> ${esc(strategyReason)}
+  </div>`;
+}
+
 function cardForPosition(p) {
   const bidDepthPnl = Number(p.bid_depth_unrealized_pnl || 0);
   const bidDepthPnlClass = bidDepthPnl >= 0 ? "win" : "loss";
@@ -1076,6 +1129,8 @@ function cardForPosition(p) {
       ${p.nowcast_source ? ` · 출처 ${esc(p.nowcast_source)}` : ""}
     </div>
     <div class="detail-line"><strong>정산 경계</strong> ${esc(boundaryLine || "관측 신호가 생기면 표시")}</div>
+    ${probabilityAuditLine(p)}
+    ${stationStrategyAuditLine(p)}
     <div class="detail-line">
       ${esc(p.city || "")} ${esc(p.date_hint || "")} · 수량 ${Number(p.shares || 0).toFixed(2)} · 비용 ${money(p.cost_usd)}
       ${p.entry_fee_usdc != null ? ` · 수수료 $${Number(p.entry_fee_usdc).toFixed(4)}` : ''}
@@ -1212,6 +1267,8 @@ function stationSignalCard(signal) {
     ${station ? `<div class="city-card-detail">공식 관측소: ${esc(station)}</div>` : ""}
     <div class="city-card-detail">${esc([observed, boundary, buffer, close].filter(Boolean).join(" · "))}</div>
     <div class="city-card-detail">${esc(allocation)} · 판단 ${esc(sidePositionKo(signal.side))}</div>
+    ${probabilityAuditLine(signal)}
+    ${stationStrategyAuditLine(signal)}
     <div class="city-card-detail">관측시각 ${shortDateTime(signal.observed_at || signal.ts)}</div>
   </div>`;
 }

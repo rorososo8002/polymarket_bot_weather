@@ -1,7 +1,7 @@
 ---
 title: Deploy payload copy must preserve app root access
 date: 2026-06-06
-last_updated: 2026-06-20
+last_updated: 2026-06-22
 category: workflow-issues
 module: deployment, oracle-vps
 problem_type: workflow_issue
@@ -10,6 +10,7 @@ severity: medium
 applies_when:
   - "Deploying a local payload directory to `/opt/polymarket-weather-bot` with `cp -a`"
   - "Refreshing source, tests, docs, or deploy files on the Oracle VPS"
+  - "Running pre-deploy pytest from an extracted `/tmp` payload as the service user"
 tags: [deployment, vps, permissions, systemd, paper-trading, pytest]
 ---
 
@@ -45,22 +46,60 @@ contained `src/weather_bot/config.py` but not
 Python selected the already installed regular `weather_bot` package, so the
 pre-deploy test exercised the old server code instead of the payload.
 
+The 2026-06-22 reviewed strategy deploy exposed two more symmetry failures:
+
+- The archive was extracted by `ubuntu`, but pre-deploy pytest ran as
+  `polymarket`. The service user could read the payload but could not create
+  `.pytest-tmp`, so pytest stopped before collection with `PermissionError`.
+- The mirror list replaced `src`, `tests`, `docs`, `deploy`, and
+  `strategy_data`, but omitted the now-deleted top-level `scripts` tree. The
+  stale server-only `scripts/daily_report.py` survived, so post-deploy pytest
+  reported `1 failed, 642 passed` even though the fresh payload had passed all
+  643 tests.
+
+After the payload was deliberately chowned to `polymarket`, cleanup had to use
+the same privilege boundary. A final plain `rm -rf` by `ubuntu` could not
+remove the service-owned `/tmp` tree and made an otherwise successful deploy
+exit non-zero.
+
 ## Guidance
 
-When deploying a bounded local payload to `/opt/polymarket-weather-bot`, mirror
-only the code and documentation trees that are safe to replace:
+When deploying a bounded local payload to `/opt/polymarket-weather-bot`, first
+make the extracted preflight tree writable by the same account that runs
+pytest:
+
+```bash
+PAYLOAD=/tmp/polymarket-weather-reviewed
+sudo chown -R polymarket:polymarket "$PAYLOAD"
+cd "$PAYLOAD"
+sudo -u polymarket env PYTHONPATH="$PAYLOAD/src" \
+  /opt/polymarket-weather-bot/.venv/bin/python -m pytest -q
+```
+
+Then mirror only source-controlled code and documentation trees that are safe
+to replace. The removal list must include tracked trees and explicit tombstones
+for top-level trees that the new revision deleted:
 
 ```bash
 APP=/opt/polymarket-weather-bot
-for path in src tests docs deploy; do
+for path in src tests docs deploy strategy_data scripts; do
   target="$APP/$path"
   case "$target" in
-    "$APP/src"|"$APP/tests"|"$APP/docs"|"$APP/deploy") sudo rm -rf "$target" ;;
+    "$APP/src"|"$APP/tests"|"$APP/docs"|"$APP/deploy"|"$APP/strategy_data"|"$APP/scripts")
+      sudo rm -rf "$target"
+      ;;
     *) echo "refusing to remove $target"; exit 1 ;;
   esac
 done
-sudo cp -a "$PAYLOAD"/. "$APP"/
+for path in src tests docs deploy strategy_data; do
+  sudo cp -a "$PAYLOAD/$path" "$APP/$path"
+done
 ```
+
+Do not infer deletion solely from what is present in the payload: an absent
+tree may mean either “deleted in this revision” or “left out of a partial
+bundle.” Build the tombstone list from the reviewed revision before the deploy.
+The test that asserts obsolete paths are absent is the final backstop.
 
 Do not delete or recreate `data`, `.venv`, `.git`, `runtime`, or root-level
 paper ledgers during a normal code deploy. Those are runtime evidence or
@@ -103,6 +142,17 @@ Tests that instantiate `Settings` should point every writable runtime ledger at
 `tmp_path`, including `portfolio_decisions_jsonl_path`, so a root-level
 `paper_event_portfolios.jsonl` cannot affect the result.
 
+Cleanup must use a privilege that can remove the extracted tree after pytest
+has written caches into it:
+
+```bash
+sudo rm -rf -- /tmp/polymarket-weather-reviewed
+sudo rm -f -- /tmp/polymarket-weather-reviewed.tar.gz
+```
+
+Use explicit, pre-verified `/tmp` paths. Never broaden this cleanup to the app
+root, `data`, `.venv`, or an interpolated path that has not been checked.
+
 ## Why This Matters
 
 The bot and dashboard systemd units both use:
@@ -119,7 +169,9 @@ has executable permissions.
 Remote verification is only trustworthy when it tests the same deployed tree as
 local verification. Stale test files made the VPS run 463 tests while local ran
 451. That mismatch is a flashing sign that the server tree is not a clean copy
-of the intended payload.
+of the intended payload. A matching count can still fail if a deleted
+server-only source file survives, so both the count and the zero-failure result
+matter.
 
 Likewise, pytest fixture setup and runtime-ledger defaults can fail for
 environment reasons that are unrelated to the strategy. Fixing those isolation
@@ -135,6 +187,11 @@ gaps prevents deployment from stalling on server-only filesystem leftovers.
   runtime files.
 - A partial-payload test reports old defaults even though the archived source
   visibly contains the new value.
+- Pre-deploy pytest cannot create `.pytest-tmp` under an extracted `/tmp`
+  payload.
+- Post-deploy tests find an obsolete top-level file that is absent from the
+  reviewed revision.
+- Final payload cleanup fails after the tree was chowned to the service user.
 
 ## Examples
 
@@ -155,7 +212,7 @@ Healthy deploy verification should show the local and remote pytest counts
 match before services restart, for example:
 
 ```text
-451 passed
+643 passed
 service_state_bot=active
 service_state_dashboard=active
 ```

@@ -64,6 +64,7 @@ class MarketTradability:
     ready: bool | None = None
     funded: bool | None = None
     condition_id: str | None = None
+    end_date_iso: str | None = None
     source: str = ""
     raw: dict[str, Any] | None = None
 

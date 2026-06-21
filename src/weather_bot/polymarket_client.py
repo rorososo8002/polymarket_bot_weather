@@ -263,6 +263,9 @@ class PolymarketClient:
                 _first_present_value(data, "condition_id", "conditionId", "market")
             )
             or normalized_condition_id,
+            end_date_iso=_optional_text(
+                _first_present_value(data, "end_date_iso", "endDateIso", "end_date", "endDate")
+            ),
             source="clob",
             raw=data,
         )

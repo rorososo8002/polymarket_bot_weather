@@ -512,6 +512,30 @@ def hko_provider_for(
     return provider, calls
 
 
+def hko_sequence_provider(payloads: list[str], *, state_path: Path):
+    calls = []
+    remaining = iter(payloads)
+
+    def fake_get(url, *, params=None, timeout, headers):
+        calls.append({"url": url, "params": params, "timeout": timeout, "headers": headers})
+        return FakeResponse(next(remaining))
+
+    return AviationWeatherMetarNowcastProvider(
+        http_get=fake_get,
+        freshness_seconds=5400,
+        cache_ttl_seconds=0,
+        hko_rollover_state_path=state_path,
+    ), calls
+
+
+def hko_csv(timestamp: str, high_c: float, low_c: float) -> str:
+    return (
+        "Date time,Automatic Weather Station,Maximum Air Temperature Since Midnight(degree Celsius),"
+        "Minimum Air Temperature Since Midnight(degree Celsius)\n"
+        f"{timestamp},HK Observatory,{high_c},{low_c}\n"
+    )
+
+
 def test_hko_provider_returns_max_temperature_since_midnight_from_fixture():
     provider, calls = hko_provider_for(load_text_fixture("hko_maxmin_fresh.csv"))
 
@@ -530,6 +554,110 @@ def test_hko_provider_returns_max_temperature_since_midnight_from_fixture():
     assert observation.freshness_seconds == 900
     assert observation.source == "hko-maxmin-since-midnight"
     assert "latest_since_midnight_maxmin.csv" in calls[0]["url"]
+
+
+def test_hko_midnight_carryover_331_is_blocked_until_292_reset_is_proven(tmp_path):
+    provider, calls = hko_sequence_provider(
+        [
+            hko_csv("202606212350", 33.1, 28.0),
+            hko_csv("202606220000", 33.1, 28.0),
+            hko_csv("202606220330", 29.2, 28.6),
+        ],
+        state_path=tmp_path / "hko_rollover_state.json",
+    )
+
+    previous = provider.observed_temperature_extremes_so_far(
+        STATION_MAP["hong kong"],
+        target_date=date(2026, 6, 21),
+        now=datetime(2026, 6, 21, 15, 55, tzinfo=timezone.utc),
+    )
+    carryover = provider.observed_temperature_extremes_so_far(
+        STATION_MAP["hong kong"],
+        target_date=date(2026, 6, 22),
+        now=datetime(2026, 6, 21, 16, 10, tzinfo=timezone.utc),
+    )
+    reset = provider.observed_temperature_extremes_so_far(
+        STATION_MAP["hong kong"],
+        target_date=date(2026, 6, 22),
+        now=datetime(2026, 6, 21, 19, 35, tzinfo=timezone.utc),
+    )
+
+    assert previous.usable is False
+    assert previous.unavailable_reason == "hko-rollover-baseline-missing"
+    assert carryover.usable is False
+    assert carryover.observed_high_c == 33.1
+    assert carryover.unavailable_reason == "hko-midnight-reset-pending"
+    assert carryover.midnight_reset_status == "pending_previous_day_match"
+    assert reset.usable is True
+    assert reset.observed_high_c == 29.2
+    assert reset.observed_low_c == 28.6
+    assert reset.midnight_reset_status == "verified"
+    assert len(calls) == 3
+
+
+def test_hko_restart_without_previous_day_baseline_fails_closed(tmp_path):
+    provider, _calls = hko_sequence_provider(
+        [hko_csv("202606220330", 29.2, 28.6)],
+        state_path=tmp_path / "missing" / "hko_rollover_state.json",
+    )
+
+    observation = provider.observed_temperature_extremes_so_far(
+        STATION_MAP["hong kong"],
+        target_date=date(2026, 6, 22),
+        now=datetime(2026, 6, 21, 19, 35, tzinfo=timezone.utc),
+    )
+
+    assert observation.usable is False
+    assert observation.unavailable_reason == "hko-rollover-baseline-missing"
+    assert observation.midnight_reset_status == "blocked_baseline_missing"
+
+
+def test_hko_same_day_high_decrease_is_blocked_after_reset(tmp_path):
+    provider, _calls = hko_sequence_provider(
+        [
+            hko_csv("202606212350", 33.1, 28.0),
+            hko_csv("202606220330", 29.2, 28.6),
+            hko_csv("202606220400", 29.0, 28.5),
+        ],
+        state_path=tmp_path / "hko_rollover_state.json",
+    )
+    station = STATION_MAP["hong kong"]
+    provider.observed_temperature_extremes_so_far(
+        station, target_date=date(2026, 6, 21), now=datetime(2026, 6, 21, 15, 55, tzinfo=timezone.utc)
+    )
+    provider.observed_temperature_extremes_so_far(
+        station, target_date=date(2026, 6, 22), now=datetime(2026, 6, 21, 19, 35, tzinfo=timezone.utc)
+    )
+    observation = provider.observed_temperature_extremes_so_far(
+        station, target_date=date(2026, 6, 22), now=datetime(2026, 6, 21, 20, 5, tzinfo=timezone.utc)
+    )
+
+    assert observation.usable is False
+    assert observation.unavailable_reason == "hko-same-day-high-decreased"
+
+
+def test_hko_same_day_low_increase_is_blocked_after_reset(tmp_path):
+    provider, _calls = hko_sequence_provider(
+        [
+            hko_csv("202606212350", 33.1, 28.0),
+            hko_csv("202606220330", 29.2, 28.6),
+            hko_csv("202606220400", 29.3, 28.7),
+        ],
+        state_path=tmp_path / "hko_rollover_state.json",
+    )
+    station = STATION_MAP["hong kong"]
+    provider.observed_temperature_extremes_so_far(
+        station, target_date=date(2026, 6, 21), now=datetime(2026, 6, 21, 15, 55, tzinfo=timezone.utc)
+    )
+    provider.observed_temperature_extremes_so_far(
+        station, target_date=date(2026, 6, 22), now=datetime(2026, 6, 21, 19, 35, tzinfo=timezone.utc)
+    )
+    observation = provider.observed_temperature_extremes_so_far(
+        station, target_date=date(2026, 6, 22), now=datetime(2026, 6, 21, 20, 5, tzinfo=timezone.utc)
+    )
+
+    assert observation.usable is False
+    assert observation.unavailable_reason == "hko-same-day-low-increased"
 
 
 def test_hko_provider_uses_fresh_yesterday_extremes_after_local_midnight():
