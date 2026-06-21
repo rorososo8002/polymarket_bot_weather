@@ -1134,7 +1134,7 @@ def test_unavailable_station_signals_do_not_trade():
 
     assert result.side == "SKIP"
     assert per_side == {}
-    assert "official-station-entry-only" in result.reason
+    assert "confidence too low" in result.reason
 
 
 def test_indicative_best_bid_only_does_not_mark_or_close_position(tmp_path):
@@ -2652,16 +2652,32 @@ def test_decision_log_writes_header_when_existing_file_is_empty(tmp_path):
         "station_id",
         "signal_source",
         "signal_confidence",
+        "strategy_mode",
+        "signal_family",
+        "price_anomaly",
+        "settlement_precision_confidence",
         "entry_vwap",
         "expected_net_return_pct",
         "best_bid",
         "best_ask",
         "spread",
-        "orderbook_status",
-        "reason_code",
-        "model_version",
-        "config_version",
-    ]
+            "orderbook_status",
+            "reason_code",
+            "raw_selected_side_probability",
+            "selected_side_probability",
+            "probability_tier",
+            "calibration_sample_days",
+            "calibration_profile_key",
+            "calibration_status",
+            "requested_size_usd",
+            "executable_size_usd",
+            "event_cap_override_fraction",
+            "fee_rate",
+            "entry_fee_usdc",
+            "expected_net_profit_usd",
+            "model_version",
+            "config_version",
+        ]
     assert rows[1][1] == "m1"
 
 

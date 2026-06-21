@@ -2,6 +2,9 @@
 
 Read this file only for VPS, deployment, dashboard, systemd, public URL, or health-check tasks.
 
+The services are paper-only: they do not connect wallets, sign, or submit real
+orders.
+
 Start routine access with `docs/codex/known-good-commands.md`. Use the rules
 below when the first command fails or when a task needs more detail.
 

@@ -77,4 +77,4 @@ library `tomllib`.
 ## Related Issues
 
 - [Use workspace temp dirs when pytest cannot scan Windows temp](../workflow-issues/pytest-temp-permission-2026-05-26.md)
-- [Verify VPS code, env, and API health before trusting dashboards](../workflow-issues/verify-vps-code-env-and-api-health-2026-05-26.md)
+- [Verified local and VPS commands](../../codex/known-good-commands.md)

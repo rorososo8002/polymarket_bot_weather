@@ -1,15 +1,20 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import date, datetime, time as datetime_time, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from .config import Settings
+from .edge import ObservationSizingTier
 from .event_dates import event_date_window_from_hint
 from .models import ParsedWeatherQuestion, WeatherSignal
 from .nowcast import StationNowcastObservation
+from .residual_probability import ResidualProbabilityEstimate
+from .settlement_precision import SettlementPrecisionProfile, settlement_precision_profile_for_station
 from .stations import StationMeta, TRADING_READY_STATION_MAP
+from .strategy_profiles import CityStrategyProfile, strategy_profile_for_city
 from .weather_client import parse_weather_question
 
 
@@ -17,6 +22,15 @@ from .weather_client import parse_weather_question
 class _OfficialStationLock:
     p_true: float
     lock_name: str
+    adjustment: str
+    entry_fraction: float
+    size_reason: str
+
+
+@dataclass(frozen=True)
+class _IntradayObservationEdge:
+    p_true: float
+    signal_name: str
     adjustment: str
     entry_fraction: float
     size_reason: str
@@ -98,9 +112,6 @@ def _official_station_exact_lock(
 
     lower_c = float(bucket_c)
     upper_c = float(bucket_c + 1)
-    hours_to_close = _hours_until_event_end(target, timezone_name, now)
-    near_close = 0.0 <= hours_to_close <= settings.official_nowcast_lock_near_close_hours
-
     if parsed.temperature_metric == "min":
         if observed_value_c < lower_c:
             return _OfficialStationLock(
@@ -112,16 +123,6 @@ def _official_station_exact_lock(
                     f"official_nowcast_lock=strong_no; observed_low_c={observed_value_c:.1f} "
                     f"< displayed_bucket_lower_c={lower_c:.1f}"
                 ),
-            )
-        if near_close and lower_c <= observed_value_c < upper_c:
-            buffer_c = observed_value_c - lower_c
-            return _yes_lock_from_buffer(
-                observed_label="observed_low_c",
-                observed_value_c=observed_value_c,
-                buffer_label="buffer_to_lower_c",
-                buffer_c=buffer_c,
-                hours_to_close=hours_to_close,
-                settings=settings,
             )
         return None
 
@@ -136,50 +137,388 @@ def _official_station_exact_lock(
                 f">= next_displayed_integer_c={upper_c:.1f}"
             ),
         )
-    if near_close and lower_c <= observed_value_c < upper_c:
-        buffer_c = upper_c - observed_value_c
-        return _yes_lock_from_buffer(
-            observed_label="observed_high_c",
-            observed_value_c=observed_value_c,
-            buffer_label="buffer_to_next_integer_c",
-            buffer_c=buffer_c,
-            hours_to_close=hours_to_close,
+    return None
+
+def _observed_value_in_source_unit(observed_value_c: float, unit: str) -> float | None:
+    if unit == "C":
+        return observed_value_c
+    if unit == "F":
+        return observed_value_c * 9.0 / 5.0 + 32.0
+    return None
+
+
+def _exact_source_bucket(
+    parsed: ParsedWeatherQuestion,
+    precision_profile: SettlementPrecisionProfile,
+) -> tuple[float, float] | None:
+    if parsed.variable != "temperature" or parsed.temperature_bucket != "exact":
+        return None
+    if parsed.threshold_original is None or parsed.threshold_unit != precision_profile.unit:
+        return None
+    rounded = round(float(parsed.threshold_original))
+    if abs(float(parsed.threshold_original) - rounded) > 1e-9:
+        return None
+    return float(rounded), float(rounded + 1)
+
+
+def _source_threshold(
+    parsed: ParsedWeatherQuestion,
+    precision_profile: SettlementPrecisionProfile,
+) -> float | None:
+    if parsed.threshold_original is None or parsed.threshold_unit != precision_profile.unit:
+        return None
+    return float(parsed.threshold_original)
+
+
+def _floor_local_minute_30m(now: datetime, timezone_name: str) -> int:
+    current = now
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    local = current.astimezone(_zone(timezone_name))
+    return local.hour * 60 + (local.minute // 30) * 30
+
+
+def _residual_bucket_request(
+    parsed: ParsedWeatherQuestion,
+    precision_profile: SettlementPrecisionProfile,
+) -> tuple[str, float | None, float | None] | None:
+    if parsed.temperature_bucket == "exact":
+        bucket = _exact_source_bucket(parsed, precision_profile)
+        if bucket is None:
+            return None
+        lower, upper = bucket
+        return "exact", lower, upper
+
+    threshold = _source_threshold(parsed, precision_profile)
+    if threshold is None:
+        return None
+    if parsed.temperature_bucket == "lower_tail":
+        return "lower_tail", None, threshold
+    if parsed.temperature_bucket == "upper_tail":
+        return "upper_tail", threshold, None
+    return None
+
+
+def _residual_tier(
+    selected_probability: float,
+    *,
+    settings: Settings,
+    concentrated_sizing_eligible: bool,
+) -> ObservationSizingTier | None:
+    probability = max(0.0, min(1.0, selected_probability))
+    if concentrated_sizing_eligible and probability >= settings.observation_tier_95_probability:
+        return ObservationSizingTier(
+            "95",
+            settings.observation_tier_95_fraction,
+            settings.observation_tier_95_fraction,
+        )
+    if probability >= settings.observation_tier_90_probability:
+        return ObservationSizingTier("90", settings.observation_tier_90_fraction)
+    if probability >= settings.observation_tier_80_probability:
+        return ObservationSizingTier("80", settings.observation_tier_80_fraction)
+    return None
+
+
+def _selected_residual_side(estimate: ResidualProbabilityEstimate) -> tuple[str, float, float]:
+    if estimate.conservative_yes_probability >= estimate.conservative_no_probability:
+        return "YES", estimate.conservative_yes_probability, estimate.raw_probability
+    return "NO", estimate.conservative_no_probability, 1.0 - estimate.raw_probability
+
+
+def _residual_neutral_signal(
+    parsed: ParsedWeatherQuestion,
+    *,
+    source: str,
+    note: str,
+    payload: dict[str, Any],
+    settings: Settings,
+    precision_profile: SettlementPrecisionProfile,
+    estimate: ResidualProbabilityEstimate | None = None,
+    selected_probability: float | None = None,
+    raw_selected_probability: float | None = None,
+) -> WeatherSignal:
+    return WeatherSignal(
+        p_true=0.5,
+        confidence=0.0,
+        source=source,
+        note=note,
+        parsed=parsed,
+        nowcast=payload,
+        strategy_mode=settings.strategy_mode,
+        signal_family="",
+        settlement_precision_confidence=precision_profile.confidence,
+        raw_probability=estimate.raw_probability if estimate is not None else None,
+        conservative_yes_probability=(
+            estimate.conservative_yes_probability if estimate is not None else None
+        ),
+        conservative_no_probability=(
+            estimate.conservative_no_probability if estimate is not None else None
+        ),
+        raw_selected_side_probability=raw_selected_probability,
+        selected_side_probability=selected_probability,
+        calibration_sample_days=estimate.sample_days if estimate is not None else 0,
+        calibration_profile_key=estimate.profile_key if estimate is not None else "",
+        calibration_status=estimate.reason_code if estimate is not None else "",
+    )
+
+
+def _residual_observation_edge_signal(
+    parsed: ParsedWeatherQuestion,
+    observed_value_c: float,
+    *,
+    station: StationMeta,
+    precision_profile: SettlementPrecisionProfile,
+    settings: Settings,
+    now: datetime,
+    target: date,
+    base_note: str,
+    payload: dict[str, Any],
+    residual_profile_store: Any | None,
+    concentrated_sizing_eligible_by_station: Mapping[str, bool] | None,
+) -> WeatherSignal | None:
+    if not settings.station_residual_probability_enabled or residual_profile_store is None:
+        return None
+    if settings.strategy_mode not in {"intraday_observation_edge", "hybrid_observation_edge"}:
+        return None
+    if precision_profile.confidence != "verified":
+        return _residual_neutral_signal(
+            parsed,
+            source="official-station-residual-unavailable",
+            note=(
+                f"{base_note}; signal_family=intraday_observation_edge; "
+                "residual_probability=blocked; settlement precision is not verified"
+            ),
+            payload=payload,
             settings=settings,
+            precision_profile=precision_profile,
+        )
+
+    bucket = _residual_bucket_request(parsed, precision_profile)
+    if bucket is None:
+        return None
+    bucket_type, bucket_lower, bucket_upper = bucket
+    observed_value = _observed_value_in_source_unit(observed_value_c, precision_profile.unit)
+    if observed_value is None:
+        return None
+
+    direction = "low" if parsed.temperature_metric == "min" else "high"
+    estimate = residual_profile_store.estimate_bucket(
+        station_id=station.station_id,
+        month=target.month,
+        local_minute=_floor_local_minute_30m(now, station.timezone),
+        direction=direction,
+        observed_extreme=observed_value,
+        bucket_type=bucket_type,
+        bucket_lower=bucket_lower,
+        bucket_upper=bucket_upper,
+        unit=precision_profile.unit,
+    )
+    if not estimate.usable:
+        return _residual_neutral_signal(
+            parsed,
+            source="official-station-residual-unavailable",
+            note=(
+                f"{base_note}; signal_family=intraday_observation_edge; "
+                f"residual_probability=unavailable; calibration_status={estimate.reason_code}; "
+                f"{estimate.reason}"
+            ),
+            payload=payload,
+            settings=settings,
+            precision_profile=precision_profile,
+            estimate=estimate,
+        )
+
+    selected_side, selected_probability, raw_selected_probability = _selected_residual_side(estimate)
+    eligible = bool(
+        concentrated_sizing_eligible_by_station
+        and concentrated_sizing_eligible_by_station.get(station.station_id)
+    )
+    tier = _residual_tier(
+        selected_probability,
+        settings=settings,
+        concentrated_sizing_eligible=eligible,
+    )
+    if tier is None:
+        return _residual_neutral_signal(
+            parsed,
+            source="official-station-residual-below-tier",
+            note=(
+                f"{base_note}; signal_family=intraday_observation_edge; "
+                f"residual_probability=below observation tier; selected_side={selected_side}; "
+                f"selected_side_probability={selected_probability:.4f}; "
+                f"calibration_status={estimate.reason_code}"
+            ),
+            payload=payload,
+            settings=settings,
+            precision_profile=precision_profile,
+            estimate=estimate,
+            selected_probability=selected_probability,
+            raw_selected_probability=raw_selected_probability,
+        )
+
+    unit = precision_profile.unit.lower()
+    size_reason = (
+        f"residual_probability={estimate.reason_code}; selected_side={selected_side}; "
+        f"raw_probability={estimate.raw_probability:.4f}; "
+        f"conservative_yes_probability={estimate.conservative_yes_probability:.4f}; "
+        f"conservative_no_probability={estimate.conservative_no_probability:.4f}; "
+        f"selected_side_probability={selected_probability:.4f}; "
+        f"probability_tier={tier.probability_tier}; "
+        f"calibration_sample_days={estimate.sample_days}; profile_key={estimate.profile_key}"
+    )
+    return WeatherSignal(
+        p_true=estimate.raw_probability,
+        confidence=1.0,
+        source=f"official-station-residual-{direction}-{selected_side.lower()}",
+        note=(
+            f"{base_note}; strategy_mode={settings.strategy_mode}; "
+            f"signal_family=intraday_observation_edge; station_adjustment=residual-{direction}; "
+            f"observed_extreme_{unit}={observed_value:.2f}; bucket_type={bucket_type}; "
+            f"{size_reason}; entry_size_fraction_override={tier.entry_fraction:.4f}"
+        ),
+        parsed=parsed,
+        nowcast=payload,
+        entry_size_fraction_override=tier.entry_fraction,
+        entry_size_reason=size_reason,
+        strategy_mode=settings.strategy_mode,
+        signal_family="intraday_observation_edge",
+        settlement_precision_confidence=precision_profile.confidence,
+        raw_probability=estimate.raw_probability,
+        conservative_yes_probability=estimate.conservative_yes_probability,
+        conservative_no_probability=estimate.conservative_no_probability,
+        raw_selected_side_probability=raw_selected_probability,
+        selected_side_probability=selected_probability,
+        calibration_sample_days=estimate.sample_days,
+        calibration_profile_key=estimate.profile_key,
+        calibration_status=estimate.reason_code,
+        probability_tier=tier.probability_tier,
+        event_cap_override_fraction=tier.event_cap_override_fraction,
+    )
+
+
+def _intraday_profile(station: StationMeta, settings: Settings) -> CityStrategyProfile:
+    return strategy_profile_for_city(
+        station.city,
+        high_confirm_local_hour=settings.intraday_high_confirm_local_hour,
+        low_confirm_local_hour=settings.intraday_low_confirm_local_hour,
+        us_high_disabled_before_local_hour=settings.intraday_us_high_disabled_before_local_hour,
+    )
+
+
+def _intraday_observation_edge(
+    parsed: ParsedWeatherQuestion,
+    observed_value_c: float,
+    *,
+    station: StationMeta,
+    precision_profile: SettlementPrecisionProfile,
+    settings: Settings,
+    now: datetime,
+) -> _IntradayObservationEdge | None:
+    if not settings.intraday_observation_edge_enabled:
+        return None
+    if settings.strategy_mode not in {"intraday_observation_edge", "hybrid_observation_edge"}:
+        return None
+
+    profile = _intraday_profile(station, settings)
+    observed_value = _observed_value_in_source_unit(observed_value_c, precision_profile.unit)
+    if observed_value is None or profile.region_group == "unknown":
+        return None
+    local_hour = now.astimezone(_zone(station.timezone)).hour
+
+    if parsed.temperature_metric == "min":
+        edge = _intraday_low_edge(
+            parsed,
+            observed_value,
+            profile=profile,
+            precision_profile=precision_profile,
+            settings=settings,
+            local_hour=local_hour,
+        )
+    else:
+        edge = _intraday_high_edge(
+            parsed,
+            observed_value,
+            profile=profile,
+            precision_profile=precision_profile,
+            settings=settings,
+            local_hour=local_hour,
+        )
+    if edge is None or precision_profile.confidence != "needs_audit":
+        return edge
+
+    multiplier = settings.intraday_hko_needs_audit_fraction_multiplier
+    return replace(
+        edge,
+        entry_fraction=edge.entry_fraction * multiplier,
+        size_reason=f"{edge.size_reason}; hko_needs_audit_multiplier={multiplier:.2f}",
+    )
+
+
+def _intraday_high_edge(
+    parsed: ParsedWeatherQuestion,
+    observed_value: float,
+    *,
+    profile: CityStrategyProfile,
+    precision_profile: SettlementPrecisionProfile,
+    settings: Settings,
+    local_hour: int,
+) -> _IntradayObservationEdge | None:
+    bucket = _exact_source_bucket(parsed, precision_profile)
+    if bucket is None:
+        return None
+    lower, upper = bucket
+    unit = precision_profile.unit
+
+    if observed_value >= upper:
+        return _IntradayObservationEdge(
+            p_true=0.0,
+            signal_name="high-strong-no",
+            adjustment="intraday-observed-high-reached-next-source-display-integer",
+            entry_fraction=settings.intraday_strong_entry_fraction,
+            size_reason=(
+                f"intraday_observation_edge=strong_no; observed_high_{unit.lower()}={observed_value:.2f}; "
+                f"bucket_upper_{unit.lower()}={upper:.2f}; local_hour={local_hour}"
+            ),
         )
     return None
 
 
-def _yes_lock_from_buffer(
+def _intraday_low_edge(
+    parsed: ParsedWeatherQuestion,
+    observed_value: float,
     *,
-    observed_label: str,
-    observed_value_c: float,
-    buffer_label: str,
-    buffer_c: float,
-    hours_to_close: float,
+    profile: CityStrategyProfile,
+    precision_profile: SettlementPrecisionProfile,
     settings: Settings,
-) -> _OfficialStationLock | None:
-    if buffer_c >= settings.official_nowcast_lock_yes_strong_buffer_c:
-        return _OfficialStationLock(
-            p_true=0.985,
-            lock_name="strong_yes",
-            adjustment="official-lock-near-close-inside-strong-buffer",
-            entry_fraction=settings.official_nowcast_lock_strong_entry_fraction,
-            size_reason=(
-                f"official_nowcast_lock=strong_yes; {observed_label}={observed_value_c:.1f}; "
-                f"{buffer_label}={buffer_c:.1f}; hours_to_close={hours_to_close:.2f}"
-            ),
+    local_hour: int,
+) -> _IntradayObservationEdge | None:
+    unit = precision_profile.unit
+    bucket = _exact_source_bucket(parsed, precision_profile)
+    if bucket is not None:
+        lower, upper = bucket
+        if observed_value < lower:
+            return _IntradayObservationEdge(
+                p_true=0.0,
+                signal_name="low-strong-no",
+                adjustment="intraday-observed-low-below-source-display-integer",
+                entry_fraction=settings.intraday_strong_entry_fraction,
+                size_reason=(
+                    f"intraday_observation_edge=strong_no; observed_low_{unit.lower()}={observed_value:.2f}; "
+                    f"bucket_lower_{unit.lower()}={lower:.2f}; local_hour={local_hour}"
+                ),
+            )
+        exact_low_yes_enabled = settings.intraday_exact_low_yes_enabled or (
+            profile.region_group == "americas" and settings.intraday_us_exact_low_yes_enabled
         )
-    if buffer_c >= settings.official_nowcast_lock_yes_base_buffer_c:
-        return _OfficialStationLock(
-            p_true=0.94,
-            lock_name="base_yes",
-            adjustment="official-lock-near-close-inside-base-buffer",
-            entry_fraction=settings.official_nowcast_lock_base_entry_fraction,
-            size_reason=(
-                f"official_nowcast_lock=base_yes; {observed_label}={observed_value_c:.1f}; "
-                f"{buffer_label}={buffer_c:.1f}; hours_to_close={hours_to_close:.2f}"
-            ),
-        )
+        if (
+            exact_low_yes_enabled
+            and profile.allow_low_intraday
+            and local_hour >= profile.low_confirm_local_hour
+            and lower <= observed_value < upper
+        ):
+            return None
+        return None
+
     return None
 
 
@@ -209,6 +548,8 @@ def estimate_station_signal(
     settings: Settings | None = None,
     *,
     observation_provider: Any | None = None,
+    residual_profile_store: Any | None = None,
+    concentrated_sizing_eligible_by_station: Mapping[str, bool] | None = None,
     now: datetime | None = None,
     **_unused: Any,
 ) -> WeatherSignal:
@@ -231,6 +572,18 @@ def estimate_station_signal(
             parsed,
             "unsupported-station",
             f"{parsed.city} is not in the trading-ready Polymarket settlement-station allowlist.",
+        )
+    precision_profile = settlement_precision_profile_for_station(station)
+    precision_note = (
+        f"settlement_precision_confidence={precision_profile.confidence}; "
+        f"settlement_precision_bucket_model={precision_profile.bucket_model}; "
+        f"reporting_precision={precision_profile.reporting_precision}"
+    )
+    if precision_profile.confidence == "blocked":
+        return _neutral_signal(
+            parsed,
+            "unsupported-settlement-precision",
+            f"{station.station_name} [{station.station_id}]; {precision_note}; {precision_profile.note}",
         )
     if not settings.station_nowcast_enabled:
         return _neutral_signal(parsed, "official-station-disabled", "station nowcast disabled")
@@ -260,49 +613,141 @@ def estimate_station_signal(
         return _neutral_signal(parsed, "official-station-unavailable", "official station observation missing")
 
     payload = observation.to_log_payload()
+    payload.update(
+        {
+            "settlement_precision_confidence": precision_profile.confidence,
+            "settlement_precision_bucket_model": precision_profile.bucket_model,
+            "settlement_reporting_precision": precision_profile.reporting_precision,
+            "settlement_source_type": precision_profile.source_type,
+        }
+    )
     observed_value_c = observation.observed_low_c if parsed.temperature_metric == "min" else observation.observed_high_c
     observed_label = "observed_low_c" if parsed.temperature_metric == "min" else "observed_high_c"
     base_note = (
         f"{station.station_name} [{station.station_id}] target_date={target.isoformat()}; "
         f"evidence=official-station; {observed_label}={observed_value_c}; "
         f"observed_at={payload.get('observed_at')}; freshness_seconds={observation.freshness_seconds}; "
-        f"nowcast_source={observation.source}"
+        f"nowcast_source={observation.source}; {precision_note}"
     )
+    if not observation.station_id or observation.station_id.upper() != station.station_id.upper():
+        return replace(
+            _neutral_signal(
+                parsed,
+                "official-station-unavailable",
+                f"{base_note}; station mismatch: expected {station.station_id}, got {observation.station_id}",
+            ),
+            nowcast=payload,
+            strategy_mode=settings.strategy_mode,
+            settlement_precision_confidence=precision_profile.confidence,
+        )
+    if (
+        observation.freshness_seconds is None
+        or observation.freshness_seconds > settings.station_nowcast_freshness_seconds
+    ):
+        return replace(
+            _neutral_signal(
+                parsed,
+                "official-station-unavailable",
+                (
+                    f"{base_note}; stale station observation: freshness_seconds="
+                    f"{observation.freshness_seconds}, limit={settings.station_nowcast_freshness_seconds}"
+                ),
+            ),
+            nowcast=payload,
+            strategy_mode=settings.strategy_mode,
+            settlement_precision_confidence=precision_profile.confidence,
+        )
     if not observation.usable or observed_value_c is None:
         reason = observation.unavailable_reason or "missing-observed-temperature"
         return replace(
             _neutral_signal(parsed, "official-station-unavailable", f"{base_note}; nowcast_unavailable={reason}"),
             nowcast=payload,
+            strategy_mode=settings.strategy_mode,
+            settlement_precision_confidence=precision_profile.confidence,
         )
 
-    lock = _official_station_exact_lock(
+    lock = None
+    if settings.strategy_mode in {"lock_only", "intraday_observation_edge", "hybrid_observation_edge"}:
+        lock = _official_station_exact_lock(
+            parsed,
+            observed_value_c,
+            target=target,
+            timezone_name=station.timezone,
+            settings=settings,
+            now=current,
+        )
+    if lock is not None:
+        return WeatherSignal(
+            p_true=lock.p_true,
+            confidence=1.0,
+            source=f"official-station-lock-{lock.lock_name}",
+            note=(
+                f"{base_note}; strategy_mode={settings.strategy_mode}; signal_family=lock_only; "
+                f"station_adjustment={lock.adjustment}; "
+                f"{lock.size_reason}; entry_size_fraction_override={lock.entry_fraction:.2f}"
+            ),
+            parsed=parsed,
+            nowcast=payload,
+            entry_size_fraction_override=lock.entry_fraction,
+            entry_size_reason=lock.size_reason,
+            strategy_mode=settings.strategy_mode,
+            signal_family="lock_only",
+            settlement_precision_confidence=precision_profile.confidence,
+        )
+
+    residual = _residual_observation_edge_signal(
         parsed,
         observed_value_c,
+        station=station,
+        precision_profile=precision_profile,
+        settings=settings,
+        now=current,
         target=target,
-        timezone_name=station.timezone,
+        base_note=base_note,
+        payload=payload,
+        residual_profile_store=residual_profile_store,
+        concentrated_sizing_eligible_by_station=concentrated_sizing_eligible_by_station,
+    )
+    if residual is not None:
+        return residual
+
+    intraday = _intraday_observation_edge(
+        parsed,
+        observed_value_c,
+        station=station,
+        precision_profile=precision_profile,
         settings=settings,
         now=current,
     )
-    if lock is None:
+    if intraday is not None and intraday.p_true == 0.0:
         return WeatherSignal(
-            p_true=0.5,
-            confidence=0.0,
-            source="official-station-neutral",
-            note=f"{base_note}; official_station_lock=none",
+            p_true=intraday.p_true,
+            confidence=1.0,
+            source=f"official-station-intraday-{intraday.signal_name}",
+            note=(
+                f"{base_note}; strategy_mode={settings.strategy_mode}; "
+                f"signal_family=intraday_observation_edge; station_adjustment={intraday.adjustment}; "
+                f"{intraday.size_reason}; entry_size_fraction_override={intraday.entry_fraction:.4f}"
+            ),
             parsed=parsed,
             nowcast=payload,
+            entry_size_fraction_override=intraday.entry_fraction,
+            entry_size_reason=intraday.size_reason,
+            strategy_mode=settings.strategy_mode,
+            signal_family="intraday_observation_edge",
+            settlement_precision_confidence=precision_profile.confidence,
         )
 
     return WeatherSignal(
-        p_true=lock.p_true,
-        confidence=1.0,
-        source=f"official-station-lock-{lock.lock_name}",
+        p_true=0.5,
+        confidence=0.0,
+        source="official-station-neutral",
         note=(
-            f"{base_note}; station_adjustment={lock.adjustment}; "
-            f"{lock.size_reason}; entry_size_fraction_override={lock.entry_fraction:.2f}"
+            f"{base_note}; strategy_mode={settings.strategy_mode}; "
+            "official_station_lock=none; intraday_observation_edge=none"
         ),
         parsed=parsed,
         nowcast=payload,
-        entry_size_fraction_override=lock.entry_fraction,
-        entry_size_reason=lock.size_reason,
+        strategy_mode=settings.strategy_mode,
+        settlement_precision_confidence=precision_profile.confidence,
     )

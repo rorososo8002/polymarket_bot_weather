@@ -49,6 +49,33 @@ grading an answer sheet with the wrong answer key.
 - Original Polymarket rule URLs and rule wording are stored in
   `src/weather_bot/stations.py`.
 
+## Residual Profile Source Evidence
+
+The running bot does not read `.station_residual_cache` or its source CSV
+files. Runtime needs only:
+
+```text
+strategy_data/station_residual_profiles.json
+strategy_data/station_residual_profiles.manifest.json
+```
+
+The profile JSON is the compact probability lookup table. The manifest is its
+receipt: source URLs, station mappings, source-file hashes, sample counts,
+monitoring windows, and the profile artifact SHA-256.
+
+`.station_residual_cache.zip` is an ignored local rebuild archive. Extract it
+at the repository root only when auditing or regenerating the artifacts. Its
+CSV files contain NCEI Global Hourly observations for 2020-2024 plus boundary
+days. `mapping.csv` maps ICAO stations to NCEI IDs.
+`regenerate_artifacts.py` parses the observations through
+`residual_profile_builder.py`, builds 30-minute high/low residual histograms,
+filters pre-monitoring bins, and rewrites the two checked-in artifacts.
+`verify_rebuild.py` performs the slower exact rebuild comparison.
+
+After a rebuild, repack useful inputs into the single ZIP and delete the
+extracted folder. `.alyac` duplicates are antivirus artifacts and are never
+inputs.
+
 ## June 19 Expansion Evidence
 
 These eight stations were named by the current Polymarket resolution text and

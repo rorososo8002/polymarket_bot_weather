@@ -4,16 +4,18 @@ Status: none
 
 ## Objective
 
-None.
+No unfinished task is active.
 
 ## Current Scope
 
-None.
+Use the user's latest request.
 
 ## Next Action
 
-None.
+Read `AGENTS.md`, this card, and `docs/production-decisions.md`. For
+strategy-validation work, also read `docs/strategy-validation-roadmap.md`.
 
 ## New Chat Prompt
 
-None.
+There is no pending handoff. Follow the user's latest request and keep the
+project paper-only.

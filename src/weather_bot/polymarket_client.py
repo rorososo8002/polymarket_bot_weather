@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from typing import Any
 from urllib.parse import quote
 
@@ -9,7 +10,7 @@ import requests
 from tenacity import RetryError, retry, stop_after_attempt, wait_exponential
 
 from .market_rules import build_market_rule_provenance
-from .models import OrderBook, OrderLevel, RawMarket
+from .models import MarketTradability, OrderBook, OrderLevel, RawMarket
 from .orderbook_validation import valid_level_size, valid_orderbook_price
 from .stations import TRADING_READY_STATION_MAP
 from .weather_client import parse_weather_question
@@ -36,7 +37,7 @@ GROUPED_OUTCOME_TITLE_KEYS = (
 )
 
 
-def parse_api_bool(value: Any, *, default: bool) -> bool | None:
+def parse_api_bool(value: Any, *, default: bool | None) -> bool | None:
     if value is None:
         return default
     if isinstance(value, bool):
@@ -52,12 +53,34 @@ def parse_api_bool(value: Any, *, default: bool) -> bool | None:
     return None
 
 
+def _first_present_value(row: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        if key in row:
+            return row[key]
+    return None
+
+
+def _optional_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
 class PolymarketClient:
-    def __init__(self, gamma_base: str, clob_base: str, timeout: float = 15.0) -> None:
+    def __init__(
+        self,
+        gamma_base: str,
+        clob_base: str,
+        timeout: float = 15.0,
+        tradability_cache_ttl_seconds: float = 30.0,
+    ) -> None:
         self.gamma_base = gamma_base.rstrip("/")
         self.clob_base = clob_base.rstrip("/")
         self.timeout = timeout
         self.web_base = "https://polymarket.com"
+        self.tradability_cache_ttl_seconds = max(0.0, float(tradability_cache_ttl_seconds))
+        self._tradability_cache: dict[str, tuple[float, MarketTradability]] = {}
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=0.5, min=0.5, max=4))
     def _get(self, url: str, params: dict[str, Any] | None = None) -> Any:
@@ -196,6 +219,56 @@ class PolymarketClient:
             raise ValueError(f"Unexpected market response for {market_id}")
         return self._parse_market(data)
 
+    def get_clob_market_tradability(self, condition_id: str) -> MarketTradability:
+        normalized_condition_id = str(condition_id or "").strip()
+        if not normalized_condition_id:
+            raise ValueError("condition_id is required for CLOB tradability lookup")
+
+        now = time.monotonic()
+        cached = self._tradability_cache.get(normalized_condition_id)
+        if cached is not None and now - cached[0] < self.tradability_cache_ttl_seconds:
+            return cached[1]
+
+        data = self._get(
+            f"{self.clob_base}/clob-markets/{quote(normalized_condition_id, safe='')}"
+        )
+        if isinstance(data, dict) and isinstance(data.get("market"), dict):
+            data = data["market"]
+        elif isinstance(data, dict) and isinstance(data.get("data"), dict):
+            data = data["data"]
+        if not isinstance(data, dict):
+            raise ValueError(f"Unexpected CLOB market response for {normalized_condition_id}")
+
+        tradability = MarketTradability(
+            active=parse_api_bool(_first_present_value(data, "active", "is_active"), default=None),
+            closed=parse_api_bool(_first_present_value(data, "closed", "is_closed"), default=None),
+            archived=parse_api_bool(_first_present_value(data, "archived", "is_archived"), default=None),
+            accepting_orders=parse_api_bool(
+                _first_present_value(data, "accepting_orders", "acceptingOrders", "accepting"),
+                default=None,
+            ),
+            enable_order_book=parse_api_bool(
+                _first_present_value(
+                    data,
+                    "enable_order_book",
+                    "enableOrderBook",
+                    "orderbook_enabled",
+                    "orderBookEnabled",
+                ),
+                default=None,
+            ),
+            ready=parse_api_bool(data.get("ready"), default=None),
+            funded=parse_api_bool(data.get("funded"), default=None),
+            condition_id=_optional_text(
+                _first_present_value(data, "condition_id", "conditionId", "market")
+            )
+            or normalized_condition_id,
+            source="clob",
+            raw=data,
+        )
+        self._tradability_cache[normalized_condition_id] = (now, tradability)
+        return tradability
+
     @staticmethod
     def _flatten_metadata_text(row: dict[str, Any]) -> str:
         parts: list[str] = []
@@ -274,7 +347,11 @@ class PolymarketClient:
     def _is_new_entry_candidate(row: dict[str, Any]) -> bool:
         active = parse_api_bool(row.get("active"), default=True)
         closed = parse_api_bool(row.get("closed"), default=False)
-        return active is True and closed is False
+        accepting_orders = parse_api_bool(
+            _first_present_value(row, "accepting_orders", "acceptingOrders"),
+            default=None,
+        )
+        return active is True and closed is False and accepting_orders is not False
 
     def _parse_market(
         self,
@@ -292,6 +369,23 @@ class PolymarketClient:
             )
         active = parse_api_bool(row.get("active"), default=True)
         closed = parse_api_bool(row.get("closed"), default=False)
+        accepting_orders = parse_api_bool(
+            _first_present_value(row, "accepting_orders", "acceptingOrders"),
+            default=None,
+        )
+        enable_order_book = parse_api_bool(
+            _first_present_value(row, "enable_order_book", "enableOrderBook"),
+            default=None,
+        )
+        archived = parse_api_bool(row.get("archived"), default=None)
+        ready = parse_api_bool(row.get("ready"), default=None)
+        funded = parse_api_bool(row.get("funded"), default=None)
+        accepting_order_timestamp = _optional_text(
+            _first_present_value(row, "accepting_order_timestamp", "acceptingOrderTimestamp")
+        )
+        end_date_iso = _optional_text(
+            _first_present_value(row, "endDateIso", "endDate", "end_date_iso", "end_date")
+        )
         market_id = str(row.get("id") or row.get("market") or row.get("conditionId") or "unknown")
         question = self._normalized_weather_question(row, event=event)
         slug = row.get("slug")
@@ -318,6 +412,14 @@ class PolymarketClient:
                 raw=row,
                 event=event,
             ),
+            accepting_orders=accepting_orders,
+            enable_order_book=enable_order_book,
+            ready=ready,
+            funded=funded,
+            archived=archived,
+            end_date_iso=end_date_iso,
+            accepting_order_timestamp=accepting_order_timestamp,
+            tradability_source="gamma",
         )
 
     @classmethod

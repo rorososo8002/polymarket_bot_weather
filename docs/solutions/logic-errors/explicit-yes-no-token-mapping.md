@@ -82,4 +82,3 @@ second, and only trade on data that proves what it represents.
 - `src/weather_bot/polymarket_client.py`
 - `tests/test_hardening.py`
 - `docs/solutions/logic-errors/paper-fees-must-flow-through-accounting.md`
-- `docs/solutions/logic-errors/forecast-date-must-match-market-date.md`

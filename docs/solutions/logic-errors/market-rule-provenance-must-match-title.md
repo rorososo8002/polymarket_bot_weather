@@ -8,7 +8,7 @@ problem_type: logic_error
 component: service_object
 symptoms:
   - "A temperature market title could parse cleanly while Gamma description or resolution text exposed a conflicting unit or station."
-  - "Forecast probability could be requested for a market whose actual settlement rule did not match the parsed title."
+  - "A station probability could be requested for a market whose actual settlement rule did not match the parsed title."
   - "Paper entries could gain fake confidence from title-only parsing."
   - "A date hint such as June 15 did not carry a normalized station-local UTC start/end window."
 root_cause: logic_error
@@ -33,9 +33,9 @@ results match executable markets with real settlement rules.
 
 - Gamma market rows already carried raw fields such as description and
   resolution text, but the normalized market contract did not expose them.
-- `pre_forecast_tradeability_gate()` blocked non-temperature, unsupported-city,
+- The pre-signal tradeability gate blocked non-temperature, unsupported-city,
   and undated markets, but it did not yet block title/rule conflicts.
-- A market could reach forecast fetching even when available rule text exposed
+- A market could reach station-signal evaluation even when available rule text exposed
   a different unit or settlement station.
 
 ## What Didn't Work
@@ -64,14 +64,14 @@ class RawMarket:
 The provenance builder extracts compact audit fields from Gamma question,
 description, resolution rules, source URL, event slug, parsed condition, date
 hint, station, unit, station timezone, and the station-local UTC event window.
-Then the pre-forecast gate checks whether exposed rule text conflicts with the
+Then the pre-signal gate checks whether exposed rule text conflicts with the
 title:
 
 ```python
 if rule_mismatch := market_rule_mismatch_reason(market):
     return skip(
         "rule-mismatch",
-        f"SKIP_RULE_MISMATCH: market title and rule text disagree before forecast. {rule_mismatch}",
+        f"SKIP_RULE_MISMATCH: market title and rule text disagree before signal evaluation. {rule_mismatch}",
         f"SKIP_RULE_MISMATCH: {rule_mismatch} [{market_type}]",
     )
 ```
@@ -80,10 +80,10 @@ Focused tests now cover:
 
 - Gamma provenance normalization for a valid Seoul Celsius market.
 - UTC start/end event-window normalization for New York, Seoul, and Wellington.
-- Forecast and nowcast sharing the same station-local target date.
-- `SKIP_RULE_MISMATCH` before forecast when rule text exposes Fahrenheit
+- Residual probability and observations sharing the same station-local target date.
+- `SKIP_RULE_MISMATCH` before signal evaluation when rule text exposes Fahrenheit
   against a Celsius title.
-- `SKIP_RULE_MISMATCH` before forecast when rule text exposes a different
+- `SKIP_RULE_MISMATCH` before signal evaluation when rule text exposes a different
   station ID.
 - Valid matching rule provenance still passing.
 
@@ -93,9 +93,10 @@ Focused tests now cover:
 the original Gamma payload available, but it also gives downstream code a
 stable contract for the facts that matter.
 
-The pre-forecast gate is the right place for the mismatch check because it sits
-before Open-Meteo calls, order-book evaluation, and paper trade logging. If the
-market rule is conflicted there, the safest and cheapest action is to skip.
+The pre-signal gate is the right place for the mismatch check because it sits
+before same-station observation requests, order-book evaluation, and paper trade
+logging. If the market rule is conflicted there, the safest and cheapest action
+is to skip.
 
 ## Prevention
 
@@ -105,7 +106,8 @@ market rule is conflicted there, the safest and cheapest action is to skip.
   `event_end_utc` together. The local date is the market's exam date; the UTC
   window is how code compares it without server-timezone drift.
 - When title and exposed rule text disagree on city, high/low direction, unit,
-  bucket value, date hint, or explicit station, fail closed before forecast.
+  bucket value, date hint, or explicit station, fail closed before signal
+  evaluation.
 - Do not treat missing rule text as proof of a mismatch. Treat conflicting rule
   text as proof that the market is unsafe to evaluate.
 

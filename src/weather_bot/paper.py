@@ -8,7 +8,7 @@ import re
 import shutil
 import time
 from copy import deepcopy
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from math import isfinite
 from pathlib import Path
@@ -26,7 +26,12 @@ from .edge import (
 )
 from .exit_policy import ExitAssessment, assess_exit, build_entry_plan, conservative_settlement_value, side_true_probability
 from .polymarket_client import PolymarketClient, parse_api_bool
-from .portfolio import adaptive_event_cap_fraction, is_complementary_with_positions, websocket_pricing_block_reason
+from .portfolio import (
+    adaptive_event_cap_fraction,
+    is_complementary_with_positions,
+    structured_event_cap_override_fraction,
+    websocket_pricing_block_reason,
+)
 from .runner_status import update_runner_status_fields
 
 _ATOMIC_REPLACE_RETRY_DELAYS_SECONDS = (0.01, 0.05, 0.1)
@@ -93,6 +98,22 @@ TRADE_CSV_FIELDNAMES = [
     "station_id",
     "signal_source",
     "signal_confidence",
+    "strategy_mode",
+    "signal_family",
+    "price_anomaly",
+    "settlement_precision_confidence",
+    "raw_selected_side_probability",
+    "selected_side_probability",
+    "probability_tier",
+    "calibration_sample_days",
+    "calibration_profile_key",
+    "calibration_status",
+    "requested_size_usd",
+    "executable_size_usd",
+    "event_cap_override_fraction",
+    "fee_rate",
+    "entry_fee_usdc",
+    "expected_net_profit_usd",
     "model_version",
     "config_version",
 ]
@@ -128,6 +149,10 @@ DECISION_CSV_FIELDNAMES = [
     "station_id",
     "signal_source",
     "signal_confidence",
+    "strategy_mode",
+    "signal_family",
+    "price_anomaly",
+    "settlement_precision_confidence",
     "entry_vwap",
     "expected_net_return_pct",
     "best_bid",
@@ -135,6 +160,18 @@ DECISION_CSV_FIELDNAMES = [
     "spread",
     "orderbook_status",
     "reason_code",
+    "raw_selected_side_probability",
+    "selected_side_probability",
+    "probability_tier",
+    "calibration_sample_days",
+    "calibration_profile_key",
+    "calibration_status",
+    "requested_size_usd",
+    "executable_size_usd",
+    "event_cap_override_fraction",
+    "fee_rate",
+    "entry_fee_usdc",
+    "expected_net_profit_usd",
     "model_version",
     "config_version",
 ]
@@ -217,8 +254,33 @@ def _format_optional_csv_float(value: Any) -> str:
     return f"{number:.6f}"
 
 
+def _format_optional_csv_int(value: Any) -> str:
+    if value in (None, "", 0):
+        return ""
+    if isinstance(value, bool):
+        return ""
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return ""
+    return str(number) if number > 0 else ""
+
+
 def _format_optional_text(value: Any) -> str:
     return "" if value in (None, "") else str(value)
+
+
+def _format_csv_bool(value: Any) -> str:
+    if value in (None, ""):
+        return ""
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes"}:
+            return "true"
+        if normalized in {"false", "0", "no"}:
+            return "false"
+        return ""
+    return "true" if bool(value) else "false"
 
 
 def _config_version(settings: Settings) -> str:
@@ -254,7 +316,7 @@ def _reason_code(reason: str, fallback: str = "") -> str:
 
 def _reason_float(reason: str, name: str, *, percent: bool = False) -> float | None:
     suffix = r"%?" if percent else ""
-    match = re.search(rf"\b{re.escape(name)}=([-+]?\d+(?:\.\d+)?)" + suffix, reason or "")
+    match = re.search(rf"\b{re.escape(name)}=\$?([-+]?\d+(?:\.\d+)?)" + suffix, reason or "")
     if not match:
         return None
     try:
@@ -281,10 +343,50 @@ def _market_replay_metadata(market: RawMarket, *, city: str = "", date_hint: str
 
 def _signal_replay_metadata(signal: Any | None) -> dict[str, str]:
     if signal is None:
-        return {"signal_source": "", "signal_confidence": ""}
+        return {
+            "signal_source": "",
+            "signal_confidence": "",
+            "strategy_mode": "",
+            "signal_family": "",
+            "price_anomaly": "",
+            "settlement_precision_confidence": "",
+            "raw_selected_side_probability": "",
+            "selected_side_probability": "",
+            "probability_tier": "",
+            "calibration_sample_days": "",
+            "calibration_profile_key": "",
+            "calibration_status": "",
+            "event_cap_override_fraction": "",
+        }
+    nowcast = getattr(signal, "nowcast", None)
+    nowcast = nowcast if isinstance(nowcast, dict) else {}
     return {
         "signal_source": str(getattr(signal, "source", "") or ""),
         "signal_confidence": _format_optional_csv_float(getattr(signal, "confidence", "")),
+        "strategy_mode": _format_optional_text(getattr(signal, "strategy_mode", "")),
+        "signal_family": _format_optional_text(getattr(signal, "signal_family", "")),
+        "price_anomaly": _format_csv_bool(getattr(signal, "price_anomaly", False)),
+        "settlement_precision_confidence": (
+            _format_optional_text(getattr(signal, "settlement_precision_confidence", ""))
+            or _format_optional_text(nowcast.get("settlement_precision_confidence"))
+        ),
+        "raw_selected_side_probability": _format_optional_csv_float(
+            getattr(signal, "raw_selected_side_probability", None)
+        ),
+        "selected_side_probability": _format_optional_csv_float(
+            getattr(signal, "selected_side_probability", None)
+        ),
+        "probability_tier": _format_optional_text(getattr(signal, "probability_tier", "")),
+        "calibration_sample_days": _format_optional_csv_int(
+            getattr(signal, "calibration_sample_days", 0)
+        ),
+        "calibration_profile_key": _format_optional_text(
+            getattr(signal, "calibration_profile_key", "")
+        ),
+        "calibration_status": _format_optional_text(getattr(signal, "calibration_status", "")),
+        "event_cap_override_fraction": _format_optional_csv_float(
+            getattr(signal, "event_cap_override_fraction", None)
+        ),
     }
 
 
@@ -293,6 +395,12 @@ def _result_replay_metadata(result: EdgeResult) -> dict[str, str]:
     best_bid = _reason_float(result.reason, "best_bid")
     best_ask = _reason_float(result.reason, "best_ask")
     spread = _reason_float(result.reason, "spread_audit")
+    requested_size = result.requested_size_usd
+    if requested_size is None:
+        requested_size = result.size_usd
+    executable_size = result.executable_size_usd
+    if executable_size is None:
+        executable_size = result.size_usd
     return {
         "reason_code": _reason_code(result.reason, result.side),
         "entry_vwap": _format_optional_csv_float(result.p_exec),
@@ -301,6 +409,77 @@ def _result_replay_metadata(result: EdgeResult) -> dict[str, str]:
         "best_ask": _format_optional_csv_float(best_ask),
         "spread": _format_optional_csv_float(spread),
         "orderbook_status": "executable" if result.side in {"YES", "NO"} and result.p_exec is not None else result.side.lower(),
+        "strategy_mode": _format_optional_text(result.strategy_mode),
+        "signal_family": _format_optional_text(result.signal_family),
+        "price_anomaly": _format_csv_bool(result.price_anomaly),
+        "raw_selected_side_probability": _format_optional_csv_float(
+            result.raw_selected_side_probability
+        ),
+        "selected_side_probability": _format_optional_csv_float(
+            result.selected_side_probability
+        ),
+        "probability_tier": _format_optional_text(result.probability_tier),
+        "calibration_sample_days": _format_optional_csv_int(result.calibration_sample_days),
+        "calibration_profile_key": _format_optional_text(result.calibration_profile_key),
+        "calibration_status": _format_optional_text(result.calibration_status),
+        "requested_size_usd": _format_optional_csv_float(requested_size),
+        "executable_size_usd": _format_optional_csv_float(executable_size),
+        "event_cap_override_fraction": _format_optional_csv_float(
+            result.event_cap_override_fraction
+        ),
+        "entry_fee_usdc": _format_optional_csv_float(
+            _reason_float(result.reason, "entry_fee")
+        ),
+        "expected_net_profit_usd": _format_optional_csv_float(
+            result.expected_net_profit_usd
+        ),
+    }
+
+
+def _strategy_replay_metadata(
+    signal_metadata: dict[str, str],
+    result_metadata: dict[str, str],
+) -> dict[str, str]:
+    result_anomaly = result_metadata.get("price_anomaly", "")
+    signal_anomaly = signal_metadata.get("price_anomaly", "")
+    price_anomaly = "true" if "true" in {result_anomaly, signal_anomaly} else "false"
+    return {
+        "strategy_mode": result_metadata.get("strategy_mode", "") or signal_metadata.get("strategy_mode", ""),
+        "signal_family": result_metadata.get("signal_family", "") or signal_metadata.get("signal_family", ""),
+        "price_anomaly": price_anomaly,
+        "settlement_precision_confidence": signal_metadata.get("settlement_precision_confidence", ""),
+        "raw_selected_side_probability": (
+            result_metadata.get("raw_selected_side_probability", "")
+            or signal_metadata.get("raw_selected_side_probability", "")
+        ),
+        "selected_side_probability": (
+            result_metadata.get("selected_side_probability", "")
+            or signal_metadata.get("selected_side_probability", "")
+        ),
+        "probability_tier": (
+            result_metadata.get("probability_tier", "")
+            or signal_metadata.get("probability_tier", "")
+        ),
+        "calibration_sample_days": (
+            result_metadata.get("calibration_sample_days", "")
+            or signal_metadata.get("calibration_sample_days", "")
+        ),
+        "calibration_profile_key": (
+            result_metadata.get("calibration_profile_key", "")
+            or signal_metadata.get("calibration_profile_key", "")
+        ),
+        "calibration_status": (
+            result_metadata.get("calibration_status", "")
+            or signal_metadata.get("calibration_status", "")
+        ),
+        "event_cap_override_fraction": (
+            result_metadata.get("event_cap_override_fraction", "")
+            or signal_metadata.get("event_cap_override_fraction", "")
+        ),
+        "requested_size_usd": result_metadata.get("requested_size_usd", ""),
+        "executable_size_usd": result_metadata.get("executable_size_usd", ""),
+        "entry_fee_usdc": result_metadata.get("entry_fee_usdc", ""),
+        "expected_net_profit_usd": result_metadata.get("expected_net_profit_usd", ""),
     }
 
 
@@ -320,6 +499,22 @@ def _position_replay_metadata(pos: PaperPosition) -> dict[str, Any]:
         "station_id": metadata.get("station_id"),
         "signal_source": metadata.get("signal_source"),
         "signal_confidence": metadata.get("signal_confidence"),
+        "strategy_mode": metadata.get("strategy_mode"),
+        "signal_family": metadata.get("signal_family"),
+        "price_anomaly": metadata.get("price_anomaly"),
+        "settlement_precision_confidence": metadata.get("settlement_precision_confidence"),
+        "raw_selected_side_probability": metadata.get("raw_selected_side_probability"),
+        "selected_side_probability": metadata.get("selected_side_probability"),
+        "probability_tier": metadata.get("probability_tier"),
+        "calibration_sample_days": metadata.get("calibration_sample_days"),
+        "calibration_profile_key": metadata.get("calibration_profile_key"),
+        "calibration_status": metadata.get("calibration_status"),
+        "requested_size_usd": metadata.get("requested_size_usd"),
+        "executable_size_usd": metadata.get("executable_size_usd"),
+        "event_cap_override_fraction": metadata.get("event_cap_override_fraction"),
+        "fee_rate": metadata.get("fee_rate"),
+        "entry_fee_usdc": metadata.get("entry_fee_usdc"),
+        "expected_net_profit_usd": metadata.get("expected_net_profit_usd"),
         "model_version": metadata.get("model_version"),
         "config_version": metadata.get("config_version"),
     }
@@ -1058,6 +1253,17 @@ class PaperBroker:
             return None
         bankroll_before = self.current_bankroll_before_entry()
         risk_bankroll = min(bankroll_before, entry_bankroll_usd) if entry_bankroll_usd is not None else bankroll_before
+        event_cap_override = structured_event_cap_override_fraction(signal, result, self.settings)
+        market_exposure = sum(position.cost_usd for position in market_positions)
+        single_market_limit = risk_bankroll * self.settings.max_single_market_fraction
+        if market_exposure + result.size_usd > single_market_limit:
+            reason = (
+                f"SKIP_SINGLE_MARKET_CAP: market exposure={market_exposure:.2f}+{result.size_usd:.2f} "
+                f"> limit={single_market_limit:.2f} "
+                f"({self.settings.max_single_market_fraction:.0%} bankroll)"
+            )
+            self.log_trade("SKIP_SINGLE_MARKET_CAP", market, result.side, token_id, 0, result.p_exec, 0, reason)
+            return None
         allowed_exposure = risk_bankroll * self.settings.max_total_exposure_fraction
         if self.total_exposure() + result.size_usd > allowed_exposure:
             self.log_trade("SKIP_EXPOSURE_CAP", market, result.side, token_id, 0, result.p_exec, 0, "total exposure cap")
@@ -1066,7 +1272,8 @@ class PaperBroker:
         # City exposure cap.
         if city:
             city_exp = self.city_exposure(city)
-            city_limit = risk_bankroll * self.settings.max_city_exposure_fraction
+            city_fraction = event_cap_override or self.settings.max_city_exposure_fraction
+            city_limit = risk_bankroll * city_fraction
             if city_exp + result.size_usd > city_limit:
                 reason = (
                     f"SKIP_CITY_CAP: {city} exposure={city_exp:.2f}+{result.size_usd:.2f} "
@@ -1079,6 +1286,13 @@ class PaperBroker:
         if city and date_hint:
             event_positions = self.event_date_positions(city, date_hint)
             event_leg_count = len(event_positions)
+            if event_cap_override is not None and event_positions and add_position is None:
+                reason = (
+                    f"SKIP_EVENT_DATE_CONCENTRATION: {city}/{date_hint} "
+                    "concentrated event override requires one exclusive position"
+                )
+                self.log_trade("SKIP_EVENT_DATE_CONCENTRATION", market, result.side, token_id, 0, result.p_exec, 0, reason)
+                return None
             if event_leg_count >= self.settings.max_event_portfolio_legs and add_position is None:
                 reason = (
                     f"SKIP_EVENT_DATE_LEG_CAP: {city}/{date_hint} legs={event_leg_count} "
@@ -1091,7 +1305,7 @@ class PaperBroker:
                 self.log_trade("SKIP_EVENT_DATE_CONCENTRATION", market, result.side, token_id, 0, result.p_exec, 0, reason)
                 return None
             event_exp = self.event_date_exposure(city, date_hint)
-            event_fraction = adaptive_event_cap_fraction(risk_bankroll, self.settings)
+            event_fraction = event_cap_override or adaptive_event_cap_fraction(risk_bankroll, self.settings)
             event_limit = risk_bankroll * event_fraction
             if event_exp + result.size_usd > event_limit:
                 reason = (
@@ -1108,26 +1322,36 @@ class PaperBroker:
         expected_profit = result.expected_net_profit_usd * spend / result.size_usd
         shares = fee_adjusted_entry_shares(spend, result.p_exec, self.settings.weather_taker_fee_rate)
         entry_fee_usdc = polymarket_taker_fee_usdc(shares, result.p_exec, self.settings.weather_taker_fee_rate)
-        adjusted_result = EdgeResult(
-            result.side,
-            result.p_true,
-            result.p_exec,
-            result.net_edge,
-            spend,
-            shares,
-            result.reason,
-            expected_profit,
+        adjusted_result = replace(
+            result,
+            size_usd=spend,
+            size_shares=shares,
+            expected_net_profit_usd=expected_profit,
+            requested_size_usd=(
+                result.requested_size_usd
+                if result.requested_size_usd is not None
+                else result.size_usd
+            ),
+            executable_size_usd=spend,
         )
         entry_plan = build_entry_plan(adjusted_result, risk_bankroll, self.settings)
         opened_at = utc_now_iso()
-        entry_side_probability = side_true_probability(result.side, result.p_true)
+        entry_side_probability = (
+            result.selected_side_probability
+            if result.selected_side_probability is not None
+            else side_true_probability(result.side, result.p_true)
+        )
         market_replay = _market_replay_metadata(market, city=city, date_hint=date_hint)
         signal_replay = _signal_replay_metadata(signal)
-        result_replay = _result_replay_metadata(result)
+        result_replay = _result_replay_metadata(adjusted_result)
+        strategy_replay = _strategy_replay_metadata(signal_replay, result_replay)
         replay_metadata = {
             **market_replay,
             **signal_replay,
             **result_replay,
+            **strategy_replay,
+            "fee_rate": self.settings.weather_taker_fee_rate,
+            "entry_fee_usdc": entry_fee_usdc,
             "model_version": PAPER_MODEL_VERSION,
             "config_version": _config_version(self.settings),
         }
@@ -1424,6 +1648,7 @@ class PaperBroker:
         market_replay = _market_replay_metadata(market)
         signal_replay = _signal_replay_metadata(signal)
         result_replay = _result_replay_metadata(result)
+        strategy_replay = _strategy_replay_metadata(signal_replay, result_replay)
         token_id = ""
         if result.side == "YES":
             token_id = market.yes_token_id or ""
@@ -1473,6 +1698,10 @@ class PaperBroker:
                 "station_id": market_replay["station_id"],
                 "signal_source": signal_replay["signal_source"],
                 "signal_confidence": signal_replay["signal_confidence"],
+                "strategy_mode": strategy_replay["strategy_mode"],
+                "signal_family": strategy_replay["signal_family"],
+                "price_anomaly": strategy_replay["price_anomaly"],
+                "settlement_precision_confidence": strategy_replay["settlement_precision_confidence"],
                 "entry_vwap": result_replay["entry_vwap"],
                 "expected_net_return_pct": result_replay["expected_net_return_pct"],
                 "best_bid": result_replay["best_bid"],
@@ -1480,6 +1709,18 @@ class PaperBroker:
                 "spread": result_replay["spread"],
                 "orderbook_status": result_replay["orderbook_status"],
                 "reason_code": result_replay["reason_code"],
+                "raw_selected_side_probability": strategy_replay["raw_selected_side_probability"],
+                "selected_side_probability": strategy_replay["selected_side_probability"],
+                "probability_tier": strategy_replay["probability_tier"],
+                "calibration_sample_days": strategy_replay["calibration_sample_days"],
+                "calibration_profile_key": strategy_replay["calibration_profile_key"],
+                "calibration_status": strategy_replay["calibration_status"],
+                "requested_size_usd": strategy_replay["requested_size_usd"],
+                "executable_size_usd": strategy_replay["executable_size_usd"],
+                "event_cap_override_fraction": strategy_replay["event_cap_override_fraction"],
+                "fee_rate": f"{self.settings.weather_taker_fee_rate:.6f}",
+                "entry_fee_usdc": strategy_replay["entry_fee_usdc"],
+                "expected_net_profit_usd": strategy_replay["expected_net_profit_usd"],
                 "model_version": PAPER_MODEL_VERSION,
                 "config_version": _config_version(self.settings),
             })
@@ -1505,6 +1746,7 @@ class PaperBroker:
         market_replay = _market_replay_metadata(market)
         signal_replay = _signal_replay_metadata(signal)
         result_replay = _result_replay_metadata(result)
+        strategy_replay = _strategy_replay_metadata(signal_replay, result_replay)
         row = {
             "ts": ts,
             "market_id": market.market_id,
@@ -1527,12 +1769,36 @@ class PaperBroker:
             "station_id": market_replay["station_id"],
             "signal_source": signal_replay["signal_source"],
             "signal_confidence": signal_replay["signal_confidence"],
+            "strategy_mode": strategy_replay["strategy_mode"],
+            "signal_family": strategy_replay["signal_family"],
+            "price_anomaly": strategy_replay["price_anomaly"],
+            "settlement_precision_confidence": strategy_replay["settlement_precision_confidence"],
             "entry_vwap": result_replay["entry_vwap"],
             "expected_net_return_pct": result_replay["expected_net_return_pct"],
             "best_bid": result_replay["best_bid"],
             "best_ask": result_replay["best_ask"],
             "spread": result_replay["spread"],
             "orderbook_status": result_replay["orderbook_status"],
+            "raw_selected_side_probability": strategy_replay["raw_selected_side_probability"],
+            "selected_side_probability": strategy_replay["selected_side_probability"],
+            "probability_tier": strategy_replay["probability_tier"],
+            "calibration_sample_days": strategy_replay["calibration_sample_days"],
+            "calibration_profile_key": strategy_replay["calibration_profile_key"],
+            "calibration_status": strategy_replay["calibration_status"],
+            "requested_size_usd": strategy_replay["requested_size_usd"],
+            "executable_size_usd": strategy_replay["executable_size_usd"],
+            "event_cap_override_fraction": strategy_replay["event_cap_override_fraction"],
+            "fee_rate": round(self.settings.weather_taker_fee_rate, 6),
+            "entry_fee_usdc": (
+                None
+                if strategy_replay["entry_fee_usdc"] == ""
+                else float(strategy_replay["entry_fee_usdc"])
+            ),
+            "expected_net_profit_usd": (
+                None
+                if strategy_replay["expected_net_profit_usd"] == ""
+                else float(strategy_replay["expected_net_profit_usd"])
+            ),
             "model_version": PAPER_MODEL_VERSION,
             "config_version": _config_version(self.settings),
         }
@@ -1587,6 +1853,44 @@ class PaperBroker:
             "station_id": _format_optional_text(entry_metadata.get("station_id")) or market_replay["station_id"],
             "signal_source": signal_replay["signal_source"],
             "signal_confidence": signal_replay["signal_confidence"],
+            "strategy_mode": _format_optional_text(entry_metadata.get("strategy_mode")),
+            "signal_family": _format_optional_text(entry_metadata.get("signal_family")),
+            "price_anomaly": _format_csv_bool(entry_metadata.get("price_anomaly")),
+            "settlement_precision_confidence": _format_optional_text(
+                entry_metadata.get("settlement_precision_confidence")
+            ),
+            "raw_selected_side_probability": _format_optional_csv_float(
+                entry_metadata.get("raw_selected_side_probability")
+            ),
+            "selected_side_probability": _format_optional_csv_float(
+                entry_metadata.get("selected_side_probability")
+            ),
+            "probability_tier": _format_optional_text(entry_metadata.get("probability_tier")),
+            "calibration_sample_days": _format_optional_csv_int(
+                entry_metadata.get("calibration_sample_days")
+            ),
+            "calibration_profile_key": _format_optional_text(
+                entry_metadata.get("calibration_profile_key")
+            ),
+            "calibration_status": _format_optional_text(
+                entry_metadata.get("calibration_status")
+            ),
+            "requested_size_usd": _format_optional_csv_float(
+                entry_metadata.get("requested_size_usd")
+            ),
+            "executable_size_usd": _format_optional_csv_float(
+                entry_metadata.get("executable_size_usd")
+            ),
+            "event_cap_override_fraction": _format_optional_csv_float(
+                entry_metadata.get("event_cap_override_fraction")
+            ),
+            "fee_rate": _format_optional_csv_float(entry_metadata.get("fee_rate")),
+            "entry_fee_usdc": _format_optional_csv_float(
+                entry_metadata.get("entry_fee_usdc")
+            ),
+            "expected_net_profit_usd": _format_optional_csv_float(
+                entry_metadata.get("expected_net_profit_usd")
+            ),
             "model_version": _format_optional_text(entry_metadata.get("model_version")) or PAPER_MODEL_VERSION,
             "config_version": _format_optional_text(entry_metadata.get("config_version")) or _config_version(self.settings),
         }
@@ -1624,6 +1928,22 @@ class PaperBroker:
                 "station_id": replay_metadata["station_id"],
                 "signal_source": replay_metadata["signal_source"],
                 "signal_confidence": replay_metadata["signal_confidence"],
+                "strategy_mode": replay_metadata["strategy_mode"],
+                "signal_family": replay_metadata["signal_family"],
+                "price_anomaly": replay_metadata["price_anomaly"],
+                "settlement_precision_confidence": replay_metadata["settlement_precision_confidence"],
+                "raw_selected_side_probability": replay_metadata["raw_selected_side_probability"],
+                "selected_side_probability": replay_metadata["selected_side_probability"],
+                "probability_tier": replay_metadata["probability_tier"],
+                "calibration_sample_days": replay_metadata["calibration_sample_days"],
+                "calibration_profile_key": replay_metadata["calibration_profile_key"],
+                "calibration_status": replay_metadata["calibration_status"],
+                "requested_size_usd": replay_metadata["requested_size_usd"],
+                "executable_size_usd": replay_metadata["executable_size_usd"],
+                "event_cap_override_fraction": replay_metadata["event_cap_override_fraction"],
+                "fee_rate": replay_metadata["fee_rate"],
+                "entry_fee_usdc": replay_metadata["entry_fee_usdc"],
+                "expected_net_profit_usd": replay_metadata["expected_net_profit_usd"],
                 "model_version": replay_metadata["model_version"],
                 "config_version": replay_metadata["config_version"],
             })

@@ -18,7 +18,7 @@ tags: [runner-status, realtime, systemd, dashboard, paper-trading, backoff]
 # Realtime cycle exceptions must update runner status
 
 ## Problem
-`run_realtime_forever()` can fail while discovering markets, preparing forecasts,
+`run_realtime_forever()` can fail while discovering markets, preparing station signals,
 starting the WebSocket stream, or writing status. Before this fix, some of those
 exceptions could escape before `paper_runner_status.json` recorded an error.
 
@@ -45,7 +45,7 @@ actually gone or restarting.
 ## Solution
 Wrap one whole realtime refresh cycle in a `try`/`except` block. Keep a
 `failed_phase` label current as the loop moves through discovery, market
-preparation, forecast preparation, WebSocket startup, status updates, monitoring,
+preparation, station-signal preparation, WebSocket startup, status updates, monitoring,
 and stream shutdown.
 
 On any normal `Exception`, stop any partially created stream, then write:

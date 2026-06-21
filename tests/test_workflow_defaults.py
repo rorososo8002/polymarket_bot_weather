@@ -78,6 +78,29 @@ def test_pytest_preserves_explicit_basetemp_override():
     assert config.option.basetemp == explicit_path
 
 
+def test_pytest_unconfigure_removes_workspace_temp_tree(tmp_path):
+    module = _load_root_conftest()
+    clean_root = tmp_path / "repo"
+    temp_base = clean_root / ".pytest-tmp" / "current"
+    temp_base.mkdir(parents=True)
+    (temp_base / "leftover.txt").write_text("temporary", encoding="utf-8")
+
+    original_file = module.__file__
+    module.__file__ = str(clean_root / "conftest.py")
+    try:
+        class Option:
+            basetemp = temp_base
+
+        class Config:
+            option = Option()
+
+        module.pytest_unconfigure(Config())
+    finally:
+        module.__file__ = original_file
+
+    assert not (clean_root / ".pytest-tmp").exists()
+
+
 def test_known_good_commands_are_linked_from_agents_and_codex_index():
     command_doc = ROOT / "docs" / "codex" / "known-good-commands.md"
     agents_text = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
@@ -105,32 +128,43 @@ def test_fresh_chat_uses_active_task_card_not_process_diary():
     active_readme = (ROOT / "docs" / "active" / "README.md").read_text(encoding="utf-8")
     current_task = (ROOT / "docs" / "active" / "current-task.md").read_text(encoding="utf-8")
 
-    assert "Mandatory fresh-chat read set" in agents_text
+    assert "Mandatory Fresh-Task Read Set" in agents_text
     assert "docs/active/current-task.md" in agents_text
     assert "docs/production-decisions.md" in agents_text
-    assert "docs/production-progress.md` as an optional compact project board" in agents_text
+    assert "docs/strategy-validation-roadmap.md" in agents_text
     assert "Status: none" in current_task or "Status: active" in current_task
     assert "## New Chat Prompt" in current_task
-    assert "Mandatory Fresh-Chat Read Set" in active_readme
+    assert "Mandatory Fresh-Task Read Set" in active_readme
     assert "docs/active/current-task.md" in active_readme
 
 
 def test_handoff_docs_stay_compact_and_avoid_chronological_ledgers():
     line_limits = {
         "docs/active/current-task.md": 80,
-        "docs/production-progress.md": 140,
-        "docs/production-decisions.md": 220,
-        "docs/production-implementation-plan.md": 350,
+        "docs/production-decisions.md": 600,
     }
     for relative_path, max_lines in line_limits.items():
         text = (ROOT / relative_path).read_text(encoding="utf-8")
         assert len(text.splitlines()) <= max_lines, f"{relative_path} should stay under {max_lines} lines"
 
     decisions = (ROOT / "docs" / "production-decisions.md").read_text(encoding="utf-8")
-    progress = (ROOT / "docs" / "production-progress.md").read_text(encoding="utf-8")
 
     assert "## Compact Ledger" not in decisions
-    assert "Completed local" not in progress
+
+
+def test_obsolete_duplicate_handoff_and_report_files_are_removed():
+    obsolete_paths = [
+        "docs/active/new-chat-task-prompts.md",
+        "docs/production-progress.md",
+        "docs/production-implementation-plan.md",
+        "docs/dashboard-build-spec.md",
+        "docs/VPS_LIVE_PAPER.md",
+        "scripts/daily_report.py",
+        "tests/test_daily_report.py",
+    ]
+
+    for relative_path in obsolete_paths:
+        assert not (ROOT / relative_path).exists(), f"{relative_path} should be removed"
 
 
 def test_paper_validation_runbook_defines_live_readiness_gates():

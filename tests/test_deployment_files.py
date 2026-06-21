@@ -40,7 +40,7 @@ def test_local_env_example_exposes_settlement_runner_defaults():
     assert "STATION_NOWCAST_REQUEST_LOG_PATH=station_nowcast_request_log.jsonl" in text
     assert "BANKROLL_USD=200\n" in text
     assert "SIZE_MODE=kelly" in text
-    assert "FRACTIONAL_KELLY=0.50" in text
+    assert "FRACTIONAL_KELLY=0.25" in text
     assert "MAX_TOTAL_EXPOSURE_FRACTION=0.90" in text
     assert "DAILY_REALIZED_LOSS_LIMIT_FRACTION=0.50" in text
     assert "DAILY_UNREALIZED_LOSS_LIMIT_FRACTION=0.50" in text
@@ -104,15 +104,20 @@ def test_vps_env_example_keeps_runtime_state_under_data_dir():
     assert "SETTLEMENT_RUNNER_MIN_EV_MARGIN_USD=0.00" in text
     assert "BANKROLL_USD=200\n" in text
     assert "SIZE_MODE=kelly" in text
-    assert "FRACTIONAL_KELLY=0.50" in text
+    assert "FRACTIONAL_KELLY=0.25" in text
     assert "ENTRY_FRACTION=0.20" in text
     assert "MAX_SINGLE_MARKET_FRACTION=0.50" in text
     assert "MAX_TOTAL_EXPOSURE_FRACTION=0.90" in text
-    assert "MAX_CITY_EXPOSURE_FRACTION=0.50" in text
-    assert "MAX_EVENT_DATE_EXPOSURE_FRACTION=0.50" in text
-    assert "LARGE_BANKROLL_EVENT_DATE_EXPOSURE_FRACTION=0.50" in text
+    assert "MAX_CITY_EXPOSURE_FRACTION=0.20" in text
+    assert "MAX_EVENT_DATE_EXPOSURE_FRACTION=0.10" in text
+    assert "LARGE_BANKROLL_EVENT_DATE_EXPOSURE_FRACTION=0.05" in text
     assert "OFFICIAL_NOWCAST_LOCK_ENABLED=true" in text
-    assert "OFFICIAL_NOWCAST_ENTRY_ONLY=true" in text
+    assert "OFFICIAL_NOWCAST_ENTRY_ONLY=false" in text
+    assert "STRATEGY_MODE=hybrid_observation_edge" in text
+    assert "INTRADAY_OBSERVATION_EDGE_ENABLED=true" in text
+    assert "INTRADAY_MIN_SIDE_PROBABILITY=0.90" in text
+    assert "INTRADAY_STRONG_SIDE_PROBABILITY=0.97" in text
+    assert "INTRADAY_ABNORMAL_MIN_NET_EDGE=0.20" in text
     assert "OFFICIAL_NOWCAST_LOCK_BASE_ENTRY_FRACTION=0.20" in text
     assert "OFFICIAL_NOWCAST_LOCK_STRONG_ENTRY_FRACTION=0.50" in text
     assert "OFFICIAL_NOWCAST_LOCK_NEAR_CLOSE_HOURS=3.0" in text
@@ -214,15 +219,16 @@ def test_dashboard_env_requires_token_and_data_paths():
 
 
 def test_vps_deployment_doc_warns_that_service_is_paper_only():
-    doc = ROOT / "docs" / "VPS_LIVE_PAPER.md"
+    doc = ROOT / "docs" / "codex" / "vps-dashboard.md"
+    commands = ROOT / "docs" / "codex" / "known-good-commands.md"
 
     text = doc.read_text(encoding="utf-8")
+    command_text = commands.read_text(encoding="utf-8")
 
-    assert "paper only" in text.lower()
-    assert "systemctl enable --now polymarket-weather-bot" in text
-    assert "systemctl enable --now polymarket-weather-dashboard" in text
-    assert "does not\nuse Codex tokens" in text
-    assert "journalctl -u polymarket-weather-bot -f" in text
+    assert "paper-only" in text.lower()
+    assert "polymarket-weather-dashboard" in text
+    assert "X-Dashboard-Token" in text
+    assert "journalctl -u polymarket-weather-bot" in command_text
 
 
 def test_pytest_is_a_dev_dependency_not_runtime_dependency():

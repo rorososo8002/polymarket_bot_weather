@@ -39,7 +39,7 @@ Two opposite mistakes are both bad:
 1. Being too conservative: skip a $10 executable opportunity because the $20
    target order cannot fully fit.
 2. Being too aggressive: pretend to buy $20 when only $10 exists, or average
-   down after the forecast probability has already crossed the stop line.
+   down after the station-based probability has already crossed the stop line.
 
 `paper_state.json` is the paper account book. It stores cash, shares, average
 entry price, and open positions. If add-ons are logged as separate duplicate

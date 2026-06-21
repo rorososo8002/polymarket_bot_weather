@@ -107,5 +107,5 @@ After reinstalling, the service reached:
 
 ## Related
 
-- [VPS live paper runbook](../../VPS_LIVE_PAPER.md)
-- [Production status](../../production-progress.md)
+- [Verified local and VPS commands](../../codex/known-good-commands.md)
+- [VPS dashboard runbook](../../codex/vps-dashboard.md)

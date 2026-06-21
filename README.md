@@ -50,7 +50,9 @@ Polymarket weather discovery
   -> supported city/date/temperature parser
   -> trading-ready station gate
   -> official settlement-station observation
-  -> exact source-display integer boundary lock
+  -> settlement-precision profile and regional intraday signal
+  -> conservative lock or 90%+ observation-edge candidate
+  -> final Gamma/CLOB tradability gate
   -> CLOB WebSocket executable order-book cache
   -> fee-aware YES/NO edge and expected-return filter
   -> city-date portfolio selector
@@ -63,7 +65,9 @@ Polymarket weather discovery
 ```text
 src/weather_bot/stations.py           station registry and trading-ready subset
 src/weather_bot/weather_client.py     weather-question parser
-src/weather_bot/station_signal.py     official-station settlement-lock signal
+src/weather_bot/settlement_precision.py source-specific bucket precision rules
+src/weather_bot/strategy_profiles.py  regional high/low strategy windows
+src/weather_bot/station_signal.py     official-station lock/intraday signals
 src/weather_bot/nowcast.py            same-station observed high/low providers
 src/weather_bot/polymarket_client.py  Polymarket Gamma and CLOB public data
 src/weather_bot/realtime_orderbook.py CLOB WebSocket order-book cache
@@ -100,7 +104,7 @@ with a new bankroll.
 AGENTS.md                             repository operating constitution
 docs/active/current-task.md           only default unfinished-work handoff card
 docs/production-decisions.md          active safety/trading/runtime rules
-docs/production-implementation-plan.md strategy and architecture contract
+docs/strategy-validation-roadmap.md   durable validation sequence and gates
 docs/codex/known-good-commands.md     verified local/VPS command shapes
 docs/codex/runtime-data.md            safe handling of large runtime files
 docs/live-trading-safety-plan.md      required read before any live-trading work
@@ -115,15 +119,21 @@ SIZE_MODE=kelly
 FRACTIONAL_KELLY=0.25
 ENTRY_FRACTION=0.20
 MIN_ORDER_USD=10.00
-MIN_NET_EDGE=0.05
-ENTRY_MIN_EXPECTED_NET_RETURN_PCT=0.06
+MIN_NET_EDGE=0.08
+ENTRY_MIN_EXPECTED_NET_RETURN_PCT=0.04
 WEATHER_TAKER_FEE_RATE=0.05
-MAX_TOTAL_EXPOSURE_FRACTION=0.60
+MAX_TOTAL_EXPOSURE_FRACTION=0.90
 MAX_CITY_EXPOSURE_FRACTION=0.20
 MAX_EVENT_DATE_EXPOSURE_FRACTION=0.10
 LARGE_BANKROLL_EVENT_DATE_EXPOSURE_FRACTION=0.05
 MAX_EVENT_PORTFOLIO_LEGS=2
-OFFICIAL_NOWCAST_ENTRY_ONLY=true
+STRATEGY_MODE=hybrid_observation_edge
+INTRADAY_OBSERVATION_EDGE_ENABLED=true
+INTRADAY_MIN_SIDE_PROBABILITY=0.90
+INTRADAY_STRONG_SIDE_PROBABILITY=0.97
+INTRADAY_ABNORMAL_MIN_NET_EDGE=0.20
+INTRADAY_HKO_NEEDS_AUDIT_FRACTION_MULTIPLIER=0.25
+OFFICIAL_NOWCAST_ENTRY_ONLY=false
 OFFICIAL_NOWCAST_LOCK_BASE_ENTRY_FRACTION=0.20
 OFFICIAL_NOWCAST_LOCK_STRONG_ENTRY_FRACTION=0.50
 STREAM_CYCLE_INTERVAL_SECONDS=2400

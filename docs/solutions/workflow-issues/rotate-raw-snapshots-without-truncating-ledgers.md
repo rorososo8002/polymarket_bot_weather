@@ -98,7 +98,7 @@ was to keep zero-selection portfolio rows opt-in with
 `weather_bot.runtime_diagnostics`, and add an hourly cron job that runs
 `weather_bot.runtime_cleanup` against `/opt/polymarket-weather-bot/data`.
 The cleanup allowlist covers diagnostic archive prefixes only:
-`paper_raw_snapshots*`, `forecast_request_log*`,
+`paper_raw_snapshots*`, `station_nowcast_request_log*`,
 `station_nowcast_request_log*`, and `paper_event_portfolios*`.
 
 During the 2026-06-04 emergency cleanup, the disk was too full for `scp` to

@@ -17,6 +17,7 @@ class _DecisionSummary:
     skips_count: int = 0
     stale_blocks_count: int = 0
     skip_reasons: Counter[str] = field(default_factory=Counter)
+    tradability_skip_reasons: Counter[str] = field(default_factory=Counter)
     bucket_counts: dict[str, int] = field(default_factory=lambda: defaultdict(int))
     bucket_p_true_sums: dict[str, float] = field(default_factory=lambda: defaultdict(float))
     latest_entry_p_yes_by_market: dict[str, float] = field(default_factory=dict)
@@ -43,6 +44,21 @@ class _TradeSummary:
     city_counts: dict[str, int] = field(default_factory=lambda: defaultdict(int))
     bucket_pnl: dict[str, float] = field(default_factory=lambda: defaultdict(float))
     bucket_counts: dict[str, int] = field(default_factory=lambda: defaultdict(int))
+    strategy_mode_pnl: dict[str, float] = field(default_factory=lambda: defaultdict(float))
+    strategy_mode_counts: dict[str, int] = field(default_factory=lambda: defaultdict(int))
+    signal_family_pnl: dict[str, float] = field(default_factory=lambda: defaultdict(float))
+    signal_family_counts: dict[str, int] = field(default_factory=lambda: defaultdict(int))
+    price_anomaly_pnl: dict[str, float] = field(default_factory=lambda: defaultdict(float))
+    price_anomaly_counts: dict[str, int] = field(default_factory=lambda: defaultdict(int))
+    settlement_precision_pnl: dict[str, float] = field(default_factory=lambda: defaultdict(float))
+    settlement_precision_counts: dict[str, int] = field(default_factory=lambda: defaultdict(int))
+    probability_tier_pnl: dict[str, float] = field(default_factory=lambda: defaultdict(float))
+    probability_tier_counts: dict[str, int] = field(default_factory=lambda: defaultdict(int))
+    tier_predicted_probability_sum: dict[str, float] = field(default_factory=lambda: defaultdict(float))
+    tier_realized_win_sum: dict[str, float] = field(default_factory=lambda: defaultdict(float))
+    tier_brier_error_sum: dict[str, float] = field(default_factory=lambda: defaultdict(float))
+    tier_calibration_counts: dict[str, int] = field(default_factory=lambda: defaultdict(int))
+    calibration_unknown_count: int = 0
     brier_error_sum: float = 0.0
     brier_count: int = 0
     warnings: list[str] = field(default_factory=list)
@@ -51,6 +67,18 @@ class _TradeSummary:
 EXECUTED_PNL_ACTIONS = {"CLOSE", "PARTIAL_CLOSE", "SETTLED"}
 EXIT_BLOCK_ACTIONS = {"HOLD_NO_LIQUIDITY", "HOLD_STREAM_UNHEALTHY"}
 EXIT_ATTEMPT_ACTIONS = EXECUTED_PNL_ACTIONS | EXIT_BLOCK_ACTIONS
+TRADABILITY_SKIP_REASONS = {
+    "SKIP_MARKET_INACTIVE",
+    "SKIP_MARKET_CLOSED",
+    "SKIP_MARKET_ARCHIVED",
+    "SKIP_NOT_ACCEPTING_ORDERS",
+    "SKIP_ORDERBOOK_DISABLED",
+    "SKIP_NO_CONDITION_ID",
+    "SKIP_TRADABILITY_UNKNOWN",
+    "SKIP_NO_EXECUTABLE_DEPTH",
+    "SKIP_NO_DEPTH",
+    "SKIP_WIDE_SPREAD",
+}
 
 
 def _iter_csv_rows(path: Path) -> Iterable[dict[str, str]]:
@@ -162,18 +190,58 @@ def _direction_label(row: dict[str, str]) -> str:
     return "unknown"
 
 
+def _metadata_label(row: dict[str, str], field_name: str) -> str:
+    return (row.get(field_name) or "").strip() or "unknown"
+
+
+def _price_anomaly_label(row: dict[str, str]) -> str:
+    normalized = (row.get("price_anomaly") or "").strip().lower()
+    if normalized in {"true", "1", "yes"}:
+        return "true"
+    if normalized in {"false", "0", "no"}:
+        return "false"
+    return "unknown"
+
+
+def _probability_tier_label(row: dict[str, str]) -> str:
+    tier = (row.get("probability_tier") or "").strip()
+    return {
+        "80": "10% (tier 80)",
+        "90": "25% (tier 90)",
+        "95": "50% (tier 95)",
+    }.get(tier, "unknown")
+
+
 def _add_pnl_breakdown(summary: _TradeSummary, row: dict[str, str], pnl: float) -> None:
     signal = _signal_label(row)
     shape = _shape_label(row)
     direction = _direction_label(row)
     city = _city_label(row)
     bucket = shape
+    strategy_mode = _metadata_label(row, "strategy_mode")
+    signal_family = _metadata_label(row, "signal_family")
+    price_anomaly = _price_anomaly_label(row)
+    settlement_precision = _metadata_label(row, "settlement_precision_confidence")
+    probability_tier = _probability_tier_label(row)
     for values, counts, label in (
         (summary.signal_pnl, summary.signal_counts, signal),
         (summary.shape_pnl, summary.shape_counts, shape),
         (summary.direction_pnl, summary.direction_counts, direction),
         (summary.city_pnl, summary.city_counts, city),
         (summary.bucket_pnl, summary.bucket_counts, bucket),
+        (summary.strategy_mode_pnl, summary.strategy_mode_counts, strategy_mode),
+        (summary.signal_family_pnl, summary.signal_family_counts, signal_family),
+        (summary.price_anomaly_pnl, summary.price_anomaly_counts, price_anomaly),
+        (
+            summary.settlement_precision_pnl,
+            summary.settlement_precision_counts,
+            settlement_precision,
+        ),
+        (
+            summary.probability_tier_pnl,
+            summary.probability_tier_counts,
+            probability_tier,
+        ),
     ):
         values[label] += pnl
         counts[label] += 1
@@ -236,7 +304,10 @@ def _summarize_decisions(decisions_path: Path) -> _DecisionSummary:
         if side.startswith("SKIP"):
             summary.skips_count += 1
             reason_code = (row.get("reason_code") or "").strip()
-            summary.skip_reasons[reason_code or _skip_label(row.get("reason", ""))] += 1
+            reason_label = reason_code or _skip_label(row.get("reason", ""))
+            summary.skip_reasons[reason_label] += 1
+            if reason_label in TRADABILITY_SKIP_REASONS:
+                summary.tradability_skip_reasons[reason_label] += 1
             if _is_stale_block(reason_code, row.get("reason"), row.get("note")):
                 summary.stale_blocks_count += 1
             continue
@@ -256,6 +327,7 @@ def _summarize_trades(trades_path: Path, latest_entry_p_yes_by_market: dict[str,
     summary = _TradeSummary()
     open_entry_p_yes_by_market: dict[str, float] = {}
     open_shares_by_position: dict[tuple[str, str, str], float] = {}
+    open_calibration_by_position: dict[tuple[str, str, str], tuple[str, float, str] | None] = {}
     for trade in _iter_csv_rows(trades_path):
         summary.trades_count += 1
         market_id = trade.get("market_id", "")
@@ -283,6 +355,21 @@ def _summarize_trades(trades_path: Path, latest_entry_p_yes_by_market: dict[str,
             entry_p_yes = _entry_p_yes_from_open_trade(trade)
             if entry_p_yes is not None:
                 open_entry_p_yes_by_market[market_id] = entry_p_yes
+            selected_probability = _probability(trade.get("selected_side_probability"))
+            tier_label = _probability_tier_label(trade)
+            side = (trade.get("side") or "").upper()
+            if (
+                selected_probability is not None
+                and tier_label != "unknown"
+                and side in {"YES", "NO"}
+            ):
+                open_calibration_by_position[key] = (
+                    tier_label,
+                    selected_probability,
+                    side,
+                )
+            else:
+                open_calibration_by_position[key] = None
             continue
         if action == "ADD":
             if key not in open_shares_by_position:
@@ -304,6 +391,18 @@ def _summarize_trades(trades_path: Path, latest_entry_p_yes_by_market: dict[str,
         winner = _resolved_winner(trade.get("reason", ""))
         if winner is None:
             continue
+        calibration = open_calibration_by_position.pop(key, None)
+        if calibration is None:
+            summary.calibration_unknown_count += 1
+        else:
+            tier_label, selected_probability, entry_side = calibration
+            realized_win = 1.0 if winner == entry_side else 0.0
+            summary.tier_predicted_probability_sum[tier_label] += selected_probability
+            summary.tier_realized_win_sum[tier_label] += realized_win
+            summary.tier_brier_error_sum[tier_label] += (
+                selected_probability - realized_win
+            ) ** 2
+            summary.tier_calibration_counts[tier_label] += 1
         p_yes = open_entry_p_yes_by_market.get(market_id)
         if p_yes is None:
             p_yes = latest_entry_p_yes_by_market.get(market_id)
@@ -334,6 +433,47 @@ def _append_pnl_group(lines: list[str], title: str, pnl_by_label: dict[str, floa
         lines.append(f"- {label}: pnl={_money(pnl_by_label[label])} n={count}")
 
 
+def _append_probability_tier_performance(lines: list[str], summary: _TradeSummary) -> None:
+    lines.extend(["", "probability_tier_performance:"])
+    ordered = ("10% (tier 80)", "25% (tier 90)", "50% (tier 95)", "unknown")
+    wrote = False
+    for label in ordered:
+        count = summary.probability_tier_counts.get(label, 0)
+        if not count:
+            continue
+        wrote = True
+        lines.append(
+            f"- {label}: pnl={_money(summary.probability_tier_pnl[label])} n={count}"
+        )
+    if not wrote:
+        lines.append("- none")
+
+
+def _append_probability_tier_calibration(lines: list[str], summary: _TradeSummary) -> None:
+    lines.extend(["", "probability_tier_calibration:"])
+    ordered = ("10% (tier 80)", "25% (tier 90)", "50% (tier 95)")
+    wrote = False
+    for label in ordered:
+        count = summary.tier_calibration_counts.get(label, 0)
+        if not count:
+            continue
+        wrote = True
+        predicted = summary.tier_predicted_probability_sum[label] / count
+        realized = summary.tier_realized_win_sum[label] / count
+        brier = summary.tier_brier_error_sum[label] / count
+        lines.append(
+            f"- {label}: predicted={predicted:.3f} realized={realized:.3f} "
+            f"brier={brier:.4f} n={count}"
+        )
+    if summary.calibration_unknown_count:
+        wrote = True
+        lines.append(
+            f"- unknown: calibrated evidence unavailable n={summary.calibration_unknown_count}"
+        )
+    if not wrote:
+        lines.append("- none")
+
+
 def build_report(decisions_path: Path, trades_path: Path) -> str:
     decision_summary = _summarize_decisions(decisions_path)
     trade_summary = _summarize_trades(trades_path, decision_summary.latest_entry_p_yes_by_market)
@@ -360,6 +500,13 @@ def build_report(decisions_path: Path, trades_path: Path) -> str:
     ])
     for reason, count in decision_summary.skip_reasons.most_common():
         lines.append(f"- {reason}: {count}")
+
+    lines.extend(["", "tradability_gate_skips:"])
+    if decision_summary.tradability_skip_reasons:
+        for reason, count in decision_summary.tradability_skip_reasons.most_common():
+            lines.append(f"- {reason}: {count}")
+    else:
+        lines.append("- none")
 
     lines.extend([
         "",
@@ -401,6 +548,32 @@ def build_report(decisions_path: Path, trades_path: Path) -> str:
     _append_pnl_group(lines, "direction_performance", trade_summary.direction_pnl, trade_summary.direction_counts)
     _append_pnl_group(lines, "city_performance", trade_summary.city_pnl, trade_summary.city_counts)
     _append_pnl_group(lines, "bucket_performance", trade_summary.bucket_pnl, trade_summary.bucket_counts)
+    _append_pnl_group(
+        lines,
+        "strategy_mode_performance",
+        trade_summary.strategy_mode_pnl,
+        trade_summary.strategy_mode_counts,
+    )
+    _append_pnl_group(
+        lines,
+        "signal_family_performance",
+        trade_summary.signal_family_pnl,
+        trade_summary.signal_family_counts,
+    )
+    _append_pnl_group(
+        lines,
+        "price_anomaly_performance",
+        trade_summary.price_anomaly_pnl,
+        trade_summary.price_anomaly_counts,
+    )
+    _append_pnl_group(
+        lines,
+        "settlement_precision_confidence_performance",
+        trade_summary.settlement_precision_pnl,
+        trade_summary.settlement_precision_counts,
+    )
+    _append_probability_tier_performance(lines, trade_summary)
+    _append_probability_tier_calibration(lines, trade_summary)
     return "\n".join(lines)
 
 

@@ -7,7 +7,7 @@ problem_type: logic_error
 component: background_job
 symptoms:
   - "The live bot repeatedly logged No such file or directory for paper_runner_status.json.tmp during runner_status_update."
-  - "Dashboard health showed forecast STALE and WebSocket FAILED after a fresh paper reset even though no streamable tokens existed yet."
+  - "Dashboard health showed station signal STALE and WebSocket FAILED after a fresh paper reset even though no streamable tokens existed yet."
   - "The bot stayed active under systemd while the realtime cycle kept retrying from status-write failures."
 root_cause: thread_violation
 resolution_type: code_fix
@@ -19,7 +19,7 @@ tags: [runner-status, heartbeat, websocket, dashboard, concurrency, paper-tradin
 
 ## Problem
 
-After a fresh paper-account reset, the dashboard showed stale forecast health
+After a fresh paper-account reset, the dashboard showed stale station-signal health
 and failed realtime order-book health. The VPS log showed repeated realtime
 cycle failures while writing `paper_runner_status.json`.
 
@@ -34,7 +34,7 @@ REALTIME ERROR: realtime refresh cycle failed during runner_status_update:
 -> '/opt/polymarket-weather-bot/data/paper_runner_status.json'
 ```
 
-- The authenticated dashboard API showed `forecast.status=STALE` and
+- The authenticated dashboard API showed `station_signal.status=STALE` and
   `websocket.status=FAILED`.
 - `paper_runner_status.json` showed `0 tokens across 0 markets`, so there was
   no concrete WebSocket token that should have been subscribed yet.
@@ -61,7 +61,7 @@ Make `paper_runner_status.json` writes safe for concurrent status updates:
 Also distinguish a zero-token discovery cycle from a WebSocket failure:
 
 - `_stream_status_phase(..., token_count=0)` returns `stream_waiting`
-- dashboard forecast health returns `WAITING` when no forecast attempt,
+- dashboard station-signal health returns `WAITING` when no observation attempt,
   success, failure, or persistence error exists
 - dashboard WebSocket health returns `WAITING` when no streamable temperature
   token exists and there is no concrete WebSocket error
@@ -87,13 +87,12 @@ market discovery, not failed executable order-book depth.
 - Add a regression test that records the temp names used by consecutive
   `write_runner_status` and `update_runner_status_fields` calls.
 - Add a dashboard regression test for the fresh-reset, zero-token state:
-  forecast health should be `WAITING`, WebSocket health should be `WAITING`,
+  station-signal health should be `WAITING`, WebSocket health should be `WAITING`,
   and the bot should not report a false failure.
 - Verify live fixes with both the dashboard API and recent service logs; HTML
   liveness alone is not enough.
 
 ## Related Issues
 
-- [Separate forecast freshness from WebSocket stream health](./explicit-forecast-and-websocket-health.md)
 - [Runner heartbeat and wall-clock cadence for long paper bot cycles](./runner-heartbeat-cadence-status-2026-05-25.md)
 - [Realtime cycle exceptions must update runner status](./realtime-cycle-exceptions-must-update-runner-status.md)

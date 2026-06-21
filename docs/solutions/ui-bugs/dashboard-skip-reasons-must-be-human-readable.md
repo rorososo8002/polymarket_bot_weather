@@ -6,7 +6,7 @@ module: weather_bot.dashboard
 problem_type: ui_bug
 component: service_object
 symptoms:
-  - "The dashboard showed raw diagnostic text such as forecast-only entry blocked."
+  - "The dashboard showed raw diagnostic text such as residual profile missing."
   - "Operators could not quickly understand why a paper entry was skipped."
 root_cause: inadequate_documentation
 resolution_type: code_fix
@@ -18,7 +18,7 @@ tags: [dashboard, skip-reasons, official-stations, nowcast, paper-trading]
 
 ## Problem
 The official-station dashboard rendered raw strategy diagnostics in recent skip
-cards. A row like `official-nowcast-entry-only: forecast-only entry blocked`
+cards. A row like `SKIP_RESIDUAL_PROFILE_MISSING: station evidence unavailable`
 was accurate for developers, but it did not answer the operator's real question:
 "why did the bot refuse this trade?"
 

@@ -24,8 +24,88 @@ class ExecutableNetReturnEstimate:
     expected_net_return_pct: float
 
 
+@dataclass(frozen=True)
+class ObservationSizingTier:
+    probability_tier: str
+    entry_fraction: float
+    event_cap_override_fraction: float | None = None
+
+
 def clamp_probability(x: float) -> float:
     return max(0.0, min(1.0, x))
+
+
+def observation_selected_side_probability(
+    side: str,
+    *,
+    conservative_yes_probability: float | None,
+    conservative_no_probability: float | None,
+) -> float | None:
+    """Return the explicit conservative probability for the selected token."""
+    probability = conservative_yes_probability if side == "YES" else conservative_no_probability
+    return clamp_probability(probability) if probability is not None else None
+
+
+def observation_edge_entry_fraction(
+    side_probability: float | None,
+    *,
+    tier_80_probability: float = 0.80,
+    tier_90_probability: float = 0.90,
+    tier_95_probability: float = 0.95,
+    tier_80_fraction: float = 0.10,
+    tier_90_fraction: float = 0.25,
+    tier_95_fraction: float = 0.50,
+) -> ObservationSizingTier | None:
+    """Map a conservative selected-side probability to a structured sizing tier."""
+    if side_probability is None:
+        return None
+    probability = clamp_probability(side_probability)
+    tiers = (
+        ObservationSizingTier("95", tier_95_fraction, tier_95_fraction),
+        ObservationSizingTier("90", tier_90_fraction),
+        ObservationSizingTier("80", tier_80_fraction),
+    )
+    thresholds = (tier_95_probability, tier_90_probability, tier_80_probability)
+    return next((tier for threshold, tier in zip(thresholds, tiers) if probability >= threshold), None)
+
+
+def observation_probability_tier(
+    side_probability: float | None,
+    *,
+    tier_80_probability: float = 0.80,
+    tier_90_probability: float = 0.90,
+    tier_95_probability: float = 0.95,
+    tier_80_fraction: float = 0.10,
+    tier_90_fraction: float = 0.25,
+    tier_95_fraction: float = 0.50,
+) -> ObservationSizingTier | None:
+    """Backward-compatible helper name for callers already using tier semantics."""
+    return observation_edge_entry_fraction(
+        side_probability,
+        tier_80_probability=tier_80_probability,
+        tier_90_probability=tier_90_probability,
+        tier_95_probability=tier_95_probability,
+        tier_80_fraction=tier_80_fraction,
+        tier_90_fraction=tier_90_fraction,
+        tier_95_fraction=tier_95_fraction,
+    )
+
+
+def is_abnormal_price_opportunity(
+    side_probability: float,
+    net_edge: float,
+    expected_net_return_pct: float,
+    *,
+    min_side_probability: float,
+    abnormal_min_net_edge: float,
+    min_expected_net_return_pct: float,
+) -> bool:
+    """Tag only executable opportunities that clear every economic threshold."""
+    return (
+        clamp_probability(side_probability) >= min_side_probability
+        and net_edge >= abnormal_min_net_edge
+        and expected_net_return_pct >= min_expected_net_return_pct
+    )
 
 
 def polymarket_taker_fee_usdc(shares: float, price: float, fee_rate: float = WEATHER_TAKER_FEE_RATE) -> float:

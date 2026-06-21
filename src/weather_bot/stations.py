@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from typing import Literal
+
+TemperatureUnit = Literal["celsius", "fahrenheit", "unknown"]
+StationReportingPrecision = Literal["1C", "0.1C", "1F", "0.1F", "UNKNOWN"]
 
 DEFAULT_STATION_VERIFICATION_STATUS = "verified_from_existing_registry"
 DEFAULT_RULE_EVIDENCE_STATUS = "needs_rule_source_url"
 DEFAULT_NOWCAST_PROVIDER_STATUS = "provider_enabled"
-DEFAULT_TEMPERATURE_UNIT = "celsius"
-DEFAULT_REPORTING_PRECISION = "1C"
+DEFAULT_TEMPERATURE_UNIT: TemperatureUnit = "celsius"
+DEFAULT_REPORTING_PRECISION: StationReportingPrecision = "1C"
 DEFAULT_STATION_LAST_VERIFIED_AT = "2026-06-14"
 RULE_EVIDENCE_TRADING_READY_STATUS = "verified_rule_source"
 RULE_EVIDENCE_STATION_ID_CONFLICT_STATUS = "rule_station_id_conflict"
@@ -42,8 +46,8 @@ class StationMeta:
     rule_evidence_status: str = DEFAULT_RULE_EVIDENCE_STATUS
     polymarket_rule_url: str = ""
     polymarket_rule_station_text: str = ""
-    temperature_unit: str = DEFAULT_TEMPERATURE_UNIT
-    reporting_precision: str = DEFAULT_REPORTING_PRECISION
+    temperature_unit: TemperatureUnit = DEFAULT_TEMPERATURE_UNIT
+    reporting_precision: StationReportingPrecision = DEFAULT_REPORTING_PRECISION
     same_station_nowcast_supported: bool = True
     nowcast_confidence_grade: str = "A"
     last_verified_at: str = DEFAULT_STATION_LAST_VERIFIED_AT
@@ -69,8 +73,8 @@ def _station(
     nowcast_source_type: str = "metar",
     nowcast_provider_status: str = DEFAULT_NOWCAST_PROVIDER_STATUS,
     nowcast_station_id: str | None = None,
-    temperature_unit: str = DEFAULT_TEMPERATURE_UNIT,
-    reporting_precision: str = DEFAULT_REPORTING_PRECISION,
+    temperature_unit: TemperatureUnit = DEFAULT_TEMPERATURE_UNIT,
+    reporting_precision: StationReportingPrecision = DEFAULT_REPORTING_PRECISION,
     same_station_nowcast_supported: bool | None = None,
     nowcast_confidence_grade: str | None = None,
     last_verified_at: str = DEFAULT_STATION_LAST_VERIFIED_AT,

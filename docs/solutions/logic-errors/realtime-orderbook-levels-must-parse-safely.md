@@ -99,5 +99,4 @@ This is the same family of rule as:
 
 ## Related Issues
 - [Best-bid-ask messages are not executable order-book depth](./best-bid-ask-indicative-not-depth.md)
-- [Separate forecast freshness from WebSocket stream health](./explicit-forecast-and-websocket-health.md)
 - [VWAP Slippage Edge Contract](./vwap-slippage-edge-contract-2026-05-25.md)

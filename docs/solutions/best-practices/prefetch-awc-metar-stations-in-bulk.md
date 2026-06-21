@@ -83,5 +83,5 @@ settlement-station rule, invent nearby-station substitutions, or guess through
 bad data.
 
 If AWC returns missing, stale, malformed, future-date, unsupported, or invalid
-data, the bot must skip or stay forecast-only according to the existing
-fail-closed rules. The goal is fewer external calls, not weaker evidence.
+data, the bot must skip according to the existing fail-closed rules. The goal
+is fewer external calls, not weaker evidence.

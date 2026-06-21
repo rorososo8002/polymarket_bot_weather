@@ -19,7 +19,7 @@ tags: [paper-trading, held-exits, nowcast, entry-bankroll, probability-stop]
 ## Context
 
 An open-position investigation found three near-zero `NO` positions whose latest
-decision rows carried fresh forecast or nowcast notes, but the position exit
+decision rows carried fresh station-signal notes, but the position exit
 state still behaved as if the old entry probability was valid. The key clue was
 the decision reason:
 
@@ -111,5 +111,4 @@ no executable bid -> explicit no-liquidity exit blocker is logged
 
 - [Entry bankroll zero must skip before return estimate](../logic-errors/entry-bankroll-zero-must-skip-before-return-estimate.md)
 - [Probability stop replaces fixed price stop](../workflow-issues/probability-stop-replaces-fixed-price-stop-2026-05-26.md)
-- [Realtime nowcast signals must refresh on the nowcast TTL](../logic-errors/realtime-nowcast-signal-refresh-must-follow-nowcast-ttl.md)
 - [Token-level WebSocket freshness for held exits](../logic-errors/token-level-websocket-freshness-for-held-exits.md)

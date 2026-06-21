@@ -584,6 +584,142 @@ def test_dashboard_payload_summarizes_state_trades_and_decisions(tmp_path):
     assert "realized_results" in payload
 
 
+def test_dashboard_position_exposes_probability_calibration_audit_fields(tmp_path):
+    state_path = tmp_path / "state.json"
+    decisions_path = tmp_path / "decisions.csv"
+    state_path.write_text(
+        json.dumps(
+            {
+                "cash_usd": 60.0,
+                "realized_pnl_usd": 0.0,
+                "positions": [
+                    {
+                        "position_id": "p-audit",
+                        "market_id": "m-audit",
+                        "question": "Will the highest temperature in Seoul be 23C today?",
+                        "token_id": "yes",
+                        "side": "YES",
+                        "entry_price": 0.5,
+                        "shares": 80.0,
+                        "cost_usd": 40.0,
+                        "opened_at": "2026-06-22T00:00:00+00:00",
+                        "last_mark_price": 0.5,
+                        "metadata": {
+                            "city": "seoul",
+                            "station_id": "RKSI",
+                            "raw_selected_side_probability": 0.97,
+                            "selected_side_probability": 0.96,
+                            "probability_tier": "95",
+                            "calibration_sample_days": 1460,
+                            "calibration_profile_key": "RKSI|month=6|minute=900|high|C",
+                            "calibration_status": "RESIDUAL_PROBABILITY_OK",
+                            "requested_size_usd": 50.0,
+                            "executable_size_usd": 40.0,
+                            "event_cap_override_fraction": 0.5,
+                            "expected_net_return_pct": 0.7,
+                            "entry_fee_usdc": 1.0,
+                        },
+                    }
+                ],
+                "stats": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    write_csv(
+        decisions_path,
+        [
+            {
+                "ts": "2026-06-22T00:00:00+00:00",
+                "market_id": "m-audit",
+                "question": "Will the highest temperature in Seoul be 23C today?",
+                "side": "YES",
+                "raw_selected_side_probability": "0.97",
+                "selected_side_probability": "0.96",
+                "probability_tier": "95",
+                "calibration_sample_days": "1460",
+                "calibration_profile_key": "RKSI|month=6|minute=900|high|C",
+                "calibration_status": "RESIDUAL_PROBABILITY_OK",
+                "requested_size_usd": "50",
+                "executable_size_usd": "40",
+                "event_cap_override_fraction": "0.5",
+                "expected_net_return_pct": "0.7",
+                "entry_fee_usdc": "1",
+            }
+        ],
+    )
+
+    payload = build_dashboard_payload(
+        Settings(
+            bankroll_usd=100.0,
+            state_path=str(state_path),
+            decisions_csv_path=str(decisions_path),
+            trades_csv_path=str(tmp_path / "trades.csv"),
+        )
+    )
+
+    position = payload["positions"][0]
+    assert position["raw_selected_side_probability"] == pytest.approx(0.97)
+    assert position["selected_side_probability"] == pytest.approx(0.96)
+    assert position["probability_tier"] == "95"
+    assert position["calibration_sample_days"] == 1460
+    assert position["calibration_profile_key"] == "RKSI|month=6|minute=900|high|C"
+    assert position["calibration_status"] == "RESIDUAL_PROBABILITY_OK"
+    assert position["requested_size_usd"] == pytest.approx(50.0)
+    assert position["executable_size_usd"] == pytest.approx(40.0)
+    assert position["event_cap_override_fraction"] == pytest.approx(0.5)
+    assert position["expected_net_return_pct"] == pytest.approx(0.7)
+    assert position["entry_fee_usdc"] == pytest.approx(1.0)
+
+
+def test_dashboard_station_signals_include_calibrated_residual_observation(tmp_path):
+    state_path = tmp_path / "state.json"
+    decisions_path = tmp_path / "decisions.csv"
+    state_path.write_text(
+        json.dumps({"cash_usd": 100.0, "realized_pnl_usd": 0.0, "positions": [], "stats": {}}),
+        encoding="utf-8",
+    )
+    write_csv(
+        decisions_path,
+        [
+            {
+                "ts": "2026-06-22T00:00:00+00:00",
+                "market_id": "m-residual",
+                "question": "Will the highest temperature in Seoul be 23C today?",
+                "side": "YES",
+                "city": "seoul",
+                "station_id": "RKSI",
+                "signal_source": "official-station-residual-high-yes",
+                "reason": "YES edge=0.20",
+                "raw_selected_side_probability": "0.97",
+                "selected_side_probability": "0.96",
+                "probability_tier": "95",
+                "calibration_sample_days": "1460",
+                "calibration_profile_key": "RKSI|month=6|minute=900|high|C",
+                "calibration_status": "RESIDUAL_PROBABILITY_OK",
+                "requested_size_usd": "50",
+                "executable_size_usd": "40",
+                "event_cap_override_fraction": "0.5",
+            }
+        ],
+    )
+
+    payload = build_dashboard_payload(
+        Settings(
+            bankroll_usd=100.0,
+            state_path=str(state_path),
+            decisions_csv_path=str(decisions_path),
+            trades_csv_path=str(tmp_path / "trades.csv"),
+        )
+    )
+
+    signal = payload["scanner"]["station_signals"][0]
+    assert signal["market_id"] == "m-residual"
+    assert signal["selected_side_probability"] == pytest.approx(0.96)
+    assert signal["probability_tier"] == "95"
+    assert signal["calibration_status"] == "RESIDUAL_PROBABILITY_OK"
+
+
 def test_dashboard_scanner_counts_all_decisions_not_just_recent_tail(tmp_path):
     state_path = tmp_path / "state.json"
     trades_path = tmp_path / "trades.csv"

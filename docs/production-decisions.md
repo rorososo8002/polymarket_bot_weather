@@ -1,197 +1,521 @@
 # Production Decisions
 
-This is the active paper-bot rule book; historical notes belong in focused `docs/solutions/` entries.
+This is the active rule book for the paper-only Polymarket temperature bot.
 
-## Current Phase: Strategy Validation First
+Historical notes belong in focused `docs/solutions/` entries. Active work belongs in `docs/active/current-task.md`. Temporary step orders belong under `docs/active/` and must be deleted after completion.
 
-- Current work is paper-only strategy validation; live discussion requires `docs/paper-validation-runbook.md` gates plus a safety project.
-- Do not build wallet, private-key, signing, real-order, redemption, claim/copy-trading, or `LiveBroker` behavior in this phase.
-- Trust paper PnL only from executable ask/bid depth, fees, spread, slippage, stale-data fail-closed behavior, official station nowcast, and replayable ledgers.
-- Advanced dashboards, calibration/optimizer views, heatmaps, and live trading stay deferred until `docs/strategy-validation-roadmap.md` P0 gates pass.
+---
 
-## Execution Boundary
+## 1. Current Phase
 
-- Paper-only execution is the boundary: no keys, wallet, signing, live orders, redemption, copy trading, or private data without a live-safety pass.
-- Public dashboard exposure requires a real `DASHBOARD_TOKEN` with at least 32 characters. Public `/api/status` must accept the token only through `X-Dashboard-Token`; URL query tokens leak through logs, history, and shares.
-- Boolean, numeric, integer, and choice settings fail closed at startup when malformed or outside safe ranges.
+Current phase:
 
-## Market Universe And Station Evidence
+```text
+paper-only strategy validation
+```
 
-- `STATION_MAP` registers 49 cities; paper execution uses only the 48-city `TRADING_READY_STATION_MAP`. Karachi stays excluded until evidence is fixed.
-- Execute temperature markets only; non-temperature markets must not reach station-signal calculation, order-book subscription, or paper trade logging.
-- Unknown, stale, malformed, unsupported, suspicious, missing, or conflictful data means skip.
-- Market title parsing is not enough rule evidence. Preserve question, available rule/source text, station, unit, bucket shape, and station-local date window; title/rule conflicts mean skip.
-- Gamma discovery normalizes rule evidence into market metadata; city, high/low, unit, bucket, date, or explicit-station conflicts fail before station evaluation with `SKIP_RULE_MISMATCH`.
-- Recurring temperature events may expose one title plus labels such as `28°C`; discovery must synthesize binary questions from title+label. Grouped event-level rules may describe station/source/precision/UI toggles rather than each bucket, so compare bucket shape/value only when rule text explicitly states the outcome condition.
-- Station metadata must keep unit, precision, same-station support, confidence grade, verification date, and confidence level explicit.
-- Only station confidence grades A/B may enter `TRADING_READY_STATION_MAP`; grades C/D, unsupported providers, inferred, nearby, or unverifiable sources remain excluded. Karachi stays excluded until station evidence is reconciled.
-- Market metadata must carry the station-local event date plus UTC start/end window. Station observations must match that local date exactly; nearby dates are not substitutes.
-- Temperature bucket settlement uses centralized millifahrenheit boundaries.
-  Exact settlement means the displayed value only. Whole-degree Celsius exact
-  strategy uses source-display band `[N.0C, N+1.0C)`: `23.7C` is still `23C`;
-  `24.0C` breaks it.
-- `pre_station_tradeability_gate` rejects markets before station-signal work when they
-  are not temperature-shaped, not trading-ready, or missing required date
-  evidence. Undated markets always fail closed.
-- Entry evidence comes from official settlement-station observations, not
-  external weather-model calls. Freshness is judged from station observation
-  timestamps and provider floors.
+Live trading remains out of scope.
 
-## Realtime Order Books
+The evidence window and readiness gates are defined in `docs/paper-validation-runbook.md`. Passing them does not authorize live trading; it only permits discussion of a separate safety project.
 
-- Use the Polymarket CLOB WebSocket market stream by default. Do not silently
-  replace realtime streaming with polling.
-- Zero streamable temperature tokens is WAITING/no-market, not WebSocket failure.
-  Show executable-depth failure only for a real token or concrete WS error.
-- Realtime startup starts WebSocket after the temperature token set is known,
-  then attaches official-station observation signals from the evaluator path.
-- Polymarket category-page discovery may parse many event slugs, but detailed
-  `/events/slug/...` fetches are capped at 80 per discovery cycle and lower
-  explicit `max_pages * page_size` budgets must be honored.
-- Missing or stale official-station signals block new entries until the
-  evaluator refreshes same-station nowcast evidence. WebSocket callbacks must
-  not make weather HTTP calls.
-- Keep token IDs for open positions subscribed even when discovery moves to
-  newer markets.
-- Discovery maps YES/NO token IDs only from explicit outcome labels. If tokens
-  or outcomes cannot prove both sides, skip the market.
-- `best_bid_ask` messages are indicative quotes only. Executable depth comes
-  from `book` snapshots and valid `price_change` updates.
-- A `price_change` may update executable depth only after that token already
-  received a full-depth snapshot in the current stream cache. That snapshot may
-  come from WebSocket `book` or the bounded REST `/book` verification path.
-- Stale or dead executable depth blocks new entries and pauses held-position
-  exits with observable reasons.
-- Planned 40-minute stream rebuilds must discard pending realtime evaluator work before stopping the old WebSocket stream. Old-window queue entries must not create `HOLD_STREAM_UNHEALTHY` rows after the receiver has been intentionally stopped.
-- REST order-book snapshots may seed or resync the WebSocket cache at a bounded
-  interval. They are verification photos, not the realtime camera: WebSocket
-  remains primary, REST snapshots must not trigger evaluations, and raw
-  snapshots must not be written to runtime ledgers.
+Do not build or enable:
 
-## Strategy, Risk, And Accounting
+```text
+wallet connection
+private keys
+signing
+real orders
+redemption
+claim
+copy trading
+LiveBroker
+```
 
-- `DECISION YES` and `DECISION NO` are station-signal/order-book judgments, not
-  guaranteed opens. Broker exposure, hedge, confidence, liquidity, fee, and
-  stale-data gates may still block entry.
-- A new entry must survive a final pre-trade check: fresh executable book,
-  enough ask depth, configured absolute/percentage spread limits, still-positive
-  after-fee edge, no conflict with held positions, exposure room, rule clarity,
-  and non-stale official-station inputs. A spread failure uses `SKIP_WIDE_SPREAD`.
-- Entry decisions are fee-aware: `p_exec` is executable VWAP, `size_usd` is the
-  all-in paper budget, and `size_shares` is fee-adjusted. Defaults stay
-  exploratory but positive-EV: `MIN_NET_EDGE=0.08`,
-  `ENTRY_MIN_EXPECTED_NET_RETURN_PCT=0.04`.
-- Active paper defaults are official-lock-only: `BANKROLL_USD=200`, `$10`
-  minimum, 50% single-market, 50% city/date, 90% total.
-- Official same-station settlement-lock entries override Kelly sizing to 20%
-  for base near-close exact-bucket YES survival or 50% for strong lock signals.
-  They still require depth, fees, spread, positive after-fee edge, expected
-  return, portfolio caps, and final pre-trade recheck.
-- Signal confidence is sizing evidence, not a license to guess. Non-lock or
-  stale station signals block new entries while held exits and settlements
-  still run.
-- In Kelly mode, `ENTRY_FRACTION` is a per-event cap, not direct order size.
-- Same-market opposite-side entries remain blocked. Same-side add-ons are
-  allowed only when price, station-side probability, edge, expected return, cash, and
-  exposure caps still pass.
-- City-date buckets share one correlated-risk budget: at most two
-  complementary non-overlapping legs; hidden overlap and exact dust fail closed.
-- Exit decisions use after-fee liquidation PnL, not raw token-price movement.
-  Allowed exits: probability stop, take profit, overheated profit, edge faded,
-  max hold, settlement, and nowcast bucket-lock risk.
-- Profit-taking exits require `MIN_PROFIT_PCT=0.08` after fees. Probability
-  stop is defensive cleanup, not take-profit.
-- Nowcast bucket-lock risk blocks new entry as well as triggering exit. If it
-  fires before order placement, convert the candidate to SKIP.
-- If an exit signal fires but the close cannot execute, log the blocker and
-  preserve the original `exit_trigger`; do not pretend to sell.
-- Whole-stream order-book failure blocks new entries. One missing/illiquid held
-  token is worth $0 in `liquidation_bankroll`, not a global unrelated block.
-- Drawdown circuit breakers block new entries only; held exits and settlements
-  must continue. Active paper daily and large-loss stops are 50% of bankroll,
-  not a fixed $20 stop.
-- Profit exits may hold the full position as a settlement runner when
-  conservative settlement value beats sell-now value; active default is
-  `SETTLEMENT_RUNNER_MAX_FRACTION=1.00`.
-- Resolved paper settlement requires a proven binary winner. Ambiguous closed
-  prices are not guessed.
-- `paper_state.json` is the account book, not a disposable cache. Existing
-  corrupt, structurally invalid, or unsafe state fails closed instead of reset.
-- `paper_state.json` and `paper_trades.csv` are paired ledgers. Startup replays
-  executed trade rows against `BANKROLL_USD` and fails closed on mismatch.
-- New decision/trade rows must carry compact replay evidence: token/city,
-  station-local date, shape, station evidence, signal, VWAP, return, reason,
-  and model/config version. Old ledger rows stay readable.
-- Normal SKIP spam stays suppressed by default, but reports should aggregate
-  stable reason codes such as `SKIP_WIDE_SPREAD`.
-## Nowcast And Station Evidence
+A paper PnL number is trusted only if it uses:
 
-- Same-station nowcast is allowed only from explicitly mapped official sources:
-  AWC METAR for ICAO stations and HKO for Hong Kong.
-- Real AWC METAR bulk requests must be at least 60 seconds apart; real HKO
-  max/min requests stay at least 10 minutes apart. Cache hits do not write
-  request-log rows, and the dashboard must show these provider floors.
-- `STATION_NOWCAST_CACHE_TTL_SECONDS=60` is the recommended nowcast TTL; HKO stays protected by its 10-minute provider floor.
-- Dashboard station views must expose the full supported settlement-station
-  registry. Display-only alternates such as KMA Seoul ASOS 108 are reference
-  context only unless Polymarket rules name that station.
-- Dashboard views are official-station-first: show station/source, observations, time, settlement boundary, lock strength, 20%/50% allocation, skip reason, bid-depth PnL, exit liquidity, and WS freshness. The
-  side badge must be the plain Polymarket outcome label `Yes` or `No`; do not
-  add `Long`, `Short`, or `보유` because the bot only buys outcome tokens and
-  those words imply a separate margin direction that does not exist here.
-- The target date may be station-local today, or station-local yesterday only
-  during the post-close freshness window for held-position exit and settlement
-  evidence.
-- For daily-high thresholds, `observed_high_c >= threshold_c` favors held YES
-  and triggers held NO `nowcast_bucket_lock_risk`. Exact/range buckets use
-  settlement text directly: exact is the displayed value only, range is the
-  displayed inclusive endpoints; never widen exact to `28.5C-29.5C`.
-- Exact Celsius station evidence uses source-display integer settlement. For a
-  whole-degree `23C` bucket, the active strategy treats
-  `23.0C <= official_value < 24.0C` as the displayed `23C` outcome and treats
-  `24.0C` as the daily-high `23C` break point.
-- For official same-station nowcast on daily-high exact Celsius markets:
-  `observed_high_c >= bucket_c + 1.0` makes the exact-bucket YES impossible and
-  creates a strong NO settlement-lock signal. If the station remains inside
-  `[bucket_c, bucket_c + 1.0)` near the local event close, YES may become a
-  settlement-lock signal: 20% when there is enough buffer to the next integer
-  and 50% when the buffer is strong. The daily-low version is symmetric around
-  the lower displayed integer.
-- For daily-high exact/range held YES positions, same-station nowcast makes
-  YES impossible only after the observed high is above the exact value or range
-  upper endpoint; a lower observed high is not decisive. For daily-low
-  exact/range held YES, same-station nowcast makes YES impossible only after
-  observed low is below the exact value or range lower endpoint.
+```text
+executable ask depth for entry
+executable bid depth for exit
+fees
+spread
+slippage
+stale-data fail-closed behavior
+official settlement-station observations
+replayable ledgers
+```
 
-## Runtime Data And Disk
+---
 
-- Runtime ledgers are ignored by git and live under `data/`; recreate them only
-  for an intentional fresh paper experiment.
-- `paper_runner_status.json` is a concurrent heartbeat; writes must use
-  collision-resistant temp paths before atomic replace.
-- `paper_decisions.csv` suppresses SKIP rows by default. Continuous SKIP
-  tracing belongs in bounded `paper_skip_diagnostics.jsonl`, not the decision
-  ledger.
-- `paper_event_portfolios.jsonl` writes only when at least one trade is
-  selected by default. For bounded investigations, `PORTFOLIO_LOG_SKIP_ENABLED`
-  may be enabled so zero-selection portfolio rows record compact rejection
-  counts and samples. Pair this with archive pruning because skip portfolio
-  diagnostics can grow quickly.
-- `paper_raw_snapshots.jsonl` is diagnostic evidence, not a source ledger.
-  Normal snapshots stay disabled except for errors.
-- Actual account events (`OPEN`, `ADD`, `CLOSE`, `PARTIAL_CLOSE`, `SETTLED`)
-  write compact raw evidence snapshots by default. Normal decisions and ticks
-  still do not write raw snapshots unless debug mode is enabled.
-- Do not apply diagnostic cleanup rules to `paper_state.json`,
-  `paper_trades.csv`, or `paper_decisions.csv`.
-- Minimum reports stream ledger rows and separate trusted executable-depth net
-  PnL from reference-only PnL, liquidity/stale blockers, signal, shape, city,
-  and high/low breakdowns.
-- Individual market evaluation exceptions fail closed as observable
-  diagnostics: write a `SKIP_ERROR` row, write an error raw snapshot, and keep
-  runner-status error fields.
-- Logrotate compresses diagnostics, not core ledgers: raw snapshots and SKIP
-  diagnostics at 100 MB, request/portfolio logs at 10 MB, five archives under
-  `data/archive/`. `runtime_cleanup` may delete only known diagnostic archives
-  when their combined size exceeds 100 MB, never account or decision ledgers.
-- `docs/codex/known-good-commands.md` is the source for pytest, SSH, and dashboard checks.
+## 2. Replaced Decisions From Older Strategy
+
+The previous active default was effectively lock-only and too inactive.
+
+Remove or stop relying on these assumptions:
+
+```text
+OFFICIAL_NOWCAST_ENTRY_ONLY=true as the long-term active default
+endDate as hard order cutoff
+near local midnight as the main new-entry window
+best ask or midpoint as executable fill proof
+all integer labels sharing one universal rounding rule
+HKO decimal values treated as fully verified without audit
+```
+
+Replace them with:
+
+```text
+STRATEGY_MODE=hybrid_observation_edge
+CLOB tradability gate at final pre-trade
+official-station intraday observation edge
+regional high/low strategy profile
+settlement precision profile
+strategy-mode ledger tags
+step-by-step implementation and verification
+```
+
+---
+
+## 3. Market Universe
+
+Trade temperature markets only.
+
+Use:
+
+```text
+STATION_MAP = registered station universe
+TRADING_READY_STATION_MAP = paper execution universe
+```
+
+Karachi stays excluded unless station-rule evidence is reconciled.
+
+Non-temperature weather markets must fail closed before:
+
+```text
+station-signal calculation
+order-book subscription
+paper trade logging
+```
+
+Unknown, stale, malformed, unsupported, suspicious, missing, or conflictful data means skip.
+
+Market title parsing is not enough. Keep and compare:
+
+```text
+question text
+rule/resolution text when available
+station/source evidence
+unit
+bucket shape
+station-local date
+UTC window
+outcome labels
+token IDs
+```
+
+Rule/title/station/unit/date conflicts fail before trading.
+
+---
+
+## 4. Polymarket Tradability
+
+Do not treat Gamma `endDate` as the hard trading cutoff.
+
+`endDate` may be useful for sorting, event-date interpretation, and diagnostics, but it is not enough to prove the CLOB is closed or accepting orders.
+
+A new paper entry requires all of these at final pre-trade time:
+
+```text
+market.active is true
+market.closed is false
+market.archived is not true
+CLOB accepting_orders is true
+CLOB enable_order_book is true
+YES token ID exists
+NO token ID exists
+ask-side executable depth exists
+final ask-side executable VWAP is computable
+spread gate passes
+fee-aware edge passes
+expected net return gate passes
+portfolio and exposure gates pass
+same-station evidence is fresh and valid
+```
+
+If CLOB tradability cannot be verified, fail closed with:
+
+```text
+SKIP_TRADABILITY_UNKNOWN
+```
+
+`accepting_orders=false` fails with:
+
+```text
+SKIP_NOT_ACCEPTING_ORDERS
+```
+
+`enable_order_book=false` fails with:
+
+```text
+SKIP_ORDERBOOK_DISABLED
+```
+
+Do not silently skip these cases. Record stable reason codes in decisions, diagnostics, or grouped counters.
+
+---
+
+## 5. Order Book And Execution Realism
+
+Use Polymarket CLOB WebSocket market stream by default.
+
+REST order-book snapshots are allowed only as bounded verification/resync helpers. They must not replace WebSocket monitoring, trigger evaluations by themselves, or write raw order books to runtime ledgers.
+
+Executable depth comes from:
+
+```text
+full book snapshots
+valid price_change updates after a token has a full-depth snapshot
+bounded REST /book seed or resync when configured
+```
+
+Indicative quotes are not executable proof.
+
+Entry rule:
+
+```text
+entry = ask-side executable VWAP for the final size
+```
+
+Exit rule:
+
+```text
+exit = bid-side executable VWAP for the final close size
+```
+
+No bid depth means no successful `CLOSE`.
+
+Partial bid depth means `PARTIAL_CLOSE` or hold blocker, not fake full close.
+
+---
+
+## 6. Official Station Evidence
+
+The strategy is official settlement-station observation first.
+
+Do not enter from generic weather-model forecasts.
+
+Same-station nowcast is allowed only from explicitly mapped official sources:
+
+```text
+AWC METAR for supported ICAO stations
+HKO for Hong Kong
+other mapped official source only when explicitly implemented and tested
+```
+
+Station observations must match the station-local target date. Nearby dates are not substitutes.
+
+Provider request floors must be respected. Do not retry-bomb providers after stale, malformed, or failed evidence.
+
+---
+
+## 7. Settlement Precision
+
+Settlement precision must be explicit per station/source.
+
+Required profile fields:
+
+```text
+city
+station_id
+source_type
+unit
+reporting_precision
+bucket_model
+confidence
+note
+```
+
+Accepted bucket models:
+
+```text
+whole_degree_source_display_band
+one_decimal_range_containing
+unknown
+```
+
+Rules:
+
+```text
+whole-degree source display:
+  integer N uses [N.0, N+1.0) as the strategy evidence band
+  do not use hidden half-step ranges
+
+one-decimal source display:
+  use range-containing interpretation only when rules or audited settlements support it
+  until verified, confidence=needs_audit and size is reduced
+
+unknown precision:
+  block new entries
+```
+
+HKO/Hong Kong starts as:
+
+```text
+source_type=HKO
+reporting_precision=0.1C
+bucket_model=one_decimal_range_containing
+confidence=needs_audit
+```
+
+HKO can become `verified` only after historical settled Polymarket outcomes are audited against HKO raw Absolute Daily Max/Min values.
+
+---
+
+## 8. Bucket Direction Rules
+
+Daily-high exact integer N:
+
+```text
+N <= observed_high < N+1.0  => still inside N bucket
+observed_high >= N+1.0     => N YES impossible, N NO strong
+```
+
+Daily-low exact integer N:
+
+```text
+N <= observed_low < N+1.0  => still inside N bucket
+observed_low < N           => N YES impossible, N NO strong
+```
+
+Tail examples:
+
+```text
+N or below for high/low uses the wording from the actual market rule
+N or higher for high/low uses the wording from the actual market rule
+```
+
+Threshold markets must follow actual rule wording:
+
+```text
+above
+at or above
+below
+at or below
+highest
+lowest
+```
+
+These are not interchangeable.
+
+---
+
+## 9. Strategy Modes
+
+Allowed values:
+
+```text
+lock_only
+intraday_observation_edge
+hybrid_observation_edge
+```
+
+Default:
+
+```text
+hybrid_observation_edge
+```
+
+### lock_only
+
+Conservative official-station lock strategy.
+
+Use when the official observed value has already made a side impossible or nearly impossible, or when near local event close the bucket remains safely inside the displayed range.
+
+### intraday_observation_edge
+
+More active strategy using official settlement-station observations during the city-local high/low formation window.
+
+Minimum side probability:
+
+```text
+0.90
+```
+
+Strong side probability:
+
+```text
+0.97
+```
+
+### abnormal_official_station_mispricing
+
+A tag, not a separate independent source of truth.
+
+Use when:
+
+```text
+side_probability >= 0.90
+net_edge >= abnormal min net edge
+expected net return passes
+final ask VWAP exists
+spread passes
+tradability gate passes
+```
+
+Abnormal price opportunities may size larger, but still obey all exposure caps.
+
+---
+
+## 10. Regional Strategy Profile
+
+Asia / India / Oceania:
+
+```text
+high intraday allowed
+watch local 12:00-16:00 and later
+strong NO allowed immediately once a high bucket is broken
+```
+
+Europe / Middle East / Africa:
+
+```text
+high intraday YES only from local 15:00 or later
+strong NO allowed immediately once a bucket is broken
+```
+
+Americas:
+
+```text
+low strategy preferred before local 15:00
+high intraday YES blocked before local 15:00
+low-tail YES and exact-low broken-bucket NO preferred
+```
+
+These regional defaults are risk filters, not settlement rules.
+
+---
+
+## 11. Active Paper Defaults
+
+Recommended active paper defaults for this upgrade:
+
+```text
+BANKROLL_USD=200
+SIZE_MODE=kelly
+FRACTIONAL_KELLY=0.25
+ENTRY_FRACTION=0.20
+MIN_ORDER_USD=10.00
+MIN_NET_EDGE=0.08
+ENTRY_MIN_EXPECTED_NET_RETURN_PCT=0.04
+WEATHER_TAKER_FEE_RATE=0.05
+MAX_TOTAL_EXPOSURE_FRACTION=0.90
+MAX_CITY_EXPOSURE_FRACTION=0.20
+MAX_EVENT_DATE_EXPOSURE_FRACTION=0.10
+MAX_EVENT_PORTFOLIO_LEGS=2
+OFFICIAL_NOWCAST_ENTRY_ONLY=false
+STRATEGY_MODE=hybrid_observation_edge
+INTRADAY_OBSERVATION_EDGE_ENABLED=true
+INTRADAY_MIN_SIDE_PROBABILITY=0.90
+INTRADAY_STRONG_SIDE_PROBABILITY=0.97
+INTRADAY_BASE_ENTRY_FRACTION=0.10
+INTRADAY_STRONG_ENTRY_FRACTION=0.25
+INTRADAY_ABNORMAL_PRICE_ENTRY_FRACTION=0.35
+INTRADAY_ABNORMAL_MIN_NET_EDGE=0.20
+INTRADAY_HKO_NEEDS_AUDIT_FRACTION_MULTIPLIER=0.25
+INTRADAY_HIGH_CONFIRM_LOCAL_HOUR=15
+INTRADAY_LOW_CONFIRM_LOCAL_HOUR=8
+INTRADAY_US_HIGH_DISABLED_BEFORE_LOCAL_HOUR=15
+```
+
+These values are paper-experiment defaults, not live-trading settings.
+
+---
+
+## 12. Risk And Portfolio
+
+Same-market opposite-side entries remain blocked.
+
+Same-side add-ons are allowed only when price, station-side probability, edge, expected return, cash, and exposure caps still pass.
+
+City-date markets share one correlated-risk budget.
+
+At most two complementary non-overlapping legs may be selected for one city-date event unless the user explicitly approves a separate portfolio-risk redesign.
+
+Drawdown circuit breakers block new entries only. Held exits and settlements must continue.
+
+---
+
+## 13. Ledgers
+
+`paper_state.json` is the account book, not a cache.
+
+`paper_trades.csv` is the paper execution receipt ledger.
+
+`paper_decisions.csv` is the strategy decision evidence ledger.
+
+Existing corrupt, structurally invalid, or unsafe state fails closed instead of reset.
+
+New rows should carry compact evidence:
+
+```text
+strategy_mode
+signal_family
+price_anomaly
+settlement_precision_confidence
+city
+target_date
+shape
+side
+side_probability
+station_id
+observed_high
+observed_low
+entry_vwap
+exit_vwap
+spread
+fee_rate
+expected_net_return
+reason
+```
+
+Old rows without these columns must remain readable.
+
+---
+
+## 14. Reporting
+
+Minimum paper report must include:
+
+```text
+realistic net PnL
+open count
+close count
+partial close count
+no-liquidity blocker count
+not accepting orders skip count
+orderbook disabled skip count
+tradability unknown skip count
+wide spread skip count
+no executable depth skip count
+strategy_mode breakdown
+signal_family breakdown
+price_anomaly breakdown
+city breakdown
+high/low breakdown
+settlement_precision_confidence breakdown
+HKO needs_audit exposure/PnL
+```
+
+Do not trust a 24-hour result that lacks these breakdowns.
+
+---
+
+## 15. Completed Upgrade State
+
+The observation-edge implementation is now part of the permanent paper strategy contract. Future changes start from the current code, tests, this decision file, and `docs/strategy-validation-roadmap.md`; they must not depend on a completed temporary work order.
+
+When a future temporary implementation order is finished:
+
+1. delete that temporary file,
+2. reset `docs/active/current-task.md` to `Status: none`,
+3. keep AGENTS.md, this file, and the roadmap,
+4. report the changed files and verification results.

@@ -51,15 +51,15 @@ if evaluator_worker is not None:
     evaluator_worker = None
 ```
 
-Then stop the forecast worker and only then stop the old stream. The discarded
-queue entries are old-window hints, not durable account evidence. The next
-stream window will rebuild subscriptions and re-evaluate from fresh executable
-depth.
+Then stop the station-signal worker and only then stop the old stream. The
+discarded queue entries are old-window hints, not durable account evidence. The
+next stream window will rebuild subscriptions and re-evaluate from fresh
+executable depth.
 
 A regression test should assert the planned cleanup order:
 
 ```text
-evaluator.stop(drain=False) -> forecast.stop -> stream.stop
+evaluator.stop(drain=False) -> station_signal.stop -> stream.stop
 ```
 
 ## Why This Works
@@ -82,6 +82,5 @@ recording its own planned shutdown as a market-data failure.
   for steady-state streaming.
 
 ## Related Issues
-- [Separate forecast freshness from WebSocket stream health](./explicit-forecast-and-websocket-health.md)
 - [Realtime cycle exceptions must update runner status](./realtime-cycle-exceptions-must-update-runner-status.md)
 - [Decouple WebSocket receiving from strategy evaluation](../performance-issues/decouple-websocket-receiver-from-strategy-evaluation.md)

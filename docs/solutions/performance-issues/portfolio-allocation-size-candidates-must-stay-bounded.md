@@ -33,7 +33,7 @@ The event portfolio selector compares candidate legs and candidate sizes. For a
 two-leg plan, the size grids multiply: 1,000 possible sizes on the left and
 1,000 possible sizes on the right become 1,000,000 combinations.
 
-That matters because weather markets move. The bot can have a good forecast and
+That matters because weather markets move. The bot can have a good station signal and
 a good price, but if portfolio selection burns time comparing tiny size
 differences, the paper result stops measuring the strategy cleanly.
 

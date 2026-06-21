@@ -20,12 +20,12 @@ tags: [paper-trading, brier-score, entry-probability, csv-ledger, analysis]
 
 Brier score is the paper bot's probability grading sheet. If the bot entered a
 market when `p_true` was `0.70`, the resolved result must be graded as a
-`0.70` forecast.
+`0.70` entry probability.
 
 `analyze_paper.py` instead used the latest entry decision stored in
 `paper_decisions.csv` for each market. If the bot opened at `0.70` and later
 updated the same market to `0.90`, the report could grade the settlement as a
-`0.90` forecast. That is hindsight drift.
+`0.90` later probability. That is hindsight drift.
 
 ## 2. Why It Was A Problem
 

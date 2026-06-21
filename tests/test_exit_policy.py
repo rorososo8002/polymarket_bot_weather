@@ -9,7 +9,7 @@ from weather_bot.models import EdgeResult, PaperPosition
 
 
 def test_entry_plan_records_probability_stop_threshold():
-    settings = Settings(bankroll_usd=100, entry_fraction=0.05, max_single_market_fraction=0.05)
+    settings = Settings(bankroll_usd=100, entry_fraction=0.05)
     result = EdgeResult("YES", 0.68, 0.52, 0.11, 5.0, 9.615, "test")
     plan = build_entry_plan(result, 100.0, settings)
     assert round(plan.entry_fraction, 4) == 0.05
@@ -17,6 +17,82 @@ def test_entry_plan_records_probability_stop_threshold():
     assert plan.model_fair_price > result.p_exec
     assert plan.target_exit_price > result.p_exec
     assert plan.target_exit_price < plan.model_fair_price
+
+
+def test_entry_plan_prefers_structured_selected_side_probability_for_no():
+    settings = Settings(bankroll_usd=100)
+    result = EdgeResult(
+        "NO",
+        0.04,
+        0.20,
+        0.10,
+        25.0,
+        125.0,
+        "test",
+        selected_side_probability=0.92,
+    )
+
+    plan = build_entry_plan(result, 100.0, settings)
+
+    assert plan.probability_stop_threshold == pytest.approx(0.82)
+    assert plan.model_fair_price < 0.92
+
+
+def test_held_exit_prefers_latest_selected_side_probability_over_p_true_complement():
+    settings = Settings(probability_stop_drop_threshold=0.10)
+    pos = PaperPosition(
+        position_id="p1",
+        market_id="m1",
+        question="q",
+        token_id="t1",
+        side="NO",
+        entry_price=0.50,
+        shares=10,
+        cost_usd=5,
+        opened_at=datetime.now(timezone.utc).isoformat(),
+        metadata={
+            "entry_p_true": 0.04,
+            "selected_side_probability": 0.92,
+            "probability_stop_threshold": 0.82,
+        },
+    )
+    latest_edge = EdgeResult(
+        "NO",
+        0.04,
+        0.50,
+        0.10,
+        0.0,
+        0.0,
+        "latest",
+        selected_side_probability=0.80,
+    )
+
+    assessment = assess_exit(pos, 0.50, latest_edge, settings, 1.0)
+
+    assert assessment.should_close
+    assert assessment.trigger == "probability_stop"
+    assert "0.920->0.800" in assessment.reason
+
+
+def test_held_exit_falls_back_to_p_true_complement_without_structured_probability():
+    settings = Settings(probability_stop_drop_threshold=0.10)
+    pos = PaperPosition(
+        position_id="p1",
+        market_id="m1",
+        question="q",
+        token_id="t1",
+        side="NO",
+        entry_price=0.50,
+        shares=10,
+        cost_usd=5,
+        opened_at=datetime.now(timezone.utc).isoformat(),
+        metadata={"entry_p_true": 0.04, "probability_stop_threshold": 0.82},
+    )
+    latest_edge = EdgeResult("NO", 0.04, 0.50, 0.10, 0.0, 0.0, "latest")
+
+    assessment = assess_exit(pos, 0.50, latest_edge, settings, 1.0)
+
+    assert not assessment.should_close
 
 
 def test_take_profit_when_mark_reaches_station_target():

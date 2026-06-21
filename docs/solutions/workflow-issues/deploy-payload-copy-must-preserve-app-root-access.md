@@ -1,7 +1,7 @@
 ---
 title: Deploy payload copy must preserve app root access
 date: 2026-06-06
-last_updated: 2026-06-08
+last_updated: 2026-06-20
 category: workflow-issues
 module: deployment, oracle-vps
 problem_type: workflow_issue
@@ -38,6 +38,12 @@ A later strategy deploy exposed two adjacent hazards:
   `.pytest-tmp` did not exist, and one test wrote to the default
   `paper_event_portfolios.jsonl` in the app root instead of a `tmp_path`
   ledger.
+
+A narrow configuration deploy exposed another hazard: a partial payload
+contained `src/weather_bot/config.py` but not
+`src/weather_bot/__init__.py`. Even with `PYTHONPATH` pointed at the payload,
+Python selected the already installed regular `weather_bot` package, so the
+pre-deploy test exercised the old server code instead of the payload.
 
 ## Guidance
 
@@ -79,6 +85,20 @@ cd /opt/polymarket-weather-bot
 sudo -u polymarket .venv/bin/python -m pytest -q
 ```
 
+When testing a partial payload before copying it into the app, include the
+complete Python package boundary, at minimum `src/weather_bot/__init__.py` and
+every imported module. For this project, the simple reliable choice is to put
+all tracked `src/weather_bot/*.py` files plus new package modules in the
+preflight archive. Verify the imported path before trusting the test:
+
+```bash
+PYTHONPATH=/tmp/payload/src .venv/bin/python -c \
+  "import weather_bot.config as c; print(c.__file__)"
+```
+
+The printed path must point into `/tmp/payload`, not
+`/opt/polymarket-weather-bot`.
+
 Tests that instantiate `Settings` should point every writable runtime ledger at
 `tmp_path`, including `portfolio_decisions_jsonl_path`, so a root-level
 `paper_event_portfolios.jsonl` cannot affect the result.
@@ -113,6 +133,8 @@ gaps prevents deployment from stalling on server-only filesystem leftovers.
 - Remote pytest runs a different test count than local pytest.
 - Remote pytest fails before assertions due to `.pytest-tmp` setup or app-root
   runtime files.
+- A partial-payload test reports old defaults even though the archived source
+  visibly contains the new value.
 
 ## Examples
 

@@ -44,6 +44,28 @@ class RawMarket:
     event_slug: str | None = None
     raw: dict[str, Any] | None = None
     rule_provenance: MarketRuleProvenance | None = None
+    accepting_orders: bool | None = None
+    enable_order_book: bool | None = None
+    ready: bool | None = None
+    funded: bool | None = None
+    archived: bool | None = None
+    end_date_iso: str | None = None
+    accepting_order_timestamp: str | None = None
+    tradability_source: str = ""
+
+
+@dataclass(frozen=True)
+class MarketTradability:
+    active: bool | None = None
+    closed: bool | None = None
+    archived: bool | None = None
+    accepting_orders: bool | None = None
+    enable_order_book: bool | None = None
+    ready: bool | None = None
+    funded: bool | None = None
+    condition_id: str | None = None
+    source: str = ""
+    raw: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -123,6 +145,20 @@ class WeatherSignal:
     nowcast: dict[str, Any] | None = None
     entry_size_fraction_override: float | None = None
     entry_size_reason: str = ""
+    strategy_mode: str = ""
+    signal_family: str = ""
+    price_anomaly: bool = False
+    settlement_precision_confidence: str = ""
+    raw_probability: float | None = None
+    conservative_yes_probability: float | None = None
+    conservative_no_probability: float | None = None
+    raw_selected_side_probability: float | None = None
+    selected_side_probability: float | None = None
+    calibration_sample_days: int = 0
+    calibration_profile_key: str = ""
+    calibration_status: str = ""
+    probability_tier: str = ""
+    event_cap_override_fraction: float | None = None
 
 
 @dataclass(frozen=True)
@@ -137,6 +173,22 @@ class EdgeResult:
     expected_net_profit_usd: float = 0.0
     exit_signal: str = ""
     exit_signal_reason: str = ""
+    price_anomaly: bool = False
+    strategy_mode: str = ""
+    signal_family: str = ""
+    entry_size_fraction_override: float | None = None
+    raw_probability: float | None = None
+    conservative_yes_probability: float | None = None
+    conservative_no_probability: float | None = None
+    raw_selected_side_probability: float | None = None
+    selected_side_probability: float | None = None
+    calibration_sample_days: int = 0
+    calibration_profile_key: str = ""
+    calibration_status: str = ""
+    probability_tier: str = ""
+    event_cap_override_fraction: float | None = None
+    requested_size_usd: float | None = None
+    executable_size_usd: float | None = None
 
 
 @dataclass(frozen=True)

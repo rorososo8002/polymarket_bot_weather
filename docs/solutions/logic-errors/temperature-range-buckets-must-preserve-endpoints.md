@@ -43,7 +43,7 @@ For `86-87F`, the condition is exactly:
 ```
 
 It is not `87F exact`, and it is not a widened helper interval such as
-`[85.5F, 87.5F)`. If the bot widens or shrinks this range, the forecast
+`[85.5F, 87.5F)`. If the bot widens or shrinks this range, the residual
 probability, edge math, and portfolio scenarios grade the wrong event.
 
 ## 3. How It Was Fixed
@@ -59,7 +59,7 @@ single-number pattern. A parsed range stores:
 - `temperature_range_inclusive`
 
 The probability code applies the lower/upper pair directly. For Fahrenheit
-ranges, it compares forecast Fahrenheit values against the displayed Fahrenheit
+ranges, it compares station-residual Fahrenheit values against the displayed Fahrenheit
 endpoints. For Celsius ranges, it converts the displayed Celsius endpoints with
 only the official formula `F = C * 9 / 5 + 32`, then compares against those
 converted values without rounding.
@@ -81,7 +81,7 @@ show which ruler was used.
 - Add a parser test first for any new Polymarket question shape.
 - Check that parsed fields preserve the real market shape, not only a single
   threshold number.
-- Add a probability test with fake ensemble members at each endpoint.
+- Add a probability test with synthetic residual samples at each endpoint.
 - Add just-below and just-above boundary values such as `85.999F` and
   `87.001F`.
 - Include a binary-float artifact case such as `68.00000000000001F`, and a real
@@ -112,5 +112,4 @@ comparisons in each module.
 
 ## Related
 
-- [Observed high nowcast must not affect daily-low markets](observed-high-nowcast-daily-low-markets.md)
 - [Weather discovery false positives](weather-discovery-false-positives-2026-05-24.md)

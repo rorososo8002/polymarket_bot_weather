@@ -68,5 +68,5 @@ cd /opt/polymarket-weather-bot && sudo -u polymarket .venv/bin/python -m pytest 
 
 ## Related
 
-- [Verify VPS code, environment, and API health before trusting the dashboard](./verify-vps-code-env-and-api-health-2026-05-26.md)
+- [Verified local and VPS commands](../../codex/known-good-commands.md)
 - [Use workspace temp dirs when pytest cannot scan Windows temp](./pytest-temp-permission-2026-05-26.md)

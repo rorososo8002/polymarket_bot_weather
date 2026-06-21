@@ -89,5 +89,4 @@ done, without adding live trading or real orders.
 
 ## Related Issues
 - [Best-bid-ask messages are not executable order-book depth](./best-bid-ask-indicative-not-depth.md)
-- [Separate forecast freshness from WebSocket stream health](./explicit-forecast-and-websocket-health.md)
 - [Realtime orderbook levels must parse safely](./realtime-orderbook-levels-must-parse-safely.md)

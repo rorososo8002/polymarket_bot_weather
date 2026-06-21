@@ -1,333 +1,251 @@
 # Strategy Validation Roadmap
 
-Created: 2026-06-13 Asia/Seoul
+This roadmap exists to make the paper strategy honest before any live-trading project is considered.
 
-## Purpose
+Do not use this file as the live task queue. The live task queue is `docs/active/current-task.md`.
 
-This document is the handoff roadmap for the current project phase.
+Long-window evidence and live-discussion gates are defined in `docs/paper-validation-runbook.md`.
 
-The long-term goal is a profitable Polymarket temperature-market bot that may
-later be connected to live trading. The current goal is narrower: prove that
-the paper bot's results are realistic enough to trust before adding any real
-money path.
+---
 
-In plain terms: do not ask "can the bot make money live?" yet. First ask "is
-the paper result honest, replayable, and based on prices we could actually
-trade?"
+## 1. North Star
 
-## Current Scope
-
-This phase includes:
-
-- realistic paper entries from ask-side executable order-book depth
-- realistic paper exits from bid-side executable order-book depth
-- no fake close when bid depth is absent
-- partial close and partial liquidity behavior
-- fee, spread, and slippage reflected in paper PnL
-- stale order books and stale official-station observations failing closed
-- exact, range, and threshold settlement logic that follows Polymarket text
-- daily-high and daily-low nowcast risk handled in opposite directions
-- official settlement-station observation evidence, not generic weather feeds
-- local event date and timezone correctness
-- compact validation logs that explain why entries, exits, skips, and holds
-  happened
-- a minimum performance report that separates realistic bid/ask-depth PnL from
-  reference-only midpoint PnL
-
-This phase excludes:
-
-- wallet connection
-- private keys
-- signing
-- real orders
-- redeeming or claiming markets
-- copy trading
-- `LiveBroker`
-- advanced analytics dashboards; the operator dashboard may be realigned to
-  the active official-station strategy
-- Brier/LogLoss dashboards
-- calibration charts
-- region exposure optimizer
-- complex portfolio heatmap
-- a large simulator
-
-## Definitions For Future Agents
-
-`VWAP` means volume-weighted average price. It is the average price the bot gets
-after consuming real order-book levels. This matters because buying 100 shares
-may use several price levels, not only the best ask.
-
-`ask depth` is the real sell-side liquidity available to buy from. A paper
-entry is realistic only when it uses this depth.
-
-`bid depth` is the real buy-side liquidity available to sell into. A paper exit
-is realistic only when it uses this depth.
-
-`best bid`, `best ask`, and midpoint are useful reference quotes, but they are
-not proof that the whole order can execute.
-
-`fail closed` means "skip or hold when evidence is missing." In a trading bot,
-guessing is worse than doing nothing because it creates fake confidence and fake
-PnL.
-
-`paper_state.json` is the paper account book. It stores cash, open positions,
-and realized PnL. It is not a cache for temporary diagnostics.
-
-`paper_trades.csv` is the paper execution receipt ledger. A `CLOSE` row should
-mean a close was executable in the paper model, not merely that an exit signal
-appeared.
-
-`paper_decisions.csv` is the decision ledger. It should explain why the bot
-wanted YES, NO, HOLD, SKIP, or an exit.
-
-## P0 Validation Gates
-
-The bot is not ready for live-trading planning until all P0 gates are true.
-
-1. Entry uses executable ask-side VWAP for the final order size.
-2. Exit uses executable bid-side VWAP for the final close size.
-3. No successful `CLOSE` is logged when executable bid depth is absent.
-4. Partial liquidity becomes scaled entry, `PARTIAL_CLOSE`, or a hold blocker.
-5. Fees, spread, and slippage are reflected before PnL is trusted.
-6. Stale order books and stale official-station observations block new entries
-   and pause exits with observable reasons.
-7. Exact bucket settlement checks are exact displayed values; no hidden
-   half-step settlement intervals.
-8. Whole-degree Celsius exact-bucket station evidence uses the settlement
-   source's displayed integer band as `[N.0C, N+1.0C)`. For daily-high exact
-   `23C`, `23.7C` still supports YES and `24.0C` creates the strong NO lock.
-9. Range buckets preserve displayed inclusive endpoints.
-10. Threshold markets follow the exact rule wording.
-11. Daily-high markets use observed high; daily-low markets use observed low.
-12. Same-station nowcast is used only when official station evidence is mapped.
-13. Event date windows are evaluated in the station-local timezone.
-14. Market rule provenance is preserved: title, description/resolution text,
-    station/source evidence, unit, bucket shape, and local event window are
-    consistent before a market may trade.
-15. A final pre-trade check revalidates executable depth, spread, stale data,
-    edge, exposure, opposing positions, and rule clarity before paper entry.
-16. Decision, trade, snapshot, and report outputs carry enough fields to audit
-    the result later.
-16. The minimum performance report shows realistic net PnL, no-liquidity rate,
-    stale-data blocks, signal-type breakdown, market-shape breakdown, city
-    breakdown, and high/low breakdown.
-
-## Existing Code Surfaces
-
-Use these files as the map before changing behavior:
+The bot should answer one question:
 
 ```text
-src/weather_bot/stations.py           station registry and trading-ready subset
-src/weather_bot/weather_client.py     market question parser and bucket shape
-src/weather_bot/station_signal.py     official station observation signals
-src/weather_bot/nowcast.py            same-station observed high/low providers
-src/weather_bot/realtime_orderbook.py executable WebSocket order-book cache
-src/weather_bot/edge.py               VWAP, fees, slippage, expected return
-src/weather_bot/paper.py              paper broker, account book, exits, ledgers
-src/weather_bot/exit_policy.py        close/hold trigger rules
-src/weather_bot/live_paper_runner.py  orchestration and realtime evaluation
-src/weather_bot/analyze_paper.py      paper performance report
-src/weather_bot/dashboard.py          read-only operator dashboard
+Did the paper strategy make money using prices, liquidity, fees, official station evidence, and ledgers that could survive a real audit?
 ```
 
-Primary focused tests:
+It should not answer:
 
 ```text
-tests/test_realtime_orderbook.py
-tests/test_hardening.py
-tests/test_parser.py
-tests/test_probability_ensemble.py
-tests/test_portfolio.py
-tests/test_paper.py
-tests/test_exit_policy.py
+Could we make the backtest or paper PnL look bigger by assuming fills?
 ```
 
-## Implementation Sequence
-
-This section is the durable roadmap, not the live task queue.
-
-Do not infer unfinished work only because a part still appears below. These
-part descriptions stay here as the strategy-validation syllabus. The only
-active queue is `docs/active/current-task.md`; keep completion evidence in
-tests, commits, final responses, or focused `docs/solutions/` notes instead of
-turning this roadmap into a diary.
-
-Current protected baseline as of 2026-06-14:
-
-- executable bid/ask VWAP, fees, partial close, and no-fake-close behavior are
-  already code-and-test protected
-- exact buckets no longer use hidden half-step intervals
-- range buckets preserve displayed inclusive endpoints
-- daily-high/daily-low nowcast risk direction is protected by tests
-- Same-station provider floors and no retry bombing are protected by tests
-
-Future work should first verify this baseline, then fill the remaining gaps in
-rule provenance, station-local windows, replayable evidence, reporting,
-confidence, drawdown, and live-readiness gates.
-
-### Part 1 - Audit And Drift Report
-
-Goal: compare current code against the P0 gates before making broad changes.
-
-Output:
-
-- a short drift note in the final response
-- docs updated first if behavior and docs disagree
-- focused characterization tests for any behavior that already works and must
-  not regress
-
-Do not redesign strategy thresholds in this part.
-
-### Part 2 - Execution Realism Hardening
-
-Goal: make entries and exits realistic.
-
-Required behavior:
-
-- entry probes ask depth with the minimum order
-- entry recalculates final executable VWAP after final size is known
-- exit probes bid depth before writing `CLOSE`
-- no bid depth produces a hold blocker, not a fake close
-- partial bid depth produces `PARTIAL_CLOSE` when allowed
-- fees flow through share count, proceeds, cash, and report value
-
-Key files:
+Paper PnL is useful only when:
 
 ```text
-src/weather_bot/edge.py
-src/weather_bot/paper.py
-src/weather_bot/realtime_orderbook.py
+entry used executable ask VWAP
+exit used executable bid VWAP
+fees/spread/slippage were included
+same-station official evidence was fresh
+market rules were clear
+tradability was verified
+ledger replay is possible
+```
+
+---
+
+## 2. Current Strategic Upgrade
+
+The current upgrade replaces a too-inactive lock-only posture with:
+
+```text
+hybrid_observation_edge
+```
+
+This includes:
+
+```text
+lock_only
+intraday_observation_edge
+abnormal_official_station_mispricing tag
+```
+
+The strategy may become more active, but every new entry still needs:
+
+```text
+CLOB tradability
+executable ask depth
+official station evidence
+90%+ side probability for intraday edge
+fee-aware positive edge
+expected net return
+portfolio room
+ledger tags
+```
+
+---
+
+## 3. P0 Gates
+
+The bot is not ready for live-trading planning until these are all true.
+
+1. New entries do not rely on `endDate` as a hard order cutoff.
+2. Final pre-trade checks CLOB `accepting_orders`, `enable_order_book`, `active`, `closed`, and actual order-book depth.
+3. Entry uses final ask-side executable VWAP.
+4. Exit uses final bid-side executable VWAP.
+5. No fake `CLOSE` when bid depth is absent.
+6. Partial liquidity becomes scaled entry, `PARTIAL_CLOSE`, or a hold blocker.
+7. Settlement precision profile exists per station/source.
+8. HKO decimal markets are `needs_audit` until historical settlement audit proves bucket mapping.
+9. Daily-high and daily-low use correct opposite nowcast directions.
+10. Intraday strategy uses official same-station observations, not generic forecasts.
+11. Strategy mode and signal family are recorded in ledgers.
+12. Report separates `lock_only`, `intraday_observation_edge`, and `price_anomaly` performance.
+13. Old ledgers remain readable.
+14. All focused tests pass or failures are clearly explained as environment-only.
+
+---
+
+## 4. P1 Gates
+
+1. Historical settlement audit table exists for HKO and other decimal/ambiguous sources.
+2. 24-72 hour paper run shows strategy-mode PnL, skip reasons, and liquidity blockers.
+3. Regional high/low filters are compared by city group.
+4. Abnormal price entries are reviewed separately from normal intraday entries.
+5. HKO `needs_audit` positions do not dominate risk.
+
+---
+
+## 5. P2 Gates
+
+1. Multiple-day paper report confirms entries are not just one-day noise.
+2. Skip reason distribution is stable and understandable.
+3. Dashboard shows the active strategy mode and tradability skip counts.
+4. Runtime files stay bounded and are not bulk-read by agents.
+5. A separate live-trading safety review can be considered only after the user explicitly asks.
+
+---
+
+## 6. Durable Implementation Sequence
+
+This sequence is durable guidance. For the current run, follow the temporary implementation order file.
+
+### Phase A - Documentation Alignment
+
+Goal:
+
+```text
+Make AGENTS.md, current-task, production decisions, and roadmap agree before code changes.
+```
+
+Required outcome:
+
+```text
+No doc says endDate is the hard trading cutoff.
+No doc says lock-only is the active default.
+Docs require accepting_orders and executable depth before new paper entry.
+Docs define settlement precision profile and HKO needs_audit behavior.
+Docs require step-by-step user confirmation.
+```
+
+### Phase B - Tradability Metadata
+
+Goal:
+
+```text
+Preserve and verify Polymarket tradability fields.
+```
+
+Main files:
+
+```text
+src/weather_bot/models.py
+src/weather_bot/polymarket_client.py
 src/weather_bot/live_paper_runner.py
 ```
 
-### Part 3 - Settlement, Nowcast, And Date Correctness
-
-Goal: make market-rule and station evidence impossible to misread.
-
-Required behavior:
-
-- exact Celsius/Fahrenheit bucket means the displayed value only
-- whole-degree exact Celsius station evidence treats
-  `[bucket_c, bucket_c + 1.0C)` as the displayed integer bucket
-- exact Celsius daily-high NO becomes strong only when the official observed
-  high reaches the next integer, not while it remains at `23.xC`
-- official same-station nowcast treats `23.7C` as still inside the displayed
-  `23C` bucket and treats `24.0C` as the break point for daily-high `23C`
-  exact markets
-- range bucket means displayed inclusive endpoints
-- threshold market follows its own above/below/inclusive wording
-- daily-high YES risk checks observed high
-- daily-low YES risk checks observed low
-- official same-station nowcast can trigger exits when it makes the position
-  impossible or near-impossible under the market rule
-- generic or wrong-station weather data cannot trigger confident exits
-- target dates use station-local date windows
-
-Key files:
+Required outcome:
 
 ```text
-src/weather_bot/weather_client.py
+RawMarket carries active/closed/archived/accepting_orders/enable_order_book/ready/funded/end_date_iso.
+Final pre-trade can fetch CLOB tradability by condition_id.
+No entry when accepting_orders is false or unknown at final pre-trade.
+```
+
+### Phase C - Settlement Precision
+
+Goal:
+
+```text
+Separate Wunderground-style whole-degree markets from HKO decimal markets.
+```
+
+Main files:
+
+```text
+src/weather_bot/settlement_precision.py
 src/weather_bot/station_signal.py
-src/weather_bot/nowcast.py
+src/weather_bot/stations.py
+```
+
+Required outcome:
+
+```text
+whole_degree_source_display_band works as [N.0, N+1.0).
+HKO one-decimal range-containing is needs_audit until proven.
+Unknown precision blocks entries.
+```
+
+### Phase D - Intraday Observation Edge
+
+Goal:
+
+```text
+Increase trade activity using official station evidence at city-local high/low formation windows.
+```
+
+Main files:
+
+```text
+src/weather_bot/strategy_profiles.py
+src/weather_bot/station_signal.py
 src/weather_bot/live_paper_runner.py
 ```
 
-### Part 4 - Validation Logging Contract
+Required outcome:
 
-Goal: make every important paper result explainable later without writing huge
-logs.
+```text
+Asia/India/Oceania high strategy allowed.
+Europe/Middle East/Africa high YES only local 15:00+.
+Americas low strategy preferred before local 15:00.
+Intraday side probability must be at least 0.90.
+```
 
-Required fields or equivalent evidence:
+### Phase E - Ledger And Report Tags
 
-- market id, event slug, city, target date, and market shape
-- selected side, probability, executable entry VWAP, executable exit VWAP
-- best bid, best ask, spread, depth status, and stale status
-- fee rate, size, shares, cash effect, and after-fee proceeds
-- signal source: official-station-neutral, base lock, strong lock, or
-  settlement evidence
-- station evidence grade and observed high/low when used
-- reason code for YES, NO, SKIP, HOLD, CLOSE, PARTIAL_CLOSE, or SETTLED
+Goal:
 
-Do not turn full SKIP logging back on by default. If SKIP detail is needed,
-prefer bounded diagnostics, grouped counters, or short debug sessions.
+```text
+Make performance auditable by strategy mode and signal family.
+```
 
-### Part 5 - Minimum Performance Report
+Main files:
 
-Goal: produce the smallest report that can answer "is this paper result worth
-trusting?"
+```text
+src/weather_bot/models.py
+src/weather_bot/paper.py
+src/weather_bot/analyze_paper.py
+```
 
-The report must show:
+Required outcome:
 
-- bid/ask-depth net PnL
-- midpoint/reference PnL separately labeled as reference only
-- no-liquidity hold rate
-- stale-data block counts
-- official-station lock-strength performance
-- exact/range/threshold performance
-- daily-high vs daily-low performance
-- city breakdown
-- bucket or threshold breakdown
-- ledger consistency warnings
+```text
+strategy_mode, signal_family, price_anomaly, settlement_precision_confidence are recorded.
+Old ledgers remain readable.
+Reports separate strategy-mode PnL.
+```
 
-Do not build advanced visual dashboards before this report is correct.
+### Phase F - Test And Cleanup
 
-### Part 6 - Paper Validation Runbook
+Goal:
 
-Goal: define how to run and judge the paper experiment.
+```text
+Verify focused behavior and remove the temporary instruction file after completion.
+```
 
-Detailed operator criteria live in `docs/paper-validation-runbook.md`.
+Required outcome:
 
-Required run protocol:
+```text
+Focused tests pass.
+Full pytest is attempted.
+Temporary implementation order is deleted only after all steps complete.
+current-task.md is reset to Status: none.
+```
 
-- run paper-only for at least 30 days
-- do not reset `paper_state.json` unless starting an intentional fresh
-  experiment
-- review daily report, minimum performance report, and ledger consistency
-- record no-liquidity, stale-data, nowcast, and settlement anomalies
-- separate base-lock profit from strong-lock profit
+---
 
-Pass criteria before live planning:
+## 7. Validation Workflow
 
-- enough decisions and enough open/close trades for a meaningful sample
-- bid/ask-depth net PnL is positive over the validation window
-- midpoint/reference PnL gap is checked and not hiding fake performance
-- no-liquidity exits are rare enough to tolerate or explicitly accounted for
-- stale data does not create fake entries or fake closes
-- exact/range/threshold results are separated
-- daily-high and daily-low results are separated
-- state and trade ledgers replay consistently
-- core tests pass and the paper-only boundary is intact
-
-### Part 7 - Future Live-Trading Safety Project
-
-Start this only after the paper validation gates pass and the user explicitly
-approves a live-trading safety project.
-
-Use `docs/live-trading-safety-plan.md`. Do not implement live trading from this
-roadmap alone.
-
-## Deferred Until After P0
-
-- Brier Score and LogLoss dashboards
-- calibration charts
-- region exposure optimizer
-- complex portfolio heatmap
-- large simulator
-- 30-day formal strategy report
-- `LiveBroker`
-- private-key or wallet handling
-- real order submission
-- redemption or claim handling
-
-## Completion Rule For Each Part
-
-Each part must end with:
-
-- docs updated before code behavior changes
-- focused tests run for touched behavior
-- broad tests run when the touched behavior affects shared strategy, accounting,
-  or runner flow
-- `docs/active/current-task.md` reset to `Status: none` if no unfinished work
-  remains
-- a concise Korean final response explaining what changed, what was verified,
-  and what remains
+For future strategy changes, run focused tests for the touched behavior first, then the full suite. Keep temporary execution orders under `docs/active/` only while they are active, and reset `docs/active/current-task.md` to `Status: none` after verified completion.

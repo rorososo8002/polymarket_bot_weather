@@ -14,7 +14,7 @@ outcome.
 ## 2. Why It Mattered
 
 If correlated legs are allowed to spend independent budgets, total exposure can
-be much larger than the strategy intended. A single forecast miss can then hurt
+be much larger than the strategy intended. A single station-probability miss can then hurt
 multiple positions at once.
 
 This matters for a paper bot too. Paper trading is where risk rules are tested.

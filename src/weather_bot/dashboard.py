@@ -568,6 +568,58 @@ def _polymarket_market_url(slug: Any, event_slug: Any = None) -> str:
     return f"https://polymarket.com/ko/event/{quote(text, safe='')}"
 
 
+def _first_audit_value(primary: dict[str, Any], fallback: dict[str, Any], key: str) -> Any:
+    value = primary.get(key)
+    return fallback.get(key) if value in (None, "") else value
+
+
+def _probability_audit_payload(
+    primary: dict[str, Any],
+    fallback: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    fallback = fallback or {}
+    tier = str(_first_audit_value(primary, fallback, "probability_tier") or "").strip()
+    profile_key = str(
+        _first_audit_value(primary, fallback, "calibration_profile_key") or ""
+    ).strip()
+    calibration_status = str(
+        _first_audit_value(primary, fallback, "calibration_status") or ""
+    ).strip()
+    return {
+        "raw_selected_side_probability": _optional_float(
+            _first_audit_value(primary, fallback, "raw_selected_side_probability")
+        ),
+        "selected_side_probability": _optional_float(
+            _first_audit_value(primary, fallback, "selected_side_probability")
+        ),
+        "probability_tier": tier or "unknown",
+        "calibration_sample_days": _optional_int(
+            _first_audit_value(primary, fallback, "calibration_sample_days")
+        ),
+        "calibration_profile_key": profile_key or "unknown",
+        "calibration_status": calibration_status or "unknown",
+        "requested_size_usd": _optional_float(
+            _first_audit_value(primary, fallback, "requested_size_usd")
+        ),
+        "executable_size_usd": _optional_float(
+            _first_audit_value(primary, fallback, "executable_size_usd")
+        ),
+        "event_cap_override_fraction": _optional_float(
+            _first_audit_value(primary, fallback, "event_cap_override_fraction")
+        ),
+        "expected_net_return_pct": _optional_float(
+            _first_audit_value(primary, fallback, "expected_net_return_pct")
+        ),
+        "expected_net_profit_usd": _optional_float(
+            _first_audit_value(primary, fallback, "expected_net_profit_usd")
+        ),
+        "fee_rate": _optional_float(_first_audit_value(primary, fallback, "fee_rate")),
+        "entry_fee_usdc": _optional_float(
+            _first_audit_value(primary, fallback, "entry_fee_usdc")
+        ),
+    }
+
+
 def _position_payload(
     pos: dict[str, Any],
     latest_decision: dict[str, str] | None = None,
@@ -606,6 +658,7 @@ def _position_payload(
     observed_at = _note_token(latest_note, "observed_at")
     bucket_label = _bucket_display_label(summary["threshold_c"], summary["condition_label"])
     station_evidence = _official_station_evidence(latest_decision)
+    probability_audit = _probability_audit_payload(metadata, latest_decision)
     return {
         "position_id": pos.get("position_id", ""),
         "market_id": pos.get("market_id", ""),
@@ -649,10 +702,10 @@ def _position_payload(
         # --- extra fields for richer dashboard display ---
         "net_edge": _optional_float(latest_decision.get("net_edge")),
         "entry_fraction": _optional_float(metadata.get("entry_fraction")) or _optional_float(latest_decision.get("entry_fraction")),
-        "entry_fee_usdc": _optional_float(metadata.get("entry_fee_usdc")),
         "market_heat_score": _optional_float(metadata.get("market_heat_score")),
         "model_fair_price": _optional_float(metadata.get("model_fair_price")),
         "market_type": metadata.get("market_type", "temperature"),
+        **probability_audit,
         "station_lock_strength": station_evidence["lock_strength"],
         "station_allocation_fraction": station_evidence["allocation_fraction"],
         "station_settlement_boundary_c": station_evidence["settlement_boundary_c"],
@@ -668,6 +721,16 @@ def _optional_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _optional_int(value: Any) -> int | None:
+    if value in (None, "") or isinstance(value, bool):
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
 
 
 def _optional_bool(value: Any) -> bool | None:
@@ -848,7 +911,11 @@ def _station_signal_rows(decisions: list[dict[str, str]], limit: int = 80) -> li
     signals: list[dict[str, Any]] = []
     for row in decisions:
         evidence = _official_station_evidence(row)
-        if not evidence["lock_strength"]:
+        probability_audit = _probability_audit_payload(row)
+        if (
+            not evidence["lock_strength"]
+            and probability_audit["selected_side_probability"] is None
+        ):
             continue
         city = str(row.get("city") or _question_summary(str(row.get("question") or ""))["city"] or "")
         station = TRADING_READY_STATION_MAP.get(city.lower())
@@ -863,6 +930,7 @@ def _station_signal_rows(decisions: list[dict[str, str]], limit: int = 80) -> li
                 "station_name": str((station.station_name if station else "") or ""),
                 "reason": str(row.get("reason") or ""),
                 "reason_code": str(row.get("reason_code") or ""),
+                **probability_audit,
                 **evidence,
             }
         )
@@ -892,6 +960,7 @@ def _recent_skip_rows(settings: Settings, limit: int = 80) -> list[dict[str, Any
                 "reason_code": str(row.get("reason_code") or ""),
                 "reason": str(row.get("reason") or ""),
                 "reason_ko": _skip_reason_ko(row),
+                **_probability_audit_payload(row),
                 **evidence,
             }
         )

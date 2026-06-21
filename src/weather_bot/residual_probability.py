@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from decimal import Decimal
+import hashlib
 import json
 import math
 from pathlib import Path
@@ -73,6 +74,7 @@ class ResidualProfileStore:
     schema_version: int = SCHEMA_VERSION
     source: str = ""
     generation_years: tuple[int, ...] = ()
+    concentrated_sizing_eligible_by_station: Mapping[str, bool] = MappingProxyType({})
     min_sample_days: int = MIN_SAMPLE_DAYS
     load_reason_code: str = ""
     load_reason: str = ""
@@ -80,11 +82,18 @@ class ResidualProfileStore:
     def __post_init__(self) -> None:
         object.__setattr__(self, "profiles", MappingProxyType(dict(self.profiles)))
         object.__setattr__(self, "generation_years", tuple(self.generation_years))
+        object.__setattr__(
+            self,
+            "concentrated_sizing_eligible_by_station",
+            MappingProxyType(dict(self.concentrated_sizing_eligible_by_station)),
+        )
 
     @classmethod
     def from_path(cls, path: str | Path) -> "ResidualProfileStore":
         try:
-            text = Path(path).read_text(encoding="utf-8")
+            profile_path = Path(path)
+            profile_bytes = profile_path.read_bytes()
+            text = profile_bytes.decode("utf-8")
         except OSError as exc:
             return cls._load_failure(
                 "SKIP_RESIDUAL_PROFILE_MISSING",
@@ -107,6 +116,10 @@ class ResidualProfileStore:
             schema_version=schema_version,
             source=source,
             generation_years=years,
+            concentrated_sizing_eligible_by_station=_load_concentrated_sizing_eligibility(
+                profile_path,
+                profile_bytes,
+            ),
         )
 
     @classmethod
@@ -273,6 +286,42 @@ class ResidualProfileStore:
             and profile.unit != unit
             for profile in self.profiles.values()
         )
+
+
+def _load_concentrated_sizing_eligibility(
+    profile_path: Path,
+    profile_bytes: bytes,
+) -> dict[str, bool]:
+    """Load the fail-closed station eligibility map from the verified sibling manifest."""
+    manifest_path = profile_path.with_name(f"{profile_path.stem}.manifest.json")
+    try:
+        manifest = json.loads(
+            manifest_path.read_text(encoding="utf-8"),
+            parse_constant=_reject_non_finite_json,
+        )
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        return {}
+    if not isinstance(manifest, dict):
+        return {}
+    expected_hash = manifest.get("profile_artifact_sha256")
+    if not isinstance(expected_hash, str):
+        return {}
+    if hashlib.sha256(profile_bytes).hexdigest() != expected_hash.lower():
+        return {}
+    stations = manifest.get("stations")
+    if not isinstance(stations, dict):
+        return {}
+
+    eligibility: dict[str, bool] = {}
+    for station_payload in stations.values():
+        if not isinstance(station_payload, dict):
+            return {}
+        station_id = station_payload.get("station_id")
+        eligible = station_payload.get("concentrated_sizing_eligible")
+        if not isinstance(station_id, str) or not station_id.strip() or not isinstance(eligible, bool):
+            return {}
+        eligibility[station_id.strip()] = eligible
+    return eligibility
 
 
 class _ProfileValidationError(ValueError):

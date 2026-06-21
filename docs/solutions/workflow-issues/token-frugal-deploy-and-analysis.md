@@ -36,11 +36,10 @@ For routine VPS deploys:
    403, and header-authenticated `/api/status` 200.
 7. Stop.
 
-Do not redeploy only because `docs/active/current-task.md`,
-`docs/active/new-chat-task-prompts.md`, or another handoff-only document
-changed after the runtime deploy. Commit and push those docs, but leave the
-server alone unless the docs are needed by runtime behavior or the user asks for
-an exact server-source mirror.
+Do not redeploy only because `docs/active/current-task.md` or another
+handoff-only document changed after the runtime deploy. Commit and push those
+docs, but leave the server alone unless the docs are needed by runtime behavior
+or the user asks for an exact server-source mirror.
 
 For analysis and development:
 

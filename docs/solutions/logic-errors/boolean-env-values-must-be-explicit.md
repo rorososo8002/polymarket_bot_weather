@@ -68,4 +68,3 @@ continues.
 
 ## Related Issues
 - `docs/solutions/security-issues/dashboard-public-host-token-fail-closed.md`
-- `docs/solutions/logic-errors/forecast-date-must-match-market-date.md`

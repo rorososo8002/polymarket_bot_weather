@@ -96,19 +96,12 @@ SystemMaxUse=50M
 
 Reload: `sudo systemctl restart systemd-journald`
 
-## Daily Performance Report
+## Performance Report
 
-A cron script runs every day at 00:00 UTC
-(`/etc/cron.d/polymarket-daily-report`) and writes to
-`/opt/polymarket-weather-bot/data/daily_report_YYYYMMDD.txt`.
-
-Report sections:
-- Bankroll delta and total P&L
-- Win rate (closed positions only)
-- City-level breakdown (wins / losses / net P&L)
-- Bucket-type breakdown (exact / range / lower_tail / upper_tail)
-- Largest single win and loss
-- Open positions summary
+Use the installed `paper-report` command, backed by
+`weather_bot.analyze_paper`, as the only report implementation. It includes
+executable PnL, liquidity blockers, strategy families, probability tiers, and
+calibration. Redirect its output only for an intentional experiment snapshot.
 
 ## Paper Reset Procedure
 

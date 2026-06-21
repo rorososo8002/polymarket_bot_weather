@@ -116,6 +116,6 @@ The fix preserves that split:
 
 ## Related Issues
 
-- [Filter out-of-scope markets before forecasting](../best-practices/filter-out-of-scope-markets-before-forecasting.md)
+- [Weather discovery false positives](./weather-discovery-false-positives-2026-05-24.md)
 - [Separate SKIP diagnostics from trades and settle exact closed markets](dashboard-trades-and-closed-market-settlement.md)
 - [Reject unknown boolean environment values](boolean-env-values-must-be-explicit.md)

@@ -81,4 +81,4 @@ false "server is alive" conclusions.
 ## Related
 
 - [Verify remote dashboard state and entry counters before diagnosing paper entries](./verify-remote-dashboard-state-and-entry-counters.md)
-- [Verify VPS code, environment, and API health before trusting the dashboard](./verify-vps-code-env-and-api-health-2026-05-26.md)
+- [VPS dashboard runbook](../../codex/vps-dashboard.md)

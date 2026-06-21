@@ -1,313 +1,108 @@
 # AGENTS.md
 
-## Core
+## Purpose
 
-- Always answer the user in Korean unless the user explicitly asks otherwise.
-- Explain like a top Korean math instructor. The user is a beginner, so do not
-  just list developer terms. When you mention a developer term, command, file,
-  function, concept, setting, state, API, or bug, explain it in this order:
-  1. 이게 뭐에 쓰이는 건가?
-  2. 왜 이걸 써야 하는가? / 왜 이렇게 만들어졌는가?
-  3. 이게 어떤 문제를 일으켰는가? 문제가 없으면 어떤 위험을 막는가?
-  4. 왜 그 문제가 생겼는가? 근본 원인은 무엇인가?
-  5. 왜 기존 방법이 필요 없었는가? / 더 나은 방법은 무엇인가?
-- Example depth:
-  - Bad: `paper_state.json이 커졌습니다. 수정했습니다.`
-  - Good: `paper_state.json은 종이계좌 장부입니다. 현금, 보유 포지션,
-    평균 진입가처럼 성과 검증의 기준이 되는 값을 저장합니다. 그래서
-    웹소켓 상태 같은 순간적인 진단 데이터를 여기에 계속 저장하면 안 됩니다.
-    그런 데이터는 몇 분 뒤 의미가 없어지는 임시 상태인데, 장부에 넣으면
-    파일이 커지고 성과 검증 기준까지 흐려집니다. 더 나은 방법은 웹소켓
-    상태는 메모리나 진단 로그에만 두고, paper_state.json에는 계좌 상태만
-    남기는 것입니다.`
-- Use the safe default when one is clear. Do not stop for unnecessary questions.
-- Before security, money, deployment, server, wallet, API key, production, or
-  configuration changes, explain the change, benefit, risk, verification, and
-  rollback.
-- For public exposure decisions, explain that anyone who knows or discovers the
-  URL may access it, including automated scanners.
+This repository is a paper-only Polymarket temperature-market validation bot.
+Its job is to prove whether paper PnL is realistic, replayable, and supported by
+executable prices, fees, official settlement-station evidence, and auditable
+ledgers.
 
-## Project North Star
+Answer in Korean unless the user asks otherwise. Explain technical items for a
+beginner: what they do, why they exist, what risk they prevent, what changed,
+and how to verify the change.
 
-- The long-term goal is a profitable Polymarket temperature-market bot that may
-  later be connected to live trading.
-- The current phase is not live trading. The current phase is **strategy
-  validation first**: make paper results realistic enough that they are useful
-  evidence before any real money path is considered.
-- A paper profit number is not trusted unless it uses executable order-book
-  depth, fees, spread, slippage, stale-data fail-closed behavior, official
-  settlement-station nowcast, and replayable ledgers.
-- Do not add private keys, wallet connection, signing, real orders, redemption,
-  claim, copy trading, or a `LiveBroker` path unless the user explicitly starts
-  a separate live-trading safety project.
+## Paper-Only Boundary
 
-## Agent Research Mandate
+Never add or enable wallets, private keys, signing, real orders, redemption,
+claims, copy trading, `LiveBroker`, hidden live paths, or private user-data
+collection. A live-trading request requires a separate safety project and
+`docs/live-trading-safety-plan.md`.
 
-- Act like a senior strategy-validation researcher, not a passive patch writer.
-  When the user gives advice, attachments, or a new idea, compare it against
-  the code, tests, ledgers, and project rules before accepting it.
-- Use expert initiative. Do not wait for the user to name every missing
-  detail. Form hypotheses about what would make this bot more honest,
-  profitable, and production-ready, then test those hypotheses against code,
-  ledgers, reports, and focused experiments before turning them into rules.
-- Sort outside advice into: already protected, adopt now, adopt later, reject,
-  or needs more evidence. Do not copy advice into docs just because it sounds
-  useful.
-- Prefer changes that make paper results more honest, replayable, and closer to
-  real execution: executable depth, fees, liquidity, station evidence, timezone
-  correctness, stale-data fail-closed behavior, and audit-ready reports.
-- A "better strategy" must prove itself with tests, logs, reports, or a bounded
-  paper experiment. Do not treat a more complex model as better until it
-  improves validation evidence.
-- Keep what works and discard what does not. When an experiment, model, rule,
-  or document pattern performs worse than the current approach, record the
-  lesson and avoid reintroducing it.
-- Preserve completed good work. If a rule or feature already exists, cite it
-  and protect it with tests instead of reimplementing it.
-- Think forward. If the requested change exposes a nearby strategy-validation
-  gap, fix or document the smallest useful next step instead of blindly
-  stopping at the literal patch.
-- Keep permanent docs clean. Stable rules belong in `AGENTS.md` or
-  `docs/production-decisions.md`; active work belongs in
-  `docs/active/current-task.md`; one-shot handoff prompts belong in
-  `docs/active/new-chat-task-prompts.md`; reusable lessons belong in
-  `docs/solutions/`.
+Temperature markets only. Unsupported market types and unknown, stale,
+malformed, suspicious, conflicting, or unverified evidence fail closed before
+signal calculation, order-book subscription, or paper-trade logging.
 
-## Mandatory fresh-chat read set
+## Mandatory Fresh-Task Read Set
 
-For non-trivial implementation, debugging, production, deployment, strategy,
-trading-risk, server, or workflow work, read these first:
+For non-trivial implementation, debugging, deployment, strategy, trading-risk,
+server, or workflow work, read once at task start:
 
-1. `AGENTS.md`
-2. `docs/active/current-task.md`
-3. `docs/production-decisions.md`
+```text
+AGENTS.md
+docs/active/current-task.md
+docs/production-decisions.md
+```
 
-Read the mandatory set once at the start of a new task/turn. Within the same
-turn, do not reread these files in full unless the file changed, context was
-compacted, or a concrete contradiction/blocker requires rechecking. Use the
-already-read context for subsequent test, commit, VPS, or verification steps.
+For strategy-validation work also read:
 
-`docs/active/current-task.md` is the only default unfinished-work card. If it
-says `Status: active`, continue from its `Next Action`. If it says
-`Status: none`, start from the user's latest request and read only the relevant
-conditional documents below.
+```text
+docs/strategy-validation-roadmap.md
+```
 
-Keep `docs/production-progress.md` as an optional compact project board, not
-the default resume source.
+`docs/active/current-task.md` is the only active-work card. Continue only from
+its `Next Action` when `Status: active`; otherwise use the user's latest
+request. Use `docs/codex/known-good-commands.md` before inventing pytest, VPS,
+or SSH command variants.
 
-Conditional reads:
+Search `docs/solutions/` only for a matching repeated bug, review finding,
+workflow correction, or prevention rule. Do not bulk-read it.
 
-- Strategy, trading-risk, station signal, order book, portfolio, paper accounting,
-  settlement, nowcast, runner behavior, or performance validation:
-  `docs/production-implementation-plan.md` and
-  `docs/strategy-validation-roadmap.md`
-- Routine local pytest or VPS/SSH command:
-  `docs/codex/known-good-commands.md`
-- VPS/server/dashboard deployment:
-  `docs/codex/known-good-commands.md`, then
-  `docs/codex/vps-dashboard.md` and `docs/codex/ssh-powershell.md` as needed
-- Runtime/log investigation: `docs/codex/runtime-data.md`
-- New-chat handoff or step-by-step delegation:
-  `docs/active/new-chat-task-prompts.md`
-- Live-trading planning or implementation:
-  `docs/live-trading-safety-plan.md`
-- Repeated bug, workflow correction, or prevention-rule work:
-  relevant entries under `docs/solutions/`
+## Strategy And Execution Contract
 
-Do not bulk-read `docs/solutions/`. Search or list only enough to identify a
-matching lesson, then open the specific relevant entry. If no relevant repeated
-bug, workflow correction, or prevention-rule issue is present, skip
-`docs/solutions/` entirely.
+The source of truth is `docs/production-decisions.md`.
 
-Do not redesign from scratch unless the user explicitly asks for a redesign.
-Do not reimplement completed work. If code and docs disagree, record the drift
-before continuing.
+```text
+default mode: hybrid_observation_edge
+allowed families: lock_only, intraday_observation_edge,
+                  abnormal_official_station_mispricing
+invalid entries: forecast-only, wrong-station, endDate-only,
+                 best-ask/midpoint/missing-depth fake fills
+```
 
-## Operating Constitution
+New entries require final CLOB tradability, executable ask-side VWAP, spread
+and fee gates, expected return, exposure room, and fresh same-station evidence.
+Exits use executable bid-side VWAP. No bid depth means HOLD, not a fake close.
+HKO decimal markets remain `needs_audit` until settlement evidence proves the
+bucket mapping.
 
-- Keep execution paper-only unless the user explicitly approves a separate
-  live-trading safety project. Do not connect wallets, add private keys, sign
-  orders, send real orders, redeem markets, or enable copy trading without that
-  approval.
-- Execute the paper strategy only on temperature markets. Rain, snow,
-  precipitation, wind, humidity, and all other non-temperature weather markets
-  must fail closed before station-signal calculation, order-book
-  subscription, or paper trade logging.
-- Trade only cities listed in `src/weather_bot/stations.py`. Treat
-  `STATION_MAP` as the station registry and `TRADING_READY_STATION_MAP` as the
-  execution universe.
-- Unknown, missing, stale, malformed, unsupported, suspicious, invalid, or
-  conflictful data means skip, not guess.
-- The strategy is official settlement-station observation first. Do not enter
-  from weather-model predictions. Enter only when same-station observed
-  high/low evidence locks or nearly locks the displayed temperature bucket.
-- Station observation providers keep their own request floors: AWC METAR may
-  refresh every 60 seconds and HKO stays protected by its 10-minute floor. Do
-  not hammer a provider after stale, malformed, or failed station evidence.
-- If station evidence is missing, stale, unsupported, conflictful, or cannot be
-  tied to the settlement station, skip the market instead of guessing.
-- Use the Polymarket CLOB WebSocket market stream for executable order books by
-  default. Do not silently replace realtime streaming with polling.
-- REST order-book snapshots are allowed only as a bounded verification/resync
-  helper for the WebSocket cache. They must not replace WebSocket monitoring,
-  must not write raw order books to disk, and must be rate-limited.
-- A WebSocket `price_change` delta must not create executable depth for a token
-  until that token has received an initial full-depth snapshot in the current
-  stream cache. The full-depth snapshot may come from WebSocket `book` or the
-  bounded REST `/book` verification/resync path.
-- Keep token IDs for open positions subscribed even when discovery moves to
-  newer markets.
+## Ledgers And Runtime Data
 
-## Strategy Validation Rules
+`paper_state.json` is the paper account book, `paper_trades.csv` is the
+execution receipt ledger, and `paper_decisions.csv` is the strategy evidence
+ledger. Old rows must remain readable when newer evidence columns are absent.
 
-- Entry must use real ask-side executable VWAP. `best ask` or midpoint is not
-  enough to claim a fill.
-- Exit must use real bid-side executable VWAP. If no executable bid depth
-  exists, do not log a successful close.
-- Partial liquidity must become `PARTIAL_CLOSE` or a scaled executable entry,
-  not a fake full fill.
-- If an exit signal fires but the close cannot execute, keep the position open,
-  log the blocker, and preserve the original exit trigger.
-- Whole-stream order-book failure blocks new entries. A single held token that
-  cannot be priced because it is illiquid or settling is valued at $0 for
-  entry-bankroll math instead of blocking every new market.
-- Fees, spread, and slippage must be reflected before paper PnL is treated as
-  useful validation evidence.
-- Stale order books, stale station observations, unsupported station data, and
-  ambiguous settlement data fail closed.
-- Exact temperature buckets mean the displayed value only. Do not invent hidden
-  half-step ranges such as `28.5C-29.5C`.
-- Range buckets preserve the displayed inclusive endpoints.
-- Threshold markets follow their actual rule wording: above, at or above,
-  below, at or below, highest, or lowest are not interchangeable.
-- Daily-high and daily-low markets have opposite nowcast risk directions.
-  Highest-temperature YES is impossible only after the observed high exceeds
-  the exact value or range upper endpoint. Lowest-temperature YES is impossible
-  only after the observed low falls below the exact value or range lower
-  endpoint.
-- Official settlement-station nowcast matters more than generic weather feeds.
-  Use same-station evidence only when the station mapping is explicit.
-- Advanced dashboards, Brier/LogLoss views, region optimizers, complex
-  portfolio heatmaps, and live trading are deferred until the P0 validation
-  gates in `docs/strategy-validation-roadmap.md` are satisfied.
+Do not bulk-read ledgers, raw snapshots, caches, logs, `.git/objects`, archives,
+downloaded packages, or deploy bundles. Prefer sizes, counts, headers, tails,
+grouped summaries, and focused `rg`.
 
-## Runtime Data
+Runtime needs the two checked-in files under `strategy_data/`; the local
+`.station_residual_cache.zip` exists only for residual-profile rebuild audits.
 
-- Runtime files are generated evidence, not source code. They are ignored by
-  git and may be deleted only for an intentional fresh paper-experiment reset.
-- All runtime files live under `data/`, not the app root. Production path:
-  `/opt/polymarket-weather-bot/data/<filename>`
-- `paper_state.json` is the paper account book. It stores cash, realized PnL,
-  and open positions.
-- `paper_trades.csv` is the execution receipt ledger. It records paper `OPEN`,
-  `ADD`, `PARTIAL_CLOSE`, `CLOSE`, and `SETTLED` actions.
-- `paper_decisions.csv` records YES/NO/HOLD actions. SKIP rows are suppressed
-  by default with `DECISIONS_LOG_SKIP_ENABLED=false`; enable only for short
-  debugging sessions.
-- `paper_event_portfolios.jsonl` records event-portfolio selections. Written
-  only when at least one trade is selected by default.
-- `paper_raw_snapshots.jsonl` is diagnostic evidence, not an account book.
-  Normal raw snapshots are disabled by default except for errors.
-- `daily_report_YYYYMMDD.txt` is the daily performance report generated every
-  day at 00:00 UTC. It shows PnL, win rate, city breakdown, and bucket
-  breakdown. Kept for 14 days, then auto-deleted.
-- Do not open large runtime files in full. Use file sizes, counts, tails,
-  filters, summaries, or small samples.
+## Workflow And Cleanup
 
-## Disk Management
+- Think before coding and state assumptions that affect results.
+- Preserve unrelated user changes; never reset or overwrite them.
+- Write focused failing tests before behavior changes, then run focused and
+  broad verification.
+- Use specific diffs and snippets instead of full-repository dumps.
+- Run git mutations serially. Do not stage or commit unless asked.
+- Reuse existing files and folders. Do not create a new directory for every
+  attempt, test, review, or handoff.
+- Pytest scratch data belongs only in `.pytest-tmp` and must be deleted when
+  pytest exits. Remove `__pycache__`, extracted tool packages, temporary
+  scripts, and one-off archives immediately after their task.
+- Temporary implementation plans belong under `docs/active/` or
+  `docs/superpowers/plans/` only while active. Delete them after verified
+  completion and reset `docs/active/current-task.md` to `Status: none`.
+- After a non-trivial Superpowers review cycle, run the compound learning check
+  only for a durable prevention lesson; otherwise say no new lesson was needed.
 
-- Logrotate compresses high-volume diagnostic/request files in `data/` hourly.
-  `paper_raw_snapshots.jsonl` rotates at 100 MB; request logs and portfolio
-  diagnostics rotate at 10 MB. Core account ledgers are not rotated until replay
-  is archive-aware.
-- journald is capped at 50 MB.
-- See `docs/codex/data-and-disk.md` for the full disk risk table and reset
-  procedure.
+## Main Code
 
-## Oracle VPS
-
-- Active Oracle VPS: `ubuntu@140.245.69.242`
-- Canonical SSH key directory: the Oracle SSH directory under
-  `C:\Users\wpdla\Documents`
-- Private key filename: `ssh-key-2026-05-25.key`
-- Never print, open, copy, or commit the key contents.
-- Before VPS work, start with `docs/codex/known-good-commands.md`.
-- For complex VPS changes from Windows PowerShell, use the remote-script
-  pattern in `docs/codex/known-good-commands.md`: create a small local `.sh`,
-  `scp` it to `/tmp`, then run it with `ssh ... bash /tmp/script.sh`.
-
-## Workflow
-
-- Think before coding. State assumptions when they affect the result.
-- Before changing any code, update the relevant documentation first. Code and
-  docs must stay in sync. A future AI reading only the docs must reach the same
-  behavior as the code.
-- Touch only files needed for the task.
-- Preserve user changes. Never reset, overwrite, or revert unrelated work.
-- Be token-frugal. Do the smallest verification that proves the claim, avoid
-  rereading large docs already summarized in the active task, and do not repeat
-  successful checks without a new reason.
-- In one turn, do not reread large mandatory docs after the first read. Inspect
-  only the needed section with `rg`, `Select-String`, line windows, or focused
-  file snippets.
-- Prefer `git diff --stat`, `git diff --name-only`, staged-name lists, and
-  specific-file diffs over full `git diff` output. Open full diffs only when
-  reviewing a small touched file or a specific risky hunk.
-- For behavior changes, add or update focused tests and verify the behavior.
-- Run focused tests before broad tests.
-- Make failure modes observable. A running process is not enough when a
-  background thread, cache, or external API can fail separately.
-- Before local pytest or VPS/SSH work, start with the matching command in
-  `docs/codex/known-good-commands.md`. If it fails, inspect the concrete error
-  before inventing a different command shape.
-- When dashboard code or dashboard UI changes, deploy to the Oracle VPS after
-  local verification and commit, restart the affected service, and verify both
-  the live dashboard HTML and authenticated `/api/status`. If the change also
-  affects paper-position metadata, settlement, or runner behavior, restart
-  `polymarket-weather-bot` too.
-- For routine VPS deploys, keep the path lean: SSH preflight once, transfer
-  once, remote pytest once, restart once, then verify service state, dashboard
-  HTML, bare `/api/status` 403, query-token 403, and header-auth `/api/status`
-  200. Do not redeploy only to sync handoff/doc-only commits unless the user
-  explicitly asks or the server needs those docs for runtime behavior.
-- Run git mutations serially. Do not run `git add`, `git commit`, branch
-  changes, or other index-locking commands in parallel.
-
-## Handoff Hygiene
-
-- Keep `docs/active/current-task.md` replace-only. Do not append completion
-  history to it.
-- When work is complete, set `docs/active/current-task.md` back to
-  `Status: none` unless there is a real unfinished follow-up.
-- When work is complete, remove completed objectives, completed next actions,
-  completed one-shot prompts, and completed plan pointers from default startup
-  docs. A future AI reading `docs/active/current-task.md` must not need to
-  mentally subtract finished work before starting.
-- Keep `docs/active/new-chat-task-prompts.md` as a single-use active prompt,
-  not a backlog. When a prompted part is complete, remove that completed prompt
-  and either replace it with exactly one next prompt or set it to `none`.
-- Delete or archive completed one-shot execution plans when their durable rules,
-  implementation contracts, tests, commits, or `docs/solutions/` lessons have
-  already captured the useful evidence. Do not leave completed plans in
-  startup-adjacent docs just because they were once important.
-- Keep active safety, trading, runtime, and handoff rules in
-  `docs/production-decisions.md`.
-- Keep strategy and implementation contracts in
-  `docs/production-implementation-plan.md`.
-- Keep the paper-validation roadmap in `docs/strategy-validation-roadmap.md`.
-- Keep reusable prevention lessons in `docs/solutions/`.
-- Do not recreate old diary-style handoff docs. Completion evidence belongs in
-  git commits, tests, or reusable solution notes.
-
-## Compound Learning
-
-- Run `ce-compound` only when the work produced a new durable prevention lesson
-  that is not already covered under `docs/solutions/`. First search/list the
-  relevant solution area instead of opening the full corpus.
-- Prefer the shortest useful compound path. For small lessons, write/update one
-  focused solution note directly or use a lightweight/headless flow instead of
-  loading broad review workflows.
-- Save durable lessons under `docs/solutions/` and reuse existing lessons when
-  working in documented areas.
-- Skip `ce-compound` only when there is no durable lesson. When skipped, say:
-  `This work did not produce a durable prevention lesson worth recording.`
+```text
+stations.py / settlement_precision.py / strategy_profiles.py
+station_signal.py / nowcast.py / residual_probability.py
+polymarket_client.py / realtime_orderbook.py / edge.py / portfolio.py
+paper.py / exit_policy.py / live_paper_runner.py
+analyze_paper.py / dashboard.py
+```

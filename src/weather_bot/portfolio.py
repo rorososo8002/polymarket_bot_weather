@@ -4,7 +4,7 @@ import logging
 from collections import Counter
 from dataclasses import dataclass, replace
 from itertools import combinations
-from math import ceil, floor, inf, isinf, log
+from math import ceil, floor, inf, isclose, isfinite, isinf, log
 from typing import TYPE_CHECKING, Any
 
 _logger = logging.getLogger(__name__)
@@ -49,6 +49,35 @@ class RejectedPortfolioLeg:
     market_id: str
     side: str
     reason: str
+
+
+def structured_event_cap_override_fraction(
+    signal: WeatherSignal | None,
+    result: EdgeResult,
+    settings: Settings,
+) -> float | None:
+    """Return the explicit 95% station override only when signal and result agree."""
+    if signal is None:
+        return None
+    expected = settings.observation_tier_95_fraction
+    fractions = (
+        signal.entry_size_fraction_override,
+        signal.event_cap_override_fraction,
+        result.entry_size_fraction_override,
+        result.event_cap_override_fraction,
+    )
+    if (
+        signal.probability_tier != "95"
+        or result.probability_tier != "95"
+        or signal.selected_side_probability is None
+        or result.selected_side_probability is None
+        or signal.selected_side_probability < settings.observation_tier_95_probability
+        or result.selected_side_probability < settings.observation_tier_95_probability
+        or any(value is None or not isfinite(value) for value in fractions)
+        or any(not isclose(value, expected, rel_tol=0.0, abs_tol=1e-9) for value in fractions)
+    ):
+        return None
+    return expected
 
 
 @dataclass
@@ -657,6 +686,7 @@ def _resize_candidate(candidate: PortfolioCandidate, size_usd: float) -> Portfol
             size_usd=size_usd,
             size_shares=result.size_shares * scale,
             expected_net_profit_usd=result.expected_net_profit_usd * scale,
+            executable_size_usd=size_usd,
         ),
     )
 
@@ -691,8 +721,9 @@ def select_event_portfolio(
     first = candidates[0] if candidates else None
     city, date_hint = _candidate_city_and_date(first) if first is not None else ("", "")
     settings = broker.settings
-    event_cap_fraction = adaptive_event_cap_fraction(entry_bankroll.entry_bankroll, settings)
-    event_cap_usd = entry_bankroll.entry_bankroll * event_cap_fraction
+    ordinary_event_cap_fraction = adaptive_event_cap_fraction(entry_bankroll.entry_bankroll, settings)
+    event_cap_fraction = ordinary_event_cap_fraction
+    event_cap_usd = entry_bankroll.entry_bankroll * ordinary_event_cap_fraction
     existing_event_exposure = broker.event_date_exposure(city, date_hint) if city and date_hint else 0.0
     held = _event_positions(broker, city, date_hint)
     rejected: list[RejectedPortfolioLeg] = []
@@ -755,17 +786,23 @@ def select_event_portfolio(
         if held and not is_add_to_existing and not _is_complementary(candidate, [], held):
             rejected.append(RejectedPortfolioLeg(candidate.market.market_id, side, "event legs are not complementary"))
             continue
+        override = structured_event_cap_override_fraction(candidate.signal, candidate.result, settings)
+        if override is not None and held and not is_add_to_existing:
+            rejected.append(
+                RejectedPortfolioLeg(
+                    candidate.market.market_id,
+                    side,
+                    "concentrated event override requires one exclusive position",
+                )
+            )
+            continue
         eligible.append(candidate)
 
-    available_budget = min(
-        event_cap_usd - existing_event_exposure,
+    ordinary_available_budget = min(
+        entry_bankroll.entry_bankroll * ordinary_event_cap_fraction - existing_event_exposure,
         entry_bankroll.entry_bankroll * settings.max_city_exposure_fraction - broker.city_exposure(city),
         entry_bankroll.entry_bankroll * settings.max_total_exposure_fraction - broker.total_exposure(),
         broker.state.cash_usd,
-    )
-    single_limit = min(
-        available_budget,
-        entry_bankroll.entry_bankroll * settings.max_single_market_fraction,
     )
     plans: list[_PortfolioPlan] = []
     remaining_slots = settings.max_event_portfolio_legs - len(held)
@@ -773,6 +810,19 @@ def select_event_portfolio(
         for candidate in eligible:
             if candidate.add_to_existing_position_id is None and remaining_slots <= 0:
                 continue
+            override = structured_event_cap_override_fraction(candidate.signal, candidate.result, settings)
+            event_fraction = override or ordinary_event_cap_fraction
+            city_fraction = override or settings.max_city_exposure_fraction
+            available_budget = min(
+                entry_bankroll.entry_bankroll * event_fraction - existing_event_exposure,
+                entry_bankroll.entry_bankroll * city_fraction - broker.city_exposure(city),
+                entry_bankroll.entry_bankroll * settings.max_total_exposure_fraction - broker.total_exposure(),
+                broker.state.cash_usd,
+            )
+            single_limit = min(
+                available_budget,
+                entry_bankroll.entry_bankroll * settings.max_single_market_fraction,
+            )
             for size_usd in _allocation_sizes(
                 min(single_limit, candidate.result.size_usd),
                 settings.min_order_usd,
@@ -788,24 +838,33 @@ def select_event_portfolio(
                 if plan is not None:
                     plans.append(plan)
     if entry_bankroll.usable and remaining_slots > 1:
-        for left, right in combinations(eligible, 2):
+        ordinary_eligible = [
+            candidate
+            for candidate in eligible
+            if structured_event_cap_override_fraction(candidate.signal, candidate.result, settings) is None
+        ]
+        ordinary_single_limit = min(
+            ordinary_available_budget,
+            entry_bankroll.entry_bankroll * settings.max_single_market_fraction,
+        )
+        for left, right in combinations(ordinary_eligible, 2):
             if left.market.market_id == right.market.market_id:
                 continue
             if not _is_complementary(right, [left], held):
                 continue
             left_sizes = _allocation_sizes(
-                min(single_limit, left.result.size_usd),
+                min(ordinary_single_limit, left.result.size_usd),
                 settings.min_order_usd,
                 preferred_usd=left.result.size_usd,
             )
             right_sizes = _allocation_sizes(
-                min(single_limit, right.result.size_usd),
+                min(ordinary_single_limit, right.result.size_usd),
                 settings.min_order_usd,
                 preferred_usd=right.result.size_usd,
             )
             for left_size in left_sizes:
                 for right_size in right_sizes:
-                    if left_size + right_size > available_budget + 1e-9:
+                    if left_size + right_size > ordinary_available_budget + 1e-9:
                         continue
                     plan = _build_plan(
                         (
@@ -830,6 +889,16 @@ def select_event_portfolio(
         default=None,
     )
     selected = list(best_plan.selected) if best_plan is not None else []
+    selected_override = max(
+        (
+            structured_event_cap_override_fraction(leg.signal, leg.result, settings) or 0.0
+            for leg in selected
+        ),
+        default=0.0,
+    )
+    if selected_override > 0:
+        event_cap_fraction = selected_override
+        event_cap_usd = entry_bankroll.entry_bankroll * selected_override
     selected_keys = {
         (leg.market.market_id, leg.result.side)
         for leg in selected

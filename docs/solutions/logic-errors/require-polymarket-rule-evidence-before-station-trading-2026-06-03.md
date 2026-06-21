@@ -22,7 +22,7 @@ tags: [polymarket, weather-stations, rule-evidence, paper-trading, fail-closed]
 
 The weather bot had a useful 41-city `STATION_MAP`, but some cities still lacked
 stored Polymarket rule evidence. A station coordinate can be correct for
-forecasting while still being unproven for Polymarket settlement. Karachi also
+signal evaluation while still being unproven for Polymarket settlement. Karachi also
 showed a sharper problem: the found Polymarket source names Masroor Airbase
 Station, but its Wunderground source URL uses `OPKC` while the registry used
 `OPMR`.
@@ -30,7 +30,7 @@ Station, but its Wunderground source URL uses `OPKC` while the registry used
 ## 2. Why It Was A Problem
 
 Paper trading is supposed to test whether the strategy can make money using the
-same information that resolves the market. If the bot forecasts the wrong
+same information that resolves the market. If the bot observes the wrong
 station, the paper result may look profitable while measuring a different
 question. That contaminates the evidence base and can hide risk.
 

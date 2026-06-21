@@ -7,7 +7,7 @@ problem_type: logic_error
 component: service_object
 symptoms:
   - "A just-ended Tokyo target date returned target-date-not-today after local midnight."
-  - "Fresh final station high/low evidence became forecast-only exactly when held exits needed it."
+  - "Fresh final station high/low evidence became unavailable exactly when held exits needed it."
   - "A short AWC bulk cache could be reused for a request that needed the full target local day."
 root_cause: logic_error
 resolution_type: code_fix
@@ -26,7 +26,7 @@ the most useful evidence for an already-held paper position.
 
 ## Symptoms
 
-- The probability path stayed `forecast-only` right after local midnight.
+- The entry path became unavailable right after local midnight.
 - Held-position exit and settlement-risk checks could miss fresh final
   observation evidence.
 - AWC METAR bulk cache reuse did not know whether the cached response looked
@@ -94,7 +94,4 @@ trading, wallets, private keys, or real orders.
 
 ## Related Issues
 
-- [Realtime nowcast signals must refresh on the nowcast TTL](./realtime-nowcast-signal-refresh-must-follow-nowcast-ttl.md)
-- [Use same-station nowcast pilots](./use-same-station-nowcast-pilots.md)
-- [Do not use observed high nowcast for daily-low markets](./observed-high-nowcast-daily-low-markets.md)
 - [Prefetch AWC METAR stations in bulk](../best-practices/prefetch-awc-metar-stations-in-bulk.md)

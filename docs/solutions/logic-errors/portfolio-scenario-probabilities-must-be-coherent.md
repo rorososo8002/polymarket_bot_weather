@@ -52,10 +52,10 @@ twice. That must not reach paper entry selection.
 
 The Amsterdam June 16 case exposed the mirror-image failure. Exact Celsius
 bucket probabilities were literal displayed-value votes, so the exact buckets
-near the forecast mean carried zero probability. The lower and upper tails had
+near the station-residual center carried zero probability. The lower and upper tails had
 only tiny non-zero dust, but the event still looked exhaustive because the
 displayed bucket labels covered the whole ladder. Normalizing that tiny total
-made the upper tail look almost certain even though the forecast mean was near
+made the upper tail look almost certain even though the residual center was near
 23C, not the upper tail.
 
 ## 3. How It Was Fixed

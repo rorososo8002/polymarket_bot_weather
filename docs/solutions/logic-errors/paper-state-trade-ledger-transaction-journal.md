@@ -1,7 +1,7 @@
 ---
 title: Paper State And Trade Ledger Updates Need A Transaction Journal
 date: 2026-06-06
-last_updated: 2026-06-06
+last_updated: 2026-06-20
 category: logic-errors
 module: weather_bot.paper
 problem_type: logic_error
@@ -12,6 +12,7 @@ symptoms:
   - "Startup could load open positions even when the trade ledger was missing or an interrupted update needed operator review."
   - "Startup could treat a missing `paper_state.json` as a fresh account even when executed trade rows already existed."
   - "Startup could load an open position whose matching `OPEN` row was absent from `paper_trades.csv`."
+  - "A truly fresh account can exist only in memory until the first accounting write, so reset verification must not assume `paper_state.json` is created at process start."
 root_cause: missing_workflow_step
 resolution_type: code_fix
 severity: high
@@ -89,6 +90,14 @@ Existing trade CSVs are no longer rewritten just to add newer columns. New
 files use the current full header, while legacy files keep their historical
 header and report code falls back when structured entry metadata is absent.
 
+For an intentional full experiment reset, a missing state file and a missing
+executed-trade ledger are a valid empty account. `PaperBroker` loads the
+configured bankroll into memory but does not persist `paper_state.json` merely
+because the process started. Operators who need an explicit zero-position
+baseline file should stop the service, construct `PaperBroker` with the active
+environment, call `save_state()`, restore data ownership, and then restart.
+This produces the canonical state schema without inventing JSON by hand.
+
 ## 4. What To Check Next Time To Prevent The Same Mistake
 
 - For every executed paper action, test both `save_state()` failure and
@@ -106,6 +115,10 @@ header and report code falls back when structured entry metadata is absent.
   legacy headers and make readers backward-compatible.
 - Add fixture trade rows whenever a test creates open positions directly in
   `paper_state.json`.
+- After a deliberate fresh-account reset, verify the runner status for active
+  cash and exposure. If an on-disk baseline is required, create it through
+  `PaperBroker.save_state()` while the service is stopped instead of assuming
+  startup writes an empty state file.
 
 ## 5. What This Project Must Be Especially Careful About
 

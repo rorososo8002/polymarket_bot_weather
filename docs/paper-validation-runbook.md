@@ -27,13 +27,13 @@ next window. Do not mix pre-change and post-change results into one claim.
 - `paper_decisions.csv` is the strategy decision ledger: YES, NO, HOLD, and
   configured diagnostic rows.
 - `paper_event_portfolios.jsonl` is the event-portfolio selection audit.
-- `daily_report_YYYYMMDD.txt` and the minimum performance report are the first
-  operator summaries to review.
+- `paper-report` (`weather_bot.analyze_paper`) is the canonical performance
+  report. Save its output only for an intentional experiment snapshot.
 
 ## Daily Routine
 
 1. Confirm the bot is still paper-only and running.
-2. Review the latest daily report and minimum performance report.
+2. Run and review the canonical `paper-report`.
 3. Check ledger warnings, replay warnings, stale-data blocks, no-liquidity
    blockers, settlement anomalies, and nowcast anomalies.
 4. Confirm open positions still have bid-depth exit evidence or a clear hold

@@ -76,4 +76,4 @@ aligns discovery with the model's actual capability.
 
 ## Related Issues
 
-- [VPS live paper runbook](../../VPS_LIVE_PAPER.md)
+- [VPS dashboard runbook](../../codex/vps-dashboard.md)

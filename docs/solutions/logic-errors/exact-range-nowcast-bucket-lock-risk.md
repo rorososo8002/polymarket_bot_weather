@@ -90,6 +90,4 @@ and blocked exits honestly.
 ## Related
 
 - [Held-position exit evidence must not depend on entry bankroll](../best-practices/held-position-exit-evidence-must-not-depend-on-entry-bankroll.md)
-- [Realtime nowcast signals must refresh on the nowcast TTL](realtime-nowcast-signal-refresh-must-follow-nowcast-ttl.md)
-- [Do not use observed high nowcast for daily-low markets](observed-high-nowcast-daily-low-markets.md)
 - [Temperature range buckets must preserve both endpoints](temperature-range-buckets-must-preserve-endpoints.md)

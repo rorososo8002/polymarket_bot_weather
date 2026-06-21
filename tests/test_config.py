@@ -11,15 +11,162 @@ def test_supported_city_allowlist_is_not_used_as_discovery_event_cap():
     assert Settings.discovery_page_size == 100
 
 
-def test_default_station_strategy_is_official_lock_only():
+def test_default_station_strategy_is_hybrid_observation_edge():
     assert Settings.stream_cycle_interval_seconds == 2400
     assert not hasattr(Settings, "forecast_cache_ttl_seconds")
     assert not hasattr(Settings, "forecast_request_min_interval_seconds")
     assert not hasattr(Settings, "forecast_rate_limit_state_path")
     assert Settings.bankroll_usd == 200.0
-    assert Settings.official_nowcast_entry_only is True
+    assert Settings.strategy_mode == "hybrid_observation_edge"
+    assert Settings.intraday_observation_edge_enabled is True
+    assert Settings.intraday_min_side_probability == 0.90
+    assert Settings.intraday_strong_side_probability == 0.97
+    assert Settings.intraday_base_entry_fraction == 0.10
+    assert Settings.intraday_strong_entry_fraction == 0.25
+    assert Settings.intraday_abnormal_price_entry_fraction == 0.35
+    assert Settings.intraday_abnormal_min_net_edge == 0.20
+    assert Settings.intraday_hko_needs_audit_fraction_multiplier == 0.25
+    assert Settings.intraday_high_confirm_local_hour == 15
+    assert Settings.intraday_low_confirm_local_hour == 8
+    assert Settings.intraday_us_high_disabled_before_local_hour == 15
+    assert Settings.intraday_exact_low_yes_enabled is False
+    assert Settings.intraday_us_exact_low_yes_enabled is True
+    assert Settings.intraday_enable_above_bucket_no is False
+    assert Settings.official_nowcast_entry_only is False
     assert Settings.official_nowcast_lock_base_entry_fraction == 0.20
     assert Settings.official_nowcast_lock_strong_entry_fraction == 0.50
+
+
+def test_default_station_residual_probability_and_sizing_tiers():
+    assert Settings.station_residual_probability_enabled is True
+    assert Settings.station_residual_profile_path == "strategy_data/station_residual_profiles.json"
+    assert Settings.station_residual_min_sample_days == 60
+    assert Settings.station_residual_wilson_z == pytest.approx(1.645)
+    assert Settings.observation_tier_80_probability == pytest.approx(0.80)
+    assert Settings.observation_tier_90_probability == pytest.approx(0.90)
+    assert Settings.observation_tier_95_probability == pytest.approx(0.95)
+    assert Settings.observation_tier_80_fraction == pytest.approx(0.10)
+    assert Settings.observation_tier_90_fraction == pytest.approx(0.25)
+    assert Settings.observation_tier_95_fraction == pytest.approx(0.50)
+    assert Settings.observation_tier_95_fraction <= Settings.max_single_market_fraction
+
+
+def test_load_settings_reads_station_residual_probability_and_sizing_tiers(monkeypatch):
+    monkeypatch.setenv("STATION_RESIDUAL_PROBABILITY_ENABLED", "false")
+    monkeypatch.setenv("STATION_RESIDUAL_PROFILE_PATH", "data/custom-residual-profiles.json")
+    monkeypatch.setenv("STATION_RESIDUAL_MIN_SAMPLE_DAYS", "90")
+    monkeypatch.setenv("STATION_RESIDUAL_WILSON_Z", "2.0")
+    monkeypatch.setenv("OBSERVATION_TIER_80_PROBABILITY", "0.81")
+    monkeypatch.setenv("OBSERVATION_TIER_90_PROBABILITY", "0.91")
+    monkeypatch.setenv("OBSERVATION_TIER_95_PROBABILITY", "0.96")
+    monkeypatch.setenv("OBSERVATION_TIER_80_FRACTION", "0.11")
+    monkeypatch.setenv("OBSERVATION_TIER_90_FRACTION", "0.26")
+    monkeypatch.setenv("OBSERVATION_TIER_95_FRACTION", "0.49")
+
+    settings = load_settings()
+
+    assert settings.station_residual_probability_enabled is False
+    assert settings.station_residual_profile_path == "data/custom-residual-profiles.json"
+    assert settings.station_residual_min_sample_days == 90
+    assert settings.station_residual_wilson_z == pytest.approx(2.0)
+    assert settings.observation_tier_80_probability == pytest.approx(0.81)
+    assert settings.observation_tier_90_probability == pytest.approx(0.91)
+    assert settings.observation_tier_95_probability == pytest.approx(0.96)
+    assert settings.observation_tier_80_fraction == pytest.approx(0.11)
+    assert settings.observation_tier_90_fraction == pytest.approx(0.26)
+    assert settings.observation_tier_95_fraction == pytest.approx(0.49)
+
+
+@pytest.mark.parametrize(
+    ("override", "expected_name"),
+    [
+        ({"observation_tier_80_probability": -0.01}, "OBSERVATION_TIER_80_PROBABILITY"),
+        ({"observation_tier_95_probability": 1.01}, "OBSERVATION_TIER_95_PROBABILITY"),
+        ({"observation_tier_80_fraction": -0.01}, "OBSERVATION_TIER_80_FRACTION"),
+        ({"observation_tier_95_fraction": 1.01}, "OBSERVATION_TIER_95_FRACTION"),
+    ],
+)
+def test_station_residual_tier_values_must_be_probabilities(override, expected_name):
+    with pytest.raises(ValueError, match=expected_name):
+        Settings(**override)
+
+
+@pytest.mark.parametrize(
+    ("override", "expected_reason"),
+    [
+        ({"observation_tier_90_probability": 0.80}, "strictly ascending"),
+        ({"observation_tier_95_probability": 0.89}, "strictly ascending"),
+        ({"observation_tier_90_fraction": 0.10}, "strictly ascending"),
+        ({"observation_tier_95_fraction": 0.24}, "strictly ascending"),
+    ],
+)
+def test_station_residual_tiers_must_be_strictly_ascending(override, expected_reason):
+    with pytest.raises(ValueError, match=expected_reason):
+        Settings(**override)
+
+
+def test_station_residual_top_fraction_cannot_exceed_single_market_cap():
+    with pytest.raises(ValueError, match="OBSERVATION_TIER_95_FRACTION"):
+        Settings(
+            max_single_market_fraction=0.48,
+            observation_tier_95_fraction=0.49,
+        )
+
+
+def test_default_top_tier_rejects_lower_single_market_cap():
+    with pytest.raises(ValueError, match="OBSERVATION_TIER_95_FRACTION"):
+        Settings(max_single_market_fraction=0.10)
+
+
+@pytest.mark.parametrize("sample_days", [0, -1, 1.5, True])
+def test_station_residual_min_sample_days_must_be_positive_integer(sample_days):
+    with pytest.raises(ValueError, match="STATION_RESIDUAL_MIN_SAMPLE_DAYS"):
+        Settings(station_residual_min_sample_days=sample_days)
+
+
+@pytest.mark.parametrize("wilson_z", [0.0, -1.0, float("inf"), float("-inf"), float("nan")])
+def test_station_residual_wilson_z_must_be_finite_and_positive(wilson_z):
+    with pytest.raises(ValueError, match="STATION_RESIDUAL_WILSON_Z"):
+        Settings(station_residual_wilson_z=wilson_z)
+
+
+@pytest.mark.parametrize(
+    "strategy_mode",
+    ["lock_only", "intraday_observation_edge", "hybrid_observation_edge"],
+)
+def test_strategy_mode_allowed_values(strategy_mode):
+    assert Settings(strategy_mode=strategy_mode).strategy_mode == strategy_mode
+
+
+def test_strategy_mode_rejects_unknown_value():
+    with pytest.raises(ValueError, match="STRATEGY_MODE"):
+        Settings(strategy_mode="forecast_only")
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"intraday_high_confirm_local_hour": 24},
+        {"intraday_low_confirm_local_hour": -1},
+        {"intraday_us_high_disabled_before_local_hour": 24},
+    ],
+)
+def test_intraday_local_hours_must_be_clock_hours(override):
+    with pytest.raises(ValueError, match="between 0 and 23"):
+        Settings(**override)
+
+
+@pytest.mark.parametrize(
+    ("override", "expected_name"),
+    [
+        ({"intraday_min_side_probability": 0.89}, "INTRADAY_MIN_SIDE_PROBABILITY"),
+        ({"intraday_strong_side_probability": 0.96}, "INTRADAY_STRONG_SIDE_PROBABILITY"),
+        ({"intraday_abnormal_min_net_edge": 0.19}, "INTRADAY_ABNORMAL_MIN_NET_EDGE"),
+    ],
+)
+def test_intraday_strategy_rejects_values_below_safety_floors(override, expected_name):
+    with pytest.raises(ValueError, match=expected_name):
+        Settings(**override)
 
 
 def test_default_realtime_orderbook_rest_snapshot_is_bounded_verification():
@@ -66,7 +213,7 @@ def test_default_city_date_portfolio_caps_shrink_after_one_thousand_dollars():
     assert Settings.bankroll_usd == 200.0
     assert Settings.size_mode == "kelly"
     assert Settings.entry_fraction == 0.20
-    assert Settings.fractional_kelly == 0.50
+    assert Settings.fractional_kelly == 0.25
     assert Settings.max_single_market_fraction == 0.50
     assert Settings.add_to_position_drop_pct == 0.10
     assert Settings.max_city_exposure_fraction == 0.20
@@ -80,7 +227,7 @@ def test_default_city_date_portfolio_caps_shrink_after_one_thousand_dollars():
     assert Settings.max_total_exposure_fraction == 0.90
     assert Settings.min_order_usd == 10.0
     assert Settings.official_nowcast_lock_enabled is True
-    assert Settings.official_nowcast_entry_only is True
+    assert Settings.official_nowcast_entry_only is False
     assert Settings.official_nowcast_lock_base_entry_fraction == 0.20
     assert Settings.official_nowcast_lock_strong_entry_fraction == 0.50
     assert Settings.official_nowcast_lock_near_close_hours == 3.0
@@ -233,6 +380,42 @@ def test_load_settings_reads_conservative_strategy_controls(monkeypatch):
     assert settings.official_nowcast_lock_near_close_hours == 2.5
     assert settings.official_nowcast_lock_yes_base_buffer_c == 0.40
     assert settings.official_nowcast_lock_yes_strong_buffer_c == 0.80
+
+
+def test_load_settings_reads_intraday_observation_edge_controls(monkeypatch):
+    monkeypatch.setenv("STRATEGY_MODE", "intraday_observation_edge")
+    monkeypatch.setenv("INTRADAY_OBSERVATION_EDGE_ENABLED", "false")
+    monkeypatch.setenv("INTRADAY_MIN_SIDE_PROBABILITY", "0.91")
+    monkeypatch.setenv("INTRADAY_STRONG_SIDE_PROBABILITY", "0.98")
+    monkeypatch.setenv("INTRADAY_BASE_ENTRY_FRACTION", "0.11")
+    monkeypatch.setenv("INTRADAY_STRONG_ENTRY_FRACTION", "0.26")
+    monkeypatch.setenv("INTRADAY_ABNORMAL_PRICE_ENTRY_FRACTION", "0.36")
+    monkeypatch.setenv("INTRADAY_ABNORMAL_MIN_NET_EDGE", "0.21")
+    monkeypatch.setenv("INTRADAY_HKO_NEEDS_AUDIT_FRACTION_MULTIPLIER", "0.20")
+    monkeypatch.setenv("INTRADAY_HIGH_CONFIRM_LOCAL_HOUR", "14")
+    monkeypatch.setenv("INTRADAY_LOW_CONFIRM_LOCAL_HOUR", "7")
+    monkeypatch.setenv("INTRADAY_US_HIGH_DISABLED_BEFORE_LOCAL_HOUR", "16")
+    monkeypatch.setenv("INTRADAY_EXACT_LOW_YES_ENABLED", "true")
+    monkeypatch.setenv("INTRADAY_US_EXACT_LOW_YES_ENABLED", "false")
+    monkeypatch.setenv("INTRADAY_ENABLE_ABOVE_BUCKET_NO", "true")
+
+    settings = load_settings()
+
+    assert settings.strategy_mode == "intraday_observation_edge"
+    assert settings.intraday_observation_edge_enabled is False
+    assert settings.intraday_min_side_probability == pytest.approx(0.91)
+    assert settings.intraday_strong_side_probability == pytest.approx(0.98)
+    assert settings.intraday_base_entry_fraction == pytest.approx(0.11)
+    assert settings.intraday_strong_entry_fraction == pytest.approx(0.26)
+    assert settings.intraday_abnormal_price_entry_fraction == pytest.approx(0.36)
+    assert settings.intraday_abnormal_min_net_edge == pytest.approx(0.21)
+    assert settings.intraday_hko_needs_audit_fraction_multiplier == pytest.approx(0.20)
+    assert settings.intraday_high_confirm_local_hour == 14
+    assert settings.intraday_low_confirm_local_hour == 7
+    assert settings.intraday_us_high_disabled_before_local_hour == 16
+    assert settings.intraday_exact_low_yes_enabled is True
+    assert settings.intraday_us_exact_low_yes_enabled is False
+    assert settings.intraday_enable_above_bucket_no is True
 
 
 def test_load_settings_reads_station_nowcast_controls(monkeypatch):

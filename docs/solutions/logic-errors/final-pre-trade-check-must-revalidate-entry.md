@@ -1,6 +1,7 @@
 ---
 title: Final pre-trade checks must revalidate paper entries
 date: 2026-06-14
+last_updated: 2026-06-20
 category: logic-errors
 module: weather_bot.live_paper_runner, weather_bot.config, weather_bot.paper
 problem_type: logic_error
@@ -9,10 +10,12 @@ symptoms:
   - "`DECISION YES` or `DECISION NO` could be selected before the final paper-open point."
   - "The order book could change after candidate selection but before `PaperBroker.open_position()`."
   - "Wide spreads needed a named `SKIP_WIDE_SPREAD` reason for audit and aggregation."
+  - "A provisional cheap price could be tagged as abnormal before final CLOB tradability and executable depth were rechecked."
+  - "Insufficient ask depth used prose or `SKIP_NO_DEPTH` instead of the required `SKIP_NO_EXECUTABLE_DEPTH` aggregation key."
 root_cause: missing_workflow_step
 resolution_type: code_fix
 severity: high
-tags: [paper-trading, pre-trade-check, spread-guard, orderbook, fail-closed]
+tags: [paper-trading, pre-trade-check, spread-guard, orderbook, price-anomaly, fail-closed, skip-reasons]
 ---
 
 # Final pre-trade checks must revalidate paper entries
@@ -47,6 +50,9 @@ without adding any live-trading behavior.
   not be the only place where market microstructure is checked.
 - Keeping the spread guard as an unnamed phrase made the ledger less useful.
   Strategy diagnosis needs stable reason codes such as `SKIP_WIDE_SPREAD`.
+- Tagging an apparent price anomaly during the first evaluation was not enough.
+  A stale or shallow best ask can look cheap without supporting the intended
+  paper order.
 
 ## Solution
 
@@ -80,6 +86,17 @@ MAX_ENTRY_SPREAD_PCT=1.00
 is that gap divided by the executable ask price. A failure logs a stable
 `SKIP_WIDE_SPREAD` action instead of creating a paper position.
 
+Executable-depth failures use `SKIP_NO_EXECUTABLE_DEPTH`. If the final order
+book cannot be fetched at all, use `SKIP_TRADABILITY_UNKNOWN` because the bot
+does not know whether depth exists. This keeps “known empty or insufficient
+depth” separate from “CLOB verification failed.”
+
+Price-anomaly metadata follows the same boundary. The first evaluation may use
+the abnormal-price fraction to size a candidate, but `price_anomaly=true` and
+`signal_family=abnormal_official_station_mispricing` are only finalized after
+the CLOB tradability lookup, fresh ask-side VWAP, spread, fee-aware edge, and
+expected-net-return checks all pass. Any final SKIP clears the anomaly flag.
+
 ## Why This Works
 
 The fix separates two different moments:
@@ -98,9 +115,14 @@ current executable-book checks.
 - Treat every `DECISION YES` and `DECISION NO` as provisional until the final
   pre-trade check passes.
 - Keep spread failures named, configurable, and test-covered.
+- Assert exact skip-reason keys in tests as well as human-readable explanation
+  text; reporting depends on those stable keys.
 - When adding future entry blockers, decide whether they belong in model
   evaluation, portfolio selection, broker account safety, or the final
   pre-trade gate.
+- Treat abnormal-price classification as execution metadata, not as a raw
+  signal property. Cheap-looking reference prices are not opportunities until
+  the final intended size is executable.
 - Never use this paper-only gate as a reason to add wallet, signing, live
   orders, redemption, copy trading, or `LiveBroker`.
 

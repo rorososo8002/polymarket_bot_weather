@@ -105,6 +105,5 @@ slow evaluation failures observable through runner status.
   updates merge to one evaluation, and worker exceptions do not kill receiving.
 
 ## Related Issues
-- [Separate forecast freshness from WebSocket stream health](../logic-errors/explicit-forecast-and-websocket-health.md)
 - [Realtime orderbook requirements are not polling requirements](../workflow-issues/realtime-orderbook-requirement-not-polling-2026-05-26.md)
 - [Avoid full decision-log scans in runtime readers](./dashboard-large-decision-log-initial-scan.md)

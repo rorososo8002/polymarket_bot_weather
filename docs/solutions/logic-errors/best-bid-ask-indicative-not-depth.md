@@ -135,5 +135,4 @@ known.
 
 ## Related Issues
 - [VWAP Slippage Edge Contract](./vwap-slippage-edge-contract-2026-05-25.md)
-- [Separate forecast freshness from WebSocket stream health](./explicit-forecast-and-websocket-health.md)
 - [Realtime orderbook requirements are not polling requirements](../workflow-issues/realtime-orderbook-requirement-not-polling-2026-05-26.md)

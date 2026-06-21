@@ -321,3 +321,160 @@ def test_build_report_warns_on_duplicate_open_trade(tmp_path):
 
     assert "warnings:" in report
     assert "duplicate OPEN market_id=m1 side=YES token_id=yes" in report
+
+
+def test_analyze_paper_groups_by_strategy_mode(tmp_path):
+    decisions = tmp_path / "paper_decisions.csv"
+    trades = tmp_path / "paper_trades.csv"
+    write(
+        decisions,
+        (
+            "ts,market_id,side,p_true,net_edge,reason\n"
+            "2026-01-01T00:00:00+00:00,m1,YES,0.960000,0.460000,entry\n"
+        ),
+    )
+    write(
+        trades,
+        "\n".join(
+            [
+                (
+                    "ts,action,market_id,slug,question,market_type,side,token_id,"
+                    "shares,price,cash_delta_or_pnl,reason,strategy_mode,signal_family,"
+                    "price_anomaly,settlement_precision_confidence"
+                ),
+                (
+                    "2026-01-01T00:00:00+00:00,OPEN,m1,s,q,temperature,YES,yes,"
+                    "20,0.5,-10,entry,hybrid_observation_edge,"
+                    "abnormal_official_station_mispricing,true,verified"
+                ),
+                (
+                    "2026-01-02T00:00:00+00:00,CLOSE,m1,s,q,temperature,YES,yes,"
+                    "20,0.75,5,take profit,hybrid_observation_edge,"
+                    "abnormal_official_station_mispricing,true,verified"
+                ),
+            ]
+        )
+        + "\n",
+    )
+
+    report = build_report(decisions, trades)
+
+    assert "strategy_mode_performance:" in report
+    assert "- hybrid_observation_edge: pnl=$+5.00 n=1" in report
+    assert "signal_family_performance:" in report
+    assert "- abnormal_official_station_mispricing: pnl=$+5.00 n=1" in report
+    assert "price_anomaly_performance:" in report
+    assert "- true: pnl=$+5.00 n=1" in report
+    assert "settlement_precision_confidence_performance:" in report
+    assert "- verified: pnl=$+5.00 n=1" in report
+
+
+def test_analyze_paper_reports_probability_tier_performance_and_calibration(tmp_path):
+    decisions = tmp_path / "paper_decisions.csv"
+    trades = tmp_path / "paper_trades.csv"
+    write(
+        decisions,
+        "ts,market_id,side,p_true,net_edge,reason\n",
+    )
+    write(
+        trades,
+        "\n".join(
+            [
+                (
+                    "ts,action,market_id,slug,question,market_type,side,token_id,"
+                    "shares,price,cash_delta_or_pnl,reason,probability_tier,"
+                    "selected_side_probability,station_id,condition_type,"
+                    "settlement_precision_confidence"
+                ),
+                (
+                    "2026-01-01T00:00:00+00:00,OPEN,m10,s10,"
+                    "Will the highest temperature in Seoul be 23C?,temperature,YES,yes10,"
+                    "20,0.5,-10,entry,80,0.84,RKSI,exact,verified"
+                ),
+                (
+                    "2026-01-02T00:00:00+00:00,SETTLED,m10,s10,"
+                    "Will the highest temperature in Seoul be 23C?,temperature,YES,yes10,"
+                    "20,1.0,10,resolved winner=YES,80,0.84,RKSI,exact,verified"
+                ),
+                (
+                    "2026-01-01T00:01:00+00:00,OPEN,m25,s25,"
+                    "Will the lowest temperature in London be 8C?,temperature,NO,no25,"
+                    "50,0.5,-25,entry,90,0.91,EGLL,exact,verified"
+                ),
+                (
+                    "2026-01-02T00:01:00+00:00,SETTLED,m25,s25,"
+                    "Will the lowest temperature in London be 8C?,temperature,NO,no25,"
+                    "50,0.0,-25,resolved winner=YES,90,0.91,EGLL,exact,verified"
+                ),
+                (
+                    "2026-01-01T00:02:00+00:00,OPEN,m50,s50,"
+                    "Will the highest temperature in NYC be 90F?,temperature,YES,yes50,"
+                    "100,0.5,-50,entry,95,0.96,KNYC,upper_threshold,verified"
+                ),
+                (
+                    "2026-01-02T00:02:00+00:00,SETTLED,m50,s50,"
+                    "Will the highest temperature in NYC be 90F?,temperature,YES,yes50,"
+                    "100,1.0,50,resolved winner=YES,95,0.96,KNYC,upper_threshold,verified"
+                ),
+            ]
+        )
+        + "\n",
+    )
+
+    report = build_report(decisions, trades)
+
+    assert "probability_tier_performance:" in report
+    assert "- 10% (tier 80): pnl=$+10.00 n=1" in report
+    assert "- 25% (tier 90): pnl=$-25.00 n=1" in report
+    assert "- 50% (tier 95): pnl=$+50.00 n=1" in report
+    assert "probability_tier_calibration:" in report
+    assert "- 10% (tier 80): predicted=0.840 realized=1.000 brier=0.0256 n=1" in report
+    assert "- 25% (tier 90): predicted=0.910 realized=0.000 brier=0.8281 n=1" in report
+    assert "- 50% (tier 95): predicted=0.960 realized=1.000 brier=0.0016 n=1" in report
+
+
+def test_analyze_paper_reports_tradability_skip_counts(tmp_path):
+    decisions = tmp_path / "paper_decisions.csv"
+    trades = tmp_path / "paper_trades.csv"
+    write(
+        decisions,
+        "\n".join(
+            [
+                "ts,market_id,side,p_true,net_edge,reason,reason_code",
+                (
+                    "2026-01-01T00:00:00+00:00,m1,SKIP,0.5,0,"
+                    "not accepting orders,SKIP_NOT_ACCEPTING_ORDERS"
+                ),
+                (
+                    "2026-01-01T00:01:00+00:00,m2,SKIP,0.5,0,"
+                    "orderbook disabled,SKIP_ORDERBOOK_DISABLED"
+                ),
+                (
+                    "2026-01-01T00:02:00+00:00,m3,SKIP,0.5,0,"
+                    "tradability unknown,SKIP_TRADABILITY_UNKNOWN"
+                ),
+                (
+                    "2026-01-01T00:03:00+00:00,m4,SKIP,0.5,0,"
+                    "no executable depth,SKIP_NO_EXECUTABLE_DEPTH"
+                ),
+                (
+                    "2026-01-01T00:04:00+00:00,m5,SKIP,0.5,0,"
+                    "wide spread,SKIP_WIDE_SPREAD"
+                ),
+            ]
+        )
+        + "\n",
+    )
+    write(
+        trades,
+        "ts,action,market_id,side,token_id,shares,price,cash_delta_or_pnl,reason\n",
+    )
+
+    report = build_report(decisions, trades)
+
+    assert "tradability_gate_skips:" in report
+    assert "- SKIP_NOT_ACCEPTING_ORDERS: 1" in report
+    assert "- SKIP_ORDERBOOK_DISABLED: 1" in report
+    assert "- SKIP_TRADABILITY_UNKNOWN: 1" in report
+    assert "- SKIP_NO_EXECUTABLE_DEPTH: 1" in report
+    assert "- SKIP_WIDE_SPREAD: 1" in report

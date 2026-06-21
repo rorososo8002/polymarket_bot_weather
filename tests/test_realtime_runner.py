@@ -1,8 +1,10 @@
 import csv
+import hashlib
 import json
 import threading
 import time
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
@@ -14,8 +16,17 @@ from weather_bot.live_paper_runner import (
     _stream_market_registry,
     run_forever,
 )
-from weather_bot.models import OrderBook, OrderLevel, PaperPosition, PaperState, RawMarket, WeatherSignal
+from weather_bot.models import (
+    MarketTradability,
+    OrderBook,
+    OrderLevel,
+    PaperPosition,
+    PaperState,
+    RawMarket,
+    WeatherSignal,
+)
 from weather_bot.nowcast import StationNowcastObservation
+from weather_bot.residual_probability import ResidualProbabilityEstimate
 from weather_bot.station_signal import _today_for_timezone
 from weather_bot.weather_client import parse_weather_question
 
@@ -29,6 +40,26 @@ class FakeStream:
         return self.book
 
 
+class FakeResidualProfileStore:
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    def estimate_bucket(self, **kwargs):
+        self.calls.append(kwargs)
+        return ResidualProbabilityEstimate(
+            usable=True,
+            raw_probability=0.98,
+            conservative_yes_probability=0.97,
+            conservative_no_probability=0.01,
+            successes=98,
+            sample_days=100,
+            profile_key="RKSI|month:06|2200|high|C",
+            profile_scope="month",
+            reason_code="RESIDUAL_PROBABILITY_OK",
+            reason="fixture residual estimate",
+        )
+
+
 def test_stream_backed_client_reads_order_books_from_websocket_cache():
     client = StreamBackedPolymarketClient("https://gamma.example", "https://clob.example", FakeStream())
 
@@ -36,6 +67,104 @@ def test_stream_backed_client_reads_order_books_from_websocket_cache():
 
     assert book.best_bid == 0.49
     assert book.best_ask == 0.50
+
+
+def test_probability_estimator_receives_residual_profile_store() -> None:
+    profile_store = object()
+    received: dict[str, object] = {}
+
+    def estimate(question, **kwargs):
+        received.update(kwargs)
+        return WeatherSignal(0.5, 0.0, "test", question)
+
+    signal = runner_module._call_probability_estimator(
+        estimate,
+        "Will the highest temperature in Seoul be 23C today?",
+        settings=Settings(),
+        residual_profile_store=profile_store,
+    )
+
+    assert signal.source == "test"
+    assert received["residual_profile_store"] is profile_store
+
+
+def test_probability_estimator_receives_store_concentrated_sizing_eligibility() -> None:
+    class EligibleStore:
+        concentrated_sizing_eligible_by_station = {"RKSI": True}
+
+    received: dict[str, object] = {}
+
+    def estimate(question, **kwargs):
+        received.update(kwargs)
+        return WeatherSignal(0.5, 0.0, "test", question)
+
+    runner_module._call_probability_estimator(
+        estimate,
+        "Will the highest temperature in Seoul be 23C today?",
+        settings=Settings(),
+        residual_profile_store=EligibleStore(),
+    )
+
+    assert received["concentrated_sizing_eligible_by_station"] == {"RKSI": True}
+
+
+def test_residual_profile_loader_reads_verified_manifest_eligibility(tmp_path) -> None:
+    profile_path = tmp_path / "station_residual_profiles.json"
+    profile_bytes = Path("tests/fixtures/residual_profiles/minimal_profiles.json").read_bytes()
+    profile_path.write_bytes(profile_bytes)
+    manifest_path = profile_path.with_name("station_residual_profiles.manifest.json")
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "profile_artifact_sha256": hashlib.sha256(profile_bytes).hexdigest(),
+                "stations": {
+                    "seoul": {
+                        "station_id": "RKSI",
+                        "concentrated_sizing_eligible": True,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    store = runner_module._load_residual_profile_store(
+        Settings(station_residual_profile_path=str(profile_path))
+    )
+
+    assert store is not None
+    assert store.concentrated_sizing_eligible_by_station == {"RKSI": True}
+
+
+def test_no_side_uses_explicit_conservative_no_probability_for_edge_and_tier() -> None:
+    question = "Will the highest temperature in Seoul be 23C today?"
+    signal = WeatherSignal(
+        0.45,
+        1.0,
+        "official-station-residual-high-no",
+        "signal_family=intraday_observation_edge",
+        parse_weather_question(question),
+        raw_probability=0.45,
+        conservative_yes_probability=0.30,
+        conservative_no_probability=0.91,
+        selected_side_probability=0.91,
+        signal_family="intraday_observation_edge",
+    )
+    settings = Settings(
+        weather_taker_fee_rate=0.0,
+        model_error_margin=0.0,
+        resolution_error_margin=0.0,
+    )
+
+    _fee, edge, side_probability = runner_module._side_edge_metrics(
+        "NO",
+        signal,
+        0.20,
+        settings,
+    )
+
+    assert side_probability == pytest.approx(0.91)
+    assert edge == pytest.approx(0.71)
 
 
 def test_realtime_evaluation_coalescer_does_not_evaluate_on_enqueue():
@@ -163,6 +292,28 @@ def test_run_forever_uses_websocket_mode_by_default(monkeypatch):
 def test_run_forever_rejects_disabling_realtime_orderbook_stream():
     with pytest.raises(RuntimeError, match="real-time order-book stream"):
         run_forever(Settings(orderbook_stream_enabled=False))
+
+
+def test_main_dry_start_checks_local_assets_without_starting_runner(monkeypatch, capsys):
+    settings = Settings(orderbook_stream_enabled=True)
+    loaded: list[Settings] = []
+
+    monkeypatch.setattr(runner_module, "load_settings", lambda: settings)
+    monkeypatch.setattr(
+        runner_module,
+        "_load_residual_profile_store",
+        lambda actual: loaded.append(actual) or FakeResidualProfileStore(),
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "run_forever",
+        lambda _settings: pytest.fail("dry start must not enter the long-running loop"),
+    )
+
+    runner_module.main(["--dry-start"])
+
+    assert loaded == [settings]
+    assert "DRY START OK" in capsys.readouterr().out
 
 
 def test_realtime_forever_records_discovery_error_before_backoff(tmp_path, monkeypatch):
@@ -656,7 +807,7 @@ def test_realtime_update_without_signal_fails_closed_without_order_book_lookup(t
     with (tmp_path / "decisions.csv").open(newline="", encoding="utf-8") as f:
         rows = list(csv.DictReader(f))
     assert rows[0]["side"] == "SKIP"
-    assert "official-station-entry-only" in rows[0]["reason"]
+    assert "confidence too low" in rows[0]["reason"]
     assert broker.state.positions == []
 
 
@@ -776,11 +927,13 @@ def test_realtime_update_refreshes_station_signal_after_nowcast_cache_ttl(tmp_pa
         min_net_edge=0.99,
     )
     nowcast_provider = ChangingNowcastProvider()
+    residual_profile_store = FakeResidualProfileStore()
     initial_signal = runner_module._call_probability_estimator(
         runner_module.estimate_station_probability,
         question,
         settings=settings,
         observation_provider=nowcast_provider,
+        residual_profile_store=residual_profile_store,
         now=signal_refreshed_at,
     )
     broker = runner_module.PaperBroker(settings)
@@ -797,13 +950,18 @@ def test_realtime_update_refreshes_station_signal_after_nowcast_cache_ttl(tmp_pa
         {},
         signal_refreshed_at_by_market={market.market_id: signal_refreshed_at},
         observation_provider=nowcast_provider,
+        residual_profile_store=residual_profile_store,
         now=signal_refreshed_at + timedelta(seconds=settings.station_nowcast_cache_ttl_seconds + 1),
     )
 
     assert nowcast_provider.calls == 2
     assert signals_by_market[market.market_id].nowcast["observed_high_c"] == 27.2
-    assert signals_by_market[market.market_id].source == "official-station-lock-strong_yes"
+    assert signals_by_market[market.market_id].source == "official-station-residual-high-yes"
     assert "evidence=official-station" in signals_by_market[market.market_id].note
+    assert [call["observed_extreme"] for call in residual_profile_store.calls] == [
+        pytest.approx(27.4),
+        pytest.approx(27.2),
+    ]
 
 
 def test_realtime_update_computes_held_exit_edge_with_fresh_signal(tmp_path):
@@ -950,6 +1108,8 @@ def test_open_position_if_needed_blocks_inactive_or_closed_markets():
     opened_market_ids: list[str] = []
 
     class FakeBroker:
+        settings = Settings()
+
         def has_position(self, market_id, side):
             return False
 
@@ -959,16 +1119,610 @@ def test_open_position_if_needed_blocks_inactive_or_closed_markets():
         def open_position(self, market, *_args, **_kwargs):
             opened_market_ids.append(market.market_id)
 
+        def log_trade(self, *_args, **_kwargs):
+            return None
+
     markets = [
-        RawMarket("inactive", question, "inactive", False, False, "inactive-yes", "inactive-no"),
-        RawMarket("closed", question, "closed", True, True, "closed-yes", "closed-no"),
-        RawMarket("open", question, "open", True, False, "open-yes", "open-no"),
+        RawMarket(
+            "inactive",
+            question,
+            "inactive",
+            False,
+            False,
+            "inactive-yes",
+            "inactive-no",
+            condition_id="condition-1",
+        ),
+        RawMarket(
+            "closed",
+            question,
+            "closed",
+            True,
+            True,
+            "closed-yes",
+            "closed-no",
+            condition_id="condition-1",
+        ),
+        RawMarket(
+            "open",
+            question,
+            "open",
+            True,
+            False,
+            "open-yes",
+            "open-no",
+            condition_id="condition-1",
+        ),
     ]
 
     for market in markets:
-        runner_module._open_position_if_needed(FakeBroker(), market, signal, result, "temperature")
+        runner_module._open_position_if_needed(
+            FakeBroker(),
+            market,
+            signal,
+            result,
+            "temperature",
+            client=_FinalGateClient(),
+        )
 
     assert opened_market_ids == ["open"]
+
+
+def _tradability(**overrides) -> MarketTradability:
+    values = {
+        "active": True,
+        "closed": False,
+        "archived": False,
+        "accepting_orders": True,
+        "enable_order_book": True,
+        "ready": True,
+        "funded": True,
+        "condition_id": "condition-1",
+        "source": "clob",
+        "raw": {},
+    }
+    values.update(overrides)
+    return MarketTradability(**values)
+
+
+def _entry_gate_market(**overrides) -> RawMarket:
+    values = {
+        "market_id": "m1",
+        "question": "Will NYC reach 90 F on May 25?",
+        "slug": "open",
+        "active": True,
+        "closed": False,
+        "yes_token_id": "yes",
+        "no_token_id": "no",
+        "condition_id": "condition-1",
+    }
+    values.update(overrides)
+    return RawMarket(**values)
+
+
+def _entry_gate_signal() -> WeatherSignal:
+    question = "Will NYC reach 90 F on May 25?"
+    return WeatherSignal(
+        0.95,
+        1.0,
+        "official-station-lock-test",
+        "official_nowcast_lock=test",
+        parse_weather_question(question),
+    )
+
+
+def test_intraday_observation_edge_is_entry_eligible_but_not_a_settlement_lock():
+    question = "Will the highest temperature in Seoul be 23C today?"
+    signal = WeatherSignal(
+        0.90,
+        1.0,
+        "official-station-intraday-high-base-yes",
+        "signal_family=intraday_observation_edge",
+        parse_weather_question(question),
+        entry_size_fraction_override=0.10,
+        entry_size_reason="intraday observation edge",
+    )
+
+    assert runner_module._is_official_nowcast_lock(signal) is False
+    assert runner_module._is_official_station_entry_signal(signal) is True
+
+
+def _entry_gate_settings(tmp_path) -> Settings:
+    return Settings(
+        state_path=str(tmp_path / "state.json"),
+        trades_csv_path=str(tmp_path / "trades.csv"),
+        decisions_csv_path=str(tmp_path / "decisions.csv"),
+        raw_snapshots_path=str(tmp_path / "raw.jsonl"),
+        portfolio_decisions_jsonl_path=str(tmp_path / "portfolio.jsonl"),
+        min_net_edge=0.01,
+        min_order_usd=1.0,
+        weather_taker_fee_rate=0.0,
+        model_error_margin=0.0,
+        resolution_error_margin=0.0,
+        entry_min_expected_net_return_pct=0.01,
+    )
+
+
+def _selected_entry_result() -> runner_module.EdgeResult:
+    return runner_module.EdgeResult("YES", 0.95, 0.50, 0.45, 10.0, 20.0, "selected")
+
+
+class _FinalGateClient:
+    def __init__(self, tradability=None, *, lookup_error: Exception | None = None) -> None:
+        self.tradability = tradability or _tradability()
+        self.lookup_error = lookup_error
+        self.tradability_calls: list[str] = []
+        self.book_calls: list[str] = []
+
+    def get_clob_market_tradability(self, condition_id: str):
+        self.tradability_calls.append(condition_id)
+        if self.lookup_error is not None:
+            raise self.lookup_error
+        return self.tradability
+
+    def get_order_book(self, token_id: str) -> OrderBook:
+        self.book_calls.append(token_id)
+        return OrderBook(token_id, bids=[OrderLevel(0.49, 1000.0)], asks=[OrderLevel(0.50, 1000.0)])
+
+
+class _AbnormalPriceClient(_FinalGateClient):
+    def __init__(self, yes_book: OrderBook, no_book: OrderBook) -> None:
+        super().__init__()
+        self.books = {"yes": yes_book, "no": no_book}
+
+    def get_order_book(self, token_id: str) -> OrderBook:
+        self.book_calls.append(token_id)
+        return self.books[token_id]
+
+
+def _intraday_signal(p_true: float) -> WeatherSignal:
+    question = "Will the highest temperature in NYC be 90F today?"
+    entry_fraction = 0.25 if p_true >= 0.97 else 0.10
+    return WeatherSignal(
+        p_true,
+        1.0,
+        "official-station-intraday-high-test",
+        "strategy_mode=hybrid_observation_edge; signal_family=intraday_observation_edge",
+        parse_weather_question(question),
+        entry_size_fraction_override=entry_fraction,
+        entry_size_reason="intraday observation edge fixture",
+    )
+
+
+def _abnormal_market() -> RawMarket:
+    return RawMarket(
+        "abnormal-1",
+        "Will the highest temperature in NYC be 90F today?",
+        "abnormal-1",
+        True,
+        False,
+        "yes",
+        "no",
+        condition_id="condition-1",
+        accepting_orders=True,
+        enable_order_book=True,
+        archived=False,
+    )
+
+
+def _abnormal_settings(tmp_path, **overrides) -> Settings:
+    values = {
+        "state_path": str(tmp_path / "state.json"),
+        "trades_csv_path": str(tmp_path / "trades.csv"),
+        "decisions_csv_path": str(tmp_path / "decisions.csv"),
+        "raw_snapshots_path": str(tmp_path / "raw.jsonl"),
+        "portfolio_decisions_jsonl_path": str(tmp_path / "portfolio.jsonl"),
+        "min_net_edge": 0.01,
+        "min_order_usd": 10.0,
+        "weather_taker_fee_rate": 0.0,
+        "model_error_margin": 0.0,
+        "resolution_error_margin": 0.0,
+        "entry_min_expected_net_return_pct": 0.01,
+        "max_entry_spread_abs": 0.05,
+        "max_entry_spread_pct": 1.0,
+        "max_city_exposure_fraction": 0.90,
+        "max_event_date_exposure_fraction": 0.90,
+        "large_bankroll_event_date_exposure_fraction": 0.90,
+    }
+    values.update(overrides)
+    return Settings(**values)
+
+
+def _evaluate_and_open_abnormal_candidate(
+    tmp_path,
+    *,
+    p_true: float,
+    yes_ask: float,
+    yes_size: float = 1000.0,
+    settings_overrides: dict | None = None,
+):
+    settings = _abnormal_settings(tmp_path, **(settings_overrides or {}))
+    broker = runner_module.PaperBroker(settings)
+    market = _abnormal_market()
+    signal = _intraday_signal(p_true)
+    client = _AbnormalPriceClient(
+        OrderBook("yes", bids=[OrderLevel(max(0.01, yes_ask - 0.01), 1000.0)], asks=[OrderLevel(yes_ask, yes_size)]),
+        OrderBook("no", bids=[OrderLevel(max(0.01, 0.99 - yes_ask), 1000.0)], asks=[OrderLevel(1.0 - yes_ask, 1000.0)]),
+    )
+    result, per_side = runner_module.evaluate_market(
+        market,
+        signal,
+        client,
+        settings,
+        200.0,
+        "temperature",
+    )
+    final_result = runner_module._open_position_if_needed(
+        broker,
+        market,
+        signal,
+        result,
+        "temperature",
+        client=client,
+    )
+    return final_result, per_side, broker
+
+
+def test_abnormal_price_tag_requires_90_probability(tmp_path):
+    result, _per_side, broker = _evaluate_and_open_abnormal_candidate(
+        tmp_path,
+        p_true=0.89,
+        yes_ask=0.50,
+    )
+
+    assert result is not None
+    assert result.side == "YES"
+    assert result.price_anomaly is False
+    assert result.signal_family == "intraday_observation_edge"
+    assert len(broker.state.positions) == 1
+
+
+def test_abnormal_price_tag_requires_min_net_edge(tmp_path):
+    result, _per_side, broker = _evaluate_and_open_abnormal_candidate(
+        tmp_path,
+        p_true=0.97,
+        yes_ask=0.78,
+    )
+
+    assert result is not None
+    assert result.side == "YES"
+    assert result.net_edge == pytest.approx(0.19)
+    assert result.price_anomaly is False
+    assert result.signal_family == "intraday_observation_edge"
+    assert len(broker.state.positions) == 1
+
+
+def test_abnormal_price_still_requires_executable_depth(tmp_path):
+    result, per_side, broker = _evaluate_and_open_abnormal_candidate(
+        tmp_path,
+        p_true=0.97,
+        yes_ask=0.50,
+        yes_size=1.0,
+    )
+
+    assert result is not None
+    assert result.side == "SKIP"
+    assert per_side["YES"].price_anomaly is False
+    assert "SKIP_NO_EXECUTABLE_DEPTH" in per_side["YES"].reason
+    assert "insufficient ask depth" in per_side["YES"].reason
+    assert broker.state.positions == []
+
+
+def test_partial_ask_liquidity_records_requested_and_executable_size(tmp_path):
+    result, _per_side, broker = _evaluate_and_open_abnormal_candidate(
+        tmp_path,
+        p_true=0.97,
+        yes_ask=0.50,
+        yes_size=80.0,
+    )
+
+    assert result is not None
+    assert result.side == "YES"
+    assert result.requested_size_usd == pytest.approx(100.0)
+    assert result.executable_size_usd == pytest.approx(40.0)
+    assert result.size_usd == pytest.approx(40.0)
+    assert broker.state.positions[0].cost_usd == pytest.approx(40.0)
+
+
+def test_abnormal_price_uses_size_override_but_obeys_caps(tmp_path):
+    result, _per_side, broker = _evaluate_and_open_abnormal_candidate(
+        tmp_path,
+        p_true=0.97,
+        yes_ask=0.50,
+        settings_overrides={
+            "max_single_market_fraction": 0.30,
+            "observation_tier_80_fraction": 0.10,
+            "observation_tier_90_fraction": 0.20,
+            "observation_tier_95_fraction": 0.30,
+        },
+    )
+
+    assert result is not None
+    assert result.side == "YES"
+    assert result.price_anomaly is True
+    assert result.strategy_mode == "hybrid_observation_edge"
+    assert result.signal_family == "abnormal_official_station_mispricing"
+    assert result.entry_size_fraction_override == pytest.approx(0.30)
+    assert result.probability_tier == "95"
+    assert result.event_cap_override_fraction is None
+    assert result.size_usd == pytest.approx(60.0)
+    assert broker.state.positions[0].cost_usd == pytest.approx(60.0)
+
+
+def test_evaluate_market_does_not_create_event_override_from_probability_alone(tmp_path):
+    settings = _abnormal_settings(
+        tmp_path,
+        observation_tier_80_fraction=0.10,
+        observation_tier_90_fraction=0.25,
+        observation_tier_95_fraction=0.50,
+    )
+    market = _abnormal_market()
+    signal = WeatherSignal(
+        0.97,
+        1.0,
+        "official-station-residual-high-yes",
+        "signal_family=intraday_observation_edge",
+        parse_weather_question(market.question),
+        entry_size_fraction_override=0.25,
+        conservative_yes_probability=0.96,
+        conservative_no_probability=0.02,
+        selected_side_probability=0.96,
+        probability_tier="90",
+        event_cap_override_fraction=None,
+    )
+    client = _AbnormalPriceClient(
+        OrderBook("yes", bids=[OrderLevel(0.49, 1000.0)], asks=[OrderLevel(0.50, 1000.0)]),
+        OrderBook("no", bids=[OrderLevel(0.49, 1000.0)], asks=[OrderLevel(0.50, 1000.0)]),
+    )
+
+    result, _per_side = runner_module.evaluate_market(
+        market,
+        signal,
+        client,
+        settings,
+        200.0,
+        "temperature",
+    )
+
+    assert result.entry_size_fraction_override == pytest.approx(0.25)
+    assert result.probability_tier == "90"
+    assert result.event_cap_override_fraction is None
+
+
+def test_evaluate_market_skip_preserves_calibration_audit_fields(tmp_path):
+    settings = _abnormal_settings(
+        tmp_path,
+        entry_min_expected_net_return_pct=0.99,
+    )
+    market = _abnormal_market()
+    signal = WeatherSignal(
+        0.97,
+        1.0,
+        "official-station-residual-high-yes",
+        "signal_family=intraday_observation_edge",
+        parse_weather_question(market.question),
+        raw_probability=0.97,
+        conservative_yes_probability=0.96,
+        conservative_no_probability=0.02,
+        raw_selected_side_probability=0.97,
+        selected_side_probability=0.96,
+        calibration_sample_days=1460,
+        calibration_profile_key="RKSI|month=6|minute=900|high|C",
+        calibration_status="RESIDUAL_PROBABILITY_OK",
+        probability_tier="95",
+        entry_size_fraction_override=0.50,
+        event_cap_override_fraction=0.50,
+    )
+    client = _AbnormalPriceClient(
+        OrderBook("yes", bids=[OrderLevel(0.49, 1000.0)], asks=[OrderLevel(0.50, 1000.0)]),
+        OrderBook("no", bids=[OrderLevel(0.49, 1000.0)], asks=[OrderLevel(0.50, 1000.0)]),
+    )
+
+    result, _per_side = runner_module.evaluate_market(
+        market,
+        signal,
+        client,
+        settings,
+        200.0,
+        "temperature",
+    )
+
+    assert result.side == "SKIP"
+    assert result.raw_selected_side_probability == pytest.approx(0.97)
+    assert result.selected_side_probability == pytest.approx(0.96)
+    assert result.probability_tier == "95"
+    assert result.calibration_sample_days == 1460
+    assert result.calibration_profile_key == "RKSI|month=6|minute=900|high|C"
+    assert result.calibration_status == "RESIDUAL_PROBABILITY_OK"
+    assert result.requested_size_usd == pytest.approx(100.0)
+    assert result.executable_size_usd == pytest.approx(100.0)
+    assert result.event_cap_override_fraction == pytest.approx(0.50)
+
+
+def _assert_evaluation_skips_untradable_market(market_overrides, expected_reason):
+    result, per_side = runner_module.evaluate_market(
+        _entry_gate_market(**market_overrides),
+        _entry_gate_signal(),
+        _FinalGateClient(),
+        Settings(),
+        200.0,
+        "temperature",
+    )
+
+    assert result.side == "SKIP"
+    assert expected_reason in result.reason
+    assert per_side == {}
+
+
+def test_open_position_blocks_accepting_orders_false():
+    _assert_evaluation_skips_untradable_market(
+        {"accepting_orders": False},
+        "SKIP_NOT_ACCEPTING_ORDERS",
+    )
+
+
+def test_open_position_blocks_enable_order_book_false():
+    _assert_evaluation_skips_untradable_market(
+        {"enable_order_book": False},
+        "SKIP_ORDERBOOK_DISABLED",
+    )
+
+
+def test_open_position_blocks_archived_market():
+    _assert_evaluation_skips_untradable_market(
+        {"archived": True},
+        "SKIP_MARKET_ARCHIVED",
+    )
+
+
+def test_final_pre_trade_fetches_clob_tradability(tmp_path):
+    broker = runner_module.PaperBroker(_entry_gate_settings(tmp_path))
+    client = _FinalGateClient()
+
+    final_result = runner_module._open_position_if_needed(
+        broker,
+        _entry_gate_market(),
+        _entry_gate_signal(),
+        _selected_entry_result(),
+        "temperature",
+        client=client,
+    )
+
+    assert final_result.side == "YES"
+    assert client.tradability_calls == ["condition-1"]
+    assert client.book_calls == ["yes"]
+    assert len(broker.state.positions) == 1
+
+
+def test_final_pre_trade_revalidates_station_signal_and_blocks_probability_drop(tmp_path):
+    question = "Will the highest temperature in Seoul be 23C today?"
+    settings = _entry_gate_settings(tmp_path)
+    broker = runner_module.PaperBroker(settings)
+    market = RawMarket(
+        "seoul-23c",
+        question,
+        "seoul-23c",
+        True,
+        False,
+        "yes",
+        "no",
+        condition_id="condition-1",
+        accepting_orders=True,
+        enable_order_book=True,
+        archived=False,
+    )
+    initial_signal = WeatherSignal(
+        0.97,
+        1.0,
+        "official-station-residual-high-yes",
+        "signal_family=intraday_observation_edge",
+        parse_weather_question(question),
+        raw_probability=0.97,
+        conservative_yes_probability=0.96,
+        conservative_no_probability=0.02,
+        selected_side_probability=0.96,
+        signal_family="intraday_observation_edge",
+        entry_size_fraction_override=0.50,
+        probability_tier="95",
+        event_cap_override_fraction=0.50,
+    )
+    provisional_result = runner_module.EdgeResult(
+        "YES",
+        0.97,
+        0.50,
+        0.46,
+        50.0,
+        100.0,
+        "selected from stale signal",
+    )
+    calls: list[str] = []
+
+    def final_estimator(question, **_kwargs):
+        calls.append(question)
+        return WeatherSignal(
+            0.5,
+            0.0,
+            "official-station-residual-below-tier",
+            "signal_family=intraday_observation_edge; residual_probability=below observation tier",
+            parse_weather_question(question),
+            raw_probability=0.89,
+            conservative_yes_probability=0.79,
+            conservative_no_probability=0.05,
+            selected_side_probability=0.79,
+            calibration_status="RESIDUAL_PROBABILITY_OK",
+        )
+
+    final_result = runner_module._open_position_if_needed(
+        broker,
+        market,
+        initial_signal,
+        provisional_result,
+        "temperature",
+        client=_FinalGateClient(),
+        probability_estimator=final_estimator,
+        observation_provider=object(),
+        residual_profile_store=object(),
+    )
+
+    assert calls == [question]
+    assert final_result.side == "SKIP"
+    assert "SKIP_FINAL_STATION_SIGNAL" in final_result.reason
+    assert broker.state.positions == []
+
+
+def test_final_pre_trade_blocks_when_clob_accepting_orders_false(tmp_path):
+    broker = runner_module.PaperBroker(_entry_gate_settings(tmp_path))
+    client = _FinalGateClient(_tradability(accepting_orders=False))
+
+    final_result = runner_module._open_position_if_needed(
+        broker,
+        _entry_gate_market(),
+        _entry_gate_signal(),
+        _selected_entry_result(),
+        "temperature",
+        client=client,
+    )
+
+    assert final_result.side == "SKIP"
+    assert "SKIP_NOT_ACCEPTING_ORDERS" in final_result.reason
+    assert client.book_calls == []
+    assert broker.state.positions == []
+
+
+def test_final_pre_trade_blocks_when_clob_lookup_fails(tmp_path):
+    broker = runner_module.PaperBroker(_entry_gate_settings(tmp_path))
+    client = _FinalGateClient(lookup_error=RuntimeError("clob unavailable"))
+
+    final_result = runner_module._open_position_if_needed(
+        broker,
+        _entry_gate_market(),
+        _entry_gate_signal(),
+        _selected_entry_result(),
+        "temperature",
+        client=client,
+    )
+
+    assert final_result.side == "SKIP"
+    assert "SKIP_TRADABILITY_UNKNOWN" in final_result.reason
+    assert client.book_calls == []
+    assert broker.state.positions == []
+
+
+def test_final_pre_trade_does_not_block_only_because_end_date_is_past(tmp_path):
+    broker = runner_module.PaperBroker(_entry_gate_settings(tmp_path))
+    client = _FinalGateClient()
+
+    final_result = runner_module._open_position_if_needed(
+        broker,
+        _entry_gate_market(end_date_iso="2020-01-01T00:00:00Z"),
+        _entry_gate_signal(),
+        _selected_entry_result(),
+        "temperature",
+        client=client,
+    )
+
+    assert final_result.side == "YES"
+    assert len(broker.state.positions) == 1
 
 
 def test_open_position_if_needed_rechecks_fresh_spread_before_broker_open(tmp_path):
@@ -991,11 +1745,15 @@ def test_open_position_if_needed_rechecks_fresh_spread_before_broker_open(tmp_pa
         entry_fraction=0.10,
     )
     broker = runner_module.PaperBroker(settings)
-    market = RawMarket("m1", question, "open", True, False, "yes", "no")
+    market = RawMarket("m1", question, "open", True, False, "yes", "no", condition_id="condition-1")
     signal = WeatherSignal(0.90, 0.90, "test", "test", parse_weather_question(question))
     result = runner_module.EdgeResult("YES", 0.90, 0.50, 0.40, 10.0, 20.0, "selected")
 
     class FinalBookClient:
+        def get_clob_market_tradability(self, condition_id: str):
+            assert condition_id == "condition-1"
+            return _tradability()
+
         def get_order_book(self, token_id: str) -> OrderBook:
             assert token_id == "yes"
             return OrderBook("yes", bids=[OrderLevel(0.44, 1000.0)], asks=[OrderLevel(0.50, 1000.0)])

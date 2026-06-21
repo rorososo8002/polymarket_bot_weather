@@ -54,4 +54,4 @@ Avoid dispatching those write commands as parallel tool calls.
 
 ## Related
 
-- [VPS live paper runbook](../../VPS_LIVE_PAPER.md)
+- [Verified local and VPS commands](../../codex/known-good-commands.md)

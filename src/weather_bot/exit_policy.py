@@ -43,14 +43,27 @@ def side_true_probability(side: Literal["YES", "NO"] | str, p_true_yes: float) -
     return p_yes if side == "YES" else 1.0 - p_yes
 
 
-def model_fair_price(side: Literal["YES", "NO"] | str, p_true_yes: float, settings: Settings) -> float:
-    """Conservative station-lock fair price for the token side."""
-    settlement_value = conservative_settlement_value(side, p_true_yes, settings)
+def _selected_side_probability(result: EdgeResult) -> float:
+    if result.selected_side_probability is not None:
+        return clamp_probability(result.selected_side_probability)
+    return side_true_probability(result.side, result.p_true)
+
+
+def _fair_price_from_side_probability(side_probability: float, settings: Settings) -> float:
+    settlement_value = max(
+        0.0,
+        min(1.0, side_probability - settings.model_error_margin - settings.resolution_error_margin),
+    )
     fair = settlement_value - polymarket_taker_fee_per_share(
         settlement_value,
         settings.weather_taker_fee_rate,
     )
     return max(0.01, min(0.99, fair))
+
+
+def model_fair_price(side: Literal["YES", "NO"] | str, p_true_yes: float, settings: Settings) -> float:
+    """Conservative station-lock fair price for the token side."""
+    return _fair_price_from_side_probability(side_true_probability(side, p_true_yes), settings)
 
 
 def conservative_settlement_value(side: Literal["YES", "NO"] | str, p_true_yes: float, settings: Settings) -> float:
@@ -105,13 +118,15 @@ def build_entry_plan(
 ) -> EntryPlan:
     if result.side not in {"YES", "NO"} or result.p_exec is None:
         raise ValueError("entry plan requires YES/NO result with p_exec")
-    fair = model_fair_price(result.side, result.p_true, settings)
+    side_probability = _selected_side_probability(result)
+    fair = _fair_price_from_side_probability(side_probability, settings)
     target = target_exit_price(result.p_exec, fair, settings)
     heat = market_heat_score(result.p_exec, fair)
     fraction = result.size_usd / bankroll_before if bankroll_before > 0 else 0.0
-    stop_threshold = probability_stop_threshold(result.side, result.p_true, settings)
+    stop_threshold = max(0.0, side_probability - settings.probability_stop_drop_threshold)
     rationale = (
-        f"entry: station_p={result.p_true:.3f}, side={result.side}, p_exec={result.p_exec:.4f}, "
+        f"entry: raw_yes_p={result.p_true:.3f}, side_p={side_probability:.3f}, "
+        f"side={result.side}, p_exec={result.p_exec:.4f}, "
         f"net_edge={result.net_edge:.4f}, bankroll=${bankroll_before:.2f}, "
         f"entry_fraction={fraction:.2%}, probability_stop={stop_threshold:.3f}, "
         f"model_fair={fair:.4f}, target_exit={target:.4f}, heat={heat:.2%}"
@@ -136,7 +151,13 @@ def assess_exit(
     holding_hours: float,
 ) -> ExitAssessment:
     p_true = latest_edge.p_true if latest_edge is not None else float(pos.metadata.get("entry_p_true", 0.5))
-    fair = model_fair_price(pos.side, p_true, settings)
+    if latest_edge is not None:
+        current_side_probability = _selected_side_probability(latest_edge)
+    elif pos.metadata.get("selected_side_probability") is not None:
+        current_side_probability = clamp_probability(float(pos.metadata["selected_side_probability"]))
+    else:
+        current_side_probability = side_true_probability(pos.side, p_true)
+    fair = _fair_price_from_side_probability(current_side_probability, settings)
     target = target_exit_price(pos.entry_price, fair, settings)
     heat = market_heat_score(mark_price, fair)
     pnl = _liquidation_pnl(pos, mark_price, settings)
@@ -152,9 +173,11 @@ def assess_exit(
 
     entry_p_true = float(pos.metadata.get("entry_p_true", p_true))
     entry_side_probability = float(
-        pos.metadata.get("entry_side_probability", side_true_probability(pos.side, entry_p_true))
+        pos.metadata.get(
+            "selected_side_probability",
+            pos.metadata.get("entry_side_probability", side_true_probability(pos.side, entry_p_true)),
+        )
     )
-    current_side_probability = side_true_probability(pos.side, p_true)
     stop_threshold = float(
         pos.metadata.get(
             "probability_stop_threshold",

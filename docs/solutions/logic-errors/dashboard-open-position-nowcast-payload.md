@@ -24,7 +24,7 @@ temperature position even though the bot had already fetched AWC METAR nowcast
 data and recorded `observed_high_c=29.0` in the matching decision note.
 
 ## Symptoms
-- The legacy operator view emphasized forecast and probability badges but did
+- The legacy operator view emphasized generic model and probability badges but did
   not make official-station evidence the primary display.
 - `station_nowcast_request_log.jsonl` showed successful bulk METAR requests.
 - The latest decision row for the market contained `observed_high_c=29.0`, but
@@ -98,6 +98,4 @@ the right fallback for display-only station names.
   `30.0C` is the first decisive break above it.
 
 ## Related Issues
-- [Realtime nowcast signals must refresh on the nowcast TTL](./realtime-nowcast-signal-refresh-must-follow-nowcast-ttl.md)
-- [Do not use observed high nowcast for daily-low markets](./observed-high-nowcast-daily-low-markets.md)
 - [Keep live dashboard refreshes small and operator-focused](../performance-issues/dashboard-live-refresh-payload-cost.md)

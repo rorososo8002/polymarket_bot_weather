@@ -45,7 +45,7 @@ to run that file.
 For complex remote changes, use the temporary-script pattern:
 
 1. Write a narrow local script under `.deploy_tmp/`, such as
-   `.deploy_tmp/update_forecast_env_1800.sh`.
+   `.deploy_tmp/update_service_env.sh`.
 2. Keep the script focused on one job and explicit paths.
 3. Copy it to `/tmp` with `scp -i`.
 4. Run only `bash /tmp/script-name.sh` over SSH.
@@ -56,8 +56,8 @@ For complex remote changes, use the temporary-script pattern:
 Good shape:
 
 ```powershell
-scp -i $key .deploy_tmp\update_forecast_env_1800.sh "${oracle}:/tmp/update_forecast_env_1800.sh"
-ssh -i $key $oracle bash /tmp/update_forecast_env_1800.sh
+scp -i $key .deploy_tmp\update_service_env.sh "${oracle}:/tmp/update_service_env.sh"
+ssh -i $key $oracle bash /tmp/update_service_env.sh
 ```
 
 Avoid:

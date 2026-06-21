@@ -7,7 +7,7 @@ problem_type: logic_error
 component: service_object
 symptoms:
   - "The live runner reported 0 streamable temperature tokens while Polymarket displayed many active temperature outcome markets."
-  - "Forecast worker counters stayed at zero because no market reached forecast scheduling."
+  - "Station-signal counters stayed at zero because no market reached signal evaluation."
   - "Dashboard WebSocket health showed WAITING with no streamable temperature tokens."
 root_cause: wrong_api
 resolution_type: code_fix
@@ -27,13 +27,14 @@ label such as `28C`, `22C or below`, or `32C or higher`.
 The paper bot originally expected each Gamma market row's `question` to already
 contain the city, date, and temperature condition. When the condition moved to
 the outcome label, discovery discarded otherwise valid temperature rows before
-forecasting or WebSocket subscription.
+station-signal evaluation or WebSocket subscription.
 
 ## Symptoms
 
 - `paper_runner_status.json` showed `0 tokens across 0 markets`.
-- `forecast_worker.processed_task_count` stayed at `0`.
-- No Open-Meteo forecast request was attempted because no market was scheduled.
+- Station-signal evaluation counters stayed at `0`.
+- No official same-station observation was evaluated because no market was
+  scheduled.
 - This looked like a conservative strategy skip, but it happened before the
   strategy had any market to evaluate.
 
@@ -41,7 +42,7 @@ forecasting or WebSocket subscription.
 
 - Treating `WAITING` as proof of normal no-market behavior hid the upstream
   discovery failure.
-- Looking only at `markets_total` after pre-forecast filtering could not tell
+- Looking only at `markets_total` after pre-signal filtering could not tell
   whether discovery found nothing or whether all candidates were rejected by
   validation gates.
 
@@ -61,15 +62,16 @@ synthetic:   Will the highest temperature in Seoul be 28C on June 15?
 
 The same path handles tail labels such as `22C or below` and `32C or higher`.
 After synthesis, the existing parser, rule provenance, station gates, token
-mapping, forecast scheduler, and WebSocket subscription logic remain unchanged.
+mapping, station-signal evaluator, and WebSocket subscription logic remain
+unchanged.
 
 The runner status also carries discovery-stage counters:
 
 ```text
 raw_discovered_markets
 temperature_markets
-pre_forecast_skipped
-pre_forecast_skip_reasons
+pre_signal_skipped
+pre_signal_skip_reasons
 stream_markets
 stream_tokens
 ```
@@ -105,7 +107,7 @@ without weakening station or settlement-source checks.
 - Keep a regression test where `question` is only the event title and
   `groupItemTitle` carries the temperature condition.
 - Check `discovery.raw_discovered_markets`, `discovery.temperature_markets`,
-  and `discovery.pre_forecast_skip_reasons` before tuning entry thresholds.
+  and `discovery.pre_signal_skip_reasons` before tuning entry thresholds.
 - Keep grouped-event rule tests with provider precision numbers and UI unit
   toggle text so the validator does not treat generic event text as a bucket.
 - Do not loosen strategy edge, spread, fee, liquidity, or station rules just

@@ -8,6 +8,7 @@ venv/
 env/
 .pytest_cache/
 .pytest-tmp*/
+.npm-cache/
 .vscode/
 .idea/
 __pycache__/
@@ -24,6 +25,7 @@ data/
 *.tar
 *.tar.gz
 *.zip
+.agbrowse-*.tgz
 paper_state.json
 paper_trades.csv
 paper_decisions.csv
@@ -42,3 +44,7 @@ shadow_signal_report.md
 # normal context scans; read a specific file only when AGENTS.md conditions say
 # it is relevant.
 docs/solutions/
+
+# Downloaded tool packages are useful for one-off repair only. Do not let future
+# agents spend context reading an unpacked npm package.
+package/

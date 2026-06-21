@@ -185,6 +185,29 @@ def test_valid_paper_state_with_position_still_loads(tmp_path):
     assert broker.state.stats == {"temperature": {"wins": 0, "losses": 0, "pnl": 0.0}}
 
 
+def test_existing_trade_csv_without_strategy_columns_still_replays(tmp_path):
+    settings = settings_for(tmp_path)
+    write_state(Path(settings.state_path), valid_position_state())
+    legacy_header = (
+        "ts,action,market_id,slug,question,market_type,side,token_id,"
+        "shares,price,cash_delta_or_pnl,reason"
+    )
+    Path(settings.trades_csv_path).write_text(
+        legacy_header
+        + "\n"
+        + "2026-06-03T00:00:00+00:00,OPEN,market-1,market-1-slug,"
+        + "Will NYC high temperature exceed 80F?,temperature,YES,token-yes-1,"
+        + "12.500000,0.420000,-5.250000,legacy open\n",
+        encoding="utf-8",
+    )
+
+    broker = PaperBroker(settings)
+
+    assert len(broker.state.positions) == 1
+    assert broker.state.positions[0].market_id == "market-1"
+    assert broker.state.cash_usd == pytest.approx(94.75)
+
+
 def test_state_with_open_positions_and_missing_trade_ledger_fails_closed(tmp_path):
     settings = settings_for(tmp_path)
     write_state(Path(settings.state_path), valid_position_state())

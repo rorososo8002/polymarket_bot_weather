@@ -16,7 +16,7 @@ tags: [paper-trading, sizing, risk-caps, minimum-order, portfolio]
 
 ## Context
 
-The paper bot can have valid signals, fresh forecasts, and executable books but
+The paper bot can have valid signals, fresh station evidence, and executable books but
 still open no positions when the risk cap for a city-date event is smaller than
 `MIN_ORDER_USD`.
 
@@ -64,7 +64,7 @@ configuration math.
 - When raising `MIN_ORDER_USD`.
 - When lowering `MAX_EVENT_DATE_EXPOSURE_FRACTION`.
 - When changing `BANKROLL_USD`.
-- When dashboard positions stay flat even though WebSocket and forecast health
+- When dashboard positions stay flat even though WebSocket and station-signal health
   are green.
 
 ## Examples

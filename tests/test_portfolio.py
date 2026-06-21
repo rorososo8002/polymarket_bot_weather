@@ -1,13 +1,23 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 
 import pytest
 
 from weather_bot.config import Settings
 from weather_bot.edge import polymarket_taker_fee_per_share
 from weather_bot.live_paper_runner import _apply_event_portfolio, _evaluate_realtime_update, evaluate_market, run_cycle
-from weather_bot.models import EdgeResult, OrderBook, OrderLevel, PaperPosition, PaperState, RawMarket, WeatherSignal
+from weather_bot.models import (
+    EdgeResult,
+    MarketTradability,
+    OrderBook,
+    OrderLevel,
+    PaperPosition,
+    PaperState,
+    RawMarket,
+    WeatherSignal,
+)
 from weather_bot.paper import PaperBroker
 from weather_bot.portfolio import (
     EntryBankrollSnapshot,
@@ -37,6 +47,23 @@ class FakeClient:
     def get_order_book(self, token_id: str):
         return self.books[token_id]
 
+    def get_clob_market_tradability(self, condition_id: str) -> MarketTradability:
+        return tradability(condition_id)
+
+
+def tradability(condition_id: str) -> MarketTradability:
+    return MarketTradability(
+        active=True,
+        closed=False,
+        archived=False,
+        accepting_orders=True,
+        enable_order_book=True,
+        ready=True,
+        funded=True,
+        condition_id=condition_id,
+        source="test-clob",
+    )
+
 
 def settings(tmp_path, **overrides) -> Settings:
     values = {
@@ -62,6 +89,7 @@ def market(market_id: str, bucket: str) -> RawMarket:
         closed=False,
         yes_token_id=f"{market_id}-yes",
         no_token_id=f"{market_id}-no",
+        condition_id=f"{market_id}-condition",
         event_id="seoul-may-25",
     )
 
@@ -85,9 +113,20 @@ def candidate(
     p_true: float = 0.6,
     p_exec: float = 0.40,
     expected_net_profit_usd: float = 1.0,
+    selected_side_probability: float | None = None,
+    probability_tier: str = "",
+    event_cap_override_fraction: float | None = None,
 ) -> PortfolioCandidate:
     raw_market = market(market_id, bucket)
     signal = station_lock_signal(p_true, 0.9, raw_market.question)
+    if event_cap_override_fraction is not None:
+        signal = replace(
+            signal,
+            entry_size_fraction_override=event_cap_override_fraction,
+            selected_side_probability=selected_side_probability,
+            probability_tier=probability_tier,
+            event_cap_override_fraction=event_cap_override_fraction,
+        )
     return PortfolioCandidate(
         market=raw_market,
         signal=signal,
@@ -100,6 +139,10 @@ def candidate(
             size_shares=size_usd / p_exec,
             reason="cost-adjusted candidate",
             expected_net_profit_usd=expected_net_profit_usd,
+            entry_size_fraction_override=event_cap_override_fraction,
+            selected_side_probability=selected_side_probability,
+            probability_tier=probability_tier,
+            event_cap_override_fraction=event_cap_override_fraction,
         ),
         market_type="temperature",
     )
@@ -285,6 +328,9 @@ def test_evaluate_market_skips_when_calculated_order_is_below_minimum(tmp_path):
         min_order_usd=10.0,
         entry_fraction=0.10,
         max_single_market_fraction=0.10,
+        observation_tier_80_fraction=0.02,
+        observation_tier_90_fraction=0.05,
+        observation_tier_95_fraction=0.10,
         entry_min_expected_net_return_pct=0.01,
         weather_taker_fee_rate=0.0,
         model_error_margin=0.0,
@@ -316,6 +362,9 @@ def test_evaluate_market_accepts_minimum_sized_order_without_requiring_max_depth
         min_order_usd=10.0,
         entry_fraction=0.01,
         max_single_market_fraction=0.10,
+        observation_tier_80_fraction=0.02,
+        observation_tier_90_fraction=0.05,
+        observation_tier_95_fraction=0.10,
         entry_min_expected_net_return_pct=0.01,
         weather_taker_fee_rate=0.0,
         model_error_margin=0.0,
@@ -347,6 +396,9 @@ def test_evaluate_market_scales_final_order_down_to_available_depth(tmp_path):
         size_mode="fixed_fraction",
         entry_fraction=0.02,
         max_single_market_fraction=0.10,
+        observation_tier_80_fraction=0.02,
+        observation_tier_90_fraction=0.05,
+        observation_tier_95_fraction=0.10,
         entry_min_expected_net_return_pct=0.01,
         weather_taker_fee_rate=0.0,
         model_error_margin=0.0,
@@ -379,6 +431,9 @@ def test_evaluate_market_still_skips_when_available_depth_is_below_minimum_order
         size_mode="fixed_fraction",
         entry_fraction=0.02,
         max_single_market_fraction=0.10,
+        observation_tier_80_fraction=0.02,
+        observation_tier_90_fraction=0.05,
+        observation_tier_95_fraction=0.10,
         entry_min_expected_net_return_pct=0.01,
         weather_taker_fee_rate=0.0,
         model_error_margin=0.0,
@@ -410,6 +465,9 @@ def test_evaluate_market_reprices_edge_when_final_order_walks_the_book(tmp_path)
         size_mode="fixed_fraction",
         entry_fraction=0.02,
         max_single_market_fraction=0.10,
+        observation_tier_80_fraction=0.02,
+        observation_tier_90_fraction=0.05,
+        observation_tier_95_fraction=0.10,
         entry_min_expected_net_return_pct=0.01,
         weather_taker_fee_rate=0.0,
         model_error_margin=0.0,
@@ -451,6 +509,71 @@ def test_event_portfolio_selects_one_profitable_leg(tmp_path):
     assert decision.expected_net_profit_usd == 1.25
 
 
+def test_event_portfolio_allows_structured_95_tier_to_use_fifty_percent_cap(tmp_path):
+    broker = PaperBroker(settings(tmp_path))
+    strong = candidate(
+        "seoul-26",
+        "26\u00b0C",
+        size_usd=50.0,
+        p_true=0.96,
+        p_exec=0.50,
+        expected_net_profit_usd=23.0,
+        selected_side_probability=0.96,
+        probability_tier="95",
+        event_cap_override_fraction=0.50,
+    )
+
+    decision = select_event_portfolio(broker, [strong], usable_snapshot())
+
+    assert decision.event_cap_fraction == pytest.approx(0.50)
+    assert decision.event_cap_usd == pytest.approx(50.0)
+    assert len(decision.selected) == 1
+    assert decision.selected[0].result.size_usd == pytest.approx(50.0)
+
+
+def test_event_portfolio_keeps_ordinary_cap_without_structured_override(tmp_path):
+    broker = PaperBroker(settings(tmp_path))
+    unstructured = candidate(
+        "seoul-26",
+        "26\u00b0C",
+        size_usd=50.0,
+        p_true=0.96,
+        p_exec=0.50,
+        expected_net_profit_usd=23.0,
+        selected_side_probability=0.96,
+        probability_tier="95",
+    )
+
+    decision = select_event_portfolio(broker, [unstructured], usable_snapshot())
+
+    assert decision.event_cap_fraction == pytest.approx(0.10)
+    assert decision.event_cap_usd == pytest.approx(10.0)
+    assert len(decision.selected) == 1
+    assert decision.selected[0].result.size_usd == pytest.approx(10.0)
+
+
+def test_event_portfolio_rejects_override_when_signal_and_result_do_not_match(tmp_path):
+    broker = PaperBroker(settings(tmp_path))
+    mismatched = candidate(
+        "seoul-26",
+        "26\u00b0C",
+        size_usd=50.0,
+        p_true=0.96,
+        p_exec=0.50,
+        expected_net_profit_usd=23.0,
+        selected_side_probability=0.96,
+        probability_tier="90",
+        event_cap_override_fraction=0.50,
+    )
+
+    decision = select_event_portfolio(broker, [mismatched], usable_snapshot())
+
+    assert decision.event_cap_fraction == pytest.approx(0.10)
+    assert decision.event_cap_usd == pytest.approx(10.0)
+    assert len(decision.selected) == 1
+    assert decision.selected[0].result.size_usd == pytest.approx(10.0)
+
+
 def test_fee_adjusted_shares_drive_portfolio_scenario_and_open_position(tmp_path):
     cfg = settings(
         tmp_path,
@@ -488,6 +611,7 @@ def test_fee_adjusted_shares_drive_portfolio_scenario_and_open_position(tmp_path
         broker,
         [PortfolioCandidate(raw_market, signal, result, "temperature")],
         usable_snapshot(),
+        client=client,
     )
 
     assert len(broker.state.positions) == 1
@@ -1192,6 +1316,12 @@ def test_broker_total_open_exposure_cap_is_ninety_percent(tmp_path):
 
 def test_runner_applies_selected_event_portfolio_and_writes_one_event_log(tmp_path):
     broker = PaperBroker(settings(tmp_path, bankroll_usd=200.0))
+    client = FakeClient(
+        {
+            "seoul-26-no": orderbook("seoul-26-no", 0.69, 0.70),
+            "seoul-27-no": orderbook("seoul-27-no", 0.69, 0.70),
+        }
+    )
     decision = _apply_event_portfolio(
         broker,
         [
@@ -1199,6 +1329,7 @@ def test_runner_applies_selected_event_portfolio_and_writes_one_event_log(tmp_pa
             candidate("seoul-27", "27°C", side="NO", size_usd=20.0, p_true=0.10, p_exec=0.70, expected_net_profit_usd=3.0),
         ],
         usable_snapshot(200.0),
+        client=client,
     )
 
     assert [pos.market_id for pos in broker.state.positions] == ["seoul-26", "seoul-27"]
@@ -1250,7 +1381,15 @@ def test_runner_applies_selected_add_to_existing_position(tmp_path):
         expected_net_profit_usd=2.0,
     )
 
-    decision = _apply_event_portfolio(broker, [add_candidate], usable_snapshot(200.0))
+    client = FakeClient(
+        {"seoul-26-yes": orderbook("seoul-26-yes", 0.43, 0.44)}
+    )
+    decision = _apply_event_portfolio(
+        broker,
+        [add_candidate],
+        usable_snapshot(200.0),
+        client=client,
+    )
 
     assert decision.selected[0].add_to_existing_position_id == "held"
     assert len(broker.state.positions) == 1
@@ -1292,6 +1431,9 @@ def test_run_cycle_opens_city_date_candidates_as_one_logged_portfolio(monkeypatc
 
         def discover_weather_markets(self, max_pages: int, page_size: int):
             return markets
+
+        def get_clob_market_tradability(self, condition_id: str) -> MarketTradability:
+            return tradability(condition_id)
 
         def get_order_book(self, token_id: str) -> OrderBook:
             return books[token_id]
@@ -1374,6 +1516,9 @@ def test_run_cycle_proceeds_with_zero_when_held_position_cannot_be_priced(monkey
         def discover_weather_markets(self, max_pages: int, page_size: int):
             return markets
 
+        def get_clob_market_tradability(self, condition_id: str) -> MarketTradability:
+            return tradability(condition_id)
+
         def get_order_book(self, token_id: str) -> OrderBook:
             return books[token_id]
 
@@ -1433,6 +1578,9 @@ def test_run_cycle_opens_two_profitable_no_legs_for_same_event(monkeypatch, tmp_
 
         def discover_weather_markets(self, max_pages: int, page_size: int):
             return markets
+
+        def get_clob_market_tradability(self, condition_id: str) -> MarketTradability:
+            return tradability(condition_id)
 
         def get_order_book(self, token_id: str) -> OrderBook:
             return books[token_id]

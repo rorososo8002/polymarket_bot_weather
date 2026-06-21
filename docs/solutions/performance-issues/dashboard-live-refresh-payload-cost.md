@@ -37,7 +37,7 @@ Keep the dashboard live, but make each refresh cheaper:
 
 - Replace high-volume event/SKIP feeds with open positions.
 - Replace the old open-position/recent-trade bottom area with a realized PnL
-  table that shows date, city, forecast temperature, threshold, expected exit,
+  table that shows date, city, station observation, threshold, expected exit,
   entry, exit, PnL, and ROI.
 - Move bounded recent trades to the right column.
 - Remove `events`, `recent_decisions`, and pressure rows from the API payload.

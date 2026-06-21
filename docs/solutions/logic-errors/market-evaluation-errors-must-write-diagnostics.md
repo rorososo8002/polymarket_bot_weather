@@ -74,7 +74,7 @@ being mistaken for an entry.
 
 ## 5. What This Project Must Be Especially Careful About
 
-Fail closed means skip, not guess. If a forecast refresh, order-book read,
+Fail closed means skip, not guess. If a station-signal refresh, order-book read,
 parser path, or realtime update fails for a market, the bot must not invent a
 probability or fill price just to keep the cycle moving.
 

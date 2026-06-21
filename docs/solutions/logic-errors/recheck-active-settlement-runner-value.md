@@ -102,6 +102,5 @@ Those are three different questions. Do not collapse them into one boolean.
 
 - [Correlated event budgets need a broker backstop](./correlated-event-budget-needs-broker-backstop.md)
 - [Invalid edge sentinel is not an exit signal](./invalid-edge-sentinel-not-exit-signal.md)
-- [Use same-station nowcast pilots before expanding weather observations](./use-same-station-nowcast-pilots.md)
 - `src/weather_bot/paper.py`
 - `tests/test_hardening.py`

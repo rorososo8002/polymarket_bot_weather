@@ -21,6 +21,7 @@ _POSITIVE_NUMBER_SETTINGS = (
     "min_order_usd",
     "event_date_exposure_transition_usd",
     "max_holding_hours",
+    "station_residual_wilson_z",
 )
 
 _POSITIVE_INTEGER_SETTINGS = (
@@ -35,10 +36,18 @@ _POSITIVE_INTEGER_SETTINGS = (
     "skip_diagnostics_archive_max_bytes",
 )
 
-_MINIMUM_INTEGER_SETTINGS = ()
+_MINIMUM_INTEGER_SETTINGS = (
+    ("station_residual_min_sample_days", 1),
+)
 
 _TCP_PORT_SETTINGS = (
     "dashboard_port",
+)
+
+_HOUR_SETTINGS = (
+    "intraday_high_confirm_local_hour",
+    "intraday_low_confirm_local_hour",
+    "intraday_us_high_disabled_before_local_hour",
 )
 
 _RATIO_SETTINGS = (
@@ -58,6 +67,19 @@ _RATIO_SETTINGS = (
     "max_event_date_exposure_fraction",
     "large_bankroll_event_date_exposure_fraction",
     "entry_min_expected_net_return_pct",
+    "intraday_min_side_probability",
+    "intraday_strong_side_probability",
+    "intraday_base_entry_fraction",
+    "intraday_strong_entry_fraction",
+    "intraday_abnormal_price_entry_fraction",
+    "intraday_abnormal_min_net_edge",
+    "intraday_hko_needs_audit_fraction_multiplier",
+    "observation_tier_80_probability",
+    "observation_tier_90_probability",
+    "observation_tier_95_probability",
+    "observation_tier_80_fraction",
+    "observation_tier_90_fraction",
+    "observation_tier_95_fraction",
     "official_nowcast_lock_base_entry_fraction",
     "official_nowcast_lock_strong_entry_fraction",
     "daily_realized_loss_limit_fraction",
@@ -88,6 +110,7 @@ _RATE_SETTINGS = (
 
 _RAW_SNAPSHOT_MODES = ("off", "error", "debug")
 _SIZE_MODES = ("fixed_fraction", "kelly")
+_STRATEGY_MODES = ("lock_only", "intraday_observation_edge", "hybrid_observation_edge")
 
 
 @dataclass(frozen=True)
@@ -133,6 +156,10 @@ class Settings:
     station_nowcast_cache_ttl_seconds: int = 60  # 1 min: matches AWC METAR documented API cadence
     station_nowcast_freshness_seconds: int = 5400
     station_nowcast_request_log_path: str = ""
+    station_residual_probability_enabled: bool = True
+    station_residual_profile_path: str = "strategy_data/station_residual_profiles.json"
+    station_residual_min_sample_days: int = 60
+    station_residual_wilson_z: float = 1.645
     dashboard_host: str = "127.0.0.1"
     dashboard_port: int = 8787
     dashboard_token: str = ""
@@ -149,11 +176,11 @@ class Settings:
     add_to_position_drop_pct: float = 0.10
     max_holding_hours: float = 96.0
 
-    # Risk / sizing. Official station locks use 20%/50% sizing while the
-    # city/date and total-exposure caps keep paper risk bounded.
+    # Risk / sizing. Strategy-specific fractions still pass these portfolio
+    # caps, so a strong signal cannot consume the whole paper bankroll.
     size_mode: str = "kelly"
     entry_fraction: float = 0.20
-    fractional_kelly: float = 0.50
+    fractional_kelly: float = 0.25
     max_single_market_fraction: float = 0.50
     max_total_exposure_fraction: float = 0.90
     bankroll_usd: float = 200.0
@@ -190,8 +217,33 @@ class Settings:
     settlement_runner_enabled: bool = True
     settlement_runner_max_fraction: float = 1.00
     settlement_runner_min_ev_margin_usd: float = 0.0
+
+    # Official same-station strategy modes. Intraday entries remain paper-only
+    # and pass the same executable-depth and portfolio gates as station locks.
+    strategy_mode: str = "hybrid_observation_edge"
+    intraday_observation_edge_enabled: bool = True
+    intraday_min_side_probability: float = 0.90
+    intraday_strong_side_probability: float = 0.97
+    intraday_base_entry_fraction: float = 0.10
+    intraday_strong_entry_fraction: float = 0.25
+    intraday_abnormal_price_entry_fraction: float = 0.35
+    intraday_abnormal_min_net_edge: float = 0.20
+    intraday_hko_needs_audit_fraction_multiplier: float = 0.25
+    intraday_high_confirm_local_hour: int = 15
+    intraday_low_confirm_local_hour: int = 8
+    intraday_us_high_disabled_before_local_hour: int = 15
+    intraday_exact_low_yes_enabled: bool = False
+    intraday_us_exact_low_yes_enabled: bool = True
+    intraday_enable_above_bucket_no: bool = False
+    observation_tier_80_probability: float = 0.80
+    observation_tier_90_probability: float = 0.90
+    observation_tier_95_probability: float = 0.95
+    observation_tier_80_fraction: float = 0.10
+    observation_tier_90_fraction: float = 0.25
+    observation_tier_95_fraction: float = 0.50
+
     official_nowcast_lock_enabled: bool = True
-    official_nowcast_entry_only: bool = True
+    official_nowcast_entry_only: bool = False
     official_nowcast_lock_base_entry_fraction: float = 0.20
     official_nowcast_lock_strong_entry_fraction: float = 0.50
     official_nowcast_lock_near_close_hours: float = 3.0
@@ -213,11 +265,15 @@ class Settings:
         _validate_positive_integers(self, _POSITIVE_INTEGER_SETTINGS)
         _validate_minimum_integers(self, _MINIMUM_INTEGER_SETTINGS)
         _validate_tcp_ports(self, _TCP_PORT_SETTINGS)
+        _validate_hours(self, _HOUR_SETTINGS)
         _validate_ratios(self, _RATIO_SETTINGS)
         _validate_non_negative_numbers(self, _NON_NEGATIVE_NUMBER_SETTINGS)
         _validate_rates(self, _RATE_SETTINGS)
         _validate_choice(self, "size_mode", _SIZE_MODES)
         _validate_choice(self, "raw_snapshots_mode", _RAW_SNAPSHOT_MODES)
+        _validate_choice(self, "strategy_mode", _STRATEGY_MODES)
+        _validate_intraday_strategy_safety(self)
+        _validate_observation_tiers(self)
 
 
 def _setting_display_name(field_name: str) -> str:
@@ -275,6 +331,15 @@ def _validate_tcp_ports(settings: Settings, field_names: tuple[str, ...]) -> Non
             raise ValueError(f"{_setting_display_name(field_name)} must be between 1 and 65535; got {value!r}")
 
 
+def _validate_hours(settings: Settings, field_names: tuple[str, ...]) -> None:
+    for field_name in field_names:
+        value = getattr(settings, field_name)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0 or value > 23:
+            raise ValueError(
+                f"{_setting_display_name(field_name)} must be an integer between 0 and 23; got {value!r}"
+            )
+
+
 def _validate_ratios(settings: Settings, field_names: tuple[str, ...]) -> None:
     for field_name in field_names:
         value = _finite_number(settings, field_name)
@@ -308,6 +373,46 @@ def _validate_choice(settings: Settings, field_name: str, allowed_values: tuple[
         raise ValueError(f"{_setting_display_name(field_name)} must be one of: {allowed}; got {value!r}")
     if normalized != value:
         object.__setattr__(settings, field_name, normalized)
+
+
+def _validate_intraday_strategy_safety(settings: Settings) -> None:
+    safety_floors = (
+        ("intraday_min_side_probability", 0.90),
+        ("intraday_strong_side_probability", 0.97),
+        ("intraday_abnormal_min_net_edge", 0.20),
+    )
+    for field_name, minimum in safety_floors:
+        value = _finite_number(settings, field_name)
+        if value < minimum:
+            raise ValueError(
+                f"{_setting_display_name(field_name)} must be at least {minimum:.2f}; got {value!r}"
+            )
+
+
+def _validate_observation_tiers(settings: Settings) -> None:
+    probability_fields = (
+        "observation_tier_80_probability",
+        "observation_tier_90_probability",
+        "observation_tier_95_probability",
+    )
+    fraction_fields = (
+        "observation_tier_80_fraction",
+        "observation_tier_90_fraction",
+        "observation_tier_95_fraction",
+    )
+    for field_names in (probability_fields, fraction_fields):
+        values = tuple(_finite_number(settings, field_name) for field_name in field_names)
+        if not values[0] < values[1] < values[2]:
+            names = ", ".join(_setting_display_name(field_name) for field_name in field_names)
+            raise ValueError(f"{names} must be strictly ascending; got {values!r}")
+
+    top_fraction = _finite_number(settings, "observation_tier_95_fraction")
+    single_market_cap = _finite_number(settings, "max_single_market_fraction")
+    if top_fraction > single_market_cap:
+        raise ValueError(
+            "OBSERVATION_TIER_95_FRACTION must not exceed MAX_SINGLE_MARKET_FRACTION; "
+            f"got {top_fraction!r} > {single_market_cap!r}"
+        )
 
 
 def _float_env(name: str, default: float) -> float:
@@ -422,6 +527,22 @@ def load_settings() -> Settings:
             "STATION_NOWCAST_REQUEST_LOG_PATH",
             Settings.station_nowcast_request_log_path,
         ),
+        station_residual_probability_enabled=_bool_env(
+            "STATION_RESIDUAL_PROBABILITY_ENABLED",
+            Settings.station_residual_probability_enabled,
+        ),
+        station_residual_profile_path=os.getenv(
+            "STATION_RESIDUAL_PROFILE_PATH",
+            Settings.station_residual_profile_path,
+        ),
+        station_residual_min_sample_days=_int_env(
+            "STATION_RESIDUAL_MIN_SAMPLE_DAYS",
+            Settings.station_residual_min_sample_days,
+        ),
+        station_residual_wilson_z=_float_env(
+            "STATION_RESIDUAL_WILSON_Z",
+            Settings.station_residual_wilson_z,
+        ),
         dashboard_host=os.getenv("DASHBOARD_HOST", Settings.dashboard_host),
         dashboard_port=_int_env("DASHBOARD_PORT", Settings.dashboard_port),
         dashboard_token=os.getenv("DASHBOARD_TOKEN", Settings.dashboard_token).strip(),
@@ -461,6 +582,87 @@ def load_settings() -> Settings:
         settlement_runner_min_ev_margin_usd=_float_env(
             "SETTLEMENT_RUNNER_MIN_EV_MARGIN_USD",
             Settings.settlement_runner_min_ev_margin_usd,
+        ),
+        strategy_mode=os.getenv("STRATEGY_MODE", Settings.strategy_mode),
+        intraday_observation_edge_enabled=_bool_env(
+            "INTRADAY_OBSERVATION_EDGE_ENABLED",
+            Settings.intraday_observation_edge_enabled,
+        ),
+        intraday_min_side_probability=_float_env(
+            "INTRADAY_MIN_SIDE_PROBABILITY",
+            Settings.intraday_min_side_probability,
+        ),
+        intraday_strong_side_probability=_float_env(
+            "INTRADAY_STRONG_SIDE_PROBABILITY",
+            Settings.intraday_strong_side_probability,
+        ),
+        intraday_base_entry_fraction=_float_env(
+            "INTRADAY_BASE_ENTRY_FRACTION",
+            Settings.intraday_base_entry_fraction,
+        ),
+        intraday_strong_entry_fraction=_float_env(
+            "INTRADAY_STRONG_ENTRY_FRACTION",
+            Settings.intraday_strong_entry_fraction,
+        ),
+        intraday_abnormal_price_entry_fraction=_float_env(
+            "INTRADAY_ABNORMAL_PRICE_ENTRY_FRACTION",
+            Settings.intraday_abnormal_price_entry_fraction,
+        ),
+        intraday_abnormal_min_net_edge=_float_env(
+            "INTRADAY_ABNORMAL_MIN_NET_EDGE",
+            Settings.intraday_abnormal_min_net_edge,
+        ),
+        intraday_hko_needs_audit_fraction_multiplier=_float_env(
+            "INTRADAY_HKO_NEEDS_AUDIT_FRACTION_MULTIPLIER",
+            Settings.intraday_hko_needs_audit_fraction_multiplier,
+        ),
+        intraday_high_confirm_local_hour=_int_env(
+            "INTRADAY_HIGH_CONFIRM_LOCAL_HOUR",
+            Settings.intraday_high_confirm_local_hour,
+        ),
+        intraday_low_confirm_local_hour=_int_env(
+            "INTRADAY_LOW_CONFIRM_LOCAL_HOUR",
+            Settings.intraday_low_confirm_local_hour,
+        ),
+        intraday_us_high_disabled_before_local_hour=_int_env(
+            "INTRADAY_US_HIGH_DISABLED_BEFORE_LOCAL_HOUR",
+            Settings.intraday_us_high_disabled_before_local_hour,
+        ),
+        intraday_exact_low_yes_enabled=_bool_env(
+            "INTRADAY_EXACT_LOW_YES_ENABLED",
+            Settings.intraday_exact_low_yes_enabled,
+        ),
+        intraday_us_exact_low_yes_enabled=_bool_env(
+            "INTRADAY_US_EXACT_LOW_YES_ENABLED",
+            Settings.intraday_us_exact_low_yes_enabled,
+        ),
+        intraday_enable_above_bucket_no=_bool_env(
+            "INTRADAY_ENABLE_ABOVE_BUCKET_NO",
+            Settings.intraday_enable_above_bucket_no,
+        ),
+        observation_tier_80_probability=_float_env(
+            "OBSERVATION_TIER_80_PROBABILITY",
+            Settings.observation_tier_80_probability,
+        ),
+        observation_tier_90_probability=_float_env(
+            "OBSERVATION_TIER_90_PROBABILITY",
+            Settings.observation_tier_90_probability,
+        ),
+        observation_tier_95_probability=_float_env(
+            "OBSERVATION_TIER_95_PROBABILITY",
+            Settings.observation_tier_95_probability,
+        ),
+        observation_tier_80_fraction=_float_env(
+            "OBSERVATION_TIER_80_FRACTION",
+            Settings.observation_tier_80_fraction,
+        ),
+        observation_tier_90_fraction=_float_env(
+            "OBSERVATION_TIER_90_FRACTION",
+            Settings.observation_tier_90_fraction,
+        ),
+        observation_tier_95_fraction=_float_env(
+            "OBSERVATION_TIER_95_FRACTION",
+            Settings.observation_tier_95_fraction,
         ),
         official_nowcast_lock_enabled=_bool_env(
             "OFFICIAL_NOWCAST_LOCK_ENABLED",

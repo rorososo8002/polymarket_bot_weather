@@ -19,7 +19,7 @@ tags: [paper-trading, csv-ledger, decision-log, headers, testing]
 ## 1. What The Problem Was
 
 `paper_decisions.csv` is the strategy judgment log. It records why the bot
-entered, skipped, or rejected a market, along with the forecast probability,
+entered, skipped, or rejected a market, along with the station-based probability,
 executable price, edge, sizing, and reason text.
 
 The decision logger checked only whether the file existed before deciding

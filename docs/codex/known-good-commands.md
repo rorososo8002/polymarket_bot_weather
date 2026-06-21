@@ -19,12 +19,10 @@ Run one focused file:
 & 'C:\Users\wpdla\Python312\python.exe' -m pytest -q tests/test_hardening.py
 ```
 
-The root `conftest.py` automatically sends pytest temporary files to
-`.pytest-tmp/current`, best-effort deletes older `.pytest-tmp/pytest-*` folders,
-and removes `.pytest_cache` because test cache state is not needed for this
-project. This avoids Windows user-temp permission errors and prevents local test
-trash from accumulating. A caller can still pass `--basetemp` explicitly when
-needed.
+The root `conftest.py` sends pytest temporary files to
+`.pytest-tmp/current`, clears stale workspace test data before the run, and
+deletes `.pytest-tmp` again when pytest exits. `.pytest_cache` is disabled.
+A caller can still pass `--basetemp` explicitly when needed.
 
 Run local pytest commands serially in this workspace. Multiple pytest processes
 share `.pytest-tmp/current` by default and can race with `FileExistsError` or
@@ -37,6 +35,22 @@ summary:
 
 ```powershell
 & 'C:\Users\wpdla\Python312\python.exe' --version
+```
+
+## Paper-Only Dry Start
+
+This checks local settings and the station-residual profile without contacting
+Polymarket or starting the long-running loop:
+
+```powershell
+$env:PYTHONPATH='src'
+& 'C:\Users\wpdla\Python312\python.exe' -m weather_bot.live_paper_runner --dry-start
+```
+
+Expected summary:
+
+```text
+DRY START OK: paper_only=true strategy_mode=hybrid_observation_edge residual_profiles=loaded
 ```
 
 ## Oracle SSH Key Lookup
