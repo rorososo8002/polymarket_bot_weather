@@ -113,6 +113,7 @@ def test_global_hourly_parser_rejects_malformed_tmp_quality_fields() -> None:
                 [
                     "STATION,DATE,TMP",
                     '47111099999,2021-06-01T00:00:00,"+0230,1"',
+                    '47111099999,2021-06-01T00:15:00,"+0235,5"',
                     '47111099999,2021-06-01T00:30:00,"+0240,X"',
                     '47111099999,2021-06-01T01:00:00,"+0250,1,extra"',
                 ]
@@ -122,7 +123,7 @@ def test_global_hourly_parser_rejects_malformed_tmp_quality_fields() -> None:
         )
     )
 
-    assert [observation.temperature_c for observation in observations] == [23.0]
+    assert [observation.temperature_c for observation in observations] == [23.0, 23.5]
 
 
 def test_iter_global_hourly_observations_streams_file_without_read_text(

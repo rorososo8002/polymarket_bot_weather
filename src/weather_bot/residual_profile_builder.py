@@ -23,7 +23,7 @@ from .stations import StationMeta, TRADING_READY_STATION_MAP
 
 SCHEMA_VERSION = 1
 PROFILE_SOURCE = "NCEI Global Hourly official same-station residual builder"
-VALID_TMP_QUALITY_CODES = frozenset({"1"})
+VALID_TMP_QUALITY_CODES = frozenset({"1", "5"})
 MISSING_TMP_TENTHS = 9999
 MIN_PLAUSIBLE_TEMPERATURE_C = -90.0
 MAX_PLAUSIBLE_TEMPERATURE_C = 60.0
