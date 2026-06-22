@@ -21,7 +21,7 @@ Read this file only for runtime logs, paper-trading data, dashboard readers, or 
   when disk pressure is dangerous. The Oracle VPS logrotate rule is a matching
   safety net and must not include paper state, trade, or decision ledgers.
 - `paper_skip_diagnostics.jsonl` is the bounded SKIP reason black box. It is
-  diagnostic-only, rotates at 100MB, and uses archive pruning; keep
+  diagnostic-only, rotates at 10MB, and keeps diagnostic archives under 20MB; keep
   `DECISIONS_LOG_SKIP_ENABLED=false` unless debugging the decision ledger itself.
 - `station_nowcast_request_log.jsonl` is the official-station observation
   request ledger. It records real station-data attempts and provider cooldowns.

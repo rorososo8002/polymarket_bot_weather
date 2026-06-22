@@ -19,14 +19,14 @@ Everything else is noise that wastes disk and makes analysis harder.
 
 ### Archive on rotation
 - `paper_raw_snapshots.jsonl` — 100 MB internal cap plus logrotate
-- `paper_skip_diagnostics.jsonl` — 100 MB internal cap plus logrotate
+- `paper_skip_diagnostics.jsonl` — 10 MB internal cap plus logrotate
 - `station_nowcast_request_log.jsonl` — 10 MB logrotate
 - `paper_event_portfolios.jsonl` — 10 MB logrotate, only selections by default
 
-### Delete automatically after 100 MB
+### Delete diagnostic archives automatically after 20 MB
 - `data/archive/` diagnostic archives only. `runtime_cleanup` deletes the
   oldest known diagnostic archive files once their combined size exceeds
-  100 MB.
+  20 MB.
 - Never delete active account ledgers automatically: `paper_state.json`,
   `paper_trades.csv`, and `paper_decisions.csv` are validation evidence, not
   disposable cache.
@@ -35,14 +35,14 @@ Everything else is noise that wastes disk and makes analysis harder.
 - SKIP rows in `paper_decisions.csv` stay suppressed via
   `DECISIONS_LOG_SKIP_ENABLED=false` (default). Continuous SKIP investigation
   uses `paper_skip_diagnostics.jsonl`, which is diagnostic-only and capped at
-  100 MB before rotation/archive pruning.
+  10 MB before rotation; its diagnostic archives are capped at 20 MB.
 
 ## Disk Bomb Risk Table
 
 | File | Growth rate (no guard) | Guard |
 |------|------------------------|-------|
 | `paper_decisions.csv` | ~6 GB / 9 h (with SKIP) | SKIP suppressed by default; use bounded `paper_skip_diagnostics.jsonl` |
-| `paper_skip_diagnostics.jsonl` | high-volume when enabled | active file rotates at 100 MB; diagnostic archives pruned |
+| `paper_skip_diagnostics.jsonl` | high-volume when enabled | active file rotates at 10 MB; diagnostic archives capped at 20 MB |
 | `paper_event_portfolios.jsonl` | ~1.2 GB / 9 h (all evals) | write-only-on-trade by default; for investigations use skip logging with logrotate 10 MB plus archive pruning |
 | `paper_trades.csv` | ~50 MB / 9 h | executed trades only; do not rotate until replay is archive-aware |
 | `paper_raw_snapshots.jsonl` | mode=error only | 100 MB internal cap |
@@ -73,7 +73,7 @@ Recommended VPS command:
 ```bash
 sudo -u polymarket /opt/polymarket-weather-bot/.venv/bin/python -m weather_bot.runtime_cleanup \
   --data-dir /opt/polymarket-weather-bot/data \
-  --max-archive-bytes 104857600
+  --max-archive-bytes 20971520
 ```
 
 It deletes only known diagnostic archive names:
@@ -130,8 +130,8 @@ stopped.
 | `DECISIONS_LOG_SKIP_ENABLED` | `false` | Write SKIP rows to paper_decisions.csv |
 | `SKIP_DIAGNOSTICS_ENABLED` | `true` | Write compact SKIP rows to bounded diagnostic JSONL |
 | `SKIP_DIAGNOSTICS_JSONL_PATH` | `paper_skip_diagnostics.jsonl` | SKIP diagnostic file |
-| `SKIP_DIAGNOSTICS_MAX_BYTES` | `104857600` | Max active SKIP diagnostic size before rotation |
-| `SKIP_DIAGNOSTICS_ARCHIVE_MAX_BYTES` | `104857600` | Max SKIP diagnostic archive budget |
+| `SKIP_DIAGNOSTICS_MAX_BYTES` | `10485760` | Max active SKIP diagnostic size before rotation |
+| `SKIP_DIAGNOSTICS_ARCHIVE_MAX_BYTES` | `20971520` | Max SKIP diagnostic archive budget |
 | `PORTFOLIO_LOG_SKIP_ENABLED` | `false` | Write portfolio rows when no trade selected |
 | `RAW_SNAPSHOTS_MODE` | `error` | When to write raw snapshots (error/always/never) |
 | `RAW_SNAPSHOTS_MAX_BYTES` | 104857600 | Max size before raw snapshot rotation |

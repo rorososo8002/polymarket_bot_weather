@@ -140,8 +140,8 @@ class Settings:
     decisions_log_skip_enabled: bool = False
     skip_diagnostics_enabled: bool = True
     skip_diagnostics_jsonl_path: str = ""
-    skip_diagnostics_max_bytes: int = 100 * 1024 * 1024
-    skip_diagnostics_archive_max_bytes: int = 100 * 1024 * 1024
+    skip_diagnostics_max_bytes: int = 10 * 1024 * 1024
+    skip_diagnostics_archive_max_bytes: int = 20 * 1024 * 1024
     portfolio_decisions_jsonl_path: str = "paper_event_portfolios.jsonl"
     # When False (default), paper_event_portfolios.jsonl is only written when
     # at least one trade is actually selected (not on every SKIP evaluation).

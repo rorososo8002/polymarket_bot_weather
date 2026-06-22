@@ -206,8 +206,8 @@ Archived (compressed) old files are stored under `data/archive/`.
 ## Disk and Log Rotation
 
 Logrotate is configured to auto-compress high-volume diagnostic/request files
-hourly. `paper_raw_snapshots.jsonl` rotates at 100 MB; request logs and
-`paper_event_portfolios.jsonl` rotate at 10 MB. Core account ledgers are not
+hourly. `paper_raw_snapshots.jsonl` rotates at 100 MB; SKIP diagnostics,
+request logs, and `paper_event_portfolios.jsonl` rotate at 10 MB. Core account ledgers are not
 rotated until replay is archive-aware.
 
 ```
@@ -215,11 +215,11 @@ rotated until replay is archive-aware.
 /etc/cron.d/polymarket-logrotate          ← hourly cron
 ```
 
-Runtime cleanup keeps diagnostic archives under 100 MB and must not delete
+Runtime cleanup keeps diagnostic archives under 20 MB and must not delete
 `paper_state.json`, `paper_trades.csv`, or `paper_decisions.csv`:
 
 ```powershell
-ssh -i $key $oracle "cd /opt/polymarket-weather-bot && sudo -u polymarket PYTHONPATH=/opt/polymarket-weather-bot/src .venv/bin/python -m weather_bot.runtime_cleanup --data-dir data --max-archive-bytes 104857600"
+ssh -i $key $oracle "cd /opt/polymarket-weather-bot && sudo -u polymarket PYTHONPATH=/opt/polymarket-weather-bot/src .venv/bin/python -m weather_bot.runtime_cleanup --data-dir data --max-archive-bytes 20971520"
 ```
 
 To check current disk usage:

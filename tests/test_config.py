@@ -191,8 +191,8 @@ def test_default_raw_snapshot_mode_saves_only_error_diagnostics():
     assert Settings.raw_snapshots_max_disk_usage_pct == 0.90
     assert Settings.skip_diagnostics_enabled is True
     assert Settings.skip_diagnostics_jsonl_path == ""
-    assert Settings.skip_diagnostics_max_bytes == 100 * 1024 * 1024
-    assert Settings.skip_diagnostics_archive_max_bytes == 100 * 1024 * 1024
+    assert Settings.skip_diagnostics_max_bytes == 10 * 1024 * 1024
+    assert Settings.skip_diagnostics_archive_max_bytes == 20 * 1024 * 1024
 
 
 def test_default_entry_net_return_filter_uses_official_weather_fee_rate():

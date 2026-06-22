@@ -17,7 +17,7 @@
 
 /opt/polymarket-weather-bot/data/paper_skip_diagnostics.jsonl {
     su polymarket polymarket
-    size 100M
+    size 10M
     rotate 5
     missingok
     notifempty

@@ -34,8 +34,8 @@ def test_local_env_example_exposes_settlement_runner_defaults():
     assert "FORECAST_" not in text
     assert "SKIP_DIAGNOSTICS_ENABLED=true" in text
     assert "SKIP_DIAGNOSTICS_JSONL_PATH=paper_skip_diagnostics.jsonl" in text
-    assert "SKIP_DIAGNOSTICS_MAX_BYTES=104857600" in text
-    assert "SKIP_DIAGNOSTICS_ARCHIVE_MAX_BYTES=104857600" in text
+    assert "SKIP_DIAGNOSTICS_MAX_BYTES=10485760" in text
+    assert "SKIP_DIAGNOSTICS_ARCHIVE_MAX_BYTES=20971520" in text
     assert "STATION_NOWCAST_CACHE_TTL_SECONDS=60" in text
     assert "STATION_NOWCAST_REQUEST_LOG_PATH=station_nowcast_request_log.jsonl" in text
     assert "HKO_ROLLOVER_STATE_PATH=hko_rollover_state.json" in text
@@ -75,8 +75,8 @@ def test_vps_env_example_keeps_runtime_state_under_data_dir():
     assert "PORTFOLIO_DECISIONS_JSONL_PATH=/opt/polymarket-weather-bot/data/paper_event_portfolios.jsonl" in text
     assert "SKIP_DIAGNOSTICS_ENABLED=true" in text
     assert "SKIP_DIAGNOSTICS_JSONL_PATH=/opt/polymarket-weather-bot/data/paper_skip_diagnostics.jsonl" in text
-    assert "SKIP_DIAGNOSTICS_MAX_BYTES=104857600" in text
-    assert "SKIP_DIAGNOSTICS_ARCHIVE_MAX_BYTES=104857600" in text
+    assert "SKIP_DIAGNOSTICS_MAX_BYTES=10485760" in text
+    assert "SKIP_DIAGNOSTICS_ARCHIVE_MAX_BYTES=20971520" in text
     assert "RAW_SNAPSHOTS_PATH=/opt/polymarket-weather-bot/data/paper_raw_snapshots.jsonl" in text
     assert "FORECAST_" not in text
     assert (
@@ -158,6 +158,7 @@ def test_runtime_logrotate_rotates_high_volume_diagnostics_only():
     assert "/opt/polymarket-weather-bot/data/paper_event_portfolios.jsonl" in text
     assert "size 100M" in text
     assert "size 10M" in text
+    assert text.count("size 10M") == 3
     assert text.count("rotate 5") == 4
     assert "maxage 7" in text
     assert "compresscmd /usr/bin/zstd" in text
@@ -173,7 +174,7 @@ def test_runtime_cleanup_cron_prunes_diagnostic_archive_only():
 
     assert "weather_bot.runtime_cleanup" in text
     assert "--data-dir /opt/polymarket-weather-bot/data" in text
-    assert "--max-archive-bytes 104857600" in text
+    assert "--max-archive-bytes 20971520" in text
     assert "paper_state.json" not in text
     assert "paper_trades.csv" not in text
     assert "paper_decisions.csv" not in text
