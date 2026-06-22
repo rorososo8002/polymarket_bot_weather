@@ -1,7 +1,7 @@
 ---
 title: Rotate raw snapshots without truncating paper ledgers
 date: 2026-06-04
-last_updated: 2026-06-18
+last_updated: 2026-06-22
 category: workflow-issues
 module: vps_runtime_data
 problem_type: workflow_issue
@@ -87,7 +87,7 @@ The code-level prevention now starts earlier than logrotate:
 - `paper_decisions.csv` and `paper_event_portfolios.jsonl` store compact
   summaries for new rows instead of raw payloads or full candidate maps.
 - `weather_bot.runtime_cleanup` prunes only known diagnostic archives under
-  `data/archive/` once their combined size exceeds `104857600` bytes (100MB).
+  `data/archive/` once their combined size exceeds `20971520` bytes (20MB).
   It deletes oldest matching archives first and never targets active paper
   ledgers.
 
@@ -98,8 +98,34 @@ was to keep zero-selection portfolio rows opt-in with
 `weather_bot.runtime_diagnostics`, and add an hourly cron job that runs
 `weather_bot.runtime_cleanup` against `/opt/polymarket-weather-bot/data`.
 The cleanup allowlist covers diagnostic archive prefixes only:
-`paper_raw_snapshots*`, `station_nowcast_request_log*`,
+`paper_raw_snapshots*`, `paper_skip_diagnostics*`,
 `station_nowcast_request_log*`, and `paper_event_portfolios*`.
+
+On 2026-06-22, `paper_skip_diagnostics.jsonl` showed why a one-time cleanup was
+not enough. It grew to about 3.1MB within minutes of a normal discovery cycle,
+while 62 older compressed SKIP archives occupied about 101MB. The operator-
+approved experiment reset preserved the active account book, trade ledger,
+decision ledger, positions, and event portfolio in one dated compressed audit
+folder. It then removed old diagnostic rotations and reset the active experiment
+files. The data directory fell from about 151MB to 140KB without deleting the
+dated audit copy.
+
+The lasting fix was to tighten only the high-volume SKIP diagnostic limits:
+
+- `SKIP_DIAGNOSTICS_MAX_BYTES=10485760` rotates the active file at 10MB.
+- `SKIP_DIAGNOSTICS_ARCHIVE_MAX_BYTES=20971520` caps its compressed history at
+  20MB.
+- The hourly `runtime_cleanup` cron uses the same 20MB archive budget.
+- `paper_raw_snapshots.jsonl` keeps its separate 100MB active cap because normal
+  operation records only error evidence there.
+
+The same deployment also exposed a verification timing trap. A remote script
+that ran the full 660-test suite before and after copying exceeded a five-minute
+local SSH timeout even though the server continued progressing. After a timeout,
+do not infer success or failure. Check `pgrep`, service state, payload markers,
+and deployed code first, then run a fresh post-deploy full suite with a client
+timeout of at least 15 minutes. The verified server run completed all 660 tests
+in about 98 seconds when executed as one bounded command.
 
 During the 2026-06-04 emergency cleanup, the disk was too full for `scp` to
 upload even a small remote script to `/tmp`. The working order was:
@@ -167,6 +193,9 @@ returned 200 with zero open positions.
 - If a remote diagnostic script times out, check for the still-running process
   with `pgrep -af`, stop that process, and switch to a bounded command shape
   before continuing.
+- When a deploy script contains more than one full remote pytest phase, give the
+  SSH client at least 15 minutes or split the preflight and post-deploy suites
+  into separately evidenced commands.
 - If the disk is already at 100%, a remote script upload can fail. Free a small,
   safe target first, such as oversized system logs, then use the remote-script
   pattern for the larger operation.
