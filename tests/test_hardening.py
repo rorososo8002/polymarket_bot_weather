@@ -155,6 +155,68 @@ def test_discovery_uses_weather_question_shape_and_paginates():
     assert [m.market_id for m in markets] == ["m1"]
 
 
+def test_discovery_uses_gamma_daily_temperature_tag_without_scraping_web_pages():
+    seen_params: list[dict] = []
+
+    class GammaTagClient(FakePolymarketClient):
+        def _get_web_text(self, path: str) -> str:
+            raise AssertionError(f"human-facing Polymarket page must not be scraped: {path}")
+
+        def _get(self, url: str, params: dict | None = None):
+            seen_params.append(dict(params or {}))
+            if int((params or {}).get("offset", 0)) > 0:
+                return []
+            return [
+                {
+                    "id": "event-seoul",
+                    "slug": "highest-temperature-in-seoul-on-june-24-2026",
+                    "title": "Highest temperature in Seoul on June 24?",
+                    "description": "Resolves using the Incheon International Airport weather station.",
+                    "markets": [
+                        {
+                            "id": "market-seoul-28",
+                            "question": "Will the highest temperature in Seoul be 28\u00b0C on June 24?",
+                            **binary_token_fields("yes-28", "no-28"),
+                        }
+                    ],
+                }
+            ]
+
+    markets = GammaTagClient().discover_weather_markets(max_pages=2, page_size=50)
+
+    assert [market.market_id for market in markets] == ["market-seoul-28"]
+    assert seen_params == [
+        {
+            "active": "true",
+            "closed": "false",
+            "tag_id": "103040",
+            "limit": "50",
+            "offset": "0",
+        },
+        {
+            "active": "true",
+            "closed": "false",
+            "tag_id": "103040",
+            "limit": "50",
+            "offset": "50",
+        },
+    ]
+
+
+def test_discovery_raises_when_gamma_tag_fails_before_finding_supported_market():
+    class FailingGammaTagClient(FakePolymarketClient):
+        def _get(self, url: str, params: dict | None = None):
+            if int((params or {}).get("offset", 0)) == 0:
+                return [{"id": "unrelated", "markets": []}]
+            raise requests.HTTPError("Gamma tag page failed")
+
+        def _get_web_text(self, path: str) -> str:
+            return ""
+
+    with pytest.raises(requests.HTTPError, match="Gamma tag page failed"):
+        FailingGammaTagClient().discover_weather_markets(max_pages=2, page_size=50)
+
+
 def test_discovery_uses_polymarket_weather_category_event_slugs():
     class CategoryClient(FakePolymarketClient):
         def _get_web_text(self, path: str) -> str:

@@ -19,6 +19,7 @@ from .weather_client import parse_weather_question
 TRUE_API_BOOL_VALUES = {"true", "1", "yes", "y", "on"}
 FALSE_API_BOOL_VALUES = {"false", "0", "no", "n", "off"}
 CATEGORY_SLUG_DISCOVERY_LIMIT = 80
+DAILY_TEMPERATURE_TAG_ID = "103040"
 GROUPED_TEMPERATURE_TITLE_RE = re.compile(
     r"^\s*(?P<metric>highest|lowest)\s+temperature\s+in\s+(?P<city>.+?)\s+on\s+(?P<date>[^?]+?)\s*\??\s*$",
     re.IGNORECASE,
@@ -93,9 +94,9 @@ class PolymarketClient:
         page_size = max(1, int(page_size))
         page_limit = max(0, int(max_pages))
         category_slug_limit = min(CATEGORY_SLUG_DISCOVERY_LIMIT, page_size * page_limit)
-        markets, seen_event_ids = self._discover_weather_markets_from_category_pages(max_slugs=category_slug_limit)
-
-        seen_market_ids = {market.market_id for market in markets}
+        markets: list[RawMarket] = []
+        seen_event_ids: set[str] = set()
+        seen_market_ids: set[str] = set()
         url = f"{self.gamma_base}/events"
         offset = 0
         pages_scanned = 0
@@ -104,13 +105,14 @@ class PolymarketClient:
             params = {
                 "active": "true",
                 "closed": "false",
+                "tag_id": DAILY_TEMPERATURE_TAG_ID,
                 "limit": str(page_size),
                 "offset": str(offset),
             }
             try:
                 data = self._get(url, params=params)
             except (requests.HTTPError, RetryError):
-                if pages_scanned > 0 or markets:
+                if markets:
                     break
                 raise
             if isinstance(data, dict):
@@ -135,7 +137,12 @@ class PolymarketClient:
 
             offset += page_size
             pages_scanned += 1
-        return markets
+        if markets:
+            return markets
+        fallback_markets, _seen_event_ids = self._discover_weather_markets_from_category_pages(
+            max_slugs=category_slug_limit
+        )
+        return fallback_markets
 
     def _discover_weather_markets_from_category_pages(self, *, max_slugs: int | None = None) -> tuple[list[RawMarket], set[str]]:
         slugs: list[str] = []
