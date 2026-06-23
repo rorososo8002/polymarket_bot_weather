@@ -667,6 +667,10 @@ def test_dashboard_position_exposes_probability_calibration_audit_fields(tmp_pat
                             "event_cap_override_fraction": 0.5,
                             "expected_net_return_pct": 0.7,
                             "entry_fee_usdc": 1.0,
+                            "station_audit": {
+                                "station_local_date": "2026-06-22",
+                                "strategy_allowed_reason": "formation monitoring started",
+                            },
                         },
                     }
                 ],
@@ -719,6 +723,7 @@ def test_dashboard_position_exposes_probability_calibration_audit_fields(tmp_pat
     assert position["event_cap_override_fraction"] == pytest.approx(0.5)
     assert position["expected_net_return_pct"] == pytest.approx(0.7)
     assert position["entry_fee_usdc"] == pytest.approx(1.0)
+    assert position["station_local_date"] == "2026-06-22"
 
 
 def test_dashboard_station_signals_include_calibrated_residual_observation(tmp_path):

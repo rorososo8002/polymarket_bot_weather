@@ -663,9 +663,9 @@ def _position_payload(
         if isinstance(metadata.get("station_audit"), dict)
         else {}
     )
-    for key, value in stored_station_audit.items():
-        if key in station_evidence and value not in (None, ""):
-            station_evidence[key] = value
+    for key, audit_value in stored_station_audit.items():
+        if key in station_evidence and audit_value not in (None, ""):
+            station_evidence[key] = audit_value
     probability_audit = _probability_audit_payload(metadata, latest_decision)
     return {
         "position_id": pos.get("position_id", ""),
