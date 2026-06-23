@@ -127,6 +127,33 @@ def drawdown_entry_block_reason(
     return ""
 
 
+def same_observation_reentry_block_reason(
+    settings: Any,
+    *,
+    city: str,
+    event_date_local: str,
+    station_observed_at: str,
+) -> str:
+    """Block city-date recycling until official station evidence advances."""
+    normalized_city = city.strip().lower()
+    normalized_date = event_date_local.strip().lower()
+    normalized_observed_at = station_observed_at.strip()
+    if not normalized_city or not normalized_date or not normalized_observed_at:
+        return ""
+    for row in reversed(_realized_trade_rows(str(getattr(settings, "trades_csv_path", "")))):
+        if str(row.get("city") or "").strip().lower() != normalized_city:
+            continue
+        row_date = str(row.get("event_date_local") or "").strip().lower()
+        if row_date != normalized_date:
+            continue
+        if str(row.get("station_observed_at") or "").strip() == normalized_observed_at:
+            return (
+                "SKIP_SAME_OBSERVATION_REENTRY: "
+                f"city={city} date={event_date_local} station_observed_at={station_observed_at}"
+            )
+    return ""
+
+
 def shrink_probability(p_true: float, gamma: float = 0.65) -> float:
     """Shrink station-lock score toward 0.5 to reduce overconfidence."""
     p = clamp_probability(p_true)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+from dataclasses import replace
 
 from weather_bot.config import Settings
 from weather_bot.models import EdgeResult, RawMarket, WeatherSignal
@@ -157,6 +158,18 @@ def test_open_trade_records_price_anomaly_tag(tmp_path):
 
     assert row["price_anomaly"] == "true"
     assert row["signal_family"] == "abnormal_official_station_mispricing"
+
+
+def test_open_trade_records_station_observation_version(tmp_path):
+    broker = PaperBroker(_settings(tmp_path))
+    observed_at = "2026-06-23T06:00:00+00:00"
+    signal = replace(_signal(), nowcast={"observed_at": observed_at})
+
+    broker.open_position(_market(), "yes", _result(), signal=signal)
+
+    with (tmp_path / "trades.csv").open(newline="", encoding="utf-8") as handle:
+        row = next(csv.DictReader(handle))
+    assert row["station_observed_at"] == observed_at
 
 
 def test_decision_records_strategy_metadata(tmp_path):

@@ -111,7 +111,7 @@ def _observation_edge_fraction(
     if not _is_official_station_entry_signal(signal):
         return None
     if signal.source.startswith("official-station-residual-"):
-        if not signal.probability_tier or signal.entry_size_fraction_override is None:
+        if not signal.probability_tier:
             return None
         return ObservationSizingTier(
             signal.probability_tier,
@@ -747,6 +747,29 @@ def _spread_guard_reason(side: str, ask: float, bid: float, settings: Settings, 
     return None
 
 
+def _price_impact_guard_reason(
+    side: str,
+    book: OrderBook,
+    p_exec: float,
+    slippage: float,
+    settings: Settings,
+    market_type: str,
+) -> str | None:
+    best_ask = book.best_ask or p_exec
+    impact_pct = slippage / best_ask if best_ask > 0 else math.inf
+    if (
+        slippage <= settings.max_entry_spread_abs
+        and impact_pct <= settings.max_entry_spread_pct
+    ):
+        return None
+    return (
+        f"SKIP_EXCESSIVE_PRICE_IMPACT: {side} VWAP impact={slippage:.4f} "
+        f"({impact_pct:.1%}) exceeds limits "
+        f"abs={settings.max_entry_spread_abs:.4f}, "
+        f"pct={settings.max_entry_spread_pct:.1%} [{market_type}]"
+    )
+
+
 def _side_liquidity_reason(side: str, book: OrderBook, settings: Settings, market_type: str) -> str | None:
     ask = book.best_ask
     bid = book.best_bid
@@ -979,6 +1002,25 @@ def _side_result(
         )
         return EdgeResult("SKIP", signal.p_true, p_exec, edge, 0.0, 0.0, reason)
 
+    price_impact_reason = _price_impact_guard_reason(
+        side,
+        book,
+        p_exec,
+        slip,
+        settings,
+        market_type,
+    )
+    if price_impact_reason:
+        return EdgeResult(
+            "SKIP",
+            signal.p_true,
+            p_exec,
+            edge,
+            0.0,
+            0.0,
+            price_impact_reason,
+        )
+
     estimate_shares = fee_adjusted_entry_shares(size_usd, p_exec, settings.weather_taker_fee_rate)
     spread = max(0.0, (book.best_ask or p_exec) - (book.best_bid or p_exec))
     fair = _model_fair_price_for_signal(side, signal, settings)
@@ -1131,6 +1173,17 @@ def _final_pre_trade_entry_result(
             f"{result.side} insufficient ask depth "
             f"for ${result.size_usd:.2f} [{market_type}]",
         )
+
+    price_impact_reason = _price_impact_guard_reason(
+        result.side,
+        book,
+        checked_p_exec,
+        checked_slip,
+        settings,
+        market_type,
+    )
+    if price_impact_reason:
+        return _skip_entry_result(result, f"{price_impact_reason}; final_pre_trade=true")
 
     _entry_fee_per_share, edge, final_side_probability = _side_edge_metrics(
         result.side,

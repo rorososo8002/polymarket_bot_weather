@@ -13,6 +13,7 @@ from .config import Settings
 from .edge import clamp_probability, executable_sell_price, polymarket_taker_fee_usdc
 from .exit_policy import side_true_probability
 from .models import EdgeResult, PaperPosition, RawMarket, WeatherSignal
+from .risk import same_observation_reentry_block_reason
 from .weather_client import (
     TemperatureBucketInterval,
     parse_weather_question,
@@ -60,12 +61,7 @@ def structured_event_cap_override_fraction(
     if signal is None:
         return None
     expected = settings.observation_tier_95_fraction
-    fractions = (
-        signal.entry_size_fraction_override,
-        signal.event_cap_override_fraction,
-        result.entry_size_fraction_override,
-        result.event_cap_override_fraction,
-    )
+    fractions = (signal.event_cap_override_fraction, result.event_cap_override_fraction)
     if (
         signal.probability_tier not in {"90", "95"}
         or result.probability_tier not in {"90", "95"}
@@ -394,6 +390,51 @@ def _bucket_intervals_do_not_overlap(left: TemperatureBucketInterval, right: Tem
     return False
 
 
+def _winning_intervals(question: str, side: str) -> list[TemperatureBucketInterval] | None:
+    interval = _temperature_interval_bounds(question)
+    if interval is None or side not in {"YES", "NO"}:
+        return None
+    if side == "YES":
+        return [interval]
+    complements: list[TemperatureBucketInterval] = []
+    if not (isinf(interval.lower_f) and interval.lower_f < 0):
+        complements.append(
+            TemperatureBucketInterval(
+                -inf,
+                interval.lower_f,
+                False,
+                not interval.lower_inclusive,
+            )
+        )
+    if not (isinf(interval.upper_f) and interval.upper_f > 0):
+        complements.append(
+            TemperatureBucketInterval(
+                interval.upper_f,
+                inf,
+                not interval.upper_inclusive,
+                False,
+            )
+        )
+    return complements
+
+
+def _payoff_outcomes_overlap(
+    left_question: str,
+    left_side: str,
+    right_question: str,
+    right_side: str,
+) -> bool:
+    left_intervals = _winning_intervals(left_question, left_side)
+    right_intervals = _winning_intervals(right_question, right_side)
+    if left_intervals is None or right_intervals is None:
+        return True
+    return any(
+        not _bucket_intervals_do_not_overlap(left, right)
+        for left in left_intervals
+        for right in right_intervals
+    )
+
+
 def _interval_width(interval: TemperatureBucketInterval) -> float:
     if isinf(interval.lower_f) or isinf(interval.upper_f):
         return inf
@@ -435,8 +476,12 @@ def _is_complementary(candidate: PortfolioCandidate, selected: list[PortfolioCan
     for leg in selected:
         if leg.market_type != "temperature":
             return False
-        leg_interval = _temperature_interval_bounds(leg.market.question)
-        if leg_interval is None or not _bucket_intervals_do_not_overlap(candidate_interval, leg_interval):
+        if _payoff_outcomes_overlap(
+            candidate.market.question,
+            candidate.result.side,
+            leg.market.question,
+            leg.result.side,
+        ):
             return False
     return is_complementary_with_positions(candidate.market.question, candidate.result.side, held)
 
@@ -448,8 +493,7 @@ def is_complementary_with_positions(question: str, side: str, held: list[PaperPo
     if candidate_interval is None:
         return False
     for pos in held:
-        held_interval = _temperature_interval_bounds(pos.question)
-        if held_interval is None or not _bucket_intervals_do_not_overlap(candidate_interval, held_interval):
+        if _payoff_outcomes_overlap(question, side, pos.question, pos.side):
             return False
     return True
 
@@ -767,6 +811,16 @@ def select_event_portfolio(
         if result.expected_net_profit_usd <= 0:
             rejected.append(RejectedPortfolioLeg(candidate.market.market_id, side, "portfolio EV does not improve after costs"))
             continue
+        nowcast = candidate.signal.nowcast if isinstance(candidate.signal.nowcast, dict) else {}
+        reentry_reason = same_observation_reentry_block_reason(
+            settings,
+            city=city,
+            event_date_local=str(nowcast.get("target_date_local") or date_hint),
+            station_observed_at=str(nowcast.get("observed_at") or ""),
+        )
+        if reentry_reason:
+            rejected.append(RejectedPortfolioLeg(candidate.market.market_id, side, reentry_reason))
+            continue
         market_positions = _market_positions(broker, candidate.market.market_id)
         same_side_position = _same_side_position(market_positions, side)
         is_add_to_existing = False
@@ -906,7 +960,17 @@ def select_event_portfolio(
     for candidate in eligible:
         key = (candidate.market.market_id, candidate.result.side)
         if key not in selected_keys:
-            rejected.append(RejectedPortfolioLeg(candidate.market.market_id, candidate.result.side, "not selected by event portfolio optimizer"))
+            overlap = any(
+                _payoff_outcomes_overlap(
+                    candidate.market.question,
+                    candidate.result.side,
+                    leg.market.question,
+                    leg.result.side,
+                )
+                for leg in selected
+            )
+            reason = "payoff outcomes overlap" if overlap else "not selected by event portfolio optimizer"
+            rejected.append(RejectedPortfolioLeg(candidate.market.market_id, candidate.result.side, reason))
     selected_exposure = sum(leg.result.size_usd for leg in selected)
     return EventPortfolioDecision(
         event_key=_event_key(first, city, date_hint) if first is not None else "unknown-event",

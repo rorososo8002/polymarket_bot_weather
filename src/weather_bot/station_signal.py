@@ -318,7 +318,7 @@ def _residual_tier(
     if probability > settings.observation_tier_90_probability:
         return ObservationSizingTier(
             "95" if probability >= settings.observation_tier_95_probability else "90",
-            settings.observation_tier_95_fraction,
+            None,
             settings.observation_tier_95_fraction,
         )
     if probability >= settings.observation_tier_90_probability:
@@ -432,6 +432,41 @@ def _residual_observation_edge_signal(
         return None
 
     direction = "low" if parsed.temperature_metric == "min" else "high"
+    q75_key = f"first_final_{direction}_local_minute_q75"
+    try:
+        formation_q75 = float(payload[q75_key])
+    except (KeyError, TypeError, ValueError):
+        formation_q75 = None
+    local = now.astimezone(_zone(station.timezone))
+    local_minute = local.hour * 60 + local.minute
+    exact_bucket_already_impossible = bool(
+        bucket_type == "exact"
+        and (
+            (direction == "high" and bucket_upper is not None and observed_value >= bucket_upper)
+            or (direction == "low" and bucket_lower is not None and observed_value < bucket_lower)
+        )
+    )
+    if (
+        bucket_type == "exact"
+        and formation_q75 is not None
+        and local_minute < formation_q75
+        and not exact_bucket_already_impossible
+    ):
+        payload["data_block_reason"] = "formation-q75-not-reached"
+        payload["strategy_allowed_reason"] = "exact bucket waits for city-month-direction q75"
+        return _residual_neutral_signal(
+            parsed,
+            source="official-station-formation-q75",
+            note=(
+                f"{base_note}; signal_family=intraday_observation_edge; "
+                f"formation_q75_local_minute={formation_q75:.0f}; "
+                f"current_local_minute={local_minute}; exact bucket entry blocked"
+            ),
+            payload=payload,
+            settings=settings,
+            precision_profile=precision_profile,
+        )
+
     estimate = residual_profile_store.estimate_bucket(
         station_id=station.station_id,
         month=target.month,
@@ -491,6 +526,11 @@ def _residual_observation_edge_signal(
         f"probability_tier={tier.probability_tier}; "
         f"calibration_sample_days={estimate.sample_days}; profile_key={estimate.profile_key}"
     )
+    sizing_note = (
+        "kelly"
+        if tier.entry_fraction is None
+        else f"{tier.entry_fraction:.4f}"
+    )
     return WeatherSignal(
         p_true=estimate.raw_probability,
         confidence=1.0,
@@ -499,7 +539,7 @@ def _residual_observation_edge_signal(
             f"{base_note}; strategy_mode={settings.strategy_mode}; "
             f"signal_family=intraday_observation_edge; station_adjustment=residual-{direction}; "
             f"observed_extreme_{unit}={observed_value:.2f}; bucket_type={bucket_type}; "
-            f"{size_reason}; entry_size_fraction_override={tier.entry_fraction:.4f}"
+            f"{size_reason}; entry_size_fraction_override={sizing_note}"
         ),
         parsed=parsed,
         nowcast=payload,

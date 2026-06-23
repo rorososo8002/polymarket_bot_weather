@@ -32,6 +32,7 @@ from .portfolio import (
     structured_event_cap_override_fraction,
     websocket_pricing_block_reason,
 )
+from .risk import same_observation_reentry_block_reason
 from .runner_status import update_runner_status_fields
 
 _ATOMIC_REPLACE_RETRY_DELAYS_SECONDS = (0.01, 0.05, 0.1)
@@ -73,6 +74,7 @@ PROFIT_RUNNER_TRIGGERS = {"take_profit", "overheated_take_profit"}
 PAPER_MODEL_VERSION = "weather-paper-v1"
 
 STATION_AUDIT_KEYS = (
+    "station_observed_at",
     "station_timezone",
     "target_date_local",
     "station_local_date",
@@ -121,6 +123,7 @@ TRADE_CSV_FIELDNAMES = [
     "event_date_local",
     "condition_type",
     "station_id",
+    "station_observed_at",
     "signal_source",
     "signal_confidence",
     "strategy_mode",
@@ -414,7 +417,11 @@ def _signal_replay_metadata(signal: Any | None) -> dict[str, Any]:
         "event_cap_override_fraction": _format_optional_csv_float(
             getattr(signal, "event_cap_override_fraction", None)
         ),
-        "station_audit": {key: nowcast.get(key) for key in STATION_AUDIT_KEYS if key in nowcast},
+        "station_audit": {
+            key: (nowcast.get("observed_at") if key == "station_observed_at" else nowcast.get(key))
+            for key in STATION_AUDIT_KEYS
+            if key in nowcast or (key == "station_observed_at" and nowcast.get("observed_at"))
+        },
     }
 
 
@@ -525,6 +532,10 @@ def _position_replay_metadata(pos: PaperPosition) -> dict[str, Any]:
         "event_date_local": metadata.get("event_date_local"),
         "condition_type": metadata.get("condition_type"),
         "station_id": metadata.get("station_id"),
+        "station_observed_at": (
+            metadata.get("station_observed_at")
+            or (metadata.get("station_audit") or {}).get("station_observed_at")
+        ),
         "signal_source": metadata.get("signal_source"),
         "signal_confidence": metadata.get("signal_confidence"),
         "strategy_mode": metadata.get("strategy_mode"),
@@ -1273,6 +1284,27 @@ class PaperBroker:
     ) -> PaperPosition | None:
         if result.side not in {"YES", "NO"} or result.p_exec is None or result.size_usd <= 0:
             return None
+        nowcast = getattr(signal, "nowcast", None)
+        nowcast = nowcast if isinstance(nowcast, dict) else {}
+        reentry_reason = same_observation_reentry_block_reason(
+            self.settings,
+            city=city,
+            event_date_local=str(nowcast.get("target_date_local") or date_hint),
+            station_observed_at=str(nowcast.get("observed_at") or ""),
+        )
+        if reentry_reason:
+            self.log_trade(
+                "SKIP_SAME_OBSERVATION_REENTRY",
+                market,
+                result.side,
+                token_id,
+                0,
+                result.p_exec,
+                0,
+                reentry_reason,
+                market_type,
+            )
+            return None
         market_positions = [pos for pos in self.state.positions if pos.market_id == market.market_id]
         add_position = next((pos for pos in market_positions if pos.side == result.side), None)
         opposite_position = next((pos for pos in market_positions if pos.side != result.side), None)
@@ -1884,6 +1916,10 @@ class PaperBroker:
             "event_date_local": _format_optional_text(entry_metadata.get("event_date_local")) or market_replay["event_date_local"],
             "condition_type": _format_optional_text(entry_metadata.get("condition_type")) or market_replay["condition_type"],
             "station_id": _format_optional_text(entry_metadata.get("station_id")) or market_replay["station_id"],
+            "station_observed_at": _format_optional_text(
+                entry_metadata.get("station_observed_at")
+                or (entry_metadata.get("station_audit") or {}).get("station_observed_at")
+            ),
             "signal_source": signal_replay["signal_source"],
             "signal_confidence": signal_replay["signal_confidence"],
             "strategy_mode": _format_optional_text(entry_metadata.get("strategy_mode")),
@@ -1959,6 +1995,7 @@ class PaperBroker:
                 "event_date_local": replay_metadata["event_date_local"],
                 "condition_type": replay_metadata["condition_type"],
                 "station_id": replay_metadata["station_id"],
+                "station_observed_at": replay_metadata["station_observed_at"],
                 "signal_source": replay_metadata["signal_source"],
                 "signal_confidence": replay_metadata["signal_confidence"],
                 "strategy_mode": replay_metadata["strategy_mode"],

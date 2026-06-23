@@ -199,9 +199,12 @@ Required outcome:
 ```text
 Verified station/month/direction monitoring_start_local_minute gates ordinary entries.
 Final high/low formation q25/median/q75 and remaining-movement probability are auditable.
+Exact-bucket entries wait for the matching q75 unless the observation has already made the bucket impossible.
 HKO midnight carryover and same-day monotonicity violations fail closed.
 CLOB-provided close time can block a high strategy that cannot reach its formation window.
 Intraday side probability must be at least 0.90.
+High-confidence sizing uses fractional Kelly under a 50% ceiling rather than forcing a 50% order.
+VWAP impact and same-observation sibling re-entry fail closed.
 ```
 
 ### Phase E - Ledger And Report Tags

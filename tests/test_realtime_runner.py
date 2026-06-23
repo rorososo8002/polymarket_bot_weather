@@ -3,6 +3,7 @@ import hashlib
 import json
 import threading
 import time
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -1425,6 +1426,48 @@ def test_partial_ask_liquidity_records_requested_and_executable_size(tmp_path):
     assert broker.state.positions[0].cost_usd == pytest.approx(40.0)
 
 
+def test_evaluate_market_blocks_excessive_vwap_price_impact(tmp_path):
+    settings = _abnormal_settings(
+        tmp_path,
+        max_entry_spread_abs=0.20,
+        max_entry_spread_pct=1.0,
+    )
+    market = _abnormal_market()
+    signal = WeatherSignal(
+        0.99,
+        1.0,
+        "official-station-residual-high-yes",
+        "signal_family=intraday_observation_edge",
+        parse_weather_question(market.question),
+        entry_size_fraction_override=0.50,
+        conservative_yes_probability=0.98,
+        conservative_no_probability=0.01,
+        selected_side_probability=0.98,
+        probability_tier="95",
+        event_cap_override_fraction=0.50,
+    )
+    client = _AbnormalPriceClient(
+        OrderBook(
+            "yes",
+            bids=[OrderLevel(0.23, 1000.0)],
+            asks=[OrderLevel(0.24, 1.0), OrderLevel(0.80, 1000.0)],
+        ),
+        OrderBook("no", bids=[OrderLevel(0.75, 1000.0)], asks=[OrderLevel(0.76, 1000.0)]),
+    )
+
+    _result, per_side = runner_module.evaluate_market(
+        market,
+        signal,
+        client,
+        settings,
+        1000.0,
+        "temperature",
+    )
+
+    assert per_side["YES"].side == "SKIP"
+    assert "SKIP_EXCESSIVE_PRICE_IMPACT" in per_side["YES"].reason
+
+
 def test_abnormal_price_uses_size_override_but_obeys_caps(tmp_path):
     result, _per_side, broker = _evaluate_and_open_abnormal_candidate(
         tmp_path,
@@ -1593,6 +1636,38 @@ def test_final_pre_trade_fetches_clob_tradability(tmp_path):
     assert client.tradability_calls == ["condition-1"]
     assert client.book_calls == ["yes"]
     assert len(broker.state.positions) == 1
+
+
+def test_final_pre_trade_blocks_new_excessive_vwap_price_impact(tmp_path):
+    broker = runner_module.PaperBroker(
+        replace(
+            _entry_gate_settings(tmp_path),
+            max_entry_spread_abs=0.20,
+            max_entry_spread_pct=1.0,
+        )
+    )
+
+    class ImpactClient(_FinalGateClient):
+        def get_order_book(self, token_id: str) -> OrderBook:
+            self.book_calls.append(token_id)
+            return OrderBook(
+                token_id,
+                bids=[OrderLevel(0.23, 1000.0)],
+                asks=[OrderLevel(0.24, 1.0), OrderLevel(0.80, 1000.0)],
+            )
+
+    result = runner_module._open_position_if_needed(
+        broker,
+        _entry_gate_market(),
+        _entry_gate_signal(),
+        runner_module.EdgeResult("YES", 0.95, 0.24, 0.70, 100.0, 400.0, "selected"),
+        "temperature",
+        client=ImpactClient(),
+    )
+
+    assert result.side == "SKIP"
+    assert "SKIP_EXCESSIVE_PRICE_IMPACT" in result.reason
+    assert broker.state.positions == []
 
 
 def test_final_pre_trade_revalidates_station_signal_and_blocks_probability_drop(tmp_path):

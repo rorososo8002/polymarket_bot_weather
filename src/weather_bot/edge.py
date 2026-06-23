@@ -27,7 +27,7 @@ class ExecutableNetReturnEstimate:
 @dataclass(frozen=True)
 class ObservationSizingTier:
     probability_tier: str
-    entry_fraction: float
+    entry_fraction: float | None
     event_cap_override_fraction: float | None = None
 
 

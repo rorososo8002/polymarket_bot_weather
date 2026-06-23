@@ -195,7 +195,7 @@ def test_unknown_precision_blocks_confident_entry(monkeypatch: pytest.MonkeyPatc
     assert provider.calls == 0
 
 
-def test_residual_high_exact_96_percent_gets_50_tier_and_calibration_metadata() -> None:
+def test_residual_high_exact_96_percent_uses_kelly_with_50_percent_cap() -> None:
     store = FakeResidualProfileStore(
         _residual_estimate(raw=0.97, yes=0.96, no=0.02)
     )
@@ -215,7 +215,7 @@ def test_residual_high_exact_96_percent_gets_50_tier_and_calibration_metadata() 
     assert signal.conservative_yes_probability == pytest.approx(0.96)
     assert signal.conservative_no_probability == pytest.approx(0.02)
     assert signal.selected_side_probability == pytest.approx(0.96)
-    assert signal.entry_size_fraction_override == pytest.approx(0.50)
+    assert signal.entry_size_fraction_override is None
     assert signal.probability_tier == "95"
     assert signal.event_cap_override_fraction == pytest.approx(0.50)
     assert signal.calibration_sample_days == 120
@@ -261,7 +261,7 @@ def test_city_month_high_is_blocked_before_profile_monitoring_start() -> None:
     assert store.calls == []
 
 
-def test_city_month_high_is_evaluated_at_profile_monitoring_start() -> None:
+def test_city_month_high_waits_for_q75_after_profile_monitoring_start() -> None:
     store = FakeResidualProfileStore(
         _residual_estimate(raw=0.97, yes=0.96, no=0.02),
         monitoring_start_local_minute=13 * 60,
@@ -275,9 +275,10 @@ def test_city_month_high_is_evaluated_at_profile_monitoring_start() -> None:
         residual_profile_store=store,
     )
 
-    assert signal.source == "official-station-residual-high-yes"
+    assert signal.source == "official-station-formation-q75"
     assert signal.nowcast["formation_monitoring_status"] == "started"
-    assert store.calls[0]["local_minute"] == 780
+    assert signal.nowcast["data_block_reason"] == "formation-q75-not-reached"
+    assert store.calls == []
 
 
 def test_city_month_low_changes_from_before_to_after_monitoring_start() -> None:
@@ -354,7 +355,7 @@ def test_hko_reset_verified_strong_no_is_capped_because_settlement_needs_audit()
 @pytest.mark.parametrize(
     ("conservative_probability", "expected_tier", "expected_fraction", "expected_override"),
     [
-        (0.944, "90", 0.50, 0.50),
+        (0.944, "90", None, 0.50),
         (0.90, "90", 0.20, None),
         (0.84, "80", 0.10, None),
     ],
@@ -380,8 +381,31 @@ def test_residual_high_exact_maps_conservative_probability_to_tiers(
 
     assert signal.selected_side_probability == pytest.approx(conservative_probability)
     assert signal.probability_tier == expected_tier
-    assert signal.entry_size_fraction_override == pytest.approx(expected_fraction)
+    if expected_fraction is None:
+        assert signal.entry_size_fraction_override is None
+    else:
+        assert signal.entry_size_fraction_override == pytest.approx(expected_fraction)
     assert signal.event_cap_override_fraction == expected_override
+
+
+def test_residual_high_exact_before_city_month_q75_is_blocked() -> None:
+    store = FakeResidualProfileStore(
+        _residual_estimate(raw=0.94, yes=0.90, no=0.04),
+        movement_probability=0.34,
+    )
+
+    signal = estimate_station_signal(
+        "Will the highest temperature in Seoul be 23C today?",
+        settings=Settings(),
+        observation_provider=ExactTemperatureProvider(observed_high_c=23.4),
+        now=datetime(2026, 6, 19, 5, 0, tzinfo=timezone.utc),
+        residual_profile_store=store,
+    )
+
+    assert signal.confidence == 0.0
+    assert signal.entry_size_fraction_override is None
+    assert signal.nowcast["data_block_reason"] == "formation-q75-not-reached"
+    assert store.calls == []
 
 
 def test_residual_below_80_percent_skips_instead_of_using_fixed_guess() -> None:
@@ -464,7 +488,8 @@ def test_lower_tail_low_observed_below_threshold_gets_strong_yes() -> None:
     assert signal.parsed is not None
     assert signal.parsed.temperature_bucket == "lower_tail"
     assert signal.p_true == pytest.approx(0.98)
-    assert signal.entry_size_fraction_override == pytest.approx(0.50)
+    assert signal.entry_size_fraction_override is None
+    assert signal.event_cap_override_fraction == pytest.approx(0.50)
     assert signal.source == "official-station-residual-low-yes"
     assert store.calls[0]["direction"] == "low"
     assert store.calls[0]["observed_extreme"] == pytest.approx(69.0, abs=0.01)

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import csv
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
@@ -509,18 +511,23 @@ def test_event_portfolio_selects_one_profitable_leg(tmp_path):
     assert decision.expected_net_profit_usd == 1.25
 
 
-def test_event_portfolio_allows_structured_95_tier_to_use_fifty_percent_cap(tmp_path):
+def test_event_portfolio_uses_fifty_percent_as_cap_without_forcing_size(tmp_path):
     broker = PaperBroker(settings(tmp_path, bankroll_usd=1000.0))
     strong = candidate(
         "seoul-26",
         "26\u00b0C",
-        size_usd=500.0,
+        size_usd=200.0,
         p_true=0.96,
         p_exec=0.50,
-        expected_net_profit_usd=230.0,
+        expected_net_profit_usd=92.0,
         selected_side_probability=0.96,
         probability_tier="95",
         event_cap_override_fraction=0.50,
+    )
+    strong = replace(
+        strong,
+        signal=replace(strong.signal, entry_size_fraction_override=None),
+        result=replace(strong.result, entry_size_fraction_override=None),
     )
 
     decision = select_event_portfolio(broker, [strong], usable_snapshot(1000.0))
@@ -528,7 +535,7 @@ def test_event_portfolio_allows_structured_95_tier_to_use_fifty_percent_cap(tmp_
     assert decision.event_cap_fraction == pytest.approx(0.50)
     assert decision.event_cap_usd == pytest.approx(500.0)
     assert len(decision.selected) == 1
-    assert decision.selected[0].result.size_usd == pytest.approx(500.0)
+    assert decision.selected[0].result.size_usd == pytest.approx(200.0)
 
 
 def test_event_portfolio_keeps_ordinary_cap_without_structured_override(tmp_path):
@@ -656,7 +663,7 @@ def test_open_position_preserves_polymarket_event_slug_for_dashboard_links(tmp_p
     assert position.metadata["event_slug"] == "highest-temperature-in-beijing-on-june-4-2026"
 
 
-def test_event_portfolio_allows_two_profitable_no_legs_when_growth_improves(tmp_path):
+def test_event_portfolio_blocks_two_no_legs_with_overlapping_payoff_outcomes(tmp_path):
     broker = PaperBroker(settings(tmp_path, bankroll_usd=200.0))
 
     decision = select_event_portfolio(
@@ -668,16 +675,11 @@ def test_event_portfolio_allows_two_profitable_no_legs_when_growth_improves(tmp_
         usable_snapshot(200.0),
     )
 
-    assert [leg.market.market_id for leg in decision.selected] == ["seoul-26", "seoul-27"]
-    assert [leg.result.side for leg in decision.selected] == ["NO", "NO"]
-    assert [leg.result.size_usd for leg in decision.selected] == [10.0, 10.0]
-    assert decision.selected_exposure_usd == decision.event_cap_usd == 20.0
-    assert decision.scenario_pnl_usd["seoul-26"] > -20.0
-    assert decision.scenario_pnl_usd["seoul-27"] > -20.0
-    assert decision.scenario_pnl_usd["other"] > 0.0
+    assert len(decision.selected) == 1
+    assert any("payoff outcomes overlap" in item.reason for item in decision.rejected)
 
 
-def test_event_portfolio_allows_yes_no_combination_from_different_buckets(tmp_path):
+def test_event_portfolio_blocks_yes_no_combination_with_overlapping_payoff_outcomes(tmp_path):
     broker = PaperBroker(settings(tmp_path, bankroll_usd=200.0))
 
     decision = select_event_portfolio(
@@ -689,11 +691,62 @@ def test_event_portfolio_allows_yes_no_combination_from_different_buckets(tmp_pa
         usable_snapshot(200.0),
     )
 
-    assert [(leg.market.market_id, leg.result.side) for leg in decision.selected] == [
-        ("seoul-25", "YES"),
-        ("seoul-27", "NO"),
-    ]
-    assert decision.selected_exposure_usd == 20.0
+    assert len(decision.selected) == 1
+    assert any("payoff outcomes overlap" in item.reason for item in decision.rejected)
+
+
+def test_event_portfolio_blocks_reentry_on_same_station_observation(tmp_path):
+    cfg = settings(tmp_path, bankroll_usd=200.0)
+    broker = PaperBroker(cfg)
+    observed_at = "2026-06-23T06:00:00+00:00"
+    Path(cfg.trades_csv_path).write_text(
+        "ts,action,market_id,city,event_date_local,cash_delta_or_pnl,station_observed_at\n"
+        f"2026-06-23T07:07:25+00:00,CLOSE,old,seoul,2026-06-23,12.00,{observed_at}\n",
+        encoding="utf-8",
+    )
+    next_leg = candidate("seoul-27", "27°C", side="NO", size_usd=20.0, p_true=0.10, p_exec=0.70)
+    next_leg = replace(
+        next_leg,
+        signal=replace(
+            next_leg.signal,
+            nowcast={"observed_at": observed_at, "target_date_local": "2026-06-23"},
+        ),
+    )
+
+    decision = select_event_portfolio(broker, [next_leg], usable_snapshot(200.0))
+
+    assert decision.selected == []
+    assert any("SAME_OBSERVATION_REENTRY" in item.reason for item in decision.rejected)
+
+
+def test_broker_blocks_direct_reentry_on_same_station_observation(tmp_path):
+    cfg = settings(tmp_path, bankroll_usd=200.0)
+    broker = PaperBroker(cfg)
+    observed_at = "2026-06-23T06:00:00+00:00"
+    Path(cfg.trades_csv_path).write_text(
+        "ts,action,market_id,city,event_date_local,cash_delta_or_pnl,station_observed_at\n"
+        f"2026-06-23T07:07:25+00:00,CLOSE,old,seoul,2026-06-23,12.00,{observed_at}\n",
+        encoding="utf-8",
+    )
+    next_leg = candidate("seoul-27", "27°C", side="NO", size_usd=20.0, p_true=0.10, p_exec=0.70)
+    signal = replace(
+        next_leg.signal,
+        nowcast={"observed_at": observed_at, "target_date_local": "2026-06-23"},
+    )
+
+    position = broker.open_position(
+        next_leg.market,
+        next_leg.market.no_token_id or "",
+        next_leg.result,
+        city="seoul",
+        date_hint="june 23",
+        entry_bankroll_usd=200.0,
+        signal=signal,
+    )
+
+    assert position is None
+    rows = list(csv.DictReader(Path(cfg.trades_csv_path).open(encoding="utf-8", newline="")))
+    assert rows[-1]["action"] == "SKIP_SAME_OBSERVATION_REENTRY"
 
 
 def test_range_temperature_interval_uses_displayed_bounds_without_half_step():
@@ -877,8 +930,8 @@ def test_event_portfolio_splits_shared_budget_instead_of_multiplying_it(tmp_path
     decision = select_event_portfolio(
         broker,
         [
-            candidate("seoul-26", "26°C", side="NO", size_usd=20.0, p_true=0.10, p_exec=0.70, expected_net_profit_usd=3.0),
-            candidate("seoul-27", "27°C", side="NO", size_usd=20.0, p_true=0.10, p_exec=0.70, expected_net_profit_usd=3.0),
+            candidate("seoul-26", "26°C", side="YES", size_usd=20.0, p_true=0.40, p_exec=0.20, expected_net_profit_usd=3.0),
+            candidate("seoul-27", "27°C", side="YES", size_usd=20.0, p_true=0.40, p_exec=0.20, expected_net_profit_usd=3.0),
         ],
         usable_snapshot(200.0),
     )
@@ -1064,8 +1117,8 @@ def test_event_portfolio_log_reconstructs_budget_legs_rejections_and_scenarios(t
     decision = select_event_portfolio(
         broker,
         [
-            candidate("seoul-26", "26°C", side="NO", size_usd=20.0, p_true=0.10, p_exec=0.70, expected_net_profit_usd=3.0),
-            candidate("seoul-27", "27°C", side="NO", size_usd=20.0, p_true=0.10, p_exec=0.70, expected_net_profit_usd=3.0),
+            candidate("seoul-26", "26°C", side="YES", size_usd=20.0, p_true=0.40, p_exec=0.20, expected_net_profit_usd=3.0),
+            candidate("seoul-27", "27°C", side="YES", size_usd=20.0, p_true=0.40, p_exec=0.20, expected_net_profit_usd=3.0),
             candidate("seoul-28", "28°C", side="YES", size_usd=20.0, p_true=0.01, p_exec=0.90, expected_net_profit_usd=0.10),
         ],
         usable_snapshot(200.0),
@@ -1094,8 +1147,8 @@ def test_event_portfolio_log_payload_is_compact_summary(tmp_path):
     decision = select_event_portfolio(
         broker,
         [
-            candidate("seoul-26", "26째C", side="NO", size_usd=20.0, p_true=0.10, p_exec=0.70, expected_net_profit_usd=3.0),
-            candidate("seoul-27", "27째C", side="NO", size_usd=20.0, p_true=0.10, p_exec=0.70, expected_net_profit_usd=3.0),
+            candidate("seoul-26", "26°C", side="YES", size_usd=20.0, p_true=0.40, p_exec=0.20, expected_net_profit_usd=3.0),
+            candidate("seoul-27", "27°C", side="YES", size_usd=20.0, p_true=0.40, p_exec=0.20, expected_net_profit_usd=3.0),
             candidate("seoul-28", "28째C", side="YES", size_usd=20.0, p_true=0.01, p_exec=0.90, expected_net_profit_usd=0.10),
         ],
         usable_snapshot(200.0),
@@ -1117,13 +1170,13 @@ def test_event_portfolio_log_payload_is_compact_summary(tmp_path):
 
 def test_broker_small_account_allows_two_legs_inside_shared_ten_percent_cap(tmp_path):
     broker = PaperBroker(settings(tmp_path, bankroll_usd=200.0))
-    first = candidate("seoul-26", "26°C", side="NO")
-    second = candidate("seoul-27", "27°C", side="NO")
-    third = candidate("seoul-28", "28°C", side="NO")
+    first = candidate("seoul-26", "26°C", side="YES")
+    second = candidate("seoul-27", "27°C", side="YES")
+    third = candidate("seoul-28", "28°C", side="YES")
 
     first_pos = broker.open_position(
         first.market,
-        first.market.no_token_id or "",
+        first.market.yes_token_id or "",
         first.result,
         city="seoul",
         date_hint="may 25",
@@ -1131,7 +1184,7 @@ def test_broker_small_account_allows_two_legs_inside_shared_ten_percent_cap(tmp_
     )
     second_pos = broker.open_position(
         second.market,
-        second.market.no_token_id or "",
+        second.market.yes_token_id or "",
         second.result,
         city="seoul",
         date_hint="may 25",
@@ -1139,7 +1192,7 @@ def test_broker_small_account_allows_two_legs_inside_shared_ten_percent_cap(tmp_
     )
     third_pos = broker.open_position(
         third.market,
-        third.market.no_token_id or "",
+        third.market.yes_token_id or "",
         third.result,
         city="seoul",
         date_hint="may 25",
@@ -1183,11 +1236,11 @@ def test_broker_blocks_third_city_date_leg_even_when_small_orders_fit_budget(tmp
     broker = PaperBroker(settings(tmp_path, bankroll_usd=300.0))
     positions = []
     for market_id, bucket in [("seoul-26", "26°C"), ("seoul-27", "27°C"), ("seoul-28", "28°C")]:
-        item = candidate(market_id, bucket, side="NO", size_usd=10.0)
+        item = candidate(market_id, bucket, side="YES", size_usd=10.0)
         positions.append(
             broker.open_position(
                 item.market,
-                item.market.no_token_id or "",
+                item.market.yes_token_id or "",
                 item.result,
                 city="seoul",
                 date_hint="may 25",
@@ -1228,7 +1281,7 @@ def test_broker_blocks_direct_same_market_opposite_position(tmp_path):
     assert broker.event_date_position_count("seoul", "may 25") == 1
 
 
-def test_broker_allows_direct_repeated_no_city_date_positions_inside_shared_budget(tmp_path):
+def test_broker_blocks_direct_repeated_no_city_date_positions_with_overlapping_payoffs(tmp_path):
     broker = PaperBroker(settings(tmp_path, bankroll_usd=200.0))
     first = candidate("seoul-26", "26°C", side="NO")
     second = candidate("seoul-27", "27°C", side="NO")
@@ -1251,8 +1304,8 @@ def test_broker_allows_direct_repeated_no_city_date_positions_inside_shared_budg
     )
 
     assert first_pos is not None
-    assert second_pos is not None
-    assert broker.event_date_position_count("seoul", "may 25") == 2
+    assert second_pos is None
+    assert broker.event_date_position_count("seoul", "may 25") == 1
 
 
 def test_broker_rejects_orders_below_ten_dollars(tmp_path):
@@ -1318,15 +1371,15 @@ def test_runner_applies_selected_event_portfolio_and_writes_one_event_log(tmp_pa
     broker = PaperBroker(settings(tmp_path, bankroll_usd=200.0))
     client = FakeClient(
         {
-            "seoul-26-no": orderbook("seoul-26-no", 0.69, 0.70),
-            "seoul-27-no": orderbook("seoul-27-no", 0.69, 0.70),
+            "seoul-26-yes": orderbook("seoul-26-yes", 0.19, 0.20),
+            "seoul-27-yes": orderbook("seoul-27-yes", 0.19, 0.20),
         }
     )
     decision = _apply_event_portfolio(
         broker,
         [
-            candidate("seoul-26", "26°C", side="NO", size_usd=20.0, p_true=0.10, p_exec=0.70, expected_net_profit_usd=3.0),
-            candidate("seoul-27", "27°C", side="NO", size_usd=20.0, p_true=0.10, p_exec=0.70, expected_net_profit_usd=3.0),
+            candidate("seoul-26", "26°C", side="YES", size_usd=20.0, p_true=0.40, p_exec=0.20, expected_net_profit_usd=3.0),
+            candidate("seoul-27", "27°C", side="YES", size_usd=20.0, p_true=0.40, p_exec=0.20, expected_net_profit_usd=3.0),
         ],
         usable_snapshot(200.0),
         client=client,
@@ -1554,7 +1607,7 @@ def test_run_cycle_proceeds_with_zero_when_held_position_cannot_be_priced(monkey
 
 
 
-def test_run_cycle_opens_two_profitable_no_legs_for_same_event(monkeypatch, tmp_path):
+def test_run_cycle_blocks_overlapping_profitable_no_legs_for_same_event(monkeypatch, tmp_path):
     cfg = settings(
         tmp_path,
         bankroll_usd=200.0,
@@ -1599,10 +1652,9 @@ def test_run_cycle_opens_two_profitable_no_legs_for_same_event(monkeypatch, tmp_
     state = json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))
     rows = (tmp_path / "portfolio.jsonl").read_text(encoding="utf-8").splitlines()
     assert [(pos["market_id"], pos["side"], pos["cost_usd"]) for pos in state["positions"]] == [
-        ("seoul-26", "NO", 10.0),
-        ("seoul-27", "NO", 10.0),
+        ("seoul-26", "NO", 20.0),
     ]
-    assert [leg["side"] for leg in json.loads(rows[0])["selected_legs"]] == ["NO", "NO"]
+    assert [leg["side"] for leg in json.loads(rows[0])["selected_legs"]] == ["NO"]
 
 
 def test_realtime_update_reselects_the_whole_city_date_event(monkeypatch, tmp_path):
