@@ -150,8 +150,15 @@ def assess_exit(
     settings: Settings,
     holding_hours: float,
 ) -> ExitAssessment:
-    p_true = latest_edge.p_true if latest_edge is not None else float(pos.metadata.get("entry_p_true", 0.5))
-    if latest_edge is not None:
+    latest_side_probability_available = bool(
+        latest_edge is not None and latest_edge.side == pos.side
+    )
+    p_true = (
+        latest_edge.p_true
+        if latest_side_probability_available and latest_edge is not None
+        else float(pos.metadata.get("entry_p_true", 0.5))
+    )
+    if latest_side_probability_available and latest_edge is not None:
         current_side_probability = _selected_side_probability(latest_edge)
     elif pos.metadata.get("selected_side_probability") is not None:
         current_side_probability = clamp_probability(float(pos.metadata["selected_side_probability"]))
@@ -196,7 +203,7 @@ def assess_exit(
             "nowcast_bucket_lock_risk",
         )
 
-    if current_side_probability <= stop_threshold:
+    if latest_side_probability_available and current_side_probability <= stop_threshold:
         return ExitAssessment(
             True,
             f"probability stop: side_probability {entry_side_probability:.3f}->{current_side_probability:.3f} "
@@ -245,9 +252,15 @@ def assess_exit(
     if holding_hours >= settings.max_holding_hours:
         return ExitAssessment(True, f"max holding hours {holding_hours:.1f}", fair, target, heat, "max_holding")
 
+    unavailable_note = (
+        "latest side probability unavailable; "
+        if latest_edge is not None and not latest_side_probability_available
+        else ""
+    )
     return ExitAssessment(
         False,
-        f"hold: mark={mark_price:.4f}, target={target:.4f}, fair={fair:.4f}, heat={heat:.1%}, {_pnl_reason(pnl)}",
+        f"hold: {unavailable_note}mark={mark_price:.4f}, target={target:.4f}, "
+        f"fair={fair:.4f}, heat={heat:.1%}, {_pnl_reason(pnl)}",
         fair,
         target,
         heat,

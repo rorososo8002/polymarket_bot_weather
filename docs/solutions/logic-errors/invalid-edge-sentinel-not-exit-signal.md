@@ -1,6 +1,7 @@
 ---
 title: Invalid edge sentinel must not trigger edge-faded exits
 date: 2026-05-28
+last_updated: 2026-06-24
 category: logic-errors
 module: exit policy
 problem_type: logic_error
@@ -68,6 +69,10 @@ actionable while ignoring transient invalid book states.
 ## Prevention
 
 - Treat sentinel values as control-flow states, not numeric trading signals.
+- Treat `EdgeResult(side="SKIP")` as “no new held-side probability.” Never pass
+  it through YES/NO complement logic. A held YES position may use a new
+  probability only from a YES result; a held NO position may use one only from
+  a NO result.
 - For every exit condition, document whether it needs model probability, current
   executable order-book price, or both.
 - When a trade closes unexpectedly, inspect the close reason, matching decision

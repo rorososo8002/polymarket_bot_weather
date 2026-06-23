@@ -7,7 +7,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from .config import Settings
-from .edge import ObservationSizingTier
+from .edge import ObservationSizingTier, observation_edge_entry_fraction
 from .event_dates import event_date_window_from_hint
 from .models import ParsedWeatherQuestion, WeatherSignal
 from .nowcast import StationNowcastObservation
@@ -314,21 +314,15 @@ def _residual_tier(
     *,
     settings: Settings,
 ) -> ObservationSizingTier | None:
-    probability = max(0.0, min(1.0, selected_probability))
-    if probability > settings.observation_tier_90_probability:
-        return ObservationSizingTier(
-            "95" if probability >= settings.observation_tier_95_probability else "90",
-            None,
-            settings.observation_tier_95_fraction,
-        )
-    if probability >= settings.observation_tier_90_probability:
-        return ObservationSizingTier(
-            "90",
-            min(settings.observation_tier_90_fraction, settings.max_city_exposure_fraction),
-        )
-    if probability >= settings.observation_tier_80_probability:
-        return ObservationSizingTier("80", settings.observation_tier_80_fraction)
-    return None
+    return observation_edge_entry_fraction(
+        selected_probability,
+        tier_80_probability=settings.observation_tier_80_probability,
+        tier_90_probability=settings.observation_tier_90_probability,
+        tier_95_probability=settings.observation_tier_95_probability,
+        tier_80_fraction=settings.observation_tier_80_fraction,
+        tier_90_fraction=settings.observation_tier_90_fraction,
+        tier_95_fraction=settings.observation_tier_95_fraction,
+    )
 
 
 def _selected_residual_side(estimate: ResidualProbabilityEstimate) -> tuple[str, float, float]:
@@ -811,7 +805,18 @@ def estimate_station_signal(
             strategy_mode=settings.strategy_mode,
             settlement_precision_confidence=precision_profile.confidence,
         )
-
+    if observation.source == "aviationweather-metar" and not observation.daily_extremes_complete:
+        reason = observation.data_block_reason or "metar-daily-extremes-incomplete"
+        return replace(
+            _neutral_signal(
+                parsed,
+                "official-station-unavailable",
+                f"{base_note}; nowcast_unavailable={reason}",
+            ),
+            nowcast=payload,
+            strategy_mode=settings.strategy_mode,
+            settlement_precision_confidence=precision_profile.confidence,
+        )
     formation_note = _formation_audit_evidence(
         payload,
         parsed=parsed,

@@ -201,9 +201,13 @@ Verified station/month/direction monitoring_start_local_minute gates ordinary en
 Final high/low formation q25/median/q75 and remaining-movement probability are auditable.
 Exact-bucket entries wait for the matching q75 unless the observation has already made the bucket impossible.
 HKO midnight carryover and same-day monotonicity violations fail closed.
+AWC METAR daily extremes require a persistent, uninterrupted station-local midnight handoff.
+Latest-only or continuity-gapped METAR evidence blocks probability calculation.
 CLOB-provided close time can block a high strategy that cannot reach its formation window.
 Intraday side probability must be at least 0.90.
-High-confidence sizing uses fractional Kelly under a 50% ceiling rather than forcing a 50% order.
+Probability from 0.90 to below 0.95 targets 30% of bankroll.
+Probability at or above 0.95 targets 50% of bankroll.
+Executable depth, fee-aware edge, and bounded VWAP impact may reduce or block those targets.
 VWAP impact and same-observation sibling re-entry fail closed.
 ```
 

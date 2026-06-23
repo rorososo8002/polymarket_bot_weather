@@ -1047,6 +1047,7 @@ function stationStrategyAuditLine(row) {
   const lowRange = [row.first_final_low_local_minute_q25, row.first_final_low_local_minute_median, row.first_final_low_local_minute_q75].map(minuteOfDay).join(" / ");
   const movement = row.remaining_movement_probability == null || row.remaining_movement_probability === "" ? "--" : probPct(row.remaining_movement_probability);
   const reset = String(row.midnight_reset_status || "해당 없음");
+  const dailyExtremes = String(row.daily_extremes_status || (String(row.daily_extremes_complete).toLowerCase() === "true" ? "complete" : "unverified"));
   const blocker = String(row.data_block_reason || "없음");
   const accepting = String(row.clob_accepting_orders ?? "unknown").toLowerCase();
   const orderbook = String(row.clob_enable_order_book ?? "unknown").toLowerCase();
@@ -1056,7 +1057,7 @@ function stationStrategyAuditLine(row) {
     <strong>관측소 현지 날짜</strong> ${esc(localDate)} · <strong>관측소 현지 시각</strong> ${esc(localTime)}<br>
     <strong>전략 관찰</strong> ${esc(monitoringKo)} (${minuteOfDay(row.monitoring_start_local_minute)}부터) · <strong>추가 움직임 확률</strong> ${esc(movement)}<br>
     <strong>최종 최고 형성</strong> ${esc(highRange)} · <strong>최종 최저 형성</strong> ${esc(lowRange)} (25% / 중앙 / 75%)<br>
-    <strong>자정 초기화</strong> ${esc(reset)} · <strong>자료 차단 이유</strong> ${esc(blocker)}<br>
+    <strong>자정 초기화</strong> ${esc(reset)} · <strong>당일 누적 최고/최저</strong> ${esc(dailyExtremes)} · <strong>자료 차단 이유</strong> ${esc(blocker)}<br>
     <strong>CLOB 주문</strong> ${esc(clob)} · <strong>전략 허용 근거</strong> ${esc(strategyReason)}
   </div>`;
 }
@@ -1218,7 +1219,7 @@ function realizedCards(rows) {
     const cardClass = isProfit ? "profit" : "loss";
     const exitLabel = isProfit ? (isDefensiveClose ? "정리" : "익절") : "손절";
     const sideRaw = (r.side || "").toUpperCase();
-    const pnlSign = isProfit ? "+" : "";
+    const pnlSign = isProfit ? "+" : "-";
     const bucket = bucketLabelFromFields(r.threshold_c, r.condition_label);
     const closeParts = closeReasonParts(r.reason || "");
     const fact = (label, value, cls = "") => `<div class="fact"><span>${esc(label)}</span><strong class="${cls}">${esc(value)}</strong></div>`;

@@ -10,7 +10,12 @@ from typing import TYPE_CHECKING, Any
 _logger = logging.getLogger(__name__)
 
 from .config import Settings
-from .edge import clamp_probability, executable_sell_price, polymarket_taker_fee_usdc
+from .edge import (
+    clamp_probability,
+    executable_sell_price,
+    observation_edge_entry_fraction,
+    polymarket_taker_fee_usdc,
+)
 from .exit_policy import side_true_probability
 from .models import EdgeResult, PaperPosition, RawMarket, WeatherSignal
 from .risk import same_observation_reentry_block_reason
@@ -57,18 +62,34 @@ def structured_event_cap_override_fraction(
     result: EdgeResult,
     settings: Settings,
 ) -> float | None:
-    """Return the explicit >90% station override only when signal and result agree."""
+    """Return the tier-specific station override only when signal and result agree."""
     if signal is None:
         return None
-    expected = settings.observation_tier_95_fraction
+    probability = (
+        min(signal.selected_side_probability, result.selected_side_probability)
+        if (
+            signal.selected_side_probability is not None
+            and result.selected_side_probability is not None
+        )
+        else None
+    )
+    tier = observation_edge_entry_fraction(
+        probability,
+        tier_80_probability=settings.observation_tier_80_probability,
+        tier_90_probability=settings.observation_tier_90_probability,
+        tier_95_probability=settings.observation_tier_95_probability,
+        tier_80_fraction=settings.observation_tier_80_fraction,
+        tier_90_fraction=settings.observation_tier_90_fraction,
+        tier_95_fraction=settings.observation_tier_95_fraction,
+    )
+    expected = tier.event_cap_override_fraction if tier is not None else None
     fractions = (signal.event_cap_override_fraction, result.event_cap_override_fraction)
     if (
-        signal.probability_tier not in {"90", "95"}
-        or result.probability_tier not in {"90", "95"}
-        or signal.selected_side_probability is None
-        or result.selected_side_probability is None
-        or signal.selected_side_probability <= settings.observation_tier_90_probability
-        or result.selected_side_probability <= settings.observation_tier_90_probability
+        tier is None
+        or tier.probability_tier not in {"90", "95"}
+        or signal.probability_tier != tier.probability_tier
+        or result.probability_tier != tier.probability_tier
+        or expected is None
         or any(value is None or not isfinite(value) for value in fractions)
         or any(not isclose(value, expected, rel_tol=0.0, abs_tol=1e-9) for value in fractions)
     ):

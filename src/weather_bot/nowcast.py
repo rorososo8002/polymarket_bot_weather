@@ -28,6 +28,7 @@ HKO_MAXMIN_UPDATE_CADENCE = (
 )
 AWC_METAR_MIN_REAL_REQUEST_INTERVAL_SECONDS = 60
 HKO_MAXMIN_MIN_REAL_REQUEST_INTERVAL_SECONDS = 10 * 60
+AWC_METAR_MAX_CONTINUITY_GAP_SECONDS = 90 * 60
 
 
 @dataclass(frozen=True)
@@ -61,6 +62,8 @@ class StationNowcastObservation:
     station_local_time: str = ""
     midnight_reset_status: str = ""
     data_block_reason: str = ""
+    daily_extremes_complete: bool = True
+    daily_extremes_status: str = ""
 
     @property
     def usable(self) -> bool:
@@ -104,6 +107,8 @@ class StationNowcastObservation:
             "station_local_time": self.station_local_time,
             "midnight_reset_status": self.midnight_reset_status,
             "data_block_reason": self.data_block_reason,
+            "daily_extremes_complete": self.daily_extremes_complete,
+            "daily_extremes_status": self.daily_extremes_status,
         }
 
 
@@ -254,6 +259,7 @@ class AviationWeatherMetarNowcastProvider:
         cache_ttl_seconds: int = 60,
         request_log_path: str | Path | None = None,
         hko_rollover_state_path: str | Path | None = None,
+        metar_daily_extremes_state_path: str | Path | None = None,
         sources: dict[str, StationNowcastSource] | None = None,
     ) -> None:
         self.http_get = http_get
@@ -262,11 +268,15 @@ class AviationWeatherMetarNowcastProvider:
         self.cache_ttl_seconds = max(0, int(cache_ttl_seconds))
         self.request_log_path = Path(request_log_path) if request_log_path else None
         self.hko_rollover_state_path = Path(hko_rollover_state_path) if hko_rollover_state_path else None
+        self.metar_daily_extremes_state_path = (
+            Path(metar_daily_extremes_state_path) if metar_daily_extremes_state_path else None
+        )
         self._request_log_error = ""
         self.sources = sources or PILOT_NOWCAST_SOURCES
         self._cache: dict[tuple[str, str], tuple[datetime, StationNowcastObservation]] = {}
         self._awc_metar_bulk_cache: _MetarBulkCacheEntry | None = None
         self._hko_rollover_state = self._load_hko_rollover_state()
+        self._metar_daily_extremes_state = self._load_metar_daily_extremes_state()
 
     @classmethod
     def from_settings(cls, settings: Any) -> "AviationWeatherMetarNowcastProvider":
@@ -276,12 +286,129 @@ class AviationWeatherMetarNowcastProvider:
         hko_rollover_state_path = getattr(settings, "hko_rollover_state_path", "") or str(
             Path(settings.state_path).with_name("hko_rollover_state.json")
         )
+        metar_daily_extremes_state_path = getattr(
+            settings,
+            "metar_daily_extremes_state_path",
+            "",
+        ) or str(Path(settings.state_path).with_name("metar_daily_extremes_state.json"))
         return cls(
             freshness_seconds=settings.station_nowcast_freshness_seconds,
             cache_ttl_seconds=settings.station_nowcast_cache_ttl_seconds,
             request_log_path=request_log_path,
             hko_rollover_state_path=hko_rollover_state_path,
+            metar_daily_extremes_state_path=metar_daily_extremes_state_path,
         )
+
+    def _load_metar_daily_extremes_state(self) -> dict[str, Any]:
+        path = self.metar_daily_extremes_state_path
+        if path is None:
+            return {"schema_version": 1, "stations": {}}
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            return {"schema_version": 1, "stations": {}}
+        if (
+            not isinstance(payload, dict)
+            or payload.get("schema_version") != 1
+            or not isinstance(payload.get("stations"), dict)
+        ):
+            return {"schema_version": 1, "stations": {}}
+        return payload
+
+    def _write_metar_daily_extremes_state(self) -> None:
+        path = self.metar_daily_extremes_state_path
+        if path is None:
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+        try:
+            tmp.write_text(
+                json.dumps(self._metar_daily_extremes_state, ensure_ascii=False, sort_keys=True),
+                encoding="utf-8",
+            )
+            os.replace(tmp, path)
+        finally:
+            tmp.unlink(missing_ok=True)
+
+    def _accumulate_metar_daily_extremes(
+        self,
+        station: StationMeta,
+        observations: list[tuple[datetime, float]],
+        target_date: date,
+    ) -> dict[str, Any] | None:
+        stations = self._metar_daily_extremes_state.setdefault("stations", {})
+        station_state = stations.setdefault(
+            station.station_id,
+            {"days": {}, "last_local_date": "", "last_observed_at": ""},
+        )
+        days = station_state.setdefault("days", {})
+        zone = _zone(station.timezone)
+        last_observed_at = _parse_observation_time(station_state.get("last_observed_at"))
+        last_local_date_text = str(station_state.get("last_local_date") or "")
+        try:
+            last_local_date = date.fromisoformat(last_local_date_text) if last_local_date_text else None
+        except ValueError:
+            last_local_date = None
+
+        for observed_at, temp_c in sorted(set(observations)):
+            local_date = observed_at.astimezone(zone).date()
+            local_date_text = local_date.isoformat()
+            if last_observed_at is not None and observed_at <= last_observed_at:
+                continue
+
+            gap_seconds = (
+                (observed_at - last_observed_at).total_seconds()
+                if last_observed_at is not None
+                else None
+            )
+            is_next_date = (
+                last_local_date is not None
+                and local_date - last_local_date == timedelta(days=1)
+            )
+            if local_date_text not in days:
+                complete = bool(
+                    is_next_date
+                    and gap_seconds is not None
+                    and gap_seconds <= AWC_METAR_MAX_CONTINUITY_GAP_SECONDS
+                )
+                days[local_date_text] = {
+                    "high_c": temp_c,
+                    "low_c": temp_c,
+                    "high_observed_at": _iso_or_empty(observed_at),
+                    "low_observed_at": _iso_or_empty(observed_at),
+                    "latest_observed_at": _iso_or_empty(observed_at),
+                    "complete": complete,
+                    "blocked_reason": (
+                        "" if complete else "metar-daily-extremes-baseline-missing"
+                    ),
+                }
+            else:
+                day = days[local_date_text]
+                if (
+                    bool(day.get("complete"))
+                    and gap_seconds is not None
+                    and gap_seconds > AWC_METAR_MAX_CONTINUITY_GAP_SECONDS
+                ):
+                    day["complete"] = False
+                    day["blocked_reason"] = "metar-observation-gap"
+                if temp_c > float(day["high_c"]):
+                    day["high_c"] = temp_c
+                    day["high_observed_at"] = _iso_or_empty(observed_at)
+                if temp_c < float(day["low_c"]):
+                    day["low_c"] = temp_c
+                    day["low_observed_at"] = _iso_or_empty(observed_at)
+                day["latest_observed_at"] = _iso_or_empty(observed_at)
+
+            last_observed_at = observed_at
+            last_local_date = local_date
+            station_state["last_observed_at"] = _iso_or_empty(observed_at)
+            station_state["last_local_date"] = local_date_text
+
+        for old_date in sorted(days)[:-2]:
+            days.pop(old_date, None)
+        self._write_metar_daily_extremes_state()
+        day = days.get(target_date.isoformat())
+        return day if isinstance(day, dict) else None
 
     def _load_hko_rollover_state(self) -> dict[str, Any]:
         if self.hko_rollover_state_path is None:
@@ -807,11 +934,30 @@ class AviationWeatherMetarNowcastProvider:
         if any(observed_at > now for observed_at, _temp in observations):
             return self._unavailable(station, "future-observation", source, raw_count=len(observations))
 
-        latest_at = max(observed_at for observed_at, _temp in observations)
-        high_at, high_c = max(observations, key=lambda item: item[1])
-        low_at, low_c = min(observations, key=lambda item: item[1])
+        day = self._accumulate_metar_daily_extremes(station, observations, target_date)
+        if day is None:
+            return self._unavailable(
+                station,
+                "metar-daily-extremes-baseline-missing",
+                source,
+                raw_count=len(observations),
+            )
+        latest_at = _parse_observation_time(day.get("latest_observed_at"))
+        high_at = _parse_observation_time(day.get("high_observed_at"))
+        low_at = _parse_observation_time(day.get("low_observed_at"))
+        if latest_at is None or high_at is None or low_at is None:
+            return self._unavailable(
+                station,
+                "malformed-observation-payload",
+                source,
+                raw_count=len(observations),
+            )
+        high_c = float(day["high_c"])
+        low_c = float(day["low_c"])
         freshness_seconds = max(0, int((now - latest_at).total_seconds()))
         reason = "stale-observation" if freshness_seconds > self.freshness_seconds else ""
+        complete = bool(day.get("complete"))
+        blocked_reason = str(day.get("blocked_reason") or "")
         return StationNowcastObservation(
             station_id=station.station_id,
             station_name=station.station_name,
@@ -829,6 +975,9 @@ class AviationWeatherMetarNowcastProvider:
             low_observed_at=low_at,
             station_local_date=latest_at.astimezone(zone).date().isoformat(),
             station_local_time=latest_at.astimezone(zone).strftime("%H:%M"),
+            data_block_reason=blocked_reason,
+            daily_extremes_complete=complete,
+            daily_extremes_status="complete" if complete else "blocked",
         )
 
     def _parse_hko_payload(
@@ -917,6 +1066,8 @@ class AviationWeatherMetarNowcastProvider:
             unavailable_reason=reason,
             raw_observation_count=raw_count,
             update_cadence=source.update_cadence if source is not None else "",
+            daily_extremes_complete=False,
+            daily_extremes_status="unavailable",
         )
 
 

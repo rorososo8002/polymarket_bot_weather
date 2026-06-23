@@ -15,8 +15,8 @@ from weather_bot.models import EdgeResult, WeatherSignal
         (0.799999, None, None, None),
         (0.80, "80", 0.10, None),
         (0.899999, "80", 0.10, None),
-        (0.90, "90", 0.25, None),
-        (0.949999, "90", 0.25, None),
+        (0.90, "90", 0.30, 0.30),
+        (0.949999, "90", 0.30, 0.30),
         (0.95, "95", 0.50, 0.50),
         (1.0, "95", 0.50, 0.50),
     ],
@@ -33,7 +33,7 @@ def test_observation_probability_tier_boundaries(
         tier_90_probability=0.90,
         tier_95_probability=0.95,
         tier_80_fraction=0.10,
-        tier_90_fraction=0.25,
+        tier_90_fraction=0.30,
         tier_95_fraction=0.50,
     )
 
@@ -56,7 +56,7 @@ def test_yes_tier_uses_separate_conservative_yes_probability():
     )
 
     assert yes_probability == pytest.approx(0.91)
-    assert observation_edge_entry_fraction(yes_probability) == ObservationSizingTier("90", 0.25, None)
+    assert observation_edge_entry_fraction(yes_probability) == ObservationSizingTier("90", 0.30, 0.30)
 
 
 def test_no_tier_uses_separate_conservative_no_probability():
@@ -82,7 +82,7 @@ def test_no_tier_uses_separate_conservative_no_probability():
     assert signal.raw_probability == 0.04
     assert no_probability == pytest.approx(0.91)
     assert no_probability != pytest.approx(1.0 - signal.raw_probability)
-    assert tier == ObservationSizingTier("90", 0.25, None)
+    assert tier == ObservationSizingTier("90", 0.30, 0.30)
 
 
 def test_weather_signal_and_edge_result_probability_metadata_defaults_are_backward_compatible():

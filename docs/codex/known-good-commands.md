@@ -182,22 +182,29 @@ All paper runtime files live under `data/`, **not** the app root:
 /opt/polymarket-weather-bot/data/paper_raw_snapshots.jsonl
 /opt/polymarket-weather-bot/data/station_nowcast_request_log.jsonl
 /opt/polymarket-weather-bot/data/hko_rollover_state.json
+/opt/polymarket-weather-bot/data/metar_daily_extremes_state.json
 /opt/polymarket-weather-bot/data/paper_skip_diagnostics.jsonl
 /opt/polymarket-weather-bot/data/paper_event_portfolios.jsonl
 ```
 
-To reset the paper account for a new experiment (stop bot first, delete from
-`data/` and `data/archive/`, then restart):
+To reset the paper account for a new experiment, stop the bot and move the
+active account ledgers and diagnostics into one dated audit directory. Do not
+delete `hko_rollover_state.json` or `metar_daily_extremes_state.json`; they are
+official-observation continuity evidence, not account history.
 
 ```bash
 sudo systemctl stop polymarket-weather-bot
 cd /opt/polymarket-weather-bot/data
-sudo rm -f paper_state.json paper_trades.csv paper_decisions.csv \
-           paper_raw_snapshots.jsonl paper_event_portfolios.jsonl \
-           paper_skip_diagnostics.jsonl station_nowcast_request_log.jsonl \
-           hko_rollover_state.json \
-           paper_runner_status.json
-sudo find archive -type f -delete
+audit_dir="archive/audit-$(TZ=Asia/Seoul date +%Y%m%d-%H%M%S-KST)"
+sudo -u polymarket mkdir -p "$audit_dir"
+for name in paper_state.json paper_trades.csv paper_decisions.csv \
+            paper_raw_snapshots.jsonl paper_event_portfolios.jsonl \
+            paper_skip_diagnostics.jsonl station_nowcast_request_log.jsonl \
+            paper_runner_status.json; do
+  if [ -f "$name" ]; then
+    sudo -u polymarket mv "$name" "$audit_dir/"
+  fi
+done
 sudo systemctl start polymarket-weather-bot
 ```
 

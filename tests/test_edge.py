@@ -3,7 +3,12 @@ import inspect
 import pytest
 
 import weather_bot.edge as edge_module
-from weather_bot.edge import no_net_edge, vwap_for_size, yes_net_edge
+from weather_bot.edge import (
+    no_net_edge,
+    observation_edge_entry_fraction,
+    vwap_for_size,
+    yes_net_edge,
+)
 from weather_bot.models import OrderBook, OrderLevel
 
 
@@ -47,6 +52,23 @@ def test_no_net_edge():
 def test_edge_functions_do_not_accept_separate_slippage_parameter():
     assert "slippage" not in inspect.signature(yes_net_edge).parameters
     assert "slippage" not in inspect.signature(no_net_edge).parameters
+
+
+@pytest.mark.parametrize(
+    ("probability", "tier", "fraction"),
+    [(0.90, "90", 0.30), (0.949, "90", 0.30), (0.95, "95", 0.50)],
+)
+def test_high_probability_tiers_force_requested_fraction_and_matching_event_cap(
+    probability: float,
+    tier: str,
+    fraction: float,
+):
+    result = observation_edge_entry_fraction(probability)
+
+    assert result is not None
+    assert result.probability_tier == tier
+    assert result.entry_fraction == pytest.approx(fraction)
+    assert result.event_cap_override_fraction == pytest.approx(fraction)
 
 
 def test_polymarket_weather_taker_fee_uses_official_curve():

@@ -349,15 +349,19 @@ Strong side probability:
 Paper sizing by calibrated selected-side probability:
 
 ```text
-<= 0.90:
+< 0.90:
   keep ordinary city exposure at or below 20% of bankroll
 
-> 0.90:
-  allow one structured city-date position with a 50% bankroll ceiling
-  size with fractional Kelly; probability tier must not force 50%
+0.90 <= probability < 0.95:
+  target 30% of bankroll for one exclusive city-date position
+
+probability >= 0.95:
+  target 50% of bankroll for one exclusive city-date position
+
+both high-confidence tiers:
   still require executable depth, positive fee-aware edge, final CLOB checks,
-  bounded VWAP price impact, fresh official station evidence, and the 50%
-  single-market ceiling
+  bounded VWAP price impact, complete station-local daily extremes, fresh
+  official station evidence, and the 50% single-market ceiling
 ```
 
 An official station signal calculated within the station cache TTL is already
@@ -415,6 +419,12 @@ day baseline, an unchanged prior-day pair after midnight, a same-day high
 decrease, or a same-day low increase blocks the source before probability
 calculation. No fixed “allow after HH:MM” exception exists.
 
+AWC METAR responses are current observations, not proof of complete daily
+extremes. The provider must persist each station's reports across the local
+midnight handoff. A restart without the prior observation baseline, a missed
+continuity interval, date regression, or incomplete current local day blocks
+new entries before probability calculation.
+
 ---
 
 ## 11. Active Paper Defaults
@@ -466,10 +476,16 @@ temperature buckets. A `YES 31` leg and a `NO 32` leg overlap because both win
 when the final value is 31; two different NO legs also overlap over most
 outcomes and cannot be treated as diversification.
 
-A calibrated probability above 0.90 may use the explicit 50% concentrated
-city-date ceiling as one exclusive position. Fractional Kelly, executable
-liquidity, and the single-market ceiling determine the actual smaller size.
-Probabilities at or below 0.90 remain under the ordinary 20% city cap.
+A calibrated probability from 0.90 up to 0.95 targets 30% of bankroll, and
+0.95 or above targets 50%, as one exclusive city-date position. Executable
+liquidity, bounded VWAP impact, and the 50% single-market ceiling may reduce or
+block the actual fill. Probabilities below 0.90 remain under the ordinary 20%
+city cap.
+
+`SKIP` means the held side could not be evaluated; it is not `NO`. Probability
+stops require a latest edge whose side matches the held position. Missing or
+invalid order-book evaluation must hold the existing probability rather than
+complementing it.
 
 VWAP price impact must pass the same absolute and relative limits used by the
 entry spread gate, both during evaluation and final pre-trade. Closing a

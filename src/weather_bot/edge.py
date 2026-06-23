@@ -53,7 +53,7 @@ def observation_edge_entry_fraction(
     tier_90_probability: float = 0.90,
     tier_95_probability: float = 0.95,
     tier_80_fraction: float = 0.10,
-    tier_90_fraction: float = 0.25,
+    tier_90_fraction: float = 0.30,
     tier_95_fraction: float = 0.50,
 ) -> ObservationSizingTier | None:
     """Map a conservative selected-side probability to a structured sizing tier."""
@@ -62,7 +62,7 @@ def observation_edge_entry_fraction(
     probability = clamp_probability(side_probability)
     tiers = (
         ObservationSizingTier("95", tier_95_fraction, tier_95_fraction),
-        ObservationSizingTier("90", tier_90_fraction),
+        ObservationSizingTier("90", tier_90_fraction, tier_90_fraction),
         ObservationSizingTier("80", tier_80_fraction),
     )
     thresholds = (tier_95_probability, tier_90_probability, tier_80_probability)
@@ -76,7 +76,7 @@ def observation_probability_tier(
     tier_90_probability: float = 0.90,
     tier_95_probability: float = 0.95,
     tier_80_fraction: float = 0.10,
-    tier_90_fraction: float = 0.25,
+    tier_90_fraction: float = 0.30,
     tier_95_fraction: float = 0.50,
 ) -> ObservationSizingTier | None:
     """Backward-compatible helper name for callers already using tier semantics."""

@@ -256,6 +256,7 @@ def test_dashboard_station_evidence_preserves_formation_and_rollover_fields():
                 "first_final_high_local_minute_q25=750; first_final_high_local_minute_median=810; "
                 "first_final_high_local_minute_q75=870; remaining_movement_probability=0.35; "
                 "midnight_reset_status=verified; data_block_reason=; "
+                "daily_extremes_complete=true; daily_extremes_status=complete; "
                 "clob_accepting_orders=true; clob_enable_order_book=true; "
                 "strategy_allowed_reason=residual probability passed"
             )
@@ -267,6 +268,8 @@ def test_dashboard_station_evidence_preserves_formation_and_rollover_fields():
     assert evidence["formation_monitoring_status"] == "started"
     assert evidence["remaining_movement_probability"] == "0.35"
     assert evidence["midnight_reset_status"] == "verified"
+    assert evidence["daily_extremes_complete"] == "true"
+    assert evidence["daily_extremes_status"] == "complete"
     assert evidence["clob_accepting_orders"] == "true"
     assert evidence["strategy_allowed_reason"] == "residual probability passed"
 
@@ -1235,6 +1238,10 @@ def test_dashboard_realized_row_exposes_probability_stop_trigger(tmp_path):
 
 def test_dashboard_template_explains_probability_stop_as_defensive_close():
     assert "방어청산" in HTML
+
+
+def test_dashboard_realized_loss_displays_minus_sign():
+    assert 'const pnlSign = isProfit ? "+" : "-";' in HTML
     assert "관측소 잠금 점수가 보유 방향과 반대로 약해져" in HTML
     assert "수익을 키우는 익절이 아니라" in HTML
 

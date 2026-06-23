@@ -538,6 +538,28 @@ def test_event_portfolio_uses_fifty_percent_as_cap_without_forcing_size(tmp_path
     assert decision.selected[0].result.size_usd == pytest.approx(200.0)
 
 
+def test_event_portfolio_allows_thirty_percent_tier_above_ordinary_city_cap(tmp_path):
+    broker = PaperBroker(settings(tmp_path, bankroll_usd=1000.0))
+    tier_90 = candidate(
+        "seoul-26",
+        "26\u00b0C",
+        size_usd=300.0,
+        p_true=0.94,
+        p_exec=0.50,
+        expected_net_profit_usd=132.0,
+        selected_side_probability=0.94,
+        probability_tier="90",
+        event_cap_override_fraction=0.30,
+    )
+
+    decision = select_event_portfolio(broker, [tier_90], usable_snapshot(1000.0))
+
+    assert decision.event_cap_fraction == pytest.approx(0.30)
+    assert decision.event_cap_usd == pytest.approx(300.0)
+    assert len(decision.selected) == 1
+    assert decision.selected[0].result.size_usd == pytest.approx(300.0)
+
+
 def test_event_portfolio_keeps_ordinary_cap_without_structured_override(tmp_path):
     broker = PaperBroker(settings(tmp_path))
     unstructured = candidate(

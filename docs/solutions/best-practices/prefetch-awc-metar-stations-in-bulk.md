@@ -1,7 +1,7 @@
 ---
 title: Prefetch AWC METAR stations in bulk
 date: 2026-06-04
-last_updated: 2026-06-06
+last_updated: 2026-06-24
 category: best-practices
 module: station_nowcast
 problem_type: best_practice
@@ -31,14 +31,15 @@ row.
 ## 2. Why It Was A Problem
 
 AWC recommends cache files for large or frequent access because repeated custom
-queries add load to the public service. The full current METAR cache is useful,
-but it only gives current reports. This bot needs the same-day high and low so
-far, so it needs multiple reports since local midnight.
+queries add load to the public service. In production checks on 2026-06-24, the
+JSON endpoint returned one latest report per requested station even when the
+query asked for a longer time window. Therefore, a query parameter that looks
+like “since midnight” is not proof that the response contains the complete
+day.
 
-That means a simple "latest METAR only" cache file would break the high/low
-evidence. The bot still needs a since-midnight response, but it should request
-the enabled ICAO station set in one bulk call instead of making one call per
-station.
+This bot needs the same-day high and low so far. Treating one latest report as
+both values made the model compare the wrong temperature against the exact
+integer bucket and produced false 90-100% probabilities.
 
 ## 3. How It Was Fixed
 
@@ -47,8 +48,14 @@ That cache is the shared AWC attendance sheet for METAR stations.
 
 On the first METAR miss in a cache refresh, the provider asks AWC for all
 enabled METAR station IDs in one JSON request. Each station then parses only
-records matching its own ICAO code and target local date. The existing parser
-still derives both observed high and observed low from that one response.
+records matching its own ICAO code.
+
+The response is treated as a current observation feed, not a historical daily
+series. `metar_daily_extremes_state.json` persists each station's reports and
+builds the running high and low across the station-local day. A new day becomes
+eligible only when the provider observed the previous day and the next report
+crossed local midnight without a gap longer than the accepted METAR cadence.
+Missing restart baseline or a later continuity gap keeps the day blocked.
 
 Each AWC row must carry its own station label. `icaoId` and `station_id` are
 the observation row's name tag; if both are missing, the row is not evidence
@@ -68,13 +75,19 @@ max/min CSV is already one whole-table request.
   cache refresh.
 - Test that a bulk row missing both `icaoId` and `station_id` is skipped rather
   than treated as the requested station.
-- Test that observed high and observed low still come from the same response.
+- Test that a latest-only response is marked incomplete rather than treated as
+  the whole day's high and low.
+- Test that an uninterrupted station-local midnight handoff starts a complete
+  day and survives a service restart.
+- Test that a continuity gap invalidates the current day's accumulated
+  extremes.
 - Keep `target-date-not-today`, stale data, malformed payloads, and unsupported
   stations fail-closed.
 - Check `station_nowcast_request_log.jsonl` for real request attempts, not the
   number of station observations produced from a bulk response.
-- Do not use the current-only AWC cache file if the code still needs
-  since-midnight high/low evidence.
+- Do not infer historical completeness from AWC time-window query parameters.
+- Preserve `metar_daily_extremes_state.json` across paper-account resets. It is
+  observation evidence, not money or trade history.
 
 ## 5. What This Project Must Be Especially Careful About
 

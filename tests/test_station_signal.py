@@ -76,11 +76,17 @@ class ExactTemperatureProvider:
         observed_low_c: float | None = None,
         station_id: str | None = None,
         freshness_seconds: int | None = 120,
+        source: str = "official-station-fixture",
+        daily_extremes_complete: bool = True,
+        data_block_reason: str = "",
     ) -> None:
         self.observed_high_c = observed_high_c
         self.observed_low_c = observed_low_c
         self.station_id = station_id
         self.freshness_seconds = freshness_seconds
+        self.source = source
+        self.daily_extremes_complete = daily_extremes_complete
+        self.data_block_reason = data_block_reason
         self.calls = 0
 
     def observed_temperature_extremes_so_far(self, station, *, target_date, now=None):
@@ -94,13 +100,15 @@ class ExactTemperatureProvider:
             observed_at=observed_at,
             high_observed_at=observed_at if self.observed_high_c is not None else None,
             low_observed_at=observed_at if self.observed_low_c is not None else None,
-            source="official-station-fixture",
+            source=self.source,
             source_url="https://example.test/observations",
             settlement_source_url="https://example.test/settlement",
             freshness_seconds=self.freshness_seconds,
             unavailable_reason="",
             raw_observation_count=8,
             update_cadence="fixture",
+            daily_extremes_complete=self.daily_extremes_complete,
+            data_block_reason=self.data_block_reason,
         )
 
 
@@ -112,6 +120,30 @@ def _estimate_seoul_high(observed_high_c: float, **kwargs):
         now=datetime(2026, 6, 19, 14, 30, tzinfo=timezone.utc),
         **kwargs,
     )
+
+
+def test_incomplete_metar_daily_extremes_block_signal_before_probability_calculation() -> None:
+    store = FakeResidualProfileStore(
+        _residual_estimate(raw=0.99, yes=0.97, no=0.01)
+    )
+    signal = estimate_station_signal(
+        "Will the highest temperature in Manila be 32C today?",
+        settings=Settings(),
+        observation_provider=ExactTemperatureProvider(
+            observed_high_c=32.0,
+            source="aviationweather-metar",
+            daily_extremes_complete=False,
+            data_block_reason="metar-daily-extremes-baseline-missing",
+        ),
+        now=datetime(2026, 6, 19, 7, 0, tzinfo=timezone.utc),
+        residual_profile_store=store,
+    )
+
+    assert signal.p_true == pytest.approx(0.5)
+    assert signal.confidence == 0.0
+    assert signal.source == "official-station-unavailable"
+    assert "metar-daily-extremes-baseline-missing" in signal.note
+    assert store.calls == []
 
 
 def test_whole_celsius_high_exact_bucket_23_9_still_inside_23() -> None:
@@ -195,7 +227,7 @@ def test_unknown_precision_blocks_confident_entry(monkeypatch: pytest.MonkeyPatc
     assert provider.calls == 0
 
 
-def test_residual_high_exact_96_percent_uses_kelly_with_50_percent_cap() -> None:
+def test_residual_high_exact_96_percent_forces_fifty_percent_target() -> None:
     store = FakeResidualProfileStore(
         _residual_estimate(raw=0.97, yes=0.96, no=0.02)
     )
@@ -215,7 +247,7 @@ def test_residual_high_exact_96_percent_uses_kelly_with_50_percent_cap() -> None
     assert signal.conservative_yes_probability == pytest.approx(0.96)
     assert signal.conservative_no_probability == pytest.approx(0.02)
     assert signal.selected_side_probability == pytest.approx(0.96)
-    assert signal.entry_size_fraction_override is None
+    assert signal.entry_size_fraction_override == pytest.approx(0.50)
     assert signal.probability_tier == "95"
     assert signal.event_cap_override_fraction == pytest.approx(0.50)
     assert signal.calibration_sample_days == 120
@@ -355,8 +387,8 @@ def test_hko_reset_verified_strong_no_is_capped_because_settlement_needs_audit()
 @pytest.mark.parametrize(
     ("conservative_probability", "expected_tier", "expected_fraction", "expected_override"),
     [
-        (0.944, "90", None, 0.50),
-        (0.90, "90", 0.20, None),
+        (0.944, "90", 0.30, 0.30),
+        (0.90, "90", 0.30, 0.30),
         (0.84, "80", 0.10, None),
     ],
 )
@@ -488,7 +520,7 @@ def test_lower_tail_low_observed_below_threshold_gets_strong_yes() -> None:
     assert signal.parsed is not None
     assert signal.parsed.temperature_bucket == "lower_tail"
     assert signal.p_true == pytest.approx(0.98)
-    assert signal.entry_size_fraction_override is None
+    assert signal.entry_size_fraction_override == pytest.approx(0.50)
     assert signal.event_cap_override_fraction == pytest.approx(0.50)
     assert signal.source == "official-station-residual-low-yes"
     assert store.calls[0]["direction"] == "low"

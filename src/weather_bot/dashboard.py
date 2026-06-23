@@ -934,6 +934,8 @@ def _official_station_evidence(row: dict[str, Any]) -> dict[str, Any]:
         "first_final_low_local_minute_q75",
         "remaining_movement_probability",
         "midnight_reset_status",
+        "daily_extremes_complete",
+        "daily_extremes_status",
         "data_block_reason",
         "clob_accepting_orders",
         "clob_enable_order_book",

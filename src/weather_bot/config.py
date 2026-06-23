@@ -157,6 +157,7 @@ class Settings:
     station_nowcast_freshness_seconds: int = 5400
     station_nowcast_request_log_path: str = ""
     hko_rollover_state_path: str = ""
+    metar_daily_extremes_state_path: str = ""
     station_residual_probability_enabled: bool = True
     station_residual_profile_path: str = "strategy_data/station_residual_profiles.json"
     station_residual_min_sample_days: int = 60
@@ -243,7 +244,7 @@ class Settings:
     observation_tier_90_probability: float = 0.90
     observation_tier_95_probability: float = 0.95
     observation_tier_80_fraction: float = 0.10
-    observation_tier_90_fraction: float = 0.25
+    observation_tier_90_fraction: float = 0.30
     observation_tier_95_fraction: float = 0.50
 
     official_nowcast_lock_enabled: bool = True
@@ -534,6 +535,10 @@ def load_settings() -> Settings:
         hko_rollover_state_path=os.getenv(
             "HKO_ROLLOVER_STATE_PATH",
             Settings.hko_rollover_state_path,
+        ),
+        metar_daily_extremes_state_path=os.getenv(
+            "METAR_DAILY_EXTREMES_STATE_PATH",
+            Settings.metar_daily_extremes_state_path,
         ),
         station_residual_probability_enabled=_bool_env(
             "STATION_RESIDUAL_PROBABILITY_ENABLED",

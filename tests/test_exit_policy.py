@@ -74,6 +74,41 @@ def test_held_exit_prefers_latest_selected_side_probability_over_p_true_compleme
     assert "0.920->0.800" in assessment.reason
 
 
+def test_skip_edge_does_not_flip_yes_probability_into_no_probability():
+    settings = Settings(probability_stop_drop_threshold=0.10)
+    pos = PaperPosition(
+        position_id="p1",
+        market_id="m1",
+        question="Will the highest temperature in Manila be 32C?",
+        token_id="t1",
+        side="YES",
+        entry_price=0.77,
+        shares=42.0,
+        cost_usd=33.0,
+        opened_at=datetime.now(timezone.utc).isoformat(),
+        metadata={
+            "entry_p_true": 0.986667,
+            "selected_side_probability": 0.960507,
+            "probability_stop_threshold": 0.860507,
+        },
+    )
+    latest_edge = EdgeResult(
+        "SKIP",
+        0.986667,
+        None,
+        -999.0,
+        0.0,
+        0.0,
+        "order book unavailable",
+    )
+
+    assessment = assess_exit(pos, 0.75, latest_edge, settings, 0.1)
+
+    assert not assessment.should_close
+    assert assessment.trigger == "hold"
+    assert "latest side probability unavailable" in assessment.reason
+
+
 def test_held_exit_falls_back_to_p_true_complement_without_structured_probability():
     settings = Settings(probability_stop_drop_threshold=0.10)
     pos = PaperPosition(

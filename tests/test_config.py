@@ -46,7 +46,7 @@ def test_default_station_residual_probability_and_sizing_tiers():
     assert Settings.observation_tier_90_probability == pytest.approx(0.90)
     assert Settings.observation_tier_95_probability == pytest.approx(0.95)
     assert Settings.observation_tier_80_fraction == pytest.approx(0.10)
-    assert Settings.observation_tier_90_fraction == pytest.approx(0.25)
+    assert Settings.observation_tier_90_fraction == pytest.approx(0.30)
     assert Settings.observation_tier_95_fraction == pytest.approx(0.50)
     assert Settings.observation_tier_95_fraction <= Settings.max_single_market_fraction
 
