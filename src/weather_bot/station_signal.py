@@ -313,17 +313,19 @@ def _residual_tier(
     selected_probability: float,
     *,
     settings: Settings,
-    concentrated_sizing_eligible: bool,
 ) -> ObservationSizingTier | None:
     probability = max(0.0, min(1.0, selected_probability))
-    if concentrated_sizing_eligible and probability >= settings.observation_tier_95_probability:
+    if probability > settings.observation_tier_90_probability:
         return ObservationSizingTier(
-            "95",
+            "95" if probability >= settings.observation_tier_95_probability else "90",
             settings.observation_tier_95_fraction,
             settings.observation_tier_95_fraction,
         )
     if probability >= settings.observation_tier_90_probability:
-        return ObservationSizingTier("90", settings.observation_tier_90_fraction)
+        return ObservationSizingTier(
+            "90",
+            min(settings.observation_tier_90_fraction, settings.max_city_exposure_fraction),
+        )
     if probability >= settings.observation_tier_80_probability:
         return ObservationSizingTier("80", settings.observation_tier_80_fraction)
     return None
@@ -384,7 +386,6 @@ def _residual_observation_edge_signal(
     base_note: str,
     payload: dict[str, Any],
     residual_profile_store: Any | None,
-    concentrated_sizing_eligible_by_station: Mapping[str, bool] | None,
 ) -> WeatherSignal | None:
     if not settings.station_residual_probability_enabled or residual_profile_store is None:
         return None
@@ -458,14 +459,9 @@ def _residual_observation_edge_signal(
         )
 
     selected_side, selected_probability, raw_selected_probability = _selected_residual_side(estimate)
-    eligible = bool(
-        concentrated_sizing_eligible_by_station
-        and concentrated_sizing_eligible_by_station.get(station.station_id)
-    )
     tier = _residual_tier(
         selected_probability,
         settings=settings,
-        concentrated_sizing_eligible=eligible,
     )
     if tier is None:
         return _residual_neutral_signal(
@@ -841,7 +837,6 @@ def estimate_station_signal(
         base_note=base_note,
         payload=payload,
         residual_profile_store=residual_profile_store,
-        concentrated_sizing_eligible_by_station=concentrated_sizing_eligible_by_station,
     )
     if residual is not None:
         return residual

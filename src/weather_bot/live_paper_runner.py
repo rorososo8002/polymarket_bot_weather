@@ -1958,57 +1958,66 @@ def _open_position_if_needed(
         or observation_provider is not None
         or residual_profile_store is not None
     ):
-        try:
-            final_signal = _call_probability_estimator(
-                probability_estimator or estimate_station_probability,
-                market.question,
-                settings=broker.settings,
-                observation_provider=observation_provider,
-                residual_profile_store=residual_profile_store,
-                now=datetime.now(timezone.utc),
-            )
-            final_best, final_per_side = evaluate_market(
-                market,
-                final_signal,
-                client,
-                broker.settings,
-                entry_bankroll_usd
-                if entry_bankroll_usd is not None
-                else broker.current_bankroll_before_entry(),
-                market_type,
-            )
-        except Exception as exc:  # noqa: BLE001
-            final_best = EdgeResult(
-                "SKIP",
-                signal.p_true,
-                None,
-                -999.0,
-                0.0,
-                0.0,
-                f"SKIP_FINAL_STATION_SIGNAL: final station signal revalidation failed: {exc}",
-            )
-            final_per_side = {}
-        final_side = final_per_side.get(result.side)
-        if final_side is None or final_side.side != result.side:
-            final_result = _skip_entry_result(
+        decision_at = _parse_iso_datetime(decision_ts)
+        current = datetime.now(timezone.utc)
+        decision_age = (current - decision_at).total_seconds() if decision_at is not None else -1.0
+        if 0.0 <= decision_age < broker.settings.station_nowcast_cache_ttl_seconds:
+            revalidated_result = replace(
                 result,
-                (
-                    "SKIP_FINAL_STATION_SIGNAL: final station signal revalidation "
-                    f"blocked {result.side}: {final_best.reason}"
-                ),
+                reason=f"{result.reason}; final_station_revalidation=fresh_signal_reused",
             )
-            return _record_pre_trade_skip(
-                broker,
-                market,
-                result,
-                final_result,
-                token_id,
-                market_type,
+        else:
+            try:
+                final_signal = _call_probability_estimator(
+                    probability_estimator or estimate_station_probability,
+                    market.question,
+                    settings=broker.settings,
+                    observation_provider=observation_provider,
+                    residual_profile_store=residual_profile_store,
+                    now=current,
+                )
+                final_best, final_per_side = evaluate_market(
+                    market,
+                    final_signal,
+                    client,
+                    broker.settings,
+                    entry_bankroll_usd
+                    if entry_bankroll_usd is not None
+                    else broker.current_bankroll_before_entry(),
+                    market_type,
+                )
+            except Exception as exc:  # noqa: BLE001
+                final_best = EdgeResult(
+                    "SKIP",
+                    signal.p_true,
+                    None,
+                    -999.0,
+                    0.0,
+                    0.0,
+                    f"SKIP_FINAL_STATION_SIGNAL: final station signal revalidation failed: {exc}",
+                )
+                final_per_side = {}
+            final_side = final_per_side.get(result.side)
+            if final_side is None or final_side.side != result.side:
+                final_result = _skip_entry_result(
+                    result,
+                    (
+                        "SKIP_FINAL_STATION_SIGNAL: final station signal revalidation "
+                        f"blocked {result.side}: {final_best.reason}"
+                    ),
+                )
+                return _record_pre_trade_skip(
+                    broker,
+                    market,
+                    result,
+                    final_result,
+                    token_id,
+                    market_type,
+                )
+            revalidated_result = replace(
+                final_side,
+                reason=f"{result.reason}; final_station_revalidation=refetched; {final_side.reason}",
             )
-        revalidated_result = replace(
-            final_side,
-            reason=f"{result.reason}; final_station_revalidation=true; {final_side.reason}",
-        )
     final_result = _final_pre_trade_entry_result(
         market,
         final_signal,

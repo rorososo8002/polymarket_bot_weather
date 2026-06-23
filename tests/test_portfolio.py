@@ -510,25 +510,25 @@ def test_event_portfolio_selects_one_profitable_leg(tmp_path):
 
 
 def test_event_portfolio_allows_structured_95_tier_to_use_fifty_percent_cap(tmp_path):
-    broker = PaperBroker(settings(tmp_path))
+    broker = PaperBroker(settings(tmp_path, bankroll_usd=1000.0))
     strong = candidate(
         "seoul-26",
         "26\u00b0C",
-        size_usd=50.0,
+        size_usd=500.0,
         p_true=0.96,
         p_exec=0.50,
-        expected_net_profit_usd=23.0,
+        expected_net_profit_usd=230.0,
         selected_side_probability=0.96,
         probability_tier="95",
         event_cap_override_fraction=0.50,
     )
 
-    decision = select_event_portfolio(broker, [strong], usable_snapshot())
+    decision = select_event_portfolio(broker, [strong], usable_snapshot(1000.0))
 
     assert decision.event_cap_fraction == pytest.approx(0.50)
-    assert decision.event_cap_usd == pytest.approx(50.0)
+    assert decision.event_cap_usd == pytest.approx(500.0)
     assert len(decision.selected) == 1
-    assert decision.selected[0].result.size_usd == pytest.approx(50.0)
+    assert decision.selected[0].result.size_usd == pytest.approx(500.0)
 
 
 def test_event_portfolio_keeps_ordinary_cap_without_structured_override(tmp_path):
@@ -561,7 +561,7 @@ def test_event_portfolio_rejects_override_when_signal_and_result_do_not_match(tm
         p_true=0.96,
         p_exec=0.50,
         expected_net_profit_usd=23.0,
-        selected_side_probability=0.96,
+        selected_side_probability=0.90,
         probability_tier="90",
         event_cap_override_fraction=0.50,
     )

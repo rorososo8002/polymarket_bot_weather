@@ -59,3 +59,23 @@ def test_runner_status_writes_use_unique_temp_paths(tmp_path, monkeypatch):
     assert replaced_sources[0] != replaced_sources[1]
     assert all(name.startswith("paper_runner_status.json.") for name in replaced_sources)
     assert all(name.endswith(".tmp") for name in replaced_sources)
+
+
+def test_runner_status_replace_retries_transient_permission_error(tmp_path, monkeypatch):
+    settings = Settings(state_path=str(tmp_path / "paper_state.json"))
+    status_path = runner_status_path(settings)
+    real_replace = runner_status_module.os.replace
+    attempts = {"count": 0}
+
+    def flaky_replace(src, dst):
+        if Path(dst) == status_path and attempts["count"] == 0:
+            attempts["count"] += 1
+            raise PermissionError("runner status briefly locked")
+        real_replace(src, dst)
+
+    monkeypatch.setattr(runner_status_module.os, "replace", flaky_replace)
+
+    write_runner_status(settings, "evaluating", message="still alive")
+
+    assert attempts["count"] == 1
+    assert status_path.exists()

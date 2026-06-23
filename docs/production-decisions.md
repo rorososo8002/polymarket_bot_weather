@@ -346,6 +346,24 @@ Strong side probability:
 0.97
 ```
 
+Paper sizing by calibrated selected-side probability:
+
+```text
+<= 0.90:
+  keep ordinary city exposure at or below 20% of bankroll
+
+> 0.90:
+  allow one structured city-date position up to 50% of bankroll
+  still require executable depth, positive fee-aware edge, final CLOB checks,
+  fresh official station evidence, and the 50% single-market ceiling
+```
+
+An official station signal calculated within the station cache TTL is already
+the current observation evidence. At final pre-trade, reuse that signal and
+recalculate the executable CLOB price and economics. Fetch the station again
+only when the signal has aged past the TTL; do not create a second provider
+failure opportunity a few seconds after a successful observation.
+
 ### abnormal_official_station_mispricing
 
 A tag, not a separate independent source of truth.
@@ -439,6 +457,10 @@ Same-side add-ons are allowed only when price, station-side probability, edge, e
 City-date markets share one correlated-risk budget.
 
 At most two complementary non-overlapping legs may be selected for one city-date event unless the user explicitly approves a separate portfolio-risk redesign.
+
+A calibrated probability above 0.90 may use the explicit 50% concentrated
+city-date budget as one exclusive position. Probabilities at or below 0.90
+remain under the ordinary 20% city cap.
 
 Drawdown circuit breakers block new entries only. Held exits and settlements must continue.
 

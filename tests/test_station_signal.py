@@ -206,7 +206,7 @@ def test_residual_high_exact_96_percent_gets_50_tier_and_calibration_metadata() 
         observation_provider=ExactTemperatureProvider(observed_high_c=23.4),
         now=datetime(2026, 6, 19, 6, 30, tzinfo=timezone.utc),
         residual_profile_store=store,
-        concentrated_sizing_eligible_by_station={"RKSI": True},
+        concentrated_sizing_eligible_by_station={"RKSI": False},
     )
 
     assert signal.source == "official-station-residual-high-yes"
@@ -352,16 +352,18 @@ def test_hko_reset_verified_strong_no_is_capped_because_settlement_needs_audit()
 
 
 @pytest.mark.parametrize(
-    ("conservative_probability", "expected_tier", "expected_fraction"),
+    ("conservative_probability", "expected_tier", "expected_fraction", "expected_override"),
     [
-        (0.944, "90", 0.25),
-        (0.84, "80", 0.10),
+        (0.944, "90", 0.50, 0.50),
+        (0.90, "90", 0.20, None),
+        (0.84, "80", 0.10, None),
     ],
 )
 def test_residual_high_exact_maps_conservative_probability_to_tiers(
     conservative_probability: float,
     expected_tier: str,
     expected_fraction: float,
+    expected_override: float | None,
 ) -> None:
     store = FakeResidualProfileStore(
         _residual_estimate(raw=0.96, yes=conservative_probability, no=0.03)
@@ -379,7 +381,7 @@ def test_residual_high_exact_maps_conservative_probability_to_tiers(
     assert signal.selected_side_probability == pytest.approx(conservative_probability)
     assert signal.probability_tier == expected_tier
     assert signal.entry_size_fraction_override == pytest.approx(expected_fraction)
-    assert signal.event_cap_override_fraction is None
+    assert signal.event_cap_override_fraction == expected_override
 
 
 def test_residual_below_80_percent_skips_instead_of_using_fixed_guess() -> None:

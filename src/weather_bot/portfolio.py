@@ -56,7 +56,7 @@ def structured_event_cap_override_fraction(
     result: EdgeResult,
     settings: Settings,
 ) -> float | None:
-    """Return the explicit 95% station override only when signal and result agree."""
+    """Return the explicit >90% station override only when signal and result agree."""
     if signal is None:
         return None
     expected = settings.observation_tier_95_fraction
@@ -67,12 +67,12 @@ def structured_event_cap_override_fraction(
         result.event_cap_override_fraction,
     )
     if (
-        signal.probability_tier != "95"
-        or result.probability_tier != "95"
+        signal.probability_tier not in {"90", "95"}
+        or result.probability_tier not in {"90", "95"}
         or signal.selected_side_probability is None
         or result.selected_side_probability is None
-        or signal.selected_side_probability < settings.observation_tier_95_probability
-        or result.selected_side_probability < settings.observation_tier_95_probability
+        or signal.selected_side_probability <= settings.observation_tier_90_probability
+        or result.selected_side_probability <= settings.observation_tier_90_probability
         or any(value is None or not isfinite(value) for value in fractions)
         or any(not isclose(value, expected, rel_tol=0.0, abs_tol=1e-9) for value in fractions)
     ):

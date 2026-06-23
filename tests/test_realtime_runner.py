@@ -1671,6 +1671,46 @@ def test_final_pre_trade_revalidates_station_signal_and_blocks_probability_drop(
     assert broker.state.positions == []
 
 
+def test_final_pre_trade_reuses_just_verified_station_signal(tmp_path):
+    question = "Will the highest temperature in Seoul be 23C today?"
+    settings = _entry_gate_settings(tmp_path)
+    broker = runner_module.PaperBroker(settings)
+    market = _entry_gate_market()
+    signal = WeatherSignal(
+        0.97,
+        1.0,
+        "official-station-residual-high-yes",
+        "signal_family=intraday_observation_edge",
+        parse_weather_question(question),
+        conservative_yes_probability=0.96,
+        conservative_no_probability=0.02,
+        selected_side_probability=0.96,
+        signal_family="intraday_observation_edge",
+        entry_size_fraction_override=0.50,
+        probability_tier="95",
+        event_cap_override_fraction=0.50,
+    )
+
+    def unavailable_estimator(_question, **_kwargs):
+        raise AssertionError("fresh station evidence must not be fetched again")
+
+    final_result = runner_module._open_position_if_needed(
+        broker,
+        market,
+        signal,
+        _selected_entry_result(),
+        "temperature",
+        client=_FinalGateClient(),
+        probability_estimator=unavailable_estimator,
+        observation_provider=object(),
+        residual_profile_store=object(),
+        decision_ts=datetime.now(timezone.utc).isoformat(),
+    )
+
+    assert final_result.side == "YES"
+    assert len(broker.state.positions) == 1
+
+
 def test_final_pre_trade_blocks_when_clob_accepting_orders_false(tmp_path):
     broker = runner_module.PaperBroker(_entry_gate_settings(tmp_path))
     client = _FinalGateClient(_tradability(accepting_orders=False))

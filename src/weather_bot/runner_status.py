@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -11,6 +12,7 @@ from uuid import uuid4
 from .config import Settings
 
 _RUNNER_STATUS_LOCK = threading.RLock()
+_ATOMIC_REPLACE_RETRY_DELAYS_SECONDS = (0.01, 0.05, 0.1)
 
 
 def utc_now_iso() -> str:
@@ -57,4 +59,11 @@ def _write_runner_status_payload(settings: Settings, payload: dict[str, Any]) ->
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = path.with_name(f"{path.name}.{uuid4().hex}.tmp")
     tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(tmp_path, path)
+    for delay in (*_ATOMIC_REPLACE_RETRY_DELAYS_SECONDS, None):
+        try:
+            os.replace(tmp_path, path)
+            return
+        except PermissionError:
+            if delay is None:
+                raise
+            time.sleep(delay)

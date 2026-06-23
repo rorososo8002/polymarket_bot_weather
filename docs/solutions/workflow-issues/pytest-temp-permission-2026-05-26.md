@@ -1,7 +1,7 @@
 ---
 title: Use workspace temp dirs when pytest cannot scan Windows temp
 date: 2026-05-26
-last_updated: 2026-06-20
+last_updated: 2026-06-23
 category: docs/solutions/workflow-issues
 module: pytest verification
 problem_type: workflow_issue
@@ -32,6 +32,11 @@ On 2026-06-20, a stale child under `.pytest-tmp/current` kept an unusable
 Windows ACL. Even a serial pytest run failed before the affected test body ran
 with `PermissionError: [WinError 5]`. The root `conftest.py` uses best-effort
 cleanup, so it could not repair an already inaccessible child in place.
+
+On 2026-06-23, the full suite reached test bodies but different runner tests
+failed at `os.replace(tmp_path, paper_runner_status.json)`. Each test passed
+alone, and the failing test changed between runs. This was a separate transient
+Windows destination-file lock, not a pytest fixture or stale-directory failure.
 
 ## Guidance
 
@@ -74,6 +79,13 @@ Use a unique quarantine name if that target already exists. Quarantine first;
 do not recursively delete an inaccessible directory as part of routine
 verification.
 
+If the traceback reaches application code and fails specifically while
+atomically replacing a frequently read status file, do not quarantine the
+pytest directory. Keep the unique temporary file and retry only
+`PermissionError` with a short bounded delay, as the paper account writer
+already does. Continue raising after the bounded attempts so real permission
+or disk failures still fail closed.
+
 ## Why This Matters
 
 The test failure is environmental, not a product regression. Making the
@@ -95,6 +107,9 @@ false red build during verification.
   `.pytest-tmp/current`, quarantine the whole `current` directory and retry.
 - The stack trace points into `_pytest\tmpdir.py` or `_pytest\pathlib.py`.
 - Focused tests pass, but tests using `tmp_path` cannot start.
+- If the stack trace instead points into the application's `os.replace`, add
+  or verify a bounded atomic-replace retry before treating it as pytest setup
+  corruption.
 
 ## Examples
 
@@ -110,6 +125,11 @@ pytest file serially; the retry passed, followed by a full-suite pass.
 The 2026-06-20 stale-ACL failure was resolved by moving `.pytest-tmp/current`
 to `.pytest-tmp/current-step8-quarantine`; the same workflow test then passed
 with `9 passed`.
+
+The 2026-06-23 runner-status failure was reproduced with a regression test that
+forced the first `os.replace` call to raise `PermissionError`. A bounded
+0.01/0.05/0.1-second retry made that test pass, followed by the full local and
+Oracle suites with `665 passed`.
 
 ## Related
 
