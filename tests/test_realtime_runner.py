@@ -1986,12 +1986,30 @@ def test_stream_status_phase_includes_operator_recovery_context():
     assert "reconnects=2" in message
 
 
-def test_stream_rebuild_is_only_for_dead_websocket_threads():
+def test_stream_rebuild_recovers_dead_or_stale_websocket_threads():
     assert hasattr(runner_module, "_stream_should_rebuild")
 
     assert runner_module._stream_should_rebuild({"thread_alive": False}, token_count=2) is True
-    assert runner_module._stream_should_rebuild({"thread_alive": True, "stale": True}, token_count=2) is False
+    assert runner_module._stream_should_rebuild({"thread_alive": True, "stale": True}, token_count=2) is True
+    assert runner_module._stream_should_rebuild({"thread_alive": True, "stale": False}, token_count=2) is False
     assert runner_module._stream_should_rebuild({"thread_alive": False}, token_count=0) is False
+
+
+def test_official_station_health_refresh_polls_every_ready_station_for_its_local_date():
+    calls = []
+
+    class FakeProvider:
+        def observed_temperature_extremes_so_far(self, station, *, target_date, now):
+            calls.append((station.station_id, target_date, now))
+
+    now = datetime(2026, 6, 24, 15, 30, tzinfo=timezone.utc)
+    runner_module._refresh_official_station_observations(FakeProvider(), now=now)
+
+    assert len(calls) == len(runner_module.TRADING_READY_STATION_MAP)
+    by_station = {station_id: target_date for station_id, target_date, _now in calls}
+    assert by_station["RKSI"].isoformat() == "2026-06-25"
+    assert by_station["KLGA"].isoformat() == "2026-06-24"
+    assert all(observed_now == now for _station_id, _target_date, observed_now in calls)
 
 
 def test_runner_groups_binary_submarkets_by_weather_event_and_reports_coverage():

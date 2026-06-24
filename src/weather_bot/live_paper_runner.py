@@ -2407,7 +2407,25 @@ def _stream_status_phase(
 
 
 def _stream_should_rebuild(websocket_health: dict[str, object], *, token_count: int) -> bool:
-    return token_count > 0 and not bool(websocket_health.get("thread_alive"))
+    return token_count > 0 and (
+        not bool(websocket_health.get("thread_alive"))
+        or bool(websocket_health.get("stale"))
+    )
+
+
+def _refresh_official_station_observations(
+    observation_provider: Any,
+    *,
+    now: datetime,
+) -> None:
+    current = _utc_datetime(now)
+    for station in TRADING_READY_STATION_MAP.values():
+        target_date = current.astimezone(ZoneInfo(station.timezone)).date()
+        observation_provider.observed_temperature_extremes_so_far(
+            station,
+            target_date=target_date,
+            now=current,
+        )
 
 
 def _realtime_error_backoff_seconds(settings: Settings) -> float:
@@ -2598,6 +2616,9 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
             failed_phase = "runner_status_update"
             write_stream_status()
             status_updated_at = datetime.now(timezone.utc)
+            station_refreshed_at = status_updated_at - timedelta(
+                seconds=settings.station_nowcast_cache_ttl_seconds
+            )
             try:
                 failed_phase = "websocket_monitoring"
                 while True:
@@ -2617,6 +2638,15 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
                             stream_holder["client"] = StreamBackedPolymarketClient(settings.gamma_base, settings.clob_base, stream)
                             stream.start(market_by_token.keys())
                         status_updated_at = now
+                    if (
+                        now - station_refreshed_at
+                    ).total_seconds() >= settings.station_nowcast_cache_ttl_seconds:
+                        failed_phase = "station_observation_refresh"
+                        _refresh_official_station_observations(
+                            observation_provider,
+                            now=now,
+                        )
+                        station_refreshed_at = now
                     if (now - status_updated_at).total_seconds() >= settings.runner_health_status_interval_seconds:
                         failed_phase = "runner_status_update"
                         write_stream_status()

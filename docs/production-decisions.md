@@ -169,6 +169,11 @@ Use Polymarket CLOB WebSocket market stream by default.
 
 REST order-book snapshots are allowed only as bounded verification/resync helpers. They must not replace WebSocket monitoring, trigger evaluations by themselves, or write raw order books to runtime ledgers.
 
+If the whole WebSocket stream has no fresh executable depth past the configured
+stale threshold, rebuild the stream automatically even when its receiver thread
+is still alive. PING/PONG traffic proves only that the socket exists; it does
+not prove executable order-book depth is current.
+
 Executable depth comes from:
 
 ```text
@@ -214,6 +219,11 @@ other mapped official source only when explicitly implemented and tested
 Station observations must match the station-local target date. Nearby dates are not substitutes.
 
 Provider request floors must be respected. Do not retry-bomb providers after stale, malformed, or failed evidence.
+
+The realtime runner refreshes every trading-ready official station on the
+station cache cadence using that station's local date. Provider bulk caches and
+request floors still control real HTTP frequency. Station refresh must not
+depend solely on an order-book price change occurring.
 
 ---
 
