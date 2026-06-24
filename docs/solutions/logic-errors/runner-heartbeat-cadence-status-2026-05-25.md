@@ -1,6 +1,7 @@
 ---
 title: Runner heartbeat and wall-clock cadence for long paper bot cycles
 date: 2026-05-25
+last_updated: 2026-06-24
 category: logic-errors
 module: weather_bot.live_paper_runner
 problem_type: logic_error
@@ -56,6 +57,12 @@ The heartbeat separates process liveness from strategy progress. The dashboard n
 
 ## Prevention
 - Treat `systemd active` as only a process-level signal; verify domain progress with heartbeat or output data timestamps.
+- Treat a live WebSocket thread and recent PONG messages as insufficient when
+  executable order-book depth is stale. Rebuild the stream automatically when
+  whole-stream executable depth crosses the stale threshold.
+- Refresh official stations on the station cache cadence using each station's
+  local date. Do not make station freshness depend on an order-book price
+  change occurring.
 - Any background job with long blocking steps should write `phase`/progress status before and during the step.
 - Add regression tests for dashboard heartbeat precedence and wall-clock cadence calculations.
 
