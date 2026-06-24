@@ -145,6 +145,45 @@ def test_profile_store_fails_closed_when_station_month_time_is_missing() -> None
     assert estimate.reason_code == "SKIP_RESIDUAL_PROFILE_MISSING"
 
 
+def test_profile_store_uses_latest_past_profile_without_future_leakage(tmp_path: Path) -> None:
+    payload = _fixture_payload()
+    payload["profiles"] = {
+        "KAUS|month:06|0990|high|F": {
+            "station_id": "KAUS",
+            "scope": "month:06",
+            "local_minute": 990,
+            "direction": "high",
+            "unit": "F",
+            "sample_days": 60,
+            "histogram": [[0.0, 60]],
+        },
+        "KAUS|month:06|1050|high|F": {
+            "station_id": "KAUS",
+            "scope": "month:06",
+            "local_minute": 1050,
+            "direction": "high",
+            "unit": "F",
+            "sample_days": 60,
+            "histogram": [[10.0, 60]],
+        },
+    }
+    store = ResidualProfileStore.from_path(_write_payload(tmp_path, payload))
+
+    estimate = _estimate_high(
+        store,
+        station_id="KAUS",
+        local_minute=1020,
+        observed_extreme=90.0,
+        bucket_lower=90.0,
+        bucket_upper=91.0,
+        unit="F",
+    )
+
+    assert estimate.usable is True
+    assert estimate.profile_key == "KAUS|month:06|0990|high|F"
+    assert estimate.raw_probability == 1.0
+
+
 def test_high_exact_bucket_uses_remaining_warming() -> None:
     store = ResidualProfileStore.from_path(FIXTURE_PATH)
 

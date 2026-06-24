@@ -284,8 +284,11 @@ class ResidualProfileStore:
         thin_profiles: list[ResidualProfile] = []
 
         for scope in requested_scopes:
-            key = _profile_key(station_id, scope, local_minute, direction, unit)
-            profile = self.profiles.get(key)
+            profile = None
+            for minute in range(local_minute, -1, -30):
+                profile = self.profiles.get(_profile_key(station_id, scope, minute, direction, unit))
+                if profile is not None:
+                    break
             if profile is None:
                 continue
             if profile.sample_days >= self.min_sample_days:
@@ -329,7 +332,7 @@ class ResidualProfileStore:
         return any(
             profile.station_id == station_id
             and profile.scope in scopes
-            and profile.local_minute == local_minute
+            and profile.local_minute <= local_minute
             and profile.direction == direction
             and profile.unit != unit
             for profile in self.profiles.values()
