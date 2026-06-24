@@ -1,93 +1,75 @@
-# Runtime Data Review Rules
+# Runtime Data Rules
 
-Read this file only for runtime logs, paper-trading data, dashboard readers, or investigations into bot behavior.
+Read this only for VPS files, disk growth, dashboard readers, or paper-ledger
+investigations.
 
-## Safe Reading
+## Account Evidence
 
-- Runtime outputs such as `paper_raw_snapshots.jsonl`, `paper_decisions.csv`, `paper_trades.csv`, `station_nowcast_request_log.jsonl`, `paper_state.json`, and `paper_runner_status.json` can become very large.
-- Treat service logs, `data/paper_raw_snapshots.jsonl`, and
-  `data/paper_decisions.csv` as token-dangerous.
-- Do not run bare `Get-Content`, `cat`, `type`, `more`, or unrestricted `python read_text()` against token-dangerous files.
-- For normal health checks, recent errors, or "why is it not trading now" questions, inspect only the latest 100 lines by default.
-- Increase the window only when needed, and state why.
-- For older data, filter by time range, market, city, event type, or decision reason.
-- Prefer counts, summaries, tails, targeted searches, and small samples over opening complete files.
-- `paper_raw_snapshots.jsonl` is detailed diagnostic evidence, not the paper
-  account book. Normal raw decision snapshots are off by default:
-  `RAW_SNAPSHOTS_MODE=error` saves only error evidence, while `debug` is for a
-  bounded investigation. The bot rotates active raw snapshots over 100MB into
-  compressed `data/archive/` files, keeps recent raw archives for 7 days by
-  default, and suspends raw writes with a `paper_runner_status.json` warning
-  when disk pressure is dangerous. The Oracle VPS logrotate rule is a matching
-  safety net and must not include paper state, trade, or decision ledgers.
-- `paper_skip_diagnostics.jsonl` is the bounded SKIP reason black box. It is
-  diagnostic-only, rotates at 10MB, and keeps diagnostic archives under 20MB; keep
-  `DECISIONS_LOG_SKIP_ENABLED=false` unless debugging the decision ledger itself.
-- `station_nowcast_request_log.jsonl` is the official-station observation
-  request ledger. It records real station-data attempts and provider cooldowns.
-  The same VPS logrotate rule moves it to `data/archive/` over 10MB and
-  compresses it with zstd.
-- Do not delete `paper_state.json`, `paper_trades.csv`, or
-  `paper_decisions.csv` as a cleanup shortcut. `paper_state.json` is the current
-  paper account book, `paper_trades.csv` is the execution ledger, and
-  `paper_decisions.csv` is the strategy evidence ledger.
-- Do not recreate a fresh `paper_state.json` just because the file is missing
-  while `paper_trades.csv` already has executed actions. That means the account
-  book may have been lost, not that the paper account is new.
-- `paper_state.json.journal` is a paper-accounting transaction marker. It
-  means `paper_state.json` and `paper_trades.csv` may have been interrupted
-  mid-update. Do not delete it just to restart the bot; inspect the state and
-  trade ledgers, reconcile the mismatch, then remove the marker only as part of
-  that operator recovery.
+- `paper_state.json` is the current paper account book: cash, positions, cost,
+  and PnL. It is not a cache.
+- `paper_trades.csv` is the execution receipt ledger. Actual entries are OPEN
+  or ADD rows; CLOSE, PARTIAL_CLOSE, and SETTLED realize results.
+- `paper_decisions.csv` is the strategy evidence ledger. YES/NO decisions are
+  candidates, not proof that a trade occurred.
+- `paper_state.json.journal` means an accounting write may have been
+  interrupted. Fail closed and reconcile before trading.
 
-## Trading Interpretation
+Never delete, truncate, or rewrite those files to speed up a report. If state
+is missing while receipts exist, that is a lost account book, not a fresh
+account. Old ledger rows without newer columns must remain readable.
 
-- `YES` and `NO` rows in `paper_decisions.csv` are candidate decisions. Actual first entries are `OPEN` rows in `paper_trades.csv`; same-side paper add-ons are `ADD` rows and update an existing open position rather than creating a duplicate position.
-- `OPEN`, `ADD`, `CLOSE`, and `PARTIAL_CLOSE` are the executed paper actions
-  that must update both `paper_state.json` and `paper_trades.csv`. If either
-  write fails, the bot leaves `paper_state.json.journal` and fails closed
-  instead of making more paper trades from uncertain accounting.
-- On startup, `paper_trades.csv` is replayed like a receipt ledger from
-  `BANKROLL_USD`: `OPEN` creates a position, `ADD` increases the same position,
-  `PARTIAL_CLOSE` reduces shares and cost basis proportionally, and
-  `CLOSE`/`SETTLED` removes the position while applying realized PnL. Replayed
-  cash, realized PnL, open-position identity, shares, cost basis, and average
-  entry price must match `paper_state.json`; otherwise follow fail-closed
-  recovery instead of deleting, truncating, or rewriting either ledger.
-- When entries appear missing, check existing open positions and exposure caps before assuming the entry path is broken.
-- Repeated valid signals for an already-held market should not create duplicate positions. Same-side add-ons are allowed only through the explicit `ADD` path after the add-on price/probability/budget gates pass; opposite-side same-market entries remain blocked.
+## Bounded Diagnostics
 
-## Dashboard Readers
+- `paper_raw_snapshots.jsonl`: raw investigation evidence, normally error-only;
+  rotates at 100 MB.
+- `paper_skip_diagnostics.jsonl`: detailed SKIP black box; rotates at 10 MB.
+- `station_nowcast_request_log.jsonl`: provider-call diagnosis; rotates at
+  10 MB.
+- `paper_event_portfolios.jsonl`: selected portfolios by default; rotates at
+  10 MB when investigation logging is enabled.
+- Known diagnostic archives under `data/archive/` share a 20 MB cleanup budget.
 
-- Preserve bounded reads and cached totals for multi-GB files. Never reintroduce full startup scans of `paper_decisions.csv` or raw snapshots.
-- Dashboard live views should not push high-volume SKIP or candidate rows every refresh.
-- `paper_trades.csv` may contain both executed paper actions and SKIP diagnostics. `Recent Trades` should show executed paper actions only: `OPEN`, `ADD`, `CLOSE`, `SETTLED`, and `PARTIAL_CLOSE`. Realized rows and realized equity points should still use only realized actions: `CLOSE`, `SETTLED`, and `PARTIAL_CLOSE`.
-- Prefer operator-useful summaries, open positions, realized trades, bounded recent trades, cached totals, a moderate visible refresh interval, and a slower hidden-tab interval.
+The cleanup may delete only recognized diagnostic archives. It must never
+delete active account/ledger files or an explicitly created experiment audit
+folder. Logrotate moves bounded files; `weather_bot.runtime_cleanup` prunes the
+oldest known diagnostic archives after rotation.
 
-## Settlement Review
+## Safe Inspection
 
-- A closed Polymarket binary market may have empty winner fields while `outcomePrices` carries the final payout. Treat exact YES/NO `1/0` or `0/1` prices as settlement evidence for paper accounting.
-- Do not settle from ambiguous outcome prices. If the values are not exact binary payout prices, keep the paper position open until a clear winner field or exact payout prices appear.
+Do not bulk-read ledgers, snapshots, caches, archives, or service logs. Start
+with sizes, row counts, headers, tails, grouped reason counts, and targeted
+searches. Full-history reports may stream every row but should retain only
+aggregates or bounded samples in memory.
 
-## Analysis And Reports
+Useful runtime diagnosis:
 
-- `paper_decisions.csv` and `paper_trades.csv` are paper-performance source ledgers, not disposable cache files. Do not truncate, rewrite, or delete them to make reports faster.
-- Do not rewrite an existing `paper_trades.csv` just to add newer columns.
-  New trade files use the current full header, but legacy headers should remain
-  as evidence and report code must use backward-compatible fallbacks.
-- If `paper_state.json` contains cash, realized PnL, or open positions that
-  cannot be reproduced by replaying the executed accounting rows in
-  `paper_trades.csv`, treat that as an obvious evidence mismatch. If
-  `paper_state.json` is missing but `paper_trades.csv` already has executed
-  accounting rows, treat that as a lost account book. Start from fail-closed
-  recovery, not from a fresh account and not from a rewritten trade ledger.
-- New `paper_decisions.csv` rows compact verbose question, reason, and note
-  text so the strategy evidence ledger does not become a raw-data warehouse.
-  New `paper_event_portfolios.jsonl` rows keep selected legs, rejection
-  counts/samples, and worst scenario PnL rather than full candidate maps.
-  Zero-selection portfolio rows are normally suppressed; enable
-  `PORTFOLIO_LOG_SKIP_ENABLED=true` only for bounded investigations into why
-  candidates were discarded, pair it with runtime archive cleanup, then summarize
-  the rows with `python -m weather_bot.runtime_diagnostics --data-dir data`.
-- Full-history reports may still scan every row when their meaning depends on all rows, but they should stream rows and keep only aggregate counters, market-level lookups, or bounded result sets in memory.
-- `analyze_paper.py` keeps the existing full-history report meaning by streaming decision and trade rows instead of materializing whole CSV files.
+```powershell
+$env:PYTHONPATH='src'
+python -m weather_bot.runtime_diagnostics --data-dir data --tail 500
+```
+
+On Oracle, run the same module as the `polymarket` service user from
+`/opt/polymarket-weather-bot`.
+
+Interpret SKIP correctly:
+
+- stale/missing official data protects against false station extremes;
+- residual/formation SKIPs protect against acting before the day develops;
+- no ask, wide spread, disabled book, or unknown CLOB state means no executable
+  entry;
+- budget/exposure SKIPs protect the paper account;
+- SKIP is “no valid new probability”, never the opposite trading side.
+
+Investigate when the same safety SKIP repeats across three cycles, the service
+is active but station/WebSocket freshness stays stale, or decisions remain
+mostly SKIP after local formation windows should be open.
+
+## Dashboard And Reports
+
+Dashboard startup must use bounded reads and cached totals. Recent trades show
+executed actions, not SKIP noise. Realized equity uses CLOSE, PARTIAL_CLOSE, and
+SETTLED rows only. Closed binary markets may use exact outcome prices `1/0` or
+`0/1` as settlement evidence when winner fields are empty.
+
+Reports must reconcile account state against execution receipts and must not
+turn `paper_decisions.csv` or `paper_trades.csv` into disposable caches.

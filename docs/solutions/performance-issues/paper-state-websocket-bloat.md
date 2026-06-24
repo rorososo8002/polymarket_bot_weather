@@ -120,7 +120,7 @@ save_state()는 포지션 정보를 paper_state.json에 저장한다.
 - src/weather_bot/paper.py L772 save_state()
 - src/weather_bot/paper.py L1584 pos.metadata["last_websocket_health"] = health
 - src/weather_bot/paper.py L1616 pos.metadata["last_websocket_token_health"] = token_health
-- docs/codex/data-and-disk.md -- 디스크 관리 규칙
+- docs/codex/runtime-data.md -- 장부와 디스크 관리 규칙
 
 ## 커밋
 fix: exclude websocket health metadata from paper_state.json save

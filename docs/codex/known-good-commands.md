@@ -1,67 +1,35 @@
 # Known-Good Commands
 
-Use this file before inventing a new command variant. These commands are the
-first path for routine local verification and Oracle VPS access. If a recorded
-command fails, stop and inspect the concrete error before trying a different
-shape.
+Use these verified shapes before inventing a new pytest, SSH, or VPS command.
+Run git mutations and pytest processes serially.
 
-## Local Windows Pytest
+## Local Tests
 
-Run from the repository root:
+Full suite from the repository root:
 
 ```powershell
 & 'C:\Users\wpdla\Python312\python.exe' -m pytest -q
 ```
 
-Run one focused file:
+Focused example:
 
 ```powershell
-& 'C:\Users\wpdla\Python312\python.exe' -m pytest -q tests/test_hardening.py
+& 'C:\Users\wpdla\Python312\python.exe' -m pytest -q tests/test_residual_probability.py
 ```
 
-The root `conftest.py` sends pytest temporary files to
-`.pytest-tmp/current`, clears stale workspace test data before the run, and
-deletes `.pytest-tmp` again when pytest exits. `.pytest_cache` is disabled.
-A caller can still pass `--basetemp` explicitly when needed.
+The root `conftest.py` owns `.pytest-tmp` and removes it after pytest. Do not run
+parallel pytest processes against the same temporary directory.
 
-Run local pytest commands serially in this workspace. Multiple pytest processes
-share `.pytest-tmp/current` by default and can race with `FileExistsError` or
-`WinError 145` unless each process uses a distinct `--basetemp`.
-
-## Local Python Check
-
-Use this when Python behavior looks suspicious or pytest prints no normal
-summary:
-
-```powershell
-& 'C:\Users\wpdla\Python312\python.exe' --version
-```
-
-## Paper-Only Dry Start
-
-This checks local settings and the station-residual profile without contacting
-Polymarket or starting the long-running loop:
+Paper-only startup check:
 
 ```powershell
 $env:PYTHONPATH='src'
-& 'C:\Users\wpdla\Python312\python.exe' -m weather_bot.live_paper_runner --dry-start
+& 'C:\Users\wpdla\Python312\python.exe' -m weather_bot --dry-start
 ```
 
-Expected summary:
+## Oracle Connection
 
-```text
-DRY START OK: paper_only=true strategy_mode=hybrid_observation_edge residual_profiles=loaded
-```
-
-## Oracle SSH Key Lookup
-
-Use the private key only as an SSH identity file. Never open, print, copy, or
-commit its contents. Do not use the adjacent `.pub` file.
-
-Do not hand-type the Korean Oracle SSH directory path from logs. In Codex or
-PowerShell output, that path can appear mojibaked or can be blocked by the
-sandbox. Discover the directory object under `Documents`, then join the known
-key filename:
+Locate the key without printing it:
 
 ```powershell
 $sshDir = Get-ChildItem -LiteralPath "$env:USERPROFILE\Documents" -Directory |
@@ -72,174 +40,85 @@ $oracle = 'ubuntu@140.245.69.242'
 Test-Path -LiteralPath $key -PathType Leaf
 ```
 
-If sandboxing reports access denied for the key directory, request one
-escalated `scp` or `ssh` command. Do not keep trying path spellings. The key
-contents must not be printed.
-
-## Oracle SSH Preflight
-
-After running the key lookup block:
+Preflight:
 
 ```powershell
 ssh -i $key $oracle date
 ```
 
-`Test-Path` checks whether the key file exists without reading its contents.
-The `date` command is a harmless first SSH request. If this fails, inspect that
-error before attempting longer remote commands. Run repeated SSH checks
-serially when they use this same Windows identity file.
+If the sandbox denies the key or network, request one escalated `ssh`/`scp`
+operation. Never print the private key.
 
-## Oracle Interactive Session
+## Remote Tests And Services
 
-Use an interactive session for multi-step remote work. This avoids fragile
-nested quoting between Windows PowerShell and the remote Linux shell.
-
-After running the key lookup block:
+Interactive full test:
 
 ```powershell
 ssh -i $key $oracle
 ```
-
-After login, run remote pytest from the application directory:
 
 ```bash
 cd /opt/polymarket-weather-bot
 sudo -u polymarket .venv/bin/python -m pytest -q
 ```
 
-## Oracle Service Logs
-
-For a bounded recent log check from local PowerShell, first run the key lookup
-block, then:
+Service and recent-log checks:
 
 ```powershell
+ssh -i $key $oracle "systemctl is-active polymarket-weather-bot polymarket-weather-dashboard"
 ssh -i $key $oracle sudo journalctl -u polymarket-weather-bot --since=-30min --no-pager
 ```
 
-Use `--since=-30min` or `--since=-2h`. Avoid relative time expressions with
-spaces because nested shell quoting becomes fragile.
-
-## Oracle SCP Shape
-
-Use this shape when a specific bounded file transfer is required. First run the
-key lookup block, then:
+For multi-step deployment or inspection, write one short local `.sh` file under
+`.deploy_tmp`, copy it, and run it. This avoids three layers of PowerShell/SSH/
+Bash quoting:
 
 ```powershell
-scp -i $key '.\path\to\file' "${oracle}:/tmp/"
+scp -i $key .deploy_tmp\task.sh "${oracle}:/tmp/task.sh"
+ssh -i $key $oracle sudo bash /tmp/task.sh
 ```
 
-Do not copy private keys, secrets, or large runtime files casually.
+The script must use `set -eu`, back up replaced files, restore on failed remote
+pytest, restart both services only after success, and delete its `/tmp` copy.
 
-## Oracle Remote Script Shape
+## Dashboard
 
-Use this shape for complex VPS changes that contain quotes, parentheses,
-braces, semicolons, JSON, `sed`, `python -c`, or multi-step shell logic.
-
-Do not keep retrying long inline commands such as
-`ssh ... "set -e; sed ...; if ...; then ..."`. Windows PowerShell, `ssh`, and
-the remote Linux shell each parse quotes differently, so those commands are
-fragile. Write the remote logic into a small local `.sh` file, copy it to
-`/tmp`, and run only `bash /tmp/name.sh` through SSH.
-
-Example local script path:
-
-```text
-.deploy_tmp/update_station_strategy_env.sh
-```
-
-Copy and run it after the key lookup block:
+Public address: `http://140.245.69.242:8787`. When authentication is enabled,
+send the configured token as `X-Dashboard-Token`; do not expose it in logs.
 
 ```powershell
-scp -i $key .deploy_tmp\update_station_strategy_env.sh "${oracle}:/tmp/update_station_strategy_env.sh"
-ssh -i $key $oracle bash /tmp/update_station_strategy_env.sh
+curl.exe -I --max-time 15 http://140.245.69.242:8787/
 ```
 
-The script should be narrow and auditable: one job, explicit paths, no private
-key contents, no dashboard token printing, and no unrelated runtime-file
-deletion. Delete local `.deploy_tmp` artifacts after the operation so they do
-not become accidental commit noise.
+## Runtime And Disk
 
-## Dashboard Reachability
+Application: `/opt/polymarket-weather-bot`
 
-The canonical dashboard host is the Oracle VPS:
+Account/ledger files under `data/`:
 
-```powershell
-curl.exe -i http://140.245.69.242:8787/
-curl.exe -i http://140.245.69.242:8787/api/status
-```
+- `paper_state.json`: current paper account book.
+- `paper_trades.csv`: executed paper receipts.
+- `paper_decisions.csv`: strategy evidence.
 
-The second request may correctly return `403` when token protection is enabled.
-Do not print the real dashboard token in logs, docs, commits, or final answers.
+Never delete or truncate those three as routine cleanup. Archive a complete
+experiment together before an explicitly approved reset. Diagnostics and raw
+snapshots are bounded separately; see `docs/codex/runtime-data.md`.
 
-## Paper Runtime Files
-
-All paper runtime files live under `data/`, **not** the app root:
-
-```
-/opt/polymarket-weather-bot/data/paper_state.json
-/opt/polymarket-weather-bot/data/paper_trades.csv
-/opt/polymarket-weather-bot/data/paper_decisions.csv
-/opt/polymarket-weather-bot/data/paper_raw_snapshots.jsonl
-/opt/polymarket-weather-bot/data/station_nowcast_request_log.jsonl
-/opt/polymarket-weather-bot/data/hko_rollover_state.json
-/opt/polymarket-weather-bot/data/metar_daily_extremes_state.json
-/opt/polymarket-weather-bot/data/paper_skip_diagnostics.jsonl
-/opt/polymarket-weather-bot/data/paper_event_portfolios.jsonl
-```
-
-To reset the paper account for a new experiment, stop the bot and move the
-active account ledgers and diagnostics into one dated audit directory. Do not
-delete `hko_rollover_state.json` or `metar_daily_extremes_state.json`; they are
-official-observation continuity evidence, not account history.
-
-```bash
-sudo systemctl stop polymarket-weather-bot
-cd /opt/polymarket-weather-bot/data
-audit_dir="archive/audit-$(TZ=Asia/Seoul date +%Y%m%d-%H%M%S-KST)"
-sudo -u polymarket mkdir -p "$audit_dir"
-for name in paper_state.json paper_trades.csv paper_decisions.csv \
-            paper_raw_snapshots.jsonl paper_event_portfolios.jsonl \
-            paper_skip_diagnostics.jsonl station_nowcast_request_log.jsonl \
-            paper_runner_status.json; do
-  if [ -f "$name" ]; then
-    sudo -u polymarket mv "$name" "$audit_dir/"
-  fi
-done
-sudo systemctl start polymarket-weather-bot
-```
-
-Archived (compressed) old files are stored under `data/archive/`.
-
-## Disk and Log Rotation
-
-Logrotate is configured to auto-compress high-volume diagnostic/request files
-hourly. `paper_raw_snapshots.jsonl` rotates at 100 MB; SKIP diagnostics,
-request logs, and `paper_event_portfolios.jsonl` rotate at 10 MB. Core account ledgers are not
-rotated until replay is archive-aware.
-
-```
-/etc/logrotate.d/polymarket-weather-bot   ← config
-/etc/cron.d/polymarket-logrotate          ← hourly cron
-```
-
-Runtime cleanup keeps diagnostic archives under 20 MB and must not delete
-`paper_state.json`, `paper_trades.csv`, or `paper_decisions.csv`:
+Run the safe diagnostic-archive cleanup:
 
 ```powershell
 ssh -i $key $oracle "cd /opt/polymarket-weather-bot && sudo -u polymarket PYTHONPATH=/opt/polymarket-weather-bot/src .venv/bin/python -m weather_bot.runtime_cleanup --data-dir data --max-archive-bytes 20971520"
 ```
 
-To check current disk usage:
+Check capacity and file sizes:
 
 ```powershell
 ssh -i $key $oracle df -h /opt/polymarket-weather-bot
 ssh -i $key $oracle "ls -lh /opt/polymarket-weather-bot/data/"
 ```
 
-## Related Detail
+## More Detail
 
-- `docs/codex/ssh-powershell.md`
-- `docs/codex/vps-dashboard.md`
-- `docs/solutions/workflow-issues/pytest-temp-permission-2026-05-26.md`
-- `docs/solutions/workflow-issues/run-remote-pytest-from-app-cwd.md`
-- `docs/solutions/workflow-issues/verify-ssh-key-file-before-tightening-permissions.md`
+- `docs/codex/ssh-powershell.md`: quoting and safe file transfer.
+- `docs/codex/vps-dashboard.md`: systemd and dashboard deployment.
+- `docs/codex/runtime-data.md`: ledgers, diagnostics, rotation, and bounded reads.
