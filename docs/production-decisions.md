@@ -225,6 +225,19 @@ station cache cadence using that station's local date. Provider bulk caches and
 request floors still control real HTTP frequency. Station refresh must not
 depend solely on an order-book price change occurring.
 
+Observation age limits follow the official source cadence:
+
+```text
+AWC METAR (including Seoul RKSI and Busan RKPK):
+  poll the bulk API no more than once per minute
+  accept an official station report up to 90 minutes old because routine
+  station METAR reports are normally hourly
+
+HKO max/min since midnight:
+  poll no more than once per 10 minutes
+  accept the official row for at most 20 minutes
+```
+
 ---
 
 ## 7. Settlement Precision

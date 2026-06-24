@@ -699,6 +699,23 @@ def test_hko_provider_returns_max_temperature_since_midnight_from_fixture():
     assert "latest_since_midnight_maxmin.csv" in calls[0]["url"]
 
 
+def test_hko_observation_older_than_two_update_cycles_is_stale():
+    provider, _calls = hko_provider_for(
+        hko_csv("202606021130", 30.0, 27.6),
+        freshness_seconds=5400,
+    )
+
+    observation = provider.observed_temperature_extremes_so_far(
+        STATION_MAP["hong kong"],
+        target_date=date(2026, 6, 2),
+        now=datetime(2026, 6, 2, 3, 51, tzinfo=timezone.utc),
+    )
+
+    assert observation.freshness_seconds == 1260
+    assert observation.usable is False
+    assert observation.unavailable_reason == "stale-observation"
+
+
 def test_hko_midnight_carryover_331_is_blocked_until_292_reset_is_proven(tmp_path):
     provider, calls = hko_sequence_provider(
         [
@@ -812,7 +829,7 @@ def test_hko_provider_uses_fresh_yesterday_extremes_after_local_midnight():
     observation = provider.observed_temperature_extremes_so_far(
         STATION_MAP["hong kong"],
         target_date=date(2026, 6, 6),
-        now=datetime(2026, 6, 6, 16, 20, tzinfo=timezone.utc),
+        now=datetime(2026, 6, 6, 16, 5, tzinfo=timezone.utc),
     )
 
     assert observation.usable is True
@@ -820,7 +837,7 @@ def test_hko_provider_uses_fresh_yesterday_extremes_after_local_midnight():
     assert observation.observed_high_c == 30.2
     assert observation.observed_low_c == 27.1
     assert observation.observed_at.isoformat() == "2026-06-06T15:50:00+00:00"
-    assert observation.freshness_seconds == 1800
+    assert observation.freshness_seconds == 900
     assert observation.unavailable_reason == ""
     assert len(calls) == 1
 

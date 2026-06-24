@@ -29,6 +29,7 @@ HKO_MAXMIN_UPDATE_CADENCE = (
 AWC_METAR_MIN_REAL_REQUEST_INTERVAL_SECONDS = 60
 HKO_MAXMIN_MIN_REAL_REQUEST_INTERVAL_SECONDS = 10 * 60
 AWC_METAR_MAX_CONTINUITY_GAP_SECONDS = 90 * 60
+HKO_MAXMIN_MAX_OBSERVATION_AGE_SECONDS = 2 * HKO_MAXMIN_MIN_REAL_REQUEST_INTERVAL_SECONDS
 
 
 @dataclass(frozen=True)
@@ -565,7 +566,7 @@ class AviationWeatherMetarNowcastProvider:
             station.timezone,
             target_date,
             current,
-            freshness_seconds=self.freshness_seconds,
+            freshness_seconds=self._source_max_observation_age_seconds(source),
         )
         if target_date_blocker:
             return self._unavailable(station, target_date_blocker, source)
@@ -738,6 +739,11 @@ class AviationWeatherMetarNowcastProvider:
         if source.source == "hko-maxmin-since-midnight":
             return HKO_MAXMIN_MIN_REAL_REQUEST_INTERVAL_SECONDS
         return 0
+
+    def _source_max_observation_age_seconds(self, source: StationNowcastSource) -> int:
+        if source.source == "hko-maxmin-since-midnight":
+            return min(self.freshness_seconds, HKO_MAXMIN_MAX_OBSERVATION_AGE_SECONDS)
+        return self.freshness_seconds
 
     def _awc_metar_bulk_station_ids(self) -> list[str]:
         station_ids = {
@@ -955,7 +961,11 @@ class AviationWeatherMetarNowcastProvider:
         high_c = float(day["high_c"])
         low_c = float(day["low_c"])
         freshness_seconds = max(0, int((now - latest_at).total_seconds()))
-        reason = "stale-observation" if freshness_seconds > self.freshness_seconds else ""
+        reason = (
+            "stale-observation"
+            if freshness_seconds > self._source_max_observation_age_seconds(source)
+            else ""
+        )
         complete = bool(day.get("complete"))
         blocked_reason = str(day.get("blocked_reason") or "")
         return StationNowcastObservation(
@@ -1010,7 +1020,7 @@ class AviationWeatherMetarNowcastProvider:
             freshness_seconds = max(0, int((now - observed_at).total_seconds()))
             reason = "stale-observation" if (
                 observed_at.astimezone(_zone(station.timezone)).date() != target_date
-                or freshness_seconds > self.freshness_seconds
+                or freshness_seconds > self._source_max_observation_age_seconds(source)
             ) else ""
             midnight_reset_status = ""
             data_block_reason = ""
