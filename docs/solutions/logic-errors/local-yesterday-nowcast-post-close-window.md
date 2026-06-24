@@ -1,6 +1,7 @@
 ---
 title: Allow local-yesterday nowcast only inside the post-close freshness window
 date: 2026-06-07
+last_updated: 2026-06-25
 category: logic-errors
 module: weather_bot.nowcast
 problem_type: logic_error
@@ -8,7 +9,7 @@ component: service_object
 symptoms:
   - "A just-ended Tokyo target date returned target-date-not-today after local midnight."
   - "Fresh final station high/low evidence became unavailable exactly when held exits needed it."
-  - "A short AWC bulk cache could be reused for a request that needed the full target local day."
+  - "A removed AWC history parameter hid missing observations after restart."
 root_cause: logic_error
 resolution_type: code_fix
 severity: high
@@ -29,8 +30,8 @@ the most useful evidence for an already-held paper position.
 - The entry path became unavailable right after local midnight.
 - Held-position exit and settlement-risk checks could miss fresh final
   observation evidence.
-- AWC METAR bulk cache reuse did not know whether the cached response looked
-  back far enough for the requested target date.
+- The provider used the removed `hoursBeforeNow` parameter and later risked
+  exceeding AWC's 400-row response maximum when requesting a full day.
 
 ## What Didn't Work
 
@@ -61,10 +62,11 @@ Then let the provider parser enforce the rest:
 - Future observations fail closed as `future-observation`.
 - Stale observations fail closed as `stale-observation`.
 
-AWC also stores the `hoursBeforeNow` coverage in its bulk cache. If a later
-local-yesterday request needs a longer lookback than the cached response
-covered, the provider fetches a new bulk response instead of reusing the short
-one.
+AWC uses the documented `hours=4` recovery window for the 47-station bulk
+request. The persistent `metar_daily_extremes_state.json` file supplies the
+target day's running high/low across local midnight and restart. If the AWC
+response reaches its 400-row maximum, the provider fails closed instead of
+using truncated history.
 
 ## Why This Works
 
@@ -86,8 +88,7 @@ trading, wallets, private keys, or real orders.
 - Test the local-midnight boundary for Asian stations such as Tokyo/RJTT.
 - Test HKO separately from AWC because the providers expose different data
   shapes.
-- When AWC bulk request parameters change by target date, test cache coverage,
-  not just cache age.
+- Test the documented AWC parameter name and the provider's 400-row boundary.
 - Keep daily-high tied to observed high and daily-low tied to observed low.
 - Keep `target-date-not-today` for future dates and dates older than local
   yesterday.

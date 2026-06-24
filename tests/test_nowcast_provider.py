@@ -553,53 +553,27 @@ def test_aviationweather_provider_uses_fresh_yesterday_extremes_after_local_midn
     assert observation.observed_at.isoformat() == "2026-06-06T14:50:00+00:00"
     assert observation.freshness_seconds == 2400
     assert observation.unavailable_reason == ""
-    assert calls[0]["params"]["hoursBeforeNow"] >= 25
+    assert calls[0]["params"]["hours"] == 4
+    assert "hoursBeforeNow" not in calls[0]["params"]
 
 
-def test_aviationweather_bulk_cache_refetches_when_yesterday_needs_longer_lookback():
-    yesterday_payload = [
-        {
-            "icaoId": "RJTT",
-            "obsTime": "2026-06-06T06:00:00.000Z",
-            "temp": 31.0,
-            "rawOb": "RJTT 060600Z 19008KT 9999 FEW025 31/20 Q1008",
-        },
-        {
-            "icaoId": "RJTT",
-            "obsTime": "2026-06-06T14:50:00.000Z",
-            "temp": 26.0,
-            "rawOb": "RJTT 061450Z 16005KT 9999 FEW020 26/19 Q1009",
-        },
-    ]
-    calls = []
-    payloads = [[], yesterday_payload]
+def test_aviationweather_provider_blocks_a_response_at_the_400_row_limit():
+    record = {
+        "icaoId": "RJTT",
+        "obsTime": "2026-06-06T06:00:00.000Z",
+        "temp": 31.0,
+        "rawOb": "RJTT 060600Z 19008KT 9999 FEW025 31/20 Q1008",
+    }
+    provider, _calls = provider_for([dict(record, receiptTime=index) for index in range(400)])
 
-    def fake_get(url, *, params, timeout, headers):
-        calls.append({"url": url, "params": params, "timeout": timeout, "headers": headers})
-        return FakeResponse(payloads.pop(0))
-
-    provider = AviationWeatherMetarNowcastProvider(
-        http_get=fake_get,
-        freshness_seconds=5400,
-        cache_ttl_seconds=900,
-    )
-
-    first = provider.observed_temperature_extremes_so_far(
-        STATION_MAP["tokyo"],
-        target_date=date(2026, 6, 7),
-        now=datetime(2026, 6, 6, 15, 5, tzinfo=timezone.utc),
-    )
-    second = provider.observed_temperature_extremes_so_far(
+    observation = provider.observed_temperature_extremes_so_far(
         STATION_MAP["tokyo"],
         target_date=date(2026, 6, 6),
-        now=datetime(2026, 6, 6, 15, 6, tzinfo=timezone.utc),
+        now=datetime(2026, 6, 6, 6, 5, tzinfo=timezone.utc),
     )
 
-    assert first.usable is False
-    assert second.usable is True
-    assert second.observed_high_c == 31.0
-    assert len(calls) == 2
-    assert calls[1]["params"]["hoursBeforeNow"] > calls[0]["params"]["hoursBeforeNow"]
+    assert observation.usable is False
+    assert observation.unavailable_reason == "metar-response-row-limit"
 
 
 def test_aviationweather_provider_fails_closed_when_yesterday_window_expired():
@@ -753,6 +727,69 @@ def test_hko_midnight_carryover_331_is_blocked_until_292_reset_is_proven(tmp_pat
     assert reset.observed_low_c == 28.6
     assert reset.midnight_reset_status == "verified"
     assert len(calls) == 3
+
+
+def test_hko_records_when_current_daily_extremes_were_first_confirmed(tmp_path):
+    state_path = tmp_path / "hko_rollover_state.json"
+    provider, _calls = hko_sequence_provider(
+        [
+            hko_csv("202606212350", 33.1, 28.0),
+            hko_csv("202606220330", 29.2, 28.6),
+            hko_csv("202606221200", 31.0, 28.6),
+            hko_csv("202606221400", 31.0, 27.9),
+        ],
+        state_path=state_path,
+    )
+    station = STATION_MAP["hong kong"]
+    provider.observed_temperature_extremes_so_far(
+        station, target_date=date(2026, 6, 21), now=datetime(2026, 6, 21, 15, 55, tzinfo=timezone.utc)
+    )
+    provider.observed_temperature_extremes_so_far(
+        station, target_date=date(2026, 6, 22), now=datetime(2026, 6, 21, 19, 35, tzinfo=timezone.utc)
+    )
+    high_update = provider.observed_temperature_extremes_so_far(
+        station, target_date=date(2026, 6, 22), now=datetime(2026, 6, 22, 4, 5, tzinfo=timezone.utc)
+    )
+    low_update = provider.observed_temperature_extremes_so_far(
+        station, target_date=date(2026, 6, 22), now=datetime(2026, 6, 22, 6, 5, tzinfo=timezone.utc)
+    )
+
+    assert high_update.high_observed_at.isoformat() == "2026-06-22T04:00:00+00:00"
+    assert high_update.low_observed_at.isoformat() == "2026-06-21T19:30:00+00:00"
+    assert low_update.high_observed_at.isoformat() == "2026-06-22T04:00:00+00:00"
+    assert low_update.low_observed_at.isoformat() == "2026-06-22T06:00:00+00:00"
+    day = json.loads(state_path.read_text(encoding="utf-8"))["days"]["2026-06-22"]
+    assert day == {
+        "high_c": 31.0,
+        "high_first_observed_at": "2026-06-22T04:00:00+00:00",
+        "latest_observed_at": "2026-06-22T06:00:00+00:00",
+        "low_c": 27.9,
+        "low_first_observed_at": "2026-06-22T06:00:00+00:00",
+    }
+
+
+def test_hko_keeps_only_the_latest_two_local_dates(tmp_path):
+    state_path = tmp_path / "hko_rollover_state.json"
+    provider, _calls = hko_sequence_provider(
+        [
+            hko_csv("202606212350", 33.1, 28.0),
+            hko_csv("202606220330", 29.2, 28.6),
+            hko_csv("202606230330", 29.0, 28.8),
+            hko_csv("202606240330", 28.5, 29.0),
+        ],
+        state_path=state_path,
+    )
+    station = STATION_MAP["hong kong"]
+    for target_date, now in [
+        (date(2026, 6, 21), datetime(2026, 6, 21, 15, 55, tzinfo=timezone.utc)),
+        (date(2026, 6, 22), datetime(2026, 6, 21, 19, 35, tzinfo=timezone.utc)),
+        (date(2026, 6, 23), datetime(2026, 6, 22, 19, 35, tzinfo=timezone.utc)),
+        (date(2026, 6, 24), datetime(2026, 6, 23, 19, 35, tzinfo=timezone.utc)),
+    ]:
+        provider.observed_temperature_extremes_so_far(station, target_date=target_date, now=now)
+
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert sorted(state["days"]) == ["2026-06-23", "2026-06-24"]
 
 
 def test_hko_restart_without_previous_day_baseline_fails_closed(tmp_path):

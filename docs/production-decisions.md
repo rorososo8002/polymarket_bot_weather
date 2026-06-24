@@ -230,12 +230,15 @@ Observation age limits follow the official source cadence:
 ```text
 AWC METAR (including Seoul RKSI and Busan RKPK):
   poll the bulk API no more than once per minute
+  use documented hours=4 only as a restart bridge; the state file holds two-day extremes
+  fail closed when a response reaches the provider's 400-row maximum
   accept an official station report up to 90 minutes old because routine
   station METAR reports are normally hourly
 
 HKO max/min since midnight:
   poll no more than once per 10 minutes
   accept the official row for at most 20 minutes
+  retain two local dates of first-confirmed high/low timestamps
 ```
 
 ---

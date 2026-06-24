@@ -29,6 +29,8 @@ HKO_MAXMIN_UPDATE_CADENCE = (
 AWC_METAR_MIN_REAL_REQUEST_INTERVAL_SECONDS = 60
 HKO_MAXMIN_MIN_REAL_REQUEST_INTERVAL_SECONDS = 10 * 60
 AWC_METAR_MAX_CONTINUITY_GAP_SECONDS = 90 * 60
+AWC_METAR_RECOVERY_LOOKBACK_HOURS = 4
+AWC_METAR_MAX_RESPONSE_ROWS = 400
 HKO_MAXMIN_MAX_OBSERVATION_AGE_SECONDS = 2 * HKO_MAXMIN_MIN_REAL_REQUEST_INTERVAL_SECONDS
 
 
@@ -437,9 +439,40 @@ class AviationWeatherMetarNowcastProvider:
         finally:
             tmp.unlink(missing_ok=True)
 
+    def _record_hko_daily_extremes(
+        self,
+        *,
+        observed_at: datetime,
+        observed_date: date,
+        high_c: float,
+        low_c: float,
+    ) -> None:
+        local_date = observed_date.isoformat()
+        days = self._hko_rollover_state.setdefault("days", {})
+        day = days.get(local_date)
+        if not isinstance(day, dict):
+            day = {
+                "high_c": high_c,
+                "high_first_observed_at": _iso_or_empty(observed_at),
+                "low_c": low_c,
+                "low_first_observed_at": _iso_or_empty(observed_at),
+            }
+            days[local_date] = day
+        else:
+            if high_c > float(day["high_c"]):
+                day["high_c"] = high_c
+                day["high_first_observed_at"] = _iso_or_empty(observed_at)
+            if low_c < float(day["low_c"]):
+                day["low_c"] = low_c
+                day["low_first_observed_at"] = _iso_or_empty(observed_at)
+        day["latest_observed_at"] = _iso_or_empty(observed_at)
+        for old_date in sorted(days)[:-2]:
+            days.pop(old_date, None)
+
     def _validate_hko_rollover(
         self,
         *,
+        observed_at: datetime,
         observed_date: date,
         high_c: float,
         low_c: float,
@@ -483,6 +516,7 @@ class AviationWeatherMetarNowcastProvider:
                 "current_low_c": low_c,
                 "reset_verified": False,
                 "blocked_reason": "",
+                "days": state.get("days", {}),
             }
             if not previous_is_yesterday:
                 state["blocked_reason"] = "hko-rollover-baseline-missing"
@@ -505,6 +539,12 @@ class AviationWeatherMetarNowcastProvider:
                 return "blocked_same_day_monotonicity", reason
             state["current_high_c"] = max(high_c, previous_high if previous_high is not None else high_c)
             state["current_low_c"] = min(low_c, previous_low if previous_low is not None else low_c)
+            self._record_hko_daily_extremes(
+                observed_at=observed_at,
+                observed_date=observed_date,
+                high_c=high_c,
+                low_c=low_c,
+            )
             self._write_hko_rollover_state()
             return "verified", ""
 
@@ -524,6 +564,12 @@ class AviationWeatherMetarNowcastProvider:
         if nested_range and strictly_reset:
             state["reset_verified"] = True
             state["blocked_reason"] = ""
+            self._record_hko_daily_extremes(
+                observed_at=observed_at,
+                observed_date=observed_date,
+                high_c=high_c,
+                low_c=low_c,
+            )
             self._write_hko_rollover_state()
             return "verified", ""
         state["blocked_reason"] = "hko-midnight-reset-pending"
@@ -640,11 +686,7 @@ class AviationWeatherMetarNowcastProvider:
         cache_miss_reason: str,
     ) -> _MetarBulkCacheEntry:
         station_ids = self._awc_metar_bulk_station_ids()
-        hours_before_now = self._awc_metar_bulk_hours_before_now(
-            now,
-            fallback_station=station,
-            target_date=target_date,
-        )
+        hours_before_now = AWC_METAR_RECOVERY_LOOKBACK_HOURS
         cached = self._fresh_awc_metar_bulk_cache(now, min_hours_before_now=hours_before_now)
         if cached is not None:
             return cached
@@ -656,7 +698,7 @@ class AviationWeatherMetarNowcastProvider:
                 params={
                     "ids": ",".join(station_ids),
                     "format": "json",
-                    "hoursBeforeNow": hours_before_now,
+                    "hours": hours_before_now,
                 },
                 timeout=self.timeout,
                 headers={"User-Agent": "polymarket-weather-bot/nowcast"},
@@ -684,6 +726,28 @@ class AviationWeatherMetarNowcastProvider:
                 return entry
             response.raise_for_status()
             payload = response.json()
+            if isinstance(payload, list) and len(payload) >= AWC_METAR_MAX_RESPONSE_ROWS:
+                entry = _MetarBulkCacheEntry(
+                    cached_at=now,
+                    payload=None,
+                    unavailable_reason="metar-response-row-limit",
+                    hours_before_now=hours_before_now,
+                )
+                self._awc_metar_bulk_cache = entry
+                self._append_request_log(
+                    self._request_log_bulk_row(
+                        requested_at=now,
+                        trigger_station=station,
+                        target_date=target_date,
+                        source=source,
+                        station_ids=station_ids,
+                        cache_miss_reason=cache_miss_reason,
+                        status="truncated_response",
+                        status_code=getattr(response, "status_code", None),
+                        unavailable_reason=entry.unavailable_reason,
+                    )
+                )
+                return entry
             entry = _MetarBulkCacheEntry(cached_at=now, payload=payload, hours_before_now=hours_before_now)
             self._awc_metar_bulk_cache = entry
             self._append_request_log(
@@ -752,24 +816,6 @@ class AviationWeatherMetarNowcastProvider:
             if source.source == "aviationweather-metar"
         }
         return sorted(station_ids)
-
-    def _awc_metar_bulk_hours_before_now(
-        self,
-        now: datetime,
-        *,
-        fallback_station: StationMeta,
-        target_date: date,
-    ) -> int:
-        station_ids = set(self._awc_metar_bulk_station_ids())
-        hours = [
-            _hours_since_local_midnight(station.timezone, now)
-            for station in STATION_MAP.values()
-            if station.station_id.upper() in station_ids
-        ]
-        hours.append(_hours_since_local_date_start(fallback_station.timezone, target_date, now))
-        if not hours:
-            return _hours_since_local_date_start(fallback_station.timezone, target_date, now)
-        return max(hours)
 
     def _fetch_hko_maxmin(
         self,
@@ -1026,18 +1072,20 @@ class AviationWeatherMetarNowcastProvider:
             data_block_reason = ""
             if not reason:
                 midnight_reset_status, data_block_reason = self._validate_hko_rollover(
+                    observed_at=observed_at,
                     observed_date=observed_at.astimezone(_zone(station.timezone)).date(),
                     high_c=high_c,
                     low_c=low_c,
                 )
                 reason = data_block_reason
             local_observed = observed_at.astimezone(_zone(station.timezone))
+            hko_day = self._hko_rollover_state.get("days", {}).get(local_observed.date().isoformat(), {})
             return StationNowcastObservation(
                 station_id=station.station_id,
                 station_name=station.station_name,
                 observed_high_c=round(high_c, 3),
                 observed_at=observed_at,
-                high_observed_at=None,
+                high_observed_at=_parse_observation_time(hko_day.get("high_first_observed_at")),
                 source=source.source,
                 source_url=source.source_url,
                 settlement_source_url=source.settlement_source_url,
@@ -1046,7 +1094,7 @@ class AviationWeatherMetarNowcastProvider:
                 raw_observation_count=len(rows),
                 update_cadence=source.update_cadence,
                 observed_low_c=round(low_c, 3),
-                low_observed_at=None,
+                low_observed_at=_parse_observation_time(hko_day.get("low_first_observed_at")),
                 station_local_date=local_observed.date().isoformat(),
                 station_local_time=local_observed.strftime("%H:%M"),
                 midnight_reset_status=midnight_reset_status,
@@ -1085,10 +1133,6 @@ def _zone(timezone_name: str) -> ZoneInfo:
     return ZoneInfo(timezone_name if timezone_name and timezone_name != "auto" else "UTC")
 
 
-def _local_date(timezone_name: str, now: datetime) -> date:
-    return now.astimezone(_zone(timezone_name)).date()
-
-
 def _target_date_unavailable_reason(
     timezone_name: str,
     target_date: date,
@@ -1107,15 +1151,3 @@ def _target_date_unavailable_reason(
             return ""
         return "target-date-post-close-window-expired"
     return "target-date-not-today"
-
-
-def _hours_since_local_midnight(timezone_name: str, now: datetime) -> int:
-    return _hours_since_local_date_start(timezone_name, _local_date(timezone_name, now), now)
-
-
-def _hours_since_local_date_start(timezone_name: str, target_date: date, now: datetime) -> int:
-    zone = _zone(timezone_name)
-    local_now = now.astimezone(zone)
-    local_midnight = datetime.combine(target_date, time.min, tzinfo=zone)
-    elapsed = local_now - local_midnight
-    return max(2, min(36, int(math.ceil(elapsed / timedelta(hours=1))) + 1))
