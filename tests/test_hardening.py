@@ -1077,7 +1077,7 @@ def test_entry_net_return_filter_allows_high_price_settlement_candidate():
     assert "expected_net_return=" in result.reason
 
 
-def test_indicative_best_ask_does_not_hide_abnormal_yes_no_depth_sum():
+def test_high_yes_no_ask_sum_still_uses_side_specific_edge():
     settings = Settings(
         min_net_edge=0.01,
         min_order_usd=1.0,
@@ -1107,10 +1107,10 @@ def test_indicative_best_ask_does_not_hide_abnormal_yes_no_depth_sum():
 
     result, per_side = evaluate_market(temp_market(), temp_signal(p_true=0.95), client, settings, 1000.0, "temperature")
 
-    assert result.side == "SKIP"
-    assert per_side["YES"].reason == result.reason
-    assert per_side["NO"].reason == result.reason
-    assert "YES+NO ask sum abnormal 1.640" in result.reason
+    assert result.side == "YES"
+    assert per_side["YES"].side == "YES"
+    assert per_side["NO"].side == "SKIP"
+    assert "YES+NO ask sum abnormal" not in result.reason
 
 
 def test_moderate_yes_no_ask_premium_uses_side_specific_edge():

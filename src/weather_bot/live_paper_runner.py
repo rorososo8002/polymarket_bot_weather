@@ -805,17 +805,6 @@ def _fetch_books(market: RawMarket, client: PolymarketClient) -> tuple[dict[str,
     return books, None
 
 
-def _yes_no_sum_reason(books: dict[str, OrderBook], market_type: str) -> str | None:
-    yes_book = books.get("YES")
-    no_book = books.get("NO")
-    if not yes_book or not no_book or yes_book.best_ask is None or no_book.best_ask is None:
-        return None
-    yes_no_sum = yes_book.best_ask + no_book.best_ask
-    if yes_no_sum < 0.60 or yes_no_sum > 1.40:
-        return f"YES+NO ask sum abnormal {yes_no_sum:.3f} outside 0.60-1.40 [{market_type}]"
-    return None
-
-
 def _side_edge_metrics(
     side: str,
     signal: WeatherSignal,
@@ -1454,11 +1443,6 @@ def evaluate_market(
     if fetch_error:
         result = EdgeResult("SKIP", signal.p_true, None, -999.0, 0.0, 0.0, fetch_error)
         return result, {}
-
-    sum_reason = _yes_no_sum_reason(books, market_type)
-    if sum_reason:
-        result = EdgeResult("SKIP", signal.p_true, None, -999.0, 0.0, 0.0, sum_reason)
-        return result, {side: _with_exit_signal(side, signal, result) for side in books}
 
     best_result = EdgeResult("SKIP", signal.p_true, None, -999.0, 0.0, 0.0, "No valid side evaluated.")
     per_side: dict[str, EdgeResult] = {}

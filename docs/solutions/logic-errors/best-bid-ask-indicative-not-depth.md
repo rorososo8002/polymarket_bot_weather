@@ -105,8 +105,9 @@ Regression tests now cover both important cases:
   snapshot-confirmed bid/ask levels.
 - `best_bid_ask` and `last_trade_price` do not enqueue realtime paper
   evaluation; mixed messages enqueue only the token IDs with executable depth.
-- Better indicative prices do not rescue abnormal executable `YES+NO` ask sums
-  or wide executable spreads.
+- Better indicative prices do not rescue wide executable spreads. Combined
+  `YES+NO` ask sums are not used as an entry blocker; selected-side executable
+  depth and edge decide entries.
 - A quote-only held-position book does not update mark price or unrealized PnL.
 
 ## Why This Works
