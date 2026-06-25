@@ -1113,6 +1113,30 @@ def test_indicative_best_ask_does_not_hide_abnormal_yes_no_depth_sum():
     assert "YES+NO ask sum abnormal 1.640" in result.reason
 
 
+def test_moderate_yes_no_ask_premium_uses_side_specific_edge():
+    settings = Settings(
+        min_net_edge=0.01,
+        min_order_usd=1.0,
+        weather_taker_fee_rate=0.0,
+        model_error_margin=0.0,
+        resolution_error_margin=0.0,
+        require_date_hint_for_trade=True,
+        entry_min_expected_net_return_pct=0.0,
+    )
+    client = FakePolymarketClient(
+        books={
+            "yes": book("yes", bid=0.84, ask=0.88, bid_size=1000.0, ask_size=1000.0),
+            "no": book("no", bid=0.20, ask=0.26, bid_size=1000.0, ask_size=1000.0),
+        }
+    )
+
+    result, per_side = evaluate_market(temp_market(), temp_signal(p_true=0.96), client, settings, 1000.0, "temperature")
+
+    assert result.side == "YES"
+    assert "YES+NO ask sum abnormal" not in result.reason
+    assert per_side["YES"].side == "YES"
+
+
 def test_indicative_best_bid_does_not_rescue_wide_executable_spread():
     settings = Settings(
         min_net_edge=0.01,

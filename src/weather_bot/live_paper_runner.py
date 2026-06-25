@@ -811,8 +811,8 @@ def _yes_no_sum_reason(books: dict[str, OrderBook], market_type: str) -> str | N
     if not yes_book or not no_book or yes_book.best_ask is None or no_book.best_ask is None:
         return None
     yes_no_sum = yes_book.best_ask + no_book.best_ask
-    if abs(yes_no_sum - 1.0) > 0.05:
-        return f"YES+NO ask sum abnormal {yes_no_sum:.3f} outside 1±0.05 [{market_type}]"
+    if yes_no_sum < 0.60 or yes_no_sum > 1.40:
+        return f"YES+NO ask sum abnormal {yes_no_sum:.3f} outside 0.60-1.40 [{market_type}]"
     return None
 
 
