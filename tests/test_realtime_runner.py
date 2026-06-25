@@ -908,6 +908,7 @@ def test_realtime_update_refreshes_station_signal_after_nowcast_cache_ttl(tmp_pa
                 unavailable_reason="",
                 raw_observation_count=4,
                 update_cadence="fixture",
+                high_bucket_confirmations=2,
             )
 
     class FakeClient:

@@ -61,6 +61,7 @@ class StationNowcastObservation:
     update_cadence: str = ""
     observed_low_c: float | None = None
     low_observed_at: datetime | None = None
+    high_bucket_confirmations: int = 0
     station_local_date: str = ""
     station_local_time: str = ""
     midnight_reset_status: str = ""
@@ -106,6 +107,7 @@ class StationNowcastObservation:
             "unavailable_reason": self.unavailable_reason,
             "raw_observation_count": self.raw_observation_count,
             "update_cadence": self.update_cadence,
+            "high_bucket_confirmations": self.high_bucket_confirmations,
             "station_local_date": self.station_local_date,
             "station_local_time": self.station_local_time,
             "midnight_reset_status": self.midnight_reset_status,
@@ -369,6 +371,7 @@ class AviationWeatherMetarNowcastProvider:
                 and local_date - last_local_date == timedelta(days=1)
             )
             if local_date_text not in days:
+                high_bucket = math.floor(temp_c)
                 complete = bool(
                     is_next_date
                     and gap_seconds is not None
@@ -376,6 +379,8 @@ class AviationWeatherMetarNowcastProvider:
                 )
                 days[local_date_text] = {
                     "high_c": temp_c,
+                    "high_bucket_c": high_bucket,
+                    "high_bucket_confirmations": 1,
                     "low_c": temp_c,
                     "high_observed_at": _iso_or_empty(observed_at),
                     "low_observed_at": _iso_or_empty(observed_at),
@@ -394,9 +399,21 @@ class AviationWeatherMetarNowcastProvider:
                 ):
                     day["complete"] = False
                     day["blocked_reason"] = "metar-observation-gap"
+                high_bucket = math.floor(float(day.get("high_c", temp_c)))
+                try:
+                    high_bucket_confirmations = int(day.get("high_bucket_confirmations", 1))
+                except (TypeError, ValueError):
+                    high_bucket_confirmations = 1
+                observed_bucket = math.floor(temp_c)
                 if temp_c > float(day["high_c"]):
                     day["high_c"] = temp_c
                     day["high_observed_at"] = _iso_or_empty(observed_at)
+                    day["high_bucket_c"] = observed_bucket
+                    day["high_bucket_confirmations"] = (
+                        high_bucket_confirmations + 1 if observed_bucket == high_bucket else 1
+                    )
+                elif observed_bucket == high_bucket:
+                    day["high_bucket_confirmations"] = high_bucket_confirmations + 1
                 if temp_c < float(day["low_c"]):
                     day["low_c"] = temp_c
                     day["low_observed_at"] = _iso_or_empty(observed_at)
@@ -1006,6 +1023,10 @@ class AviationWeatherMetarNowcastProvider:
             )
         high_c = float(day["high_c"])
         low_c = float(day["low_c"])
+        try:
+            high_bucket_confirmations = int(day.get("high_bucket_confirmations", 0))
+        except (TypeError, ValueError):
+            high_bucket_confirmations = 0
         freshness_seconds = max(0, int((now - latest_at).total_seconds()))
         reason = (
             "stale-observation"
@@ -1029,6 +1050,7 @@ class AviationWeatherMetarNowcastProvider:
             update_cadence=source.update_cadence,
             observed_low_c=round(low_c, 3),
             low_observed_at=low_at,
+            high_bucket_confirmations=high_bucket_confirmations,
             station_local_date=latest_at.astimezone(zone).date().isoformat(),
             station_local_time=latest_at.astimezone(zone).strftime("%H:%M"),
             data_block_reason=blocked_reason,

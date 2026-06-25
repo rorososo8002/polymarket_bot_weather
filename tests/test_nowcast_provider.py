@@ -164,6 +164,52 @@ def test_aviationweather_midnight_handoff_builds_persistent_daily_extremes(tmp_p
     assert continued.observed_low_c == 19.0
 
 
+def test_aviationweather_counts_repeated_high_integer_bucket_confirmations(tmp_path):
+    state_path = tmp_path / "metar_daily_extremes_state.json"
+    provider = metar_sequence_provider(
+        [
+            [{
+                "icaoId": "RJTT",
+                "obsTime": "2026-06-22T14:00:00.000Z",
+                "temp": 21.0,
+                "rawOb": "RJTT 221400Z 18005KT 9999 FEW020 21/18 Q1010",
+            }],
+            [{
+                "icaoId": "RJTT",
+                "obsTime": "2026-06-22T15:00:00.000Z",
+                "temp": 20.0,
+                "rawOb": "RJTT 221500Z 18005KT 9999 FEW020 20/18 Q1010",
+            }],
+            [{
+                "icaoId": "RJTT",
+                "obsTime": "2026-06-22T16:00:00.000Z",
+                "temp": 20.0,
+                "rawOb": "RJTT 221600Z 18005KT 9999 FEW020 20/18 Q1010",
+            }],
+        ],
+        state_path=state_path,
+    )
+
+    provider.observed_temperature_extremes_so_far(
+        STATION_MAP["tokyo"],
+        target_date=date(2026, 6, 22),
+        now=datetime(2026, 6, 22, 14, 5, tzinfo=timezone.utc),
+    )
+    provider.observed_temperature_extremes_so_far(
+        STATION_MAP["tokyo"],
+        target_date=date(2026, 6, 23),
+        now=datetime(2026, 6, 22, 15, 5, tzinfo=timezone.utc),
+    )
+    confirmed = provider.observed_temperature_extremes_so_far(
+        STATION_MAP["tokyo"],
+        target_date=date(2026, 6, 23),
+        now=datetime(2026, 6, 22, 16, 5, tzinfo=timezone.utc),
+    )
+
+    assert confirmed.observed_high_c == 20.0
+    assert confirmed.high_bucket_confirmations == 2
+
+
 def test_aviationweather_observation_gap_invalidates_daily_extremes(tmp_path):
     state_path = tmp_path / "metar_daily_extremes_state.json"
     provider = metar_sequence_provider(

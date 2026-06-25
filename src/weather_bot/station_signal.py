@@ -17,6 +17,10 @@ from .stations import StationMeta, TRADING_READY_STATION_MAP
 from .weather_client import parse_weather_question
 
 
+UNSTABLE_HIGH_BUCKET_CITY_IDS = frozenset({"ZUUU", "ZUCK", "KBKF"})
+MIN_HIGH_BUCKET_CONFIRMATIONS = 2
+
+
 @dataclass(frozen=True)
 class _OfficialStationLock:
     p_true: float
@@ -460,6 +464,27 @@ def _residual_observation_edge_signal(
             settings=settings,
             precision_profile=precision_profile,
         )
+    if bucket_type == "exact" and direction == "high" and not exact_bucket_already_impossible:
+        try:
+            high_bucket_confirmations = int(payload.get("high_bucket_confirmations", 0))
+        except (TypeError, ValueError):
+            high_bucket_confirmations = 0
+        if high_bucket_confirmations < MIN_HIGH_BUCKET_CONFIRMATIONS:
+            payload["data_block_reason"] = "high-bucket-confirmation-pending"
+            payload["strategy_allowed_reason"] = "blocked until the current high integer bucket is confirmed twice"
+            return _residual_neutral_signal(
+                parsed,
+                source="official-station-high-bucket-confirmation",
+                note=(
+                    f"{base_note}; signal_family=intraday_observation_edge; "
+                    f"high_bucket_confirmations={high_bucket_confirmations}; "
+                    f"required_high_bucket_confirmations={MIN_HIGH_BUCKET_CONFIRMATIONS}; "
+                    "exact high bucket entry blocked"
+                ),
+                payload=payload,
+                settings=settings,
+                precision_profile=precision_profile,
+            )
 
     estimate = residual_profile_store.estimate_bucket(
         station_id=station.station_id,
@@ -488,6 +513,30 @@ def _residual_observation_edge_signal(
         )
 
     selected_side, selected_probability, raw_selected_probability = _selected_residual_side(estimate)
+    if (
+        bucket_type == "exact"
+        and direction == "high"
+        and station.station_id in UNSTABLE_HIGH_BUCKET_CITY_IDS
+        and raw_selected_probability < 1.0
+    ):
+        payload["data_block_reason"] = "unstable-high-bucket-city-requires-raw-100"
+        payload["strategy_allowed_reason"] = "blocked because this city needs raw 100% high-bucket evidence"
+        return _residual_neutral_signal(
+            parsed,
+            source="official-station-unstable-high-bucket-city",
+            note=(
+                f"{base_note}; signal_family=intraday_observation_edge; "
+                f"station_id={station.station_id}; selected_side={selected_side}; "
+                f"raw_selected_side_probability={raw_selected_probability:.4f}; "
+                "unstable high-bucket city requires raw 100%"
+            ),
+            payload=payload,
+            settings=settings,
+            precision_profile=precision_profile,
+            estimate=estimate,
+            selected_probability=selected_probability,
+            raw_selected_probability=raw_selected_probability,
+        )
     tier = _residual_tier(
         selected_probability,
         settings=settings,

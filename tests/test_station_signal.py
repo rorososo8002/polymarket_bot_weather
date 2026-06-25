@@ -79,6 +79,7 @@ class ExactTemperatureProvider:
         source: str = "official-station-fixture",
         daily_extremes_complete: bool = True,
         data_block_reason: str = "",
+        high_bucket_confirmations: int | None = None,
     ) -> None:
         self.observed_high_c = observed_high_c
         self.observed_low_c = observed_low_c
@@ -87,11 +88,15 @@ class ExactTemperatureProvider:
         self.source = source
         self.daily_extremes_complete = daily_extremes_complete
         self.data_block_reason = data_block_reason
+        self.high_bucket_confirmations = high_bucket_confirmations
         self.calls = 0
 
     def observed_temperature_extremes_so_far(self, station, *, target_date, now=None):
         self.calls += 1
         observed_at = datetime(2026, 6, 19, 12, 0, tzinfo=timezone.utc)
+        kwargs = {}
+        if self.high_bucket_confirmations is not None:
+            kwargs["high_bucket_confirmations"] = self.high_bucket_confirmations
         return StationNowcastObservation(
             station_id=self.station_id or station.station_id,
             station_name=station.station_name,
@@ -109,6 +114,7 @@ class ExactTemperatureProvider:
             update_cadence="fixture",
             daily_extremes_complete=self.daily_extremes_complete,
             data_block_reason=self.data_block_reason,
+            **kwargs,
         )
 
 
@@ -235,7 +241,10 @@ def test_residual_high_exact_96_percent_forces_fifty_percent_target() -> None:
     signal = estimate_station_signal(
         "Will the highest temperature in Seoul be 23C today?",
         settings=Settings(),
-        observation_provider=ExactTemperatureProvider(observed_high_c=23.4),
+        observation_provider=ExactTemperatureProvider(
+            observed_high_c=23.4,
+            high_bucket_confirmations=2,
+        ),
         now=datetime(2026, 6, 19, 6, 30, tzinfo=timezone.utc),
         residual_profile_store=store,
         concentrated_sizing_eligible_by_station={"RKSI": False},
@@ -302,7 +311,10 @@ def test_city_month_high_waits_for_q75_after_profile_monitoring_start() -> None:
     signal = estimate_station_signal(
         "Will the highest temperature in Seoul be 23C today?",
         settings=Settings(),
-        observation_provider=ExactTemperatureProvider(observed_high_c=23.4),
+        observation_provider=ExactTemperatureProvider(
+            observed_high_c=23.4,
+            high_bucket_confirmations=2,
+        ),
         now=datetime(2026, 6, 19, 4, 0, tzinfo=timezone.utc),
         residual_profile_store=store,
     )
@@ -405,7 +417,10 @@ def test_residual_high_exact_maps_conservative_probability_to_tiers(
     signal = estimate_station_signal(
         "Will the highest temperature in Seoul be 23C today?",
         settings=Settings(),
-        observation_provider=ExactTemperatureProvider(observed_high_c=23.4),
+        observation_provider=ExactTemperatureProvider(
+            observed_high_c=23.4,
+            high_bucket_confirmations=2,
+        ),
         now=datetime(2026, 6, 19, 6, 30, tzinfo=timezone.utc),
         residual_profile_store=store,
         concentrated_sizing_eligible_by_station={"RKSI": True},
@@ -420,6 +435,53 @@ def test_residual_high_exact_maps_conservative_probability_to_tiers(
     assert signal.event_cap_override_fraction == expected_override
 
 
+def test_residual_high_exact_waits_for_two_integer_bucket_confirmations() -> None:
+    store = FakeResidualProfileStore(
+        _residual_estimate(raw=0.96, yes=0.92, no=0.03),
+        movement_probability=0.34,
+    )
+
+    signal = estimate_station_signal(
+        "Will the highest temperature in Seoul be 23C today?",
+        settings=Settings(),
+        observation_provider=ExactTemperatureProvider(
+            observed_high_c=23.0,
+            high_bucket_confirmations=1,
+        ),
+        now=datetime(2026, 6, 19, 6, 30, tzinfo=timezone.utc),
+        residual_profile_store=store,
+        concentrated_sizing_eligible_by_station={"RKSI": True},
+    )
+
+    assert signal.confidence == 0.0
+    assert signal.entry_size_fraction_override is None
+    assert signal.nowcast["data_block_reason"] == "high-bucket-confirmation-pending"
+    assert store.calls == []
+
+
+def test_unstable_high_bucket_city_requires_raw_one_hundred_percent() -> None:
+    store = FakeResidualProfileStore(
+        _residual_estimate(raw=0.99, yes=0.96, no=0.001, profile_key="ZUUU|month:06|0930|high|C"),
+        movement_probability=0.34,
+    )
+
+    signal = estimate_station_signal(
+        "Will the highest temperature in Chengdu be 23C today?",
+        settings=Settings(),
+        observation_provider=ExactTemperatureProvider(
+            observed_high_c=23.0,
+            high_bucket_confirmations=2,
+        ),
+        now=datetime(2026, 6, 19, 7, 30, tzinfo=timezone.utc),
+        residual_profile_store=store,
+        concentrated_sizing_eligible_by_station={"ZUUU": True},
+    )
+
+    assert signal.confidence == 0.0
+    assert signal.entry_size_fraction_override is None
+    assert signal.nowcast["data_block_reason"] == "unstable-high-bucket-city-requires-raw-100"
+
+
 def test_residual_high_exact_before_city_month_q75_is_blocked() -> None:
     store = FakeResidualProfileStore(
         _residual_estimate(raw=0.94, yes=0.90, no=0.04),
@@ -429,7 +491,10 @@ def test_residual_high_exact_before_city_month_q75_is_blocked() -> None:
     signal = estimate_station_signal(
         "Will the highest temperature in Seoul be 23C today?",
         settings=Settings(),
-        observation_provider=ExactTemperatureProvider(observed_high_c=23.4),
+        observation_provider=ExactTemperatureProvider(
+            observed_high_c=23.4,
+            high_bucket_confirmations=2,
+        ),
         now=datetime(2026, 6, 19, 5, 0, tzinfo=timezone.utc),
         residual_profile_store=store,
     )
@@ -446,7 +511,10 @@ def test_residual_below_80_percent_skips_instead_of_using_fixed_guess() -> None:
     signal = estimate_station_signal(
         "Will the highest temperature in Seoul be 23C today?",
         settings=Settings(),
-        observation_provider=ExactTemperatureProvider(observed_high_c=23.4),
+        observation_provider=ExactTemperatureProvider(
+            observed_high_c=23.4,
+            high_bucket_confirmations=2,
+        ),
         now=datetime(2026, 6, 19, 6, 30, tzinfo=timezone.utc),
         residual_profile_store=store,
         concentrated_sizing_eligible_by_station={"RKSI": True},
@@ -585,7 +653,10 @@ def test_residual_missing_profile_does_not_fall_back_to_fixed_probability() -> N
     signal = estimate_station_signal(
         "Will the highest temperature in Seoul be 23C today?",
         settings=Settings(),
-        observation_provider=ExactTemperatureProvider(observed_high_c=23.4),
+        observation_provider=ExactTemperatureProvider(
+            observed_high_c=23.4,
+            high_bucket_confirmations=2,
+        ),
         now=datetime(2026, 6, 19, 6, 30, tzinfo=timezone.utc),
         residual_profile_store=store,
     )
