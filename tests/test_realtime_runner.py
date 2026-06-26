@@ -901,6 +901,7 @@ def test_realtime_update_refreshes_station_signal_after_nowcast_cache_ttl(tmp_pa
                 observed_high_c=observed_high_c,
                 observed_at=now,
                 high_observed_at=now,
+                high_drop_observed_at=now,
                 source="aviationweather-metar",
                 source_url="https://aviationweather.gov/api/data/metar",
                 settlement_source_url="https://www.wunderground.com/history/daily/kr/incheon/RKSI",

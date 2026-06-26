@@ -507,6 +507,20 @@ def _residual_observation_edge_signal(
                 settings=settings,
                 precision_profile=precision_profile,
             )
+        if not str(payload.get("high_drop_observed_at") or "").strip():
+            payload["data_block_reason"] = "high-exact-drop-not-confirmed"
+            payload["strategy_allowed_reason"] = "blocked until a lower observation confirms the high has rolled over"
+            return _residual_neutral_signal(
+                parsed,
+                source="official-station-high-drop-confirmation",
+                note=(
+                    f"{base_note}; signal_family=intraday_observation_edge; "
+                    "high_drop_observed_at missing; exact high bucket entry blocked"
+                ),
+                payload=payload,
+                settings=settings,
+                precision_profile=precision_profile,
+            )
 
     estimate = residual_profile_store.estimate_bucket(
         station_id=station.station_id,

@@ -80,6 +80,7 @@ class ExactTemperatureProvider:
         daily_extremes_complete: bool = True,
         data_block_reason: str = "",
         high_bucket_confirmations: int | None = None,
+        high_drop_observed_at: datetime | None = None,
     ) -> None:
         self.observed_high_c = observed_high_c
         self.observed_low_c = observed_low_c
@@ -89,6 +90,7 @@ class ExactTemperatureProvider:
         self.daily_extremes_complete = daily_extremes_complete
         self.data_block_reason = data_block_reason
         self.high_bucket_confirmations = high_bucket_confirmations
+        self.high_drop_observed_at = high_drop_observed_at
         self.calls = 0
 
     def observed_temperature_extremes_so_far(self, station, *, target_date, now=None):
@@ -104,6 +106,7 @@ class ExactTemperatureProvider:
             observed_low_c=self.observed_low_c,
             observed_at=observed_at,
             high_observed_at=observed_at if self.observed_high_c is not None else None,
+            high_drop_observed_at=self.high_drop_observed_at,
             low_observed_at=observed_at if self.observed_low_c is not None else None,
             source=self.source,
             source_url="https://example.test/observations",
@@ -244,6 +247,7 @@ def test_residual_high_exact_96_percent_forces_fifty_percent_target() -> None:
         observation_provider=ExactTemperatureProvider(
             observed_high_c=23.4,
             high_bucket_confirmations=2,
+            high_drop_observed_at=datetime(2026, 6, 19, 7, 0, tzinfo=timezone.utc),
         ),
         now=datetime(2026, 6, 19, 7, 30, tzinfo=timezone.utc),
         residual_profile_store=store,
@@ -314,6 +318,7 @@ def test_city_month_high_waits_for_q75_after_profile_monitoring_start() -> None:
         observation_provider=ExactTemperatureProvider(
             observed_high_c=23.4,
             high_bucket_confirmations=2,
+            high_drop_observed_at=datetime(2026, 6, 19, 7, 0, tzinfo=timezone.utc),
         ),
         now=datetime(2026, 6, 19, 4, 0, tzinfo=timezone.utc),
         residual_profile_store=store,
@@ -420,6 +425,7 @@ def test_residual_high_exact_maps_conservative_probability_to_tiers(
         observation_provider=ExactTemperatureProvider(
             observed_high_c=23.4,
             high_bucket_confirmations=2,
+            high_drop_observed_at=datetime(2026, 6, 19, 7, 0, tzinfo=timezone.utc),
         ),
         now=datetime(2026, 6, 19, 7, 30, tzinfo=timezone.utc),
         residual_profile_store=store,
@@ -483,6 +489,55 @@ def test_residual_high_exact_waits_until_16_local() -> None:
     assert store.calls == []
 
 
+def test_residual_high_exact_waits_for_drop_after_high() -> None:
+    store = FakeResidualProfileStore(
+        _residual_estimate(raw=0.96, yes=0.92, no=0.03),
+        movement_probability=0.34,
+    )
+
+    signal = estimate_station_signal(
+        "Will the highest temperature in Seoul be 23C today?",
+        settings=Settings(),
+        observation_provider=ExactTemperatureProvider(
+            observed_high_c=23.0,
+            high_bucket_confirmations=2,
+        ),
+        now=datetime(2026, 6, 19, 7, 30, tzinfo=timezone.utc),
+        residual_profile_store=store,
+        concentrated_sizing_eligible_by_station={"RKSI": True},
+    )
+
+    assert signal.confidence == 0.0
+    assert signal.entry_size_fraction_override is None
+    assert signal.nowcast["data_block_reason"] == "high-exact-drop-not-confirmed"
+    assert store.calls == []
+
+
+def test_residual_high_exact_allows_entry_after_drop_after_high() -> None:
+    store = FakeResidualProfileStore(
+        _residual_estimate(raw=0.96, yes=0.92, no=0.03),
+        movement_probability=0.34,
+    )
+
+    signal = estimate_station_signal(
+        "Will the highest temperature in Seoul be 23C today?",
+        settings=Settings(),
+        observation_provider=ExactTemperatureProvider(
+            observed_high_c=23.0,
+            high_bucket_confirmations=2,
+            high_drop_observed_at=datetime(2026, 6, 19, 7, 0, tzinfo=timezone.utc),
+        ),
+        now=datetime(2026, 6, 19, 7, 30, tzinfo=timezone.utc),
+        residual_profile_store=store,
+        concentrated_sizing_eligible_by_station={"RKSI": True},
+    )
+
+    assert signal.confidence > 0.0
+    assert signal.entry_size_fraction_override == pytest.approx(0.30)
+    assert signal.nowcast["data_block_reason"] == ""
+    assert len(store.calls) == 1
+
+
 def test_unstable_high_bucket_city_requires_raw_one_hundred_percent() -> None:
     store = FakeResidualProfileStore(
         _residual_estimate(raw=0.99, yes=0.96, no=0.001, profile_key="ZUUU|month:06|0930|high|C"),
@@ -495,6 +550,7 @@ def test_unstable_high_bucket_city_requires_raw_one_hundred_percent() -> None:
         observation_provider=ExactTemperatureProvider(
             observed_high_c=23.0,
             high_bucket_confirmations=2,
+            high_drop_observed_at=datetime(2026, 6, 19, 8, 0, tzinfo=timezone.utc),
         ),
         now=datetime(2026, 6, 19, 8, 30, tzinfo=timezone.utc),
         residual_profile_store=store,
@@ -518,6 +574,7 @@ def test_residual_high_exact_before_city_month_q75_is_blocked() -> None:
         observation_provider=ExactTemperatureProvider(
             observed_high_c=23.4,
             high_bucket_confirmations=2,
+            high_drop_observed_at=datetime(2026, 6, 19, 7, 0, tzinfo=timezone.utc),
         ),
         now=datetime(2026, 6, 19, 5, 0, tzinfo=timezone.utc),
         residual_profile_store=store,
@@ -538,6 +595,7 @@ def test_residual_below_80_percent_skips_instead_of_using_fixed_guess() -> None:
         observation_provider=ExactTemperatureProvider(
             observed_high_c=23.4,
             high_bucket_confirmations=2,
+            high_drop_observed_at=datetime(2026, 6, 19, 7, 0, tzinfo=timezone.utc),
         ),
         now=datetime(2026, 6, 19, 7, 30, tzinfo=timezone.utc),
         residual_profile_store=store,
@@ -680,6 +738,7 @@ def test_residual_missing_profile_does_not_fall_back_to_fixed_probability() -> N
         observation_provider=ExactTemperatureProvider(
             observed_high_c=23.4,
             high_bucket_confirmations=2,
+            high_drop_observed_at=datetime(2026, 6, 19, 7, 0, tzinfo=timezone.utc),
         ),
         now=datetime(2026, 6, 19, 7, 30, tzinfo=timezone.utc),
         residual_profile_store=store,
