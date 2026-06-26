@@ -245,7 +245,7 @@ def test_residual_high_exact_96_percent_forces_fifty_percent_target() -> None:
             observed_high_c=23.4,
             high_bucket_confirmations=2,
         ),
-        now=datetime(2026, 6, 19, 6, 30, tzinfo=timezone.utc),
+        now=datetime(2026, 6, 19, 7, 30, tzinfo=timezone.utc),
         residual_profile_store=store,
         concentrated_sizing_eligible_by_station={"RKSI": False},
     )
@@ -266,7 +266,7 @@ def test_residual_high_exact_96_percent_forces_fifty_percent_target() -> None:
         {
             "station_id": "RKSI",
             "month": 6,
-            "local_minute": 930,
+            "local_minute": 990,
             "direction": "high",
             "observed_extreme": pytest.approx(23.4),
             "bucket_type": "exact",
@@ -278,7 +278,7 @@ def test_residual_high_exact_96_percent_forces_fifty_percent_target() -> None:
     assert signal.nowcast["formation_monitoring_status"] == "started"
     assert signal.nowcast["remaining_movement_probability"] == pytest.approx(0.35)
     assert signal.nowcast["station_local_date"] == "2026-06-19"
-    assert signal.nowcast["station_local_time"] == "15:30"
+    assert signal.nowcast["station_local_time"] == "16:30"
 
 
 def test_city_month_high_is_blocked_before_profile_monitoring_start() -> None:
@@ -421,7 +421,7 @@ def test_residual_high_exact_maps_conservative_probability_to_tiers(
             observed_high_c=23.4,
             high_bucket_confirmations=2,
         ),
-        now=datetime(2026, 6, 19, 6, 30, tzinfo=timezone.utc),
+        now=datetime(2026, 6, 19, 7, 30, tzinfo=timezone.utc),
         residual_profile_store=store,
         concentrated_sizing_eligible_by_station={"RKSI": True},
     )
@@ -448,7 +448,7 @@ def test_residual_high_exact_waits_for_two_integer_bucket_confirmations() -> Non
             observed_high_c=23.0,
             high_bucket_confirmations=1,
         ),
-        now=datetime(2026, 6, 19, 6, 30, tzinfo=timezone.utc),
+        now=datetime(2026, 6, 19, 7, 30, tzinfo=timezone.utc),
         residual_profile_store=store,
         concentrated_sizing_eligible_by_station={"RKSI": True},
     )
@@ -456,6 +456,30 @@ def test_residual_high_exact_waits_for_two_integer_bucket_confirmations() -> Non
     assert signal.confidence == 0.0
     assert signal.entry_size_fraction_override is None
     assert signal.nowcast["data_block_reason"] == "high-bucket-confirmation-pending"
+    assert store.calls == []
+
+
+def test_residual_high_exact_waits_until_16_local() -> None:
+    store = FakeResidualProfileStore(
+        _residual_estimate(raw=0.96, yes=0.92, no=0.03),
+        movement_probability=0.34,
+    )
+
+    signal = estimate_station_signal(
+        "Will the highest temperature in Seoul be 23C today?",
+        settings=Settings(),
+        observation_provider=ExactTemperatureProvider(
+            observed_high_c=23.0,
+            high_bucket_confirmations=2,
+        ),
+        now=datetime(2026, 6, 19, 6, 30, tzinfo=timezone.utc),
+        residual_profile_store=store,
+        concentrated_sizing_eligible_by_station={"RKSI": True},
+    )
+
+    assert signal.confidence == 0.0
+    assert signal.entry_size_fraction_override is None
+    assert signal.nowcast["data_block_reason"] == "high-exact-before-16-local"
     assert store.calls == []
 
 
@@ -472,7 +496,7 @@ def test_unstable_high_bucket_city_requires_raw_one_hundred_percent() -> None:
             observed_high_c=23.0,
             high_bucket_confirmations=2,
         ),
-        now=datetime(2026, 6, 19, 7, 30, tzinfo=timezone.utc),
+        now=datetime(2026, 6, 19, 8, 30, tzinfo=timezone.utc),
         residual_profile_store=store,
         concentrated_sizing_eligible_by_station={"ZUUU": True},
     )
@@ -515,7 +539,7 @@ def test_residual_below_80_percent_skips_instead_of_using_fixed_guess() -> None:
             observed_high_c=23.4,
             high_bucket_confirmations=2,
         ),
-        now=datetime(2026, 6, 19, 6, 30, tzinfo=timezone.utc),
+        now=datetime(2026, 6, 19, 7, 30, tzinfo=timezone.utc),
         residual_profile_store=store,
         concentrated_sizing_eligible_by_station={"RKSI": True},
     )
@@ -657,7 +681,7 @@ def test_residual_missing_profile_does_not_fall_back_to_fixed_probability() -> N
             observed_high_c=23.4,
             high_bucket_confirmations=2,
         ),
-        now=datetime(2026, 6, 19, 6, 30, tzinfo=timezone.utc),
+        now=datetime(2026, 6, 19, 7, 30, tzinfo=timezone.utc),
         residual_profile_store=store,
     )
 

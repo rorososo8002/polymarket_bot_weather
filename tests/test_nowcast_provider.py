@@ -210,6 +210,54 @@ def test_aviationweather_counts_repeated_high_integer_bucket_confirmations(tmp_p
     assert confirmed.high_bucket_confirmations == 2
 
 
+def test_aviationweather_tracks_high_plateau_and_drop_times(tmp_path):
+    state_path = tmp_path / "metar_daily_extremes_state.json"
+    provider = metar_sequence_provider(
+        [
+            [{
+                "icaoId": "RJTT",
+                "obsTime": "2026-06-22T14:00:00.000Z",
+                "temp": 21.0,
+                "rawOb": "RJTT 221400Z 18005KT 9999 FEW020 21/18 Q1010",
+            }],
+            [{
+                "icaoId": "RJTT",
+                "obsTime": "2026-06-22T15:00:00.000Z",
+                "temp": 21.0,
+                "rawOb": "RJTT 221500Z 18005KT 9999 FEW020 21/18 Q1010",
+            }],
+            [{
+                "icaoId": "RJTT",
+                "obsTime": "2026-06-22T16:00:00.000Z",
+                "temp": 20.0,
+                "rawOb": "RJTT 221600Z 18005KT 9999 FEW020 20/18 Q1010",
+            }],
+        ],
+        state_path=state_path,
+    )
+
+    provider.observed_temperature_extremes_so_far(
+        STATION_MAP["tokyo"],
+        target_date=date(2026, 6, 22),
+        now=datetime(2026, 6, 22, 14, 5, tzinfo=timezone.utc),
+    )
+    provider.observed_temperature_extremes_so_far(
+        STATION_MAP["tokyo"],
+        target_date=date(2026, 6, 23),
+        now=datetime(2026, 6, 22, 15, 5, tzinfo=timezone.utc),
+    )
+    dropped = provider.observed_temperature_extremes_so_far(
+        STATION_MAP["tokyo"],
+        target_date=date(2026, 6, 23),
+        now=datetime(2026, 6, 22, 16, 5, tzinfo=timezone.utc),
+    )
+
+    assert dropped.observed_high_c == 21.0
+    assert dropped.high_observed_at.isoformat() == "2026-06-22T15:00:00+00:00"
+    assert dropped.high_last_observed_at.isoformat() == "2026-06-22T15:00:00+00:00"
+    assert dropped.high_drop_observed_at.isoformat() == "2026-06-22T16:00:00+00:00"
+
+
 def test_aviationweather_observation_gap_invalidates_daily_extremes(tmp_path):
     state_path = tmp_path / "metar_daily_extremes_state.json"
     provider = metar_sequence_provider(

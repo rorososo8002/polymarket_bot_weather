@@ -19,6 +19,7 @@ from .weather_client import parse_weather_question
 
 UNSTABLE_HIGH_BUCKET_CITY_IDS = frozenset({"ZUUU", "ZUCK", "KBKF"})
 MIN_HIGH_BUCKET_CONFIRMATIONS = 2
+HIGH_EXACT_ENTRY_MIN_LOCAL_MINUTE = 16 * 60
 
 
 @dataclass(frozen=True)
@@ -459,6 +460,27 @@ def _residual_observation_edge_signal(
                 f"{base_note}; signal_family=intraday_observation_edge; "
                 f"formation_q75_local_minute={formation_q75:.0f}; "
                 f"current_local_minute={local_minute}; exact bucket entry blocked"
+            ),
+            payload=payload,
+            settings=settings,
+            precision_profile=precision_profile,
+        )
+    if (
+        bucket_type == "exact"
+        and direction == "high"
+        and local_minute < HIGH_EXACT_ENTRY_MIN_LOCAL_MINUTE
+        and not exact_bucket_already_impossible
+    ):
+        payload["data_block_reason"] = "high-exact-before-16-local"
+        payload["strategy_allowed_reason"] = "blocked until station-local 16:00 for high exact entries"
+        return _residual_neutral_signal(
+            parsed,
+            source="official-station-high-exact-local-time",
+            note=(
+                f"{base_note}; signal_family=intraday_observation_edge; "
+                f"current_local_minute={local_minute}; "
+                f"required_local_minute={HIGH_EXACT_ENTRY_MIN_LOCAL_MINUTE}; "
+                "exact high entry blocked before station-local 16:00"
             ),
             payload=payload,
             settings=settings,
