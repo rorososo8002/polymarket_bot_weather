@@ -190,6 +190,7 @@ class EdgeResult:
     event_cap_override_fraction: float | None = None
     requested_size_usd: float | None = None
     executable_size_usd: float | None = None
+    entry_ask_depth_top5_json: str = ""
 
 
 @dataclass(frozen=True)

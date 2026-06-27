@@ -4,6 +4,7 @@ import argparse
 from collections.abc import Callable, Mapping
 from dataclasses import replace
 import inspect
+import json
 from datetime import date, datetime, timedelta, timezone
 import math
 import threading
@@ -50,6 +51,7 @@ estimate_station_probability = estimate_station_signal
 
 ENTRY_BANKROLL_FAIL_CLOSED_REASON = "기존 포지션을 안전하게 평가할 수 없어 신규 진입 차단"
 
+ENTRY_DEPTH_AUDIT_TARGET_USD = 100.0
 REALTIME_EVALUATION_QUEUE_MAX_EVENTS = 256
 REALTIME_EVALUATION_COALESCE_SECONDS = 0.25
 
@@ -855,6 +857,58 @@ def _max_executable_buy_target_usd(book: OrderBook, fee_rate: float) -> float:
     return total
 
 
+def _entry_ask_depth_top5_json(
+    book: OrderBook,
+    *,
+    entry_size_usd: float,
+    entry_vwap: float,
+    entry_shares: float,
+    fee_rate: float,
+) -> str:
+    levels: list[dict[str, float]] = []
+    cumulative_shares = 0.0
+    cumulative_notional = 0.0
+    cumulative_all_in = 0.0
+    for level in book.asks:
+        if level.size <= 0:
+            continue
+        cumulative_shares += level.size
+        notional = level.price * level.size
+        all_in = level.size * (level.price + polymarket_taker_fee_per_share(level.price, fee_rate))
+        cumulative_notional += notional
+        cumulative_all_in += all_in
+        levels.append(
+            {
+                "price": round(level.price, 6),
+                "size": round(level.size, 6),
+                "notional_usd": round(notional, 6),
+                "all_in_usd": round(all_in, 6),
+                "cumulative_size": round(cumulative_shares, 6),
+                "cumulative_notional_usd": round(cumulative_notional, 6),
+                "cumulative_all_in_usd": round(cumulative_all_in, 6),
+            }
+        )
+        if len(levels) >= 5:
+            break
+    target_vwap, target_shares, target_slip = executable_buy_price(
+        book,
+        ENTRY_DEPTH_AUDIT_TARGET_USD,
+        fee_rate=fee_rate,
+    )
+    payload = {
+        "entry_size_usd": round(entry_size_usd, 6),
+        "entry_vwap": round(entry_vwap, 6),
+        "entry_shares": round(entry_shares, 6),
+        "target_usd": ENTRY_DEPTH_AUDIT_TARGET_USD,
+        "target_executable": target_vwap is not None and target_shares > 0,
+        "target_vwap": None if target_vwap is None else round(target_vwap, 6),
+        "target_shares": round(target_shares, 6),
+        "target_slippage": round(target_slip, 6),
+        "levels": levels,
+    }
+    return json.dumps(payload, separators=(",", ":"), sort_keys=True)
+
+
 def _side_result(
     side: str,
     book: OrderBook,
@@ -1240,6 +1294,14 @@ def _final_pre_trade_entry_result(
         f"price_anomaly={str(price_anomaly).lower()}, strategy_mode={settings.strategy_mode}, "
         f"signal_family={signal_family}"
     )
+    entry_ask_depth_top5_json = _entry_ask_depth_top5_json(
+        book,
+        entry_size_usd=result.size_usd,
+        entry_vwap=checked_p_exec,
+        entry_shares=checked_shares,
+        fee_rate=settings.weather_taker_fee_rate,
+    )
+    reason = f"{reason}, entry_ask_depth_top5={entry_ask_depth_top5_json}"
     return replace(
         result,
         p_exec=checked_p_exec,
@@ -1250,6 +1312,7 @@ def _final_pre_trade_entry_result(
         price_anomaly=price_anomaly,
         strategy_mode=settings.strategy_mode if _is_official_station_entry_signal(signal) else "",
         signal_family=signal_family,
+        entry_ask_depth_top5_json=entry_ask_depth_top5_json,
     )
 
 

@@ -144,6 +144,7 @@ TRADE_CSV_FIELDNAMES = [
     "fee_rate",
     "entry_fee_usdc",
     "expected_net_profit_usd",
+    "entry_ask_depth_top5_json",
     "model_version",
     "config_version",
 ]
@@ -470,6 +471,7 @@ def _result_replay_metadata(result: EdgeResult) -> dict[str, str]:
         "expected_net_profit_usd": _format_optional_csv_float(
             result.expected_net_profit_usd
         ),
+        "entry_ask_depth_top5_json": _format_optional_text(result.entry_ask_depth_top5_json),
     }
 
 
@@ -556,6 +558,7 @@ def _position_replay_metadata(pos: PaperPosition) -> dict[str, Any]:
         "fee_rate": metadata.get("fee_rate"),
         "entry_fee_usdc": metadata.get("entry_fee_usdc"),
         "expected_net_profit_usd": metadata.get("expected_net_profit_usd"),
+        "entry_ask_depth_top5_json": metadata.get("entry_ask_depth_top5_json"),
         "model_version": metadata.get("model_version"),
         "config_version": metadata.get("config_version"),
     }
@@ -1417,8 +1420,16 @@ class PaperBroker:
             "model_version": PAPER_MODEL_VERSION,
             "config_version": _config_version(self.settings),
         }
+        entry_depth_reason = (
+            f"; entry_ask_depth_top5={replay_metadata['entry_ask_depth_top5_json']}"
+            if replay_metadata.get("entry_ask_depth_top5_json")
+            else ""
+        )
         if add_position is not None:
-            add_reason = f"{entry_plan.rationale}; add_to_position={add_position.position_id}; entry_fee=${entry_fee_usdc:.5f}"
+            add_reason = (
+                f"{entry_plan.rationale}; add_to_position={add_position.position_id}; "
+                f"entry_fee=${entry_fee_usdc:.5f}{entry_depth_reason}"
+            )
 
             def mutate_add_position() -> PaperPosition:
                 old_shares = add_position.shares
@@ -1529,7 +1540,7 @@ class PaperBroker:
                 **{key: value for key, value in replay_metadata.items() if value != ""},
             },
         )
-        open_reason = f"{entry_plan.rationale}; entry_fee=${entry_fee_usdc:.5f}"
+        open_reason = f"{entry_plan.rationale}; entry_fee=${entry_fee_usdc:.5f}{entry_depth_reason}"
 
         def mutate_open_position() -> PaperPosition:
             self.state.cash_usd -= spend
@@ -1962,6 +1973,9 @@ class PaperBroker:
             "expected_net_profit_usd": _format_optional_csv_float(
                 entry_metadata.get("expected_net_profit_usd")
             ),
+            "entry_ask_depth_top5_json": _format_optional_text(
+                entry_metadata.get("entry_ask_depth_top5_json")
+            ),
             "model_version": _format_optional_text(entry_metadata.get("model_version")) or PAPER_MODEL_VERSION,
             "config_version": _format_optional_text(entry_metadata.get("config_version")) or _config_version(self.settings),
         }
@@ -2016,6 +2030,7 @@ class PaperBroker:
                 "fee_rate": replay_metadata["fee_rate"],
                 "entry_fee_usdc": replay_metadata["entry_fee_usdc"],
                 "expected_net_profit_usd": replay_metadata["expected_net_profit_usd"],
+                "entry_ask_depth_top5_json": replay_metadata["entry_ask_depth_top5_json"],
                 "model_version": replay_metadata["model_version"],
                 "config_version": replay_metadata["config_version"],
             })

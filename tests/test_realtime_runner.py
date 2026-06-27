@@ -1640,6 +1640,48 @@ def test_final_pre_trade_fetches_clob_tradability(tmp_path):
     assert len(broker.state.positions) == 1
 
 
+def test_final_pre_trade_logs_entry_ask_depth_top5(tmp_path):
+    broker = runner_module.PaperBroker(_entry_gate_settings(tmp_path))
+
+    class DepthClient(_FinalGateClient):
+        def get_order_book(self, token_id: str) -> OrderBook:
+            self.book_calls.append(token_id)
+            return OrderBook(
+                token_id,
+                bids=[OrderLevel(0.49, 1000.0)],
+                asks=[
+                    OrderLevel(0.50, 1.0),
+                    OrderLevel(0.51, 2.0),
+                    OrderLevel(0.52, 300.0),
+                    OrderLevel(0.53, 4.0),
+                    OrderLevel(0.54, 5.0),
+                    OrderLevel(0.55, 6.0),
+                ],
+            )
+
+    final_result = runner_module._open_position_if_needed(
+        broker,
+        _entry_gate_market(),
+        _entry_gate_signal(),
+        _selected_entry_result(),
+        "temperature",
+        client=DepthClient(),
+    )
+
+    assert final_result.side == "YES"
+    with Path(broker.trades_csv_path).open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+
+    snapshot_text = rows[-1]["entry_ask_depth_top5_json"]
+    assert f"entry_ask_depth_top5={snapshot_text}" in rows[-1]["reason"]
+    snapshot = json.loads(snapshot_text)
+    assert snapshot["target_usd"] == 100.0
+    assert snapshot["target_executable"] is True
+    assert snapshot["entry_size_usd"] == pytest.approx(10.0)
+    assert [level["price"] for level in snapshot["levels"]] == [0.5, 0.51, 0.52, 0.53, 0.54]
+    assert snapshot["levels"][1]["cumulative_notional_usd"] == pytest.approx(1.52)
+
+
 def test_final_pre_trade_blocks_new_excessive_vwap_price_impact(tmp_path):
     broker = runner_module.PaperBroker(
         replace(
