@@ -552,6 +552,21 @@ def _slug_text(value: Any) -> str:
     return text.strip("/")
 
 
+def _market_slug_text(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if "://" in text:
+        path_parts = [part for part in urlparse(text).path.split("/") if part]
+        if "event" in path_parts:
+            event_index = path_parts.index("event")
+            if len(path_parts) > event_index + 2:
+                return path_parts[event_index + 2].strip()
+            if len(path_parts) > event_index + 1:
+                return path_parts[event_index + 1].strip()
+    return text.strip("/")
+
+
 def _event_slug_from_market_slug(slug: Any) -> str:
     text = _slug_text(slug)
     if not text:
@@ -562,10 +577,14 @@ def _event_slug_from_market_slug(slug: Any) -> str:
 
 
 def _polymarket_market_url(slug: Any, event_slug: Any = None) -> str:
-    text = _slug_text(event_slug) or _event_slug_from_market_slug(slug)
-    if not text:
+    market_slug = _market_slug_text(slug)
+    event_text = _slug_text(event_slug) or _event_slug_from_market_slug(market_slug)
+    if not event_text:
         return ""
-    return f"https://polymarket.com/ko/event/{quote(text, safe='')}"
+    event_url = f"https://polymarket.com/ko/event/{quote(event_text, safe='')}"
+    if market_slug and market_slug != event_text:
+        return f"{event_url}/{quote(market_slug, safe='')}"
+    return event_url
 
 
 def _first_audit_value(primary: dict[str, Any], fallback: dict[str, Any], key: str) -> Any:
@@ -639,7 +658,8 @@ def _position_payload(
     slug = metadata.get("slug") or latest_decision.get("slug") or ""
     event_slug = metadata.get("event_slug") or latest_decision.get("event_slug") or ""
     latest_note = latest_decision.get("note", "")
-    summary = _question_summary(str(pos.get("question", "")))
+    question_text = str(pos.get("question") or latest_decision.get("question") or "")
+    summary = _question_summary(question_text)
     city = str(metadata.get("city") or latest_decision.get("city") or summary["city"] or "")
     station = TRADING_READY_STATION_MAP.get(city.lower())
     station_id = str(
@@ -671,7 +691,13 @@ def _position_payload(
         "position_id": pos.get("position_id", ""),
         "market_id": pos.get("market_id", ""),
         "question": pos.get("question", ""),
-        "event_title": _event_title_from_position(city, metadata.get("date_hint") or latest_decision.get("event_date_local") or summary["date_hint"]),
+        "event_title": question_text.strip()
+        or _event_title_from_position(
+            city,
+            metadata.get("date_hint")
+            or latest_decision.get("event_date_local")
+            or summary["date_hint"],
+        ),
         "display_title": _position_display_title(city, metadata.get("date_hint") or summary["date_hint"], bucket_label, str(pos.get("side") or "")),
         "bucket_label": bucket_label,
         "slug": slug,

@@ -61,6 +61,8 @@ class StationNowcastObservation:
     update_cadence: str = ""
     observed_low_c: float | None = None
     low_observed_at: datetime | None = None
+    low_last_observed_at: datetime | None = None
+    low_rise_observed_at: datetime | None = None
     high_bucket_confirmations: int = 0
     high_last_observed_at: datetime | None = None
     high_drop_observed_at: datetime | None = None
@@ -104,6 +106,8 @@ class StationNowcastObservation:
             "high_last_observed_at": _iso_or_empty(self.high_last_observed_at),
             "high_drop_observed_at": _iso_or_empty(self.high_drop_observed_at),
             "low_observed_at": _iso_or_empty(self.low_observed_at),
+            "low_last_observed_at": _iso_or_empty(self.low_last_observed_at),
+            "low_rise_observed_at": _iso_or_empty(self.low_rise_observed_at),
             "source": self.source,
             "source_url": self.source_url,
             "settlement_source_url": self.settlement_source_url,
@@ -390,6 +394,8 @@ class AviationWeatherMetarNowcastProvider:
                     "high_last_observed_at": _iso_or_empty(observed_at),
                     "high_drop_observed_at": "",
                     "low_observed_at": _iso_or_empty(observed_at),
+                    "low_last_observed_at": _iso_or_empty(observed_at),
+                    "low_rise_observed_at": "",
                     "latest_observed_at": _iso_or_empty(observed_at),
                     "complete": complete,
                     "blocked_reason": (
@@ -429,9 +435,17 @@ class AviationWeatherMetarNowcastProvider:
                     day["high_bucket_confirmations"] = high_bucket_confirmations + 1
                 elif temp_c < float(day["high_c"]) and not day.get("high_drop_observed_at"):
                     day["high_drop_observed_at"] = _iso_or_empty(observed_at)
-                if temp_c < float(day["low_c"]):
+                current_low = float(day["low_c"])
+                if temp_c < current_low:
                     day["low_c"] = temp_c
                     day["low_observed_at"] = _iso_or_empty(observed_at)
+                    day["low_last_observed_at"] = _iso_or_empty(observed_at)
+                    day["low_rise_observed_at"] = ""
+                elif temp_c == current_low:
+                    day["low_last_observed_at"] = _iso_or_empty(observed_at)
+                    day["low_rise_observed_at"] = ""
+                elif temp_c > current_low and not day.get("low_rise_observed_at"):
+                    day["low_rise_observed_at"] = _iso_or_empty(observed_at)
                 day["latest_observed_at"] = _iso_or_empty(observed_at)
 
             last_observed_at = observed_at
@@ -1031,6 +1045,8 @@ class AviationWeatherMetarNowcastProvider:
         high_last_at = _parse_observation_time(day.get("high_last_observed_at")) or high_at
         high_drop_at = _parse_observation_time(day.get("high_drop_observed_at"))
         low_at = _parse_observation_time(day.get("low_observed_at"))
+        low_last_at = _parse_observation_time(day.get("low_last_observed_at")) or low_at
+        low_rise_at = _parse_observation_time(day.get("low_rise_observed_at"))
         if latest_at is None or high_at is None or low_at is None:
             return self._unavailable(
                 station,
@@ -1067,6 +1083,8 @@ class AviationWeatherMetarNowcastProvider:
             update_cadence=source.update_cadence,
             observed_low_c=round(low_c, 3),
             low_observed_at=low_at,
+            low_last_observed_at=low_last_at,
+            low_rise_observed_at=low_rise_at,
             high_bucket_confirmations=high_bucket_confirmations,
             high_last_observed_at=high_last_at,
             high_drop_observed_at=high_drop_at,

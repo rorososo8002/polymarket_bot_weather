@@ -521,6 +521,25 @@ def _residual_observation_edge_signal(
                 settings=settings,
                 precision_profile=precision_profile,
             )
+    if (
+        bucket_type == "exact"
+        and direction == "low"
+        and not exact_bucket_already_impossible
+        and not str(payload.get("low_rise_observed_at") or "").strip()
+    ):
+        payload["data_block_reason"] = "low-exact-rise-not-confirmed"
+        payload["strategy_allowed_reason"] = "blocked until a higher observation confirms the low has rolled over"
+        return _residual_neutral_signal(
+            parsed,
+            source="official-station-low-rise-confirmation",
+            note=(
+                f"{base_note}; signal_family=intraday_observation_edge; "
+                "low_rise_observed_at missing; exact low bucket entry blocked"
+            ),
+            payload=payload,
+            settings=settings,
+            precision_profile=precision_profile,
+        )
 
     estimate = residual_profile_store.estimate_bucket(
         station_id=station.station_id,

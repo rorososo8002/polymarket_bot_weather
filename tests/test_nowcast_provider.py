@@ -258,6 +258,67 @@ def test_aviationweather_tracks_high_plateau_and_drop_times(tmp_path):
     assert dropped.high_drop_observed_at.isoformat() == "2026-06-22T16:00:00+00:00"
 
 
+def test_aviationweather_tracks_low_plateau_and_rise_times(tmp_path):
+    state_path = tmp_path / "metar_daily_extremes_state.json"
+    provider = metar_sequence_provider(
+        [
+            [{
+                "icaoId": "RJTT",
+                "obsTime": "2026-06-22T14:00:00.000Z",
+                "temp": 21.0,
+                "rawOb": "RJTT 221400Z 18005KT 9999 FEW020 21/18 Q1010",
+            }],
+            [{
+                "icaoId": "RJTT",
+                "obsTime": "2026-06-22T15:00:00.000Z",
+                "temp": 20.0,
+                "rawOb": "RJTT 221500Z 18005KT 9999 FEW020 20/18 Q1010",
+            }],
+            [{
+                "icaoId": "RJTT",
+                "obsTime": "2026-06-22T16:00:00.000Z",
+                "temp": 20.0,
+                "rawOb": "RJTT 221600Z 18005KT 9999 FEW020 20/18 Q1010",
+            }],
+            [{
+                "icaoId": "RJTT",
+                "obsTime": "2026-06-22T17:00:00.000Z",
+                "temp": 21.0,
+                "rawOb": "RJTT 221700Z 18005KT 9999 FEW020 21/18 Q1010",
+            }],
+        ],
+        state_path=state_path,
+    )
+
+    provider.observed_temperature_extremes_so_far(
+        STATION_MAP["tokyo"],
+        target_date=date(2026, 6, 22),
+        now=datetime(2026, 6, 22, 14, 5, tzinfo=timezone.utc),
+    )
+    provider.observed_temperature_extremes_so_far(
+        STATION_MAP["tokyo"],
+        target_date=date(2026, 6, 23),
+        now=datetime(2026, 6, 22, 15, 5, tzinfo=timezone.utc),
+    )
+    before_rise = provider.observed_temperature_extremes_so_far(
+        STATION_MAP["tokyo"],
+        target_date=date(2026, 6, 23),
+        now=datetime(2026, 6, 22, 16, 5, tzinfo=timezone.utc),
+    )
+    risen = provider.observed_temperature_extremes_so_far(
+        STATION_MAP["tokyo"],
+        target_date=date(2026, 6, 23),
+        now=datetime(2026, 6, 22, 17, 5, tzinfo=timezone.utc),
+    )
+
+    assert before_rise.observed_low_c == 20.0
+    assert before_rise.low_rise_observed_at is None
+    assert risen.observed_low_c == 20.0
+    assert risen.low_observed_at.isoformat() == "2026-06-22T15:00:00+00:00"
+    assert risen.low_last_observed_at.isoformat() == "2026-06-22T16:00:00+00:00"
+    assert risen.low_rise_observed_at.isoformat() == "2026-06-22T17:00:00+00:00"
+
+
 def test_aviationweather_observation_gap_invalidates_daily_extremes(tmp_path):
     state_path = tmp_path / "metar_daily_extremes_state.json"
     provider = metar_sequence_provider(

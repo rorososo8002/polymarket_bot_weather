@@ -1416,6 +1416,100 @@ def test_dashboard_open_positions_include_polymarket_link_without_forecast_weath
     assert "p_true" not in position
 
 
+def test_dashboard_open_position_uses_actual_question_and_submarket_link(tmp_path):
+    state_path = tmp_path / "state.json"
+    trades_path = tmp_path / "trades.csv"
+    decisions_path = tmp_path / "decisions.csv"
+    state_path.write_text(
+        json.dumps(
+            {
+                "cash_usd": 902.0,
+                "positions": [
+                    {
+                        "position_id": "p-london-low",
+                        "market_id": "m-london-low-22",
+                        "question": "Will the lowest temperature in London be 22°C on June 27?",
+                        "token_id": "yes",
+                        "side": "YES",
+                        "entry_price": 0.358,
+                        "shares": 265.15,
+                        "cost_usd": 98.0,
+                        "opened_at": "2026-06-27T04:00:30+00:00",
+                        "last_mark_price": 0.001,
+                        "metadata": {
+                            "city": "london",
+                            "date_hint": "june 27",
+                            "event_slug": "lowest-temperature-in-london-on-june-27-2026",
+                            "slug": "lowest-temperature-in-london-on-june-27-2026-22c",
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    write_csv(
+        trades_path,
+        [
+            {
+                "ts": "2026-06-27T04:00:30+00:00",
+                "action": "OPEN",
+                "market_id": "m-london-low-22",
+                "slug": "lowest-temperature-in-london-on-june-27-2026-22c",
+                "question": "Will the lowest temperature in London be 22°C on June 27?",
+                "market_type": "temperature",
+                "side": "YES",
+                "token_id": "yes",
+                "shares": "265.15",
+                "price": "0.358",
+                "cash_delta_or_pnl": "-98",
+                "reason": "entry",
+            }
+        ],
+    )
+    write_csv(
+        decisions_path,
+        [
+            {
+                "ts": "2026-06-27T04:00:27+00:00",
+                "market_id": "m-london-low-22",
+                "slug": "lowest-temperature-in-london-on-june-27-2026-22c",
+                "question": "Will the lowest temperature in London be 22°C on June 27?",
+                "market_type": "temperature",
+                "side": "YES",
+                "p_true": "0.88",
+                "p_exec": "0.358",
+                "net_edge": "0.42",
+                "size_usd": "98",
+                "size_shares": "265.15",
+                "entry_fraction": "0.10",
+                "probability_stop_threshold": "0.72",
+                "model_fair_price": "0.78",
+                "target_exit_price": "0.66",
+                "market_heat_score": "0.0",
+                "reason": "edge ok",
+                "note": "",
+            }
+        ],
+    )
+
+    payload = build_dashboard_payload(
+        Settings(
+            state_path=str(state_path),
+            trades_csv_path=str(trades_path),
+            decisions_csv_path=str(decisions_path),
+        )
+    )
+
+    position = payload["positions"][0]
+    assert position["event_title"] == "Will the lowest temperature in London be 22°C on June 27?"
+    assert position["market_url"] == (
+        "https://polymarket.com/ko/event/"
+        "lowest-temperature-in-london-on-june-27-2026/"
+        "lowest-temperature-in-london-on-june-27-2026-22c"
+    )
+
+
 def test_dashboard_open_position_uses_latest_station_decision_not_entry_snapshot(tmp_path):
     state_path = tmp_path / "state.json"
     decisions_path = tmp_path / "decisions.csv"
@@ -1479,7 +1573,7 @@ def test_dashboard_open_position_uses_latest_station_decision_not_entry_snapshot
     assert position["station_allocation_fraction"] == pytest.approx(0.50)
 
 
-def test_dashboard_open_position_link_strips_condition_suffix_from_weather_slug(tmp_path):
+def test_dashboard_open_position_link_points_to_weather_submarket_slug(tmp_path):
     state_path = tmp_path / "state.json"
     state_path.write_text(
         json.dumps(
@@ -1514,7 +1608,9 @@ def test_dashboard_open_position_link_strips_condition_suffix_from_weather_slug(
     position = payload["positions"][0]
     assert (
         position["market_url"]
-        == "https://polymarket.com/ko/event/highest-temperature-in-beijing-on-june-4-2026"
+        == "https://polymarket.com/ko/event/"
+        "highest-temperature-in-beijing-on-june-4-2026/"
+        "highest-temperature-in-beijing-on-june-4-2026-25corbelow"
     )
 
 

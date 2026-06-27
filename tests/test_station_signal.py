@@ -81,6 +81,7 @@ class ExactTemperatureProvider:
         data_block_reason: str = "",
         high_bucket_confirmations: int | None = None,
         high_drop_observed_at: datetime | None = None,
+        low_rise_observed_at: datetime | None = None,
     ) -> None:
         self.observed_high_c = observed_high_c
         self.observed_low_c = observed_low_c
@@ -91,6 +92,7 @@ class ExactTemperatureProvider:
         self.data_block_reason = data_block_reason
         self.high_bucket_confirmations = high_bucket_confirmations
         self.high_drop_observed_at = high_drop_observed_at
+        self.low_rise_observed_at = low_rise_observed_at
         self.calls = 0
 
     def observed_temperature_extremes_so_far(self, station, *, target_date, now=None):
@@ -108,6 +110,7 @@ class ExactTemperatureProvider:
             high_observed_at=observed_at if self.observed_high_c is not None else None,
             high_drop_observed_at=self.high_drop_observed_at,
             low_observed_at=observed_at if self.observed_low_c is not None else None,
+            low_rise_observed_at=self.low_rise_observed_at,
             source=self.source,
             source_url="https://example.test/observations",
             settlement_source_url="https://example.test/settlement",
@@ -534,6 +537,51 @@ def test_residual_high_exact_allows_entry_after_drop_after_high() -> None:
 
     assert signal.confidence > 0.0
     assert signal.entry_size_fraction_override == pytest.approx(0.30)
+    assert signal.nowcast["data_block_reason"] == ""
+    assert len(store.calls) == 1
+
+
+def test_residual_low_exact_waits_for_rise_after_low() -> None:
+    store = FakeResidualProfileStore(
+        _residual_estimate(raw=0.88, yes=0.83, no=0.08, profile_key="RKSI|month:06|0390|low|C"),
+        movement_probability=0.12,
+    )
+
+    signal = estimate_station_signal(
+        "Will the lowest temperature in Seoul be 22C today?",
+        settings=Settings(),
+        observation_provider=ExactTemperatureProvider(observed_low_c=22.0),
+        now=datetime(2026, 6, 18, 21, 30, tzinfo=timezone.utc),
+        residual_profile_store=store,
+        concentrated_sizing_eligible_by_station={"RKSI": True},
+    )
+
+    assert signal.confidence == 0.0
+    assert signal.entry_size_fraction_override is None
+    assert signal.nowcast["data_block_reason"] == "low-exact-rise-not-confirmed"
+    assert store.calls == []
+
+
+def test_residual_low_exact_allows_entry_after_rise_after_low() -> None:
+    store = FakeResidualProfileStore(
+        _residual_estimate(raw=0.88, yes=0.83, no=0.08, profile_key="RKSI|month:06|0390|low|C"),
+        movement_probability=0.12,
+    )
+
+    signal = estimate_station_signal(
+        "Will the lowest temperature in Seoul be 22C today?",
+        settings=Settings(),
+        observation_provider=ExactTemperatureProvider(
+            observed_low_c=22.0,
+            low_rise_observed_at=datetime(2026, 6, 18, 21, 0, tzinfo=timezone.utc),
+        ),
+        now=datetime(2026, 6, 18, 21, 30, tzinfo=timezone.utc),
+        residual_profile_store=store,
+        concentrated_sizing_eligible_by_station={"RKSI": True},
+    )
+
+    assert signal.source == "official-station-residual-low-yes"
+    assert signal.confidence > 0.0
     assert signal.nowcast["data_block_reason"] == ""
     assert len(store.calls) == 1
 

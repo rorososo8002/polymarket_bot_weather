@@ -78,8 +78,10 @@ Before monitoring starts, ordinary residual entries are blocked. Exact-bucket
 entries also wait for that direction's q75 formation minute. High exact
 residual entries additionally require station-local 16:00, two observations in
 the same integer high bucket, and a later lower observation confirming the high
-has rolled over. A reset-verified observation that has already crossed an exact
-bucket's irreversible boundary may produce strong NO earlier.
+has rolled over. Low exact residual YES entries require a later higher
+observation confirming the low has rolled over. A reset-verified observation
+that has already crossed an exact bucket's irreversible boundary may produce
+strong NO earlier.
 
 Profiles are stored on 30-minute checkpoints. When the current local minute has
 no exact checkpoint, use the latest available checkpoint at or before now.
