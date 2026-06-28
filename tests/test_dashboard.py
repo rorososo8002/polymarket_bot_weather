@@ -1416,7 +1416,7 @@ def test_dashboard_open_positions_include_polymarket_link_without_forecast_weath
     assert "p_true" not in position
 
 
-def test_dashboard_open_position_uses_actual_question_and_submarket_link(tmp_path):
+def test_dashboard_open_position_uses_actual_question_and_event_link(tmp_path):
     state_path = tmp_path / "state.json"
     trades_path = tmp_path / "trades.csv"
     decisions_path = tmp_path / "decisions.csv"
@@ -1505,8 +1505,7 @@ def test_dashboard_open_position_uses_actual_question_and_submarket_link(tmp_pat
     assert position["event_title"] == "Will the lowest temperature in London be 22°C on June 27?"
     assert position["market_url"] == (
         "https://polymarket.com/ko/event/"
-        "lowest-temperature-in-london-on-june-27-2026/"
-        "lowest-temperature-in-london-on-june-27-2026-22c"
+        "lowest-temperature-in-london-on-june-27-2026"
     )
 
 
@@ -1573,7 +1572,7 @@ def test_dashboard_open_position_uses_latest_station_decision_not_entry_snapshot
     assert position["station_allocation_fraction"] == pytest.approx(0.50)
 
 
-def test_dashboard_open_position_link_points_to_weather_submarket_slug(tmp_path):
+def test_dashboard_open_position_link_points_to_weather_event_slug(tmp_path):
     state_path = tmp_path / "state.json"
     state_path.write_text(
         json.dumps(
@@ -1609,8 +1608,16 @@ def test_dashboard_open_position_link_points_to_weather_submarket_slug(tmp_path)
     assert (
         position["market_url"]
         == "https://polymarket.com/ko/event/"
-        "highest-temperature-in-beijing-on-june-4-2026/"
-        "highest-temperature-in-beijing-on-june-4-2026-25corbelow"
+        "highest-temperature-in-beijing-on-june-4-2026"
+    )
+
+
+def test_dashboard_market_url_keeps_event_year_when_suffix_has_bucket():
+    assert dashboard_module._polymarket_market_url(
+        "lowest-temperature-in-tokyo-on-june-28-2026-21c"
+    ) == (
+        "https://polymarket.com/ko/event/"
+        "lowest-temperature-in-tokyo-on-june-28-2026"
     )
 
 

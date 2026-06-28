@@ -51,7 +51,7 @@ WEAK_DASHBOARD_TOKEN_MARKERS = (
 )
 _TOKEN_QUERY_LOG_RE = re.compile(r"(?i)([?&]token=)([^&\s]*)")
 _WEATHER_MARKET_SUFFIX_RE = re.compile(
-    r"-(?:\d+(?:\.\d+)?(?:-\d+(?:\.\d+)?)?[cf]|\d+(?:\.\d+)?(?:c|f)?or(?:higher|below))$",
+    r"-(?:\d{1,3}(?:\.\d+)?(?:-\d{1,3}(?:\.\d+)?)?[cf]|\d{1,3}(?:\.\d+)?(?:c|f)?or(?:higher|below))$",
     re.IGNORECASE,
 )
 
@@ -581,10 +581,7 @@ def _polymarket_market_url(slug: Any, event_slug: Any = None) -> str:
     event_text = _slug_text(event_slug) or _event_slug_from_market_slug(market_slug)
     if not event_text:
         return ""
-    event_url = f"https://polymarket.com/ko/event/{quote(event_text, safe='')}"
-    if market_slug and market_slug != event_text:
-        return f"{event_url}/{quote(market_slug, safe='')}"
-    return event_url
+    return f"https://polymarket.com/ko/event/{quote(event_text, safe='')}"
 
 
 def _first_audit_value(primary: dict[str, Any], fallback: dict[str, Any], key: str) -> Any:
