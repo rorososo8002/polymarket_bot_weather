@@ -90,6 +90,8 @@ def test_aviationweather_latest_only_is_not_a_complete_daily_extreme(tmp_path):
                 "icaoId": "RJTT",
                 "obsTime": "2026-06-23T06:00:00.000Z",
                 "temp": 23.0,
+                "dewp": 22.0,
+                "wxString": "-RA",
                 "rawOb": "RJTT 230600Z 18005KT 9999 FEW020 23/18 Q1010",
             }
         ]],
@@ -104,6 +106,9 @@ def test_aviationweather_latest_only_is_not_a_complete_daily_extreme(tmp_path):
 
     assert observation.observed_high_c == 23.0
     assert observation.observed_low_c == 23.0
+    assert observation.latest_temp_c == 23.0
+    assert observation.latest_dewpoint_c == 22.0
+    assert observation.latest_weather == "-RA"
     assert observation.daily_extremes_complete is False
     assert observation.data_block_reason == "metar-daily-extremes-baseline-missing"
 

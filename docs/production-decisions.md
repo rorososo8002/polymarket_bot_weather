@@ -50,6 +50,12 @@ AWC METAR rules:
   each daily high/low was reached. A restart gap, missing baseline, date
   regression, or incomplete day blocks entry.
 - Seoul RKSI and Busan RKPK use this same AWC path.
+- For low-temperature exact NO entries, same-station METAR rain/precipitation
+  and dewpoint are risk filters, not entry evidence. If the current low is only
+  1°C above the selected exact bucket and both precipitation is observed and
+  dewpoint is within 1°C of the selected bucket, block the entry. If only one
+  weather-risk flag is present, reduce the selected-side probability and cap
+  entry size to 5% of bankroll.
 
 HKO rules:
 

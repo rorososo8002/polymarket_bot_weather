@@ -72,6 +72,10 @@ class StationNowcastObservation:
     data_block_reason: str = ""
     daily_extremes_complete: bool = True
     daily_extremes_status: str = ""
+    latest_temp_c: float | None = None
+    latest_dewpoint_c: float | None = None
+    latest_weather: str = ""
+    latest_raw_observation: str = ""
 
     @property
     def usable(self) -> bool:
@@ -122,6 +126,10 @@ class StationNowcastObservation:
             "data_block_reason": self.data_block_reason,
             "daily_extremes_complete": self.daily_extremes_complete,
             "daily_extremes_status": self.daily_extremes_status,
+            "latest_temp_c": self.latest_temp_c,
+            "latest_dewpoint_c": self.latest_dewpoint_c,
+            "latest_weather": self.latest_weather,
+            "latest_raw_observation": self.latest_raw_observation,
         }
 
 
@@ -213,6 +221,21 @@ def _parse_raw_metar_temp_c(raw: str) -> float | None:
     return sign * float(digits)
 
 
+def _parse_raw_metar_dewpoint_c(raw: str) -> float | None:
+    precise = re.search(r"\bT[01]\d{3}([01])(\d{3})\b", raw)
+    if precise:
+        sign = -1.0 if precise.group(1) == "1" else 1.0
+        return sign * int(precise.group(2)) / 10.0
+
+    standard = re.search(r"\bM?\d{2}/(M?\d{2}|//)\b", raw)
+    if not standard or standard.group(1) == "//":
+        return None
+    token = standard.group(1)
+    sign = -1.0 if token.startswith("M") else 1.0
+    digits = token[1:] if token.startswith("M") else token
+    return sign * float(digits)
+
+
 def _parse_hko_report_time(value: Any, timezone_name: str) -> datetime | None:
     text = str(value or "").strip()
     if not text:
@@ -250,6 +273,27 @@ def _extract_temperature_c(record: dict[str, Any]) -> float | None:
     if raw is None:
         return None
     return _parse_raw_metar_temp_c(str(raw))
+
+
+def _extract_dewpoint_c(record: dict[str, Any]) -> float | None:
+    for key in ("dewp", "dewpoint", "dewpoint_c"):
+        value = record.get(key)
+        if value is None:
+            continue
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(parsed):
+            return parsed
+    raw = record.get("rawOb") or record.get("raw_text") or record.get("raw")
+    if raw is None:
+        return None
+    return _parse_raw_metar_dewpoint_c(str(raw))
+
+
+def _raw_observation_text(record: dict[str, Any]) -> str:
+    return str(record.get("rawOb") or record.get("raw_text") or record.get("raw") or "")
 
 
 def _record_observed_at(record: dict[str, Any]) -> datetime | None:
@@ -1013,6 +1057,8 @@ class AviationWeatherMetarNowcastProvider:
 
         zone = _zone(station.timezone)
         observations: list[tuple[datetime, float]] = []
+        latest_record: dict[str, Any] | None = None
+        latest_record_at: datetime | None = None
         for record in payload:
             if not isinstance(record, dict):
                 continue
@@ -1025,6 +1071,9 @@ class AviationWeatherMetarNowcastProvider:
                 continue
             if observed_at.astimezone(zone).date() == target_date:
                 observations.append((observed_at, temp_c))
+                if latest_record_at is None or observed_at > latest_record_at:
+                    latest_record = record
+                    latest_record_at = observed_at
 
         if not observations:
             return self._unavailable(station, "malformed-observation-payload", source, raw_count=len(payload))
@@ -1056,6 +1105,10 @@ class AviationWeatherMetarNowcastProvider:
             )
         high_c = float(day["high_c"])
         low_c = float(day["low_c"])
+        latest_temp_c = _extract_temperature_c(latest_record or {})
+        latest_dewpoint_c = _extract_dewpoint_c(latest_record or {})
+        latest_weather = str((latest_record or {}).get("wxString") or "")
+        latest_raw = _raw_observation_text(latest_record or {})
         try:
             high_bucket_confirmations = int(day.get("high_bucket_confirmations", 0))
         except (TypeError, ValueError):
@@ -1093,6 +1146,10 @@ class AviationWeatherMetarNowcastProvider:
             data_block_reason=blocked_reason,
             daily_extremes_complete=complete,
             daily_extremes_status="complete" if complete else "blocked",
+            latest_temp_c=round(latest_temp_c, 3) if latest_temp_c is not None else None,
+            latest_dewpoint_c=round(latest_dewpoint_c, 3) if latest_dewpoint_c is not None else None,
+            latest_weather=latest_weather,
+            latest_raw_observation=latest_raw,
         )
 
     def _parse_hko_payload(

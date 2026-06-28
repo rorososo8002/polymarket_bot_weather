@@ -74,6 +74,9 @@ class ExactTemperatureProvider:
         *,
         observed_high_c: float | None = None,
         observed_low_c: float | None = None,
+        latest_temp_c: float | None = None,
+        latest_dewpoint_c: float | None = None,
+        latest_weather: str = "",
         station_id: str | None = None,
         freshness_seconds: int | None = 120,
         source: str = "official-station-fixture",
@@ -85,6 +88,9 @@ class ExactTemperatureProvider:
     ) -> None:
         self.observed_high_c = observed_high_c
         self.observed_low_c = observed_low_c
+        self.latest_temp_c = latest_temp_c
+        self.latest_dewpoint_c = latest_dewpoint_c
+        self.latest_weather = latest_weather
         self.station_id = station_id
         self.freshness_seconds = freshness_seconds
         self.source = source
@@ -120,6 +126,9 @@ class ExactTemperatureProvider:
             update_cadence="fixture",
             daily_extremes_complete=self.daily_extremes_complete,
             data_block_reason=self.data_block_reason,
+            latest_temp_c=self.latest_temp_c,
+            latest_dewpoint_c=self.latest_dewpoint_c,
+            latest_weather=self.latest_weather,
             **kwargs,
         )
 
@@ -362,6 +371,68 @@ def test_city_month_low_changes_from_before_to_after_monitoring_start() -> None:
     assert before.nowcast["formation_monitoring_status"] == "before_start"
     assert after.source == "official-station-residual-low-yes"
     assert after.nowcast["formation_monitoring_status"] == "started"
+
+
+def test_low_exact_no_one_degree_buffer_blocks_when_raining_and_dewpoint_near_target() -> None:
+    store = FakeResidualProfileStore(
+        _residual_estimate(
+            raw=0.13,
+            yes=0.09,
+            no=0.82,
+            profile_key="RJTT|month:06|0330|low|C",
+        )
+    )
+
+    signal = estimate_station_signal(
+        "Will the lowest temperature in Tokyo be 21C today?",
+        settings=Settings(),
+        observation_provider=ExactTemperatureProvider(
+            observed_low_c=22.0,
+            latest_temp_c=22.0,
+            latest_dewpoint_c=21.0,
+            latest_weather="-RA",
+            low_rise_observed_at=datetime(2026, 6, 27, 18, 0, tzinfo=timezone.utc),
+        ),
+        now=datetime(2026, 6, 27, 20, 40, tzinfo=timezone.utc),
+        residual_profile_store=store,
+    )
+
+    assert signal.source == "official-station-low-weather-risk"
+    assert signal.confidence == 0.0
+    assert signal.entry_size_fraction_override is None
+    assert signal.nowcast["data_block_reason"] == "low-exact-no-rain-dewpoint-risk"
+    assert "low_weather_risk=blocked" in signal.note
+
+
+def test_low_exact_no_one_degree_buffer_caps_size_when_dewpoint_near_target() -> None:
+    store = FakeResidualProfileStore(
+        _residual_estimate(
+            raw=0.07,
+            yes=0.05,
+            no=0.91,
+            profile_key="RJTT|month:06|0330|low|C",
+        )
+    )
+
+    signal = estimate_station_signal(
+        "Will the lowest temperature in Tokyo be 21C today?",
+        settings=Settings(),
+        observation_provider=ExactTemperatureProvider(
+            observed_low_c=22.0,
+            latest_temp_c=22.0,
+            latest_dewpoint_c=21.0,
+            low_rise_observed_at=datetime(2026, 6, 27, 18, 0, tzinfo=timezone.utc),
+        ),
+        now=datetime(2026, 6, 27, 20, 40, tzinfo=timezone.utc),
+        residual_profile_store=store,
+    )
+
+    assert signal.source == "official-station-residual-low-no"
+    assert signal.selected_side_probability == pytest.approx(0.83)
+    assert signal.probability_tier == "80"
+    assert signal.entry_size_fraction_override == pytest.approx(0.05)
+    assert signal.event_cap_override_fraction is None
+    assert "low_weather_risk=penalty" in signal.note
 
 
 def test_hko_carryover_observation_cannot_create_strong_no() -> None:

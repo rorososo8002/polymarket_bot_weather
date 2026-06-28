@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import date, datetime, time as datetime_time, timedelta, timezone
+import math
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -20,6 +21,10 @@ from .weather_client import parse_weather_question
 UNSTABLE_HIGH_BUCKET_CITY_IDS = frozenset({"ZUUU", "ZUCK", "KBKF"})
 MIN_HIGH_BUCKET_CONFIRMATIONS = 2
 HIGH_EXACT_ENTRY_MIN_LOCAL_MINUTE = 16 * 60
+LOW_EXACT_NO_WEATHER_BUFFER_C = 1.0
+LOW_EXACT_NO_WEATHER_PENALTY = 0.08
+LOW_EXACT_NO_WEATHER_MAX_FRACTION = 0.05
+PRECIPITATION_TOKENS = frozenset({"RA", "DZ", "SHRA", "TSRA", "FZRA", "SN", "SHSN", "TSSN"})
 
 
 @dataclass(frozen=True)
@@ -38,6 +43,15 @@ class _IntradayObservationEdge:
     adjustment: str
     entry_fraction: float
     size_reason: str
+
+
+@dataclass(frozen=True)
+class _LowWeatherRisk:
+    selected_probability: float
+    conservative_yes_probability: float
+    conservative_no_probability: float
+    block_reason: str
+    note: str
 
 
 def _utc_now() -> datetime:
@@ -336,6 +350,75 @@ def _selected_residual_side(estimate: ResidualProbabilityEstimate) -> tuple[str,
     return "NO", estimate.conservative_no_probability, 1.0 - estimate.raw_probability
 
 
+def _payload_float(payload: Mapping[str, Any], key: str) -> float | None:
+    try:
+        value = float(payload.get(key))
+    except (TypeError, ValueError):
+        return None
+    return value if math.isfinite(value) else None
+
+
+def _has_precipitation(payload: Mapping[str, Any]) -> bool:
+    text = f"{payload.get('latest_weather') or ''} {payload.get('latest_raw_observation') or ''}"
+    for token in text.replace("+", " ").replace("-", " ").split():
+        normalized = "".join(ch for ch in token.upper() if ch.isalpha())
+        if normalized in PRECIPITATION_TOKENS:
+            return True
+    return False
+
+
+def _low_exact_no_weather_risk(
+    *,
+    selected_side: str,
+    selected_probability: float,
+    conservative_yes_probability: float,
+    conservative_no_probability: float,
+    direction: str,
+    bucket_type: str,
+    bucket_lower: float | None,
+    observed_value: float,
+    payload: Mapping[str, Any],
+) -> _LowWeatherRisk | None:
+    if selected_side != "NO" or direction != "low" or bucket_type != "exact" or bucket_lower is None:
+        return None
+    gap_c = observed_value - bucket_lower
+    if gap_c <= 0.0 or gap_c > LOW_EXACT_NO_WEATHER_BUFFER_C:
+        return None
+
+    dewpoint_c = _payload_float(payload, "latest_dewpoint_c")
+    dewpoint_near = dewpoint_c is not None and dewpoint_c <= bucket_lower + LOW_EXACT_NO_WEATHER_BUFFER_C
+    precip = _has_precipitation(payload)
+    flags = [f"gap_c={gap_c:.2f}"]
+    if dewpoint_near:
+        flags.append(f"dewpoint_c={dewpoint_c:.2f}")
+    if precip:
+        flags.append("precipitation_observed=true")
+
+    if dewpoint_near and precip:
+        return _LowWeatherRisk(
+            selected_probability=selected_probability,
+            conservative_yes_probability=conservative_yes_probability,
+            conservative_no_probability=conservative_no_probability,
+            block_reason="low-exact-no-rain-dewpoint-risk",
+            note="low_weather_risk=blocked; " + "; ".join(flags),
+        )
+    if not dewpoint_near and not precip:
+        return None
+
+    adjusted_no = max(0.0, conservative_no_probability - LOW_EXACT_NO_WEATHER_PENALTY)
+    adjusted_yes = min(1.0, conservative_yes_probability + LOW_EXACT_NO_WEATHER_PENALTY)
+    return _LowWeatherRisk(
+        selected_probability=adjusted_no,
+        conservative_yes_probability=adjusted_yes,
+        conservative_no_probability=adjusted_no,
+        block_reason="",
+        note=(
+            f"low_weather_risk=penalty; penalty={LOW_EXACT_NO_WEATHER_PENALTY:.2f}; "
+            + "; ".join(flags)
+        ),
+    )
+
+
 def _residual_neutral_signal(
     parsed: ParsedWeatherQuestion,
     *,
@@ -567,7 +650,43 @@ def _residual_observation_edge_signal(
             estimate=estimate,
         )
 
+    conservative_yes_probability = estimate.conservative_yes_probability
+    conservative_no_probability = estimate.conservative_no_probability
     selected_side, selected_probability, raw_selected_probability = _selected_residual_side(estimate)
+    low_weather_risk = _low_exact_no_weather_risk(
+        selected_side=selected_side,
+        selected_probability=selected_probability,
+        conservative_yes_probability=conservative_yes_probability,
+        conservative_no_probability=conservative_no_probability,
+        direction=direction,
+        bucket_type=bucket_type,
+        bucket_lower=bucket_lower,
+        observed_value=observed_value,
+        payload=payload,
+    )
+    if low_weather_risk is not None and low_weather_risk.block_reason:
+        payload["data_block_reason"] = low_weather_risk.block_reason
+        payload["strategy_allowed_reason"] = "blocked because low exact NO has rain/dewpoint downside risk"
+        return _residual_neutral_signal(
+            parsed,
+            source="official-station-low-weather-risk",
+            note=(
+                f"{base_note}; signal_family=intraday_observation_edge; "
+                f"selected_side={selected_side}; selected_side_probability={selected_probability:.4f}; "
+                f"{low_weather_risk.note}"
+            ),
+            payload=payload,
+            settings=settings,
+            precision_profile=precision_profile,
+            estimate=estimate,
+            selected_probability=selected_probability,
+            raw_selected_probability=raw_selected_probability,
+        )
+    if low_weather_risk is not None:
+        conservative_yes_probability = low_weather_risk.conservative_yes_probability
+        conservative_no_probability = low_weather_risk.conservative_no_probability
+        selected_probability = low_weather_risk.selected_probability
+        payload["low_weather_risk"] = low_weather_risk.note
     if (
         bucket_type == "exact"
         and direction == "high"
@@ -612,18 +731,27 @@ def _residual_observation_edge_signal(
             estimate=estimate,
             selected_probability=selected_probability,
             raw_selected_probability=raw_selected_probability,
+            )
+
+    if low_weather_risk is not None and tier.entry_fraction is not None:
+        tier = replace(
+            tier,
+            entry_fraction=min(tier.entry_fraction, LOW_EXACT_NO_WEATHER_MAX_FRACTION),
+            event_cap_override_fraction=None,
         )
 
     unit = precision_profile.unit.lower()
     size_reason = (
         f"residual_probability={estimate.reason_code}; selected_side={selected_side}; "
         f"raw_probability={estimate.raw_probability:.4f}; "
-        f"conservative_yes_probability={estimate.conservative_yes_probability:.4f}; "
-        f"conservative_no_probability={estimate.conservative_no_probability:.4f}; "
+        f"conservative_yes_probability={conservative_yes_probability:.4f}; "
+        f"conservative_no_probability={conservative_no_probability:.4f}; "
         f"selected_side_probability={selected_probability:.4f}; "
         f"probability_tier={tier.probability_tier}; "
         f"calibration_sample_days={estimate.sample_days}; profile_key={estimate.profile_key}"
     )
+    if low_weather_risk is not None:
+        size_reason = f"{size_reason}; {low_weather_risk.note}"
     sizing_note = (
         "kelly"
         if tier.entry_fraction is None
@@ -647,8 +775,8 @@ def _residual_observation_edge_signal(
         signal_family="intraday_observation_edge",
         settlement_precision_confidence=precision_profile.confidence,
         raw_probability=estimate.raw_probability,
-        conservative_yes_probability=estimate.conservative_yes_probability,
-        conservative_no_probability=estimate.conservative_no_probability,
+        conservative_yes_probability=conservative_yes_probability,
+        conservative_no_probability=conservative_no_probability,
         raw_selected_side_probability=raw_selected_probability,
         selected_side_probability=selected_probability,
         calibration_sample_days=estimate.sample_days,
