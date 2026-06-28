@@ -1384,18 +1384,18 @@ def pre_station_tradeability_gate(
             f"city not parsed: refusing market before station evaluation [{market_type}]",
         )
 
-    if parsed.city.lower() not in TRADING_READY_STATION_MAP:
-        return skip(
-            "unsupported-station",
-            f"{parsed.city} is not in the trading-ready Polymarket settlement-station allowlist with stored rule evidence.",
-            f"unsupported-station: refusing market before station evaluation [{market_type}]",
-        )
-
     if rule_mismatch := market_rule_mismatch_reason(market):
         return skip(
             "rule-mismatch",
             f"SKIP_RULE_MISMATCH: market title and rule text disagree before station evaluation. {rule_mismatch}",
             f"SKIP_RULE_MISMATCH: {rule_mismatch} [{market_type}]",
+        )
+
+    if parsed.city.lower() not in TRADING_READY_STATION_MAP:
+        return skip(
+            "unsupported-station",
+            f"{parsed.city} is not in the trading-ready Polymarket settlement-station allowlist with stored rule evidence.",
+            f"unsupported-station: refusing market before station evaluation [{market_type}]",
         )
 
     if parsed.date_hint is None:

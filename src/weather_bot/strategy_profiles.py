@@ -16,7 +16,6 @@ ASIA_HIGH_CITIES = frozenset(
         "manila",
         "qingdao",
         "shanghai",
-        "shenzhen",
         "singapore",
         "taipei",
         "wuhan",

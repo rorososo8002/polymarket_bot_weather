@@ -101,6 +101,18 @@ def test_karachi_stays_excluded_until_station_evidence_is_reconciled():
     assert not station_is_trading_ready(karachi)
 
 
+def test_shenzhen_stays_excluded_until_wunderground_source_is_reconciled():
+    shenzhen = STATION_MAP["shenzhen"]
+
+    assert shenzhen.nowcast_confidence_grade == "D"
+    assert shenzhen.confidence_level == "blocked"
+    assert shenzhen.same_station_nowcast_supported is False
+    assert shenzhen.rule_evidence_status == "rule_station_id_conflict"
+    assert "Lau Fau Shan/45035" in shenzhen.polymarket_rule_station_text
+    assert "shenzhen" not in TRADING_READY_STATION_MAP
+    assert not station_is_trading_ready(shenzhen)
+
+
 def test_new_polymarket_stations_have_verified_execution_metadata():
     for city, expected in EXPECTED_NEW_STATIONS.items():
         station_id, latitude, longitude, timezone_name, unit, precision = expected
@@ -164,7 +176,7 @@ def test_trading_ready_nowcast_sources_are_metar_bulk_plus_single_hko_csv():
         for station in TRADING_READY_STATION_MAP.values()
     ]
 
-    assert len(TRADING_READY_STATION_MAP) == 48
-    assert trading_ready_sources.count("metar") == 47
+    assert len(TRADING_READY_STATION_MAP) == 47
+    assert trading_ready_sources.count("metar") == 46
     assert trading_ready_sources.count("hko_maxmin_since_midnight") == 1
     assert "metar_unavailable" not in trading_ready_sources

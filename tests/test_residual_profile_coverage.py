@@ -102,7 +102,7 @@ def test_manifest_status_counts_keep_all_mapped_metar_stations_calibrated() -> N
     manifest = _load_json(MANIFEST_PATH)
 
     assert manifest["station_status_counts"] == {
-        "calibrated": 45,
+        "calibrated": 44,
         "insufficient_history": 0,
         "precision_needs_audit": 1,
         "unsupported_archive_mapping": 2,

@@ -27,13 +27,16 @@ grading an answer sheet with the wrong answer key.
 ## Current Conclusion
 
 - All 49 cities remain in `STATION_MAP` as the station registry.
-- 48 cities are trading-ready because code stores an official Polymarket rule
+- 47 cities are trading-ready because code stores an official Polymarket rule
   URL and station wording for them.
 - `karachi/OPMR` is not trading-ready. Its station evidence conflicts with the
   current registry and must be reconciled from a primary source before use.
+- `shenzhen/ZGSZ` is not trading-ready. Wunderground's `ZGSZ` historical feed
+  currently maps to `Lau Fau Shan/45035`, so AWC METAR `ZGSZ` cannot be used as
+  same-station settlement evidence.
 - Trading discovery and station-signal generation use the trading-ready subset,
   not the full 49-city registry.
-- 47 ICAO stations read same-day observed values through the Aviation Weather
+- 46 ICAO stations read same-day observed values through the Aviation Weather
   Center METAR API and carry grade A station confidence. One bulk AWC request
   covers the enabled ICAO set, and real AWC calls are floored at 60 seconds.
 - `hong kong/HKO` uses Hong Kong Observatory max/min temperature CSV data since

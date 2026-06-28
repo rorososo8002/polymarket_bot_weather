@@ -281,7 +281,16 @@ _STATION_MAP_BASE: dict[str, StationMeta] = {
         ),
     ),
     "shanghai": _station("shanghai", "ZSPD", "Shanghai Pudong International Airport Station", 31.1443, 121.8083, "Asia/Shanghai", 4),
-    "shenzhen": _station("shenzhen", "ZGSZ", "Shenzhen Bao'an International Airport Station", 22.6393, 113.8107, "Asia/Shanghai", 4),
+    "shenzhen": _station(
+        "shenzhen",
+        "ZGSZ",
+        "Shenzhen Bao'an International Airport Station",
+        22.6393,
+        113.8107,
+        "Asia/Shanghai",
+        4,
+        same_station_nowcast_supported=False,
+    ),
     "singapore": _station("singapore", "WSSS", "Singapore Changi Airport Station", 1.3644, 103.9915, "Asia/Singapore", 7),
     "taipei": _station("taipei", "RCSS", "Taipei Songshan Airport Station", 25.0697, 121.5525, "Asia/Taipei", 5),
     "tel aviv": _station("tel aviv", "LLBG", "Ben Gurion International Airport", 32.0055, 34.8854, "Asia/Jerusalem", 41),
@@ -469,7 +478,8 @@ _RULE_EVIDENCE: dict[str, dict[str, str]] = {
     ),
     "shenzhen": _rule(
         "https://polymarket.com/event/highest-temperature-in-shenzhen-on-may-20-2026/highest-temperature-in-shenzhen-on-may-20-2026-31corhigher",
-        "highest temperature recorded at the Shenzhen Bao'an International Airport Station",
+        "highest temperature recorded at the Shenzhen Bao'an International Airport Station; Wunderground ZGSZ history maps to Lau Fau Shan/45035 instead of same-station ZGSZ observations",
+        RULE_EVIDENCE_STATION_ID_CONFLICT_STATUS,
     ),
     "singapore": _rule(
         "https://polymarket.com/event/highest-temperature-in-singapore-on-march-17-2026/highest-temperature-in-singapore-on-march-17-2026-24corbelow",

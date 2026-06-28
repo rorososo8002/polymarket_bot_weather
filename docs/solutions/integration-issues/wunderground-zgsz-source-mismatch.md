@@ -63,6 +63,9 @@ The regression test builds a Shenzhen grouped event with the Wunderground ZGSZ
 source and asserts that the pre-station gate returns `SKIP_RULE_MISMATCH` with
 the Lau Fau Shan / 45035 explanation.
 
+Shenzhen is also excluded from `TRADING_READY_STATION_MAP` until the
+Wunderground historical source maps back to same-station `ZGSZ` observations.
+
 ## Why This Works
 
 This bot is validating executable paper PnL against Polymarket settlement
@@ -79,6 +82,8 @@ profitable trades from non-settlement evidence.
   inspect the settlement source before assuming the market is stale.
 - Add city-specific fail-closed guards for verified source conflicts rather than
   silently substituting a cleaner weather API.
+- Keep source-conflicted cities out of the trading-ready registry, not just out
+  of one entry path.
 
 ## Related Issues
 
