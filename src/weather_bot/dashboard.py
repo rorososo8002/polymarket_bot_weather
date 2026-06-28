@@ -1338,6 +1338,129 @@ def _realized_results(
     return _sorted_recent(rows, limit)
 
 
+def _latest_ts(*values: str) -> str:
+    parsed = [(dt, value) for value in values if (dt := _parse_datetime(value)) is not None]
+    return max(parsed, default=(None, ""))[1]
+
+
+def _earliest_ts(*values: str) -> str:
+    parsed = [(dt, value) for value in values if (dt := _parse_datetime(value)) is not None]
+    return min(parsed, default=(None, ""))[1]
+
+
+def _trade_entry_amount(row: dict[str, Any]) -> float:
+    action = (row.get("action") or "").upper()
+    if action not in {"OPEN", "ADD"}:
+        return 0.0
+    cash_delta = abs(_float(row.get("cash_delta_or_pnl")))
+    if cash_delta > 0:
+        return cash_delta
+    return _float(row.get("shares")) * _float(row.get("price"))
+
+
+def _city_entry_boxes(positions: list[dict[str, Any]], recent_trades: list[dict[str, str]], limit: int = 60) -> list[dict[str, Any]]:
+    groups: dict[str, dict[str, Any]] = {}
+    market_city = {
+        str(pos.get("market_id") or ""): str(pos.get("city") or "").strip()
+        for pos in positions
+        if str(pos.get("market_id") or "")
+    }
+
+    def group_for(city: str) -> dict[str, Any]:
+        display_city = city.strip() or "unknown"
+        key = display_city.lower()
+        if key not in groups:
+            groups[key] = {
+                "city": display_city,
+                "open_count": 0,
+                "open_entry_usd": 0.0,
+                "open_market_value_usd": 0.0,
+                "open_unrealized_pnl": 0.0,
+                "recent_entry_count": 0,
+                "recent_entry_usd": 0.0,
+                "recent_realized_pnl": 0.0,
+                "latest_entry_at": "",
+                "first_entry_at": "",
+                "latest_trade_at": "",
+                "positions": [],
+                "recent_trades": [],
+            }
+        return groups[key]
+
+    for pos in positions:
+        city = str(pos.get("city") or _question_summary(str(pos.get("question") or ""))["city"] or "")
+        group = group_for(city)
+        opened_at = str(pos.get("opened_at") or "")
+        group["open_count"] += 1
+        group["open_entry_usd"] += _float(pos.get("cost_usd"))
+        group["open_market_value_usd"] += _float(pos.get("market_value"))
+        group["open_unrealized_pnl"] += _float(pos.get("unrealized_pnl"))
+        group["latest_entry_at"] = _latest_ts(str(group["latest_entry_at"]), opened_at)
+        group["first_entry_at"] = _earliest_ts(str(group["first_entry_at"]), opened_at) or opened_at
+        group["latest_trade_at"] = _latest_ts(str(group["latest_trade_at"]), opened_at)
+        group["positions"].append(
+            {
+                "question": pos.get("display_title") or pos.get("question") or "",
+                "side": pos.get("side") or "",
+                "opened_at": opened_at,
+                "entry_price": pos.get("entry_price"),
+                "mark_price": pos.get("mark_price"),
+                "cost_usd": round(_float(pos.get("cost_usd")), 4),
+                "unrealized_pnl": round(_float(pos.get("unrealized_pnl")), 4),
+                "market_url": pos.get("market_url") or "",
+            }
+        )
+
+    for trade in recent_trades:
+        market_id = str(trade.get("market_id") or "")
+        summary = _question_summary(str(trade.get("question") or ""))
+        city = str(trade.get("city") or market_city.get(market_id) or summary["city"] or "")
+        group = group_for(city)
+        ts = str(trade.get("ts") or "")
+        action = (trade.get("action") or "").upper()
+        entry_amount = _trade_entry_amount(trade)
+        pnl = _float(trade.get("cash_delta_or_pnl")) if action in REALIZED_TRADE_ACTIONS else 0.0
+        if entry_amount > 0:
+            group["recent_entry_count"] += 1
+            group["recent_entry_usd"] += entry_amount
+            group["latest_entry_at"] = _latest_ts(str(group["latest_entry_at"]), ts)
+            group["first_entry_at"] = _earliest_ts(str(group["first_entry_at"]), ts) or ts
+        group["recent_realized_pnl"] += pnl
+        group["latest_trade_at"] = _latest_ts(str(group["latest_trade_at"]), ts)
+        group["recent_trades"].append(
+            {
+                "ts": ts,
+                "action": action,
+                "question": trade.get("question") or "",
+                "side": trade.get("side") or "",
+                "price": _optional_float(trade.get("price")),
+                "entry_amount_usd": round(entry_amount, 4),
+                "pnl": round(pnl, 4),
+            }
+        )
+
+    rows = []
+    for group in groups.values():
+        group["open_entry_usd"] = round(_float(group["open_entry_usd"]), 4)
+        group["open_market_value_usd"] = round(_float(group["open_market_value_usd"]), 4)
+        group["open_unrealized_pnl"] = round(_float(group["open_unrealized_pnl"]), 4)
+        group["recent_entry_usd"] = round(_float(group["recent_entry_usd"]), 4)
+        group["recent_realized_pnl"] = round(_float(group["recent_realized_pnl"]), 4)
+        group["positions"] = _sorted_recent(group["positions"], 4)
+        group["recent_trades"] = _sorted_recent(group["recent_trades"], 4)
+        rows.append(group)
+
+    return sorted(
+        rows,
+        key=lambda row: (
+            int(row["open_count"]),
+            _parse_datetime(str(row["latest_trade_at"])) or datetime.min.replace(tzinfo=timezone.utc),
+            _parse_datetime(str(row["latest_entry_at"])) or datetime.min.replace(tzinfo=timezone.utc),
+        ),
+        reverse=True,
+    )[:limit]
+
+
 def _stats_summary(state: dict[str, Any], trades: list[dict[str, str]]) -> tuple[int, int, float]:
     stats = state.get("stats") if isinstance(state.get("stats"), dict) else {}
     wins = losses = 0
@@ -1674,6 +1797,7 @@ def build_dashboard_payload(settings: Settings | None = None, auth_required: boo
         "positions": positions,
         "recent_trades": recent_trades,
         "realized_results": realized_results,
+        "city_entries": _city_entry_boxes(positions, recent_trades),
         "scanner": {
             "decisions": scanner_totals["decisions"],
             "skips": scanner_totals["skips"],

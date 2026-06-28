@@ -220,6 +220,8 @@ def test_dashboard_html_is_official_station_first():
     assert "공식 관측소 목록" in HTML
     assert "skip.reason_ko" in HTML
     assert "stationRegistryCard" in HTML
+    assert 'id="r-city-entries"' in HTML
+    assert "function cityEntryCard(row)" in HTML
 
 
 def test_dashboard_template_displays_probability_calibration_and_executable_size():
@@ -630,6 +632,14 @@ def test_dashboard_payload_summarizes_state_trades_and_decisions(tmp_path):
     assert payload["positions"][0]["station_name"] == "Incheon Intl Airport Station"
     assert payload["positions"][0]["bucket_label"] == "21°C 이상"
     assert payload["positions"][0]["display_title"] == "Seoul · May 24 · 21°C 이상 · YES"
+    city_entry = next(row for row in payload["city_entries"] if row["city"] == "seoul")
+    assert city_entry["open_count"] == 1
+    assert city_entry["open_entry_usd"] == pytest.approx(50.0)
+    assert city_entry["open_market_value_usd"] == pytest.approx(58.8)
+    assert city_entry["open_unrealized_pnl"] == pytest.approx(8.8)
+    assert city_entry["latest_entry_at"] == "2026-05-24T10:00:00+00:00"
+    assert city_entry["positions"][0]["cost_usd"] == pytest.approx(50.0)
+    assert city_entry["recent_trades"][0]["entry_amount_usd"] == pytest.approx(50.0)
     assert "events" not in payload
     assert "recent_decisions" not in payload
     assert "pressure" not in payload

@@ -166,6 +166,7 @@ HTML = r"""<!doctype html>
       overflow-y: auto;
       padding-right: 2px;
     }
+    .city-entry-list { max-height: 330px; }
     .city-card {
       border: 1px solid var(--line);
       background: var(--panel-3);
@@ -690,6 +691,10 @@ HTML = r"""<!doctype html>
         <div class="right-stat"><span>수익 현황</span><strong id="r-total-profit" class="">$0</strong></div>
         <div class="right-stat"><span>손실 현황</span><strong id="r-total-loss" class="bad">$0</strong></div>
         <div class="right-stat"><span>매매가능현금</span><strong id="r-cash">$0</strong></div>
+        <div class="city-cards-section">
+          <div class="city-cards-title">도시별 진입 박스</div>
+          <div id="r-city-entries" class="city-cards-list city-entry-list"><div class="small muted">로딩 중…</div></div>
+        </div>
         <div class="health-box">
           <div class="health-title"><span>공식 관측소 수신 상태</span><strong id="r-station-health">--</strong></div>
           <div id="r-station-success" class="health-detail">마지막 성공 --</div>
@@ -1115,6 +1120,8 @@ function cardForPosition(p) {
     </div>
     <div class="pos-row">
       <span class="badge price">진입 ${price(p.entry_price)}</span>
+      <span class="badge price">진입금액 ${money(p.cost_usd)}</span>
+      <span class="badge neutral">진입시간 ${shortDateTime(p.opened_at)}</span>
       <span class="badge current-price">현재가 ${price(p.mark_price)}</span>
       <span class="badge ${bidDepthPnlClass}">청산PnL ${bidDepthPnlSign}${money(Math.abs(bidDepthPnl))}</span>
     </div>
@@ -1147,6 +1154,7 @@ function cardForTrade(t) {
   const action = String(t.action || "");
   const isClose = action.includes("CLOSE") || action.includes("SETTLE");
   const pnl = Number(t.cash_delta_or_pnl || 0);
+  const entryAmount = Math.abs(Number(t.cash_delta_or_pnl || 0)) || Number(t.price || 0) * Number(t.shares || 0);
   const sideLabel = (t.side || "").toUpperCase() === "YES" ? "Yes" : "No";
   const actionLabel = actionKo(action);
   const isProfit = pnl >= 0;
@@ -1165,6 +1173,7 @@ function cardForTrade(t) {
       <span class="badge ${isClose ? (isProfit ? 'win' : 'loss') : 'neutral'}">${esc(actionLabel)}</span>
       <span class="badge ${(t.side||'').toUpperCase() === 'YES' ? 'yes' : 'no'}">${sidePositionKo(sideLabel)}</span>
       <span class="badge current-price">체결가 ${price(t.price)}</span>
+      ${!isClose ? `<span class="badge price">진입금액 ${money(entryAmount)}</span>` : ""}
       <span class="badge ${pnlClass}">${pnlSign}${money(Math.abs(pnl))}</span>
     </div>
     ${reasonKo ? `<div class="reason-box"><b>진입 근거</b><br>${esc(reasonKo)}</div>` : ""}
@@ -1247,6 +1256,48 @@ function realizedCards(rows) {
       <div class="detail-line">${esc(r.city || '')} ${esc(r.date_hint || '')}</div>
     </div>`;
   }).join("");
+}
+
+function cityEntryCard(row) {
+  const openPnl = Number(row.open_unrealized_pnl || 0);
+  const realizedPnl = Number(row.recent_realized_pnl || 0);
+  const pnlClass = openPnl >= 0 ? "city-status-ok" : "city-status-fail";
+  const realizedClass = realizedPnl >= 0 ? "city-status-ok" : "city-status-fail";
+  const positions = (row.positions || []).slice(0, 3).map(p => {
+    const pnl = Number(p.unrealized_pnl || 0);
+    const cls = pnl >= 0 ? "city-status-ok" : "city-status-fail";
+    const title = p.market_url
+      ? `<a class="market-link" href="${esc(p.market_url)}" target="_blank" rel="noopener noreferrer">${esc(p.question || "")}</a>`
+      : esc(p.question || "");
+    return `<div class="city-card-detail">
+      ${title}<br>
+      ${esc(sidePositionKo(p.side))} · 진입 ${price(p.entry_price)} · 현재 ${price(p.mark_price)} · 금액 ${money(p.cost_usd)} · <span class="${cls}">${signedMoney(pnl)}</span>
+    </div>`;
+  }).join("");
+  const trades = (row.recent_trades || []).slice(0, 3).map(t => {
+    const isEntry = ["OPEN", "ADD"].includes(String(t.action || "").toUpperCase());
+    const value = isEntry ? money(t.entry_amount_usd) : signedMoney(t.pnl);
+    return `<div class="city-card-detail">
+      ${shortDateTime(t.ts)} · ${esc(actionKo(t.action))} · ${esc(sidePositionKo(t.side))} · ${price(t.price)} · ${value}
+    </div>`;
+  }).join("");
+  return `<div class="city-card ${Number(row.open_count || 0) ? "ok" : "warn"}">
+    <div class="city-card-row">
+      <span class="city-name">${esc(row.city || "unknown")}</span>
+      <span class="${pnlClass}">${signedMoney(openPnl)}</span>
+    </div>
+    <div class="city-card-detail">
+      보유 ${Number(row.open_count || 0)}개 · 보유 진입금 ${money(row.open_entry_usd)} · 평가 ${money(row.open_market_value_usd)}
+    </div>
+    <div class="city-card-detail">
+      첫 진입 ${shortDateTime(row.first_entry_at)} · 최근 진입 ${shortDateTime(row.latest_entry_at)} · 최근 체결 ${shortDateTime(row.latest_trade_at)}
+    </div>
+    <div class="city-card-detail">
+      최근 진입 ${Number(row.recent_entry_count || 0)}건 / ${money(row.recent_entry_usd)} · 최근 확정 <span class="${realizedClass}">${signedMoney(realizedPnl)}</span>
+    </div>
+    ${positions ? `<div class="city-card-detail"><strong>보유</strong></div>${positions}` : ""}
+    ${trades ? `<div class="city-card-detail"><strong>최근체결</strong></div>${trades}` : ""}
+  </div>`;
 }
 
 function stationSignalCard(signal) {
@@ -1484,6 +1535,10 @@ function render(payload) {
   setText("r-total-profit", "+" + money(profitUsd));
   setText("r-total-loss", "-" + money(lossUsd));
   setText("r-cash", money(payload.summary.cash));
+  const cityEntries = payload.city_entries || [];
+  document.getElementById("r-city-entries").innerHTML = cityEntries.length
+    ? cityEntries.map(cityEntryCard).join("")
+    : `<div class="small muted">도시별 진입 내역이 없습니다</div>`;
   const stationHealth = (payload.health || {}).station || {};
   setHealthStatus("r-station-health", stationHealth.status);
   setText("r-station-success", "마지막 성공 " + shortDateTime(stationHealth.last_success_at));
