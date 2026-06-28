@@ -715,6 +715,40 @@ def test_pre_station_gate_allows_grouped_event_rules_with_unit_toggle_text():
     assert pre_station_tradeability_gate(market, Settings(), "temperature") is None
 
 
+def test_pre_station_gate_blocks_known_shenzhen_wunderground_history_conflict():
+    client = FakePolymarketClient()
+    event = {
+        "id": "event-shenzhen",
+        "slug": "highest-temperature-in-shenzhen-on-june-28-2026",
+        "title": "Highest temperature in Shenzhen on June 28?",
+        "description": (
+            "This market will resolve to the temperature range that contains the highest "
+            "temperature recorded at the Shenzhen Bao'an International Airport Station in "
+            "degrees Celsius on 28 Jun '26. The resolution source for this market will be "
+            "information from Wunderground, available here: "
+            "https://www.wunderground.com/history/daily/cn/shenzhen/ZGSZ."
+        ),
+        "resolutionSource": "https://www.wunderground.com/history/daily/cn/shenzhen/ZGSZ",
+    }
+    market = client._parse_market(
+        {
+            "id": "shenzhen-28c",
+            "question": "Highest temperature in Shenzhen on June 28?",
+            "groupItemTitle": "28\u00b0C",
+            **binary_token_fields("yes", "no"),
+        },
+        event=event,
+    )
+
+    gated = pre_station_tradeability_gate(market, Settings(), "temperature")
+
+    assert gated is not None
+    _signal, result = gated
+    assert result.side == "SKIP"
+    assert "SKIP_RULE_MISMATCH" in result.reason
+    assert "Lau Fau Shan/45035" in result.reason
+
+
 def test_pre_station_gate_allows_grouped_event_rules_with_precision_numbers():
     client = FakePolymarketClient()
     event = {

@@ -45,6 +45,13 @@ OUTCOME_CONDITION_RE = re.compile(
     r")\s+(?:to\s+)?(?:yes|no)\b",
     re.IGNORECASE,
 )
+KNOWN_SOURCE_CONFLICTS = {
+    "shenzhen": (
+        "wunderground.com/history/daily/cn/shenzhen/zgsz",
+        "source mismatch: Wunderground ZGSZ historical feed currently maps to Lau Fau Shan/45035, "
+        "so AWC METAR ZGSZ cannot be used as settlement evidence",
+    ),
+}
 
 
 def build_market_rule_provenance(
@@ -121,9 +128,24 @@ def market_rule_mismatch_reason(market: RawMarket) -> str | None:
             event_slug=market.event_slug,
             raw=market.raw,
         )
-    if provenance is None or not provenance.mismatch_reason:
+    if provenance is None:
         return None
-    return provenance.mismatch_reason
+    if known_conflict := _known_source_conflict_reason(provenance):
+        return known_conflict
+    return provenance.mismatch_reason or None
+
+
+def _known_source_conflict_reason(provenance: MarketRuleProvenance) -> str:
+    city = str(provenance.city or "").lower()
+    source_text = _combined_text(
+        provenance.description,
+        provenance.resolution_source,
+        provenance.resolution_rules_text,
+    ).lower()
+    needle, reason = KNOWN_SOURCE_CONFLICTS.get(city, ("", ""))
+    if needle and needle in source_text:
+        return reason
+    return ""
 
 
 def _stringify(value: Any) -> str:
