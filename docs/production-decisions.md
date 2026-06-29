@@ -139,6 +139,11 @@ Gamma `endDate` alone.
 The CLOB WebSocket market stream is primary. REST `/book` is only a bounded
 seed, verification, or resync helper. PING/PONG proves a socket exists, not that
 its executable depth is fresh; rebuild a stale stream even if its thread lives.
+Fresh REST helper snapshots with executable bid/ask depth may refresh per-token
+freshness and wake exit evaluation, but the dashboard must show them as REST
+helper depth rather than millisecond WebSocket depth.
+Held-position tokens must remain subscribed and be checked first even when
+market discovery omits the market or returns an incomplete YES/NO token pair.
 
 - Entry price = ask-side executable VWAP for the final size.
 - Exit price = bid-side executable VWAP for the final close size.

@@ -128,7 +128,7 @@ def test_rest_snapshot_can_seed_executable_depth_as_verification_cache(monkeypat
     )
 
     assert updated == {"yes"}
-    assert calls == []
+    assert calls == [{"yes"}]
     book = stream.get_order_book("yes")
     assert book.best_bid == 0.49
     assert book.best_ask == 0.52
@@ -136,6 +136,7 @@ def test_rest_snapshot_can_seed_executable_depth_as_verification_cache(monkeypat
     assert health["last_rest_snapshot_at"] == "2026-06-01T00:00:00+00:00"
     assert health["last_rest_snapshot_token_id"] == "yes"
     assert health["rest_snapshot_count"] == 1
+    assert health["last_book_source"] == "rest"
 
     assert stream.apply_message(
         {
@@ -145,7 +146,7 @@ def test_rest_snapshot_can_seed_executable_depth_as_verification_cache(monkeypat
             ],
         }
     ) == {"yes"}
-    assert calls == [{"yes"}]
+    assert calls == [{"yes"}, {"yes"}]
 
 
 def test_price_change_without_prior_book_snapshot_does_not_create_executable_depth():
@@ -489,6 +490,35 @@ def test_market_stream_enqueues_only_executable_orderbook_updates():
     )
 
     assert calls == [{"depth-token"}]
+
+
+def test_market_stream_rest_snapshot_refreshes_token_freshness_and_evaluation_queue(monkeypatch):
+    now = [datetime(2026, 6, 1, 0, 0, tzinfo=timezone.utc)]
+
+    class AliveThread:
+        def is_alive(self):
+            return True
+
+    calls: list[set[str]] = []
+    monkeypatch.setattr("weather_bot.realtime_orderbook._utc_now", lambda: now[0])
+    stream = OrderBookMarketStream(stale_seconds=60, on_update=lambda token_ids: calls.append(set(token_ids)))
+    stream._thread = AliveThread()
+    stream._started_at = now[0] - timedelta(seconds=120)
+
+    stream.apply_rest_snapshot(
+        OrderBook(
+            "rest-token",
+            bids=[OrderLevel(0.98, 10)],
+            asks=[OrderLevel(0.99, 10)],
+        )
+    )
+
+    health = stream.token_health_snapshot("rest-token")
+
+    assert calls == [{"rest-token"}]
+    assert health["last_book_at"] == "2026-06-01T00:00:00+00:00"
+    assert health["stale"] is False
+    assert health["last_book_source"] == "rest"
 
 
 def test_market_stream_tracks_executable_book_freshness_by_token(monkeypatch):

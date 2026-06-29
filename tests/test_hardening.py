@@ -1718,6 +1718,7 @@ def test_stale_websocket_pauses_held_position_exit_evaluation(tmp_path):
     assert "last executable order book depth age 61s exceeds 60s" in rows[0]["reason"]
     assert broker.state.positions[0].metadata["last_exit_signal_trigger"] == "probability_stop"
     assert "probability stop" in broker.state.positions[0].metadata["last_exit_signal_reason"]
+    assert "last executable order book depth age 61s exceeds 60s" in broker.state.positions[0].metadata["last_exit_blocker"]
 
 
 def test_token_stale_websocket_pauses_only_that_position_exit_evaluation(tmp_path):
@@ -1810,6 +1811,7 @@ def test_token_stale_websocket_pauses_only_that_position_exit_evaluation(tmp_pat
     assert rows[0]["token_id"] == "fresh-token"
     assert rows[1]["token_id"] == "stale-token"
     assert "token stale-token executable order book depth age 120s exceeds 60s" in rows[1]["reason"]
+    assert "token stale-token executable order book depth age 120s exceeds 60s" in broker.state.positions[0].metadata["last_exit_blocker"]
 
 
 def test_low_liquidity_limits_runner_cap_tranche(tmp_path):

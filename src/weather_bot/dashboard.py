@@ -641,6 +641,7 @@ def _position_payload(
     latest_decision: dict[str, str] | None = None,
     fee_rate: float = 0.0,
     websocket_health: dict[str, Any] | None = None,
+    bankroll_usd: float | None = None,
 ) -> dict[str, Any]:
     metadata = pos.get("metadata") if isinstance(pos.get("metadata"), dict) else {}
     latest_decision = latest_decision or {}
@@ -648,6 +649,7 @@ def _position_payload(
     entry = _float(pos.get("entry_price"))
     shares = _float(pos.get("shares"))
     cost = _float(pos.get("cost_usd"))
+    actual_entry_fraction = cost / bankroll_usd if bankroll_usd and bankroll_usd > 0 else None
     mark = _float(pos.get("last_mark_price"), entry)
     exit_fee_usdc = polymarket_taker_fee_usdc(shares, mark, fee_rate)
     value = shares * mark - exit_fee_usdc
@@ -705,6 +707,7 @@ def _position_payload(
         "mark_price": mark,
         "shares": shares,
         "cost_usd": cost,
+        "actual_entry_fraction": actual_entry_fraction,
         "exit_fee_usdc": exit_fee_usdc,
         "market_value": value,
         "unrealized_pnl": value - cost,
@@ -716,6 +719,7 @@ def _position_payload(
         "websocket_stale": bool(websocket_health.get("stale")),
         "websocket_stale_book_age_seconds": websocket_health.get("stale_book_age_seconds"),
         "websocket_last_book_at": str(websocket_health.get("last_book_at") or ""),
+        "websocket_last_book_source": str(websocket_health.get("last_book_source") or ""),
         "nowcast_high_c": _nowcast_c_from_note(latest_note, "observed_high_c"),
         "nowcast_low_c": _nowcast_c_from_note(latest_note, "observed_low_c"),
         "nowcast_unavailable_reason": nowcast_unavailable,
@@ -906,6 +910,29 @@ def _note_token(note: str, key: str) -> str:
     return match.group(1).strip() if match else ""
 
 
+def _station_lock_strength_from_row(row: dict[str, Any], evidence_text: str) -> str:
+    source_match = re.search(
+        r"\bofficial-station-lock-([a-z_]+)\b",
+        str(row.get("signal_source") or ""),
+        re.IGNORECASE,
+    )
+    if source_match:
+        return source_match.group(1).lower()
+    reason_match = re.search(
+        r"\bofficial_nowcast_lock=([a-z_]+)\b",
+        evidence_text,
+        re.IGNORECASE,
+    )
+    if reason_match and reason_match.group(1).lower() not in {"true", "false"}:
+        return reason_match.group(1).lower()
+    entry_reason_match = re.search(
+        r"\bentry_size_reason=official_nowcast_lock=([a-z_]+)\b",
+        evidence_text,
+        re.IGNORECASE,
+    )
+    return entry_reason_match.group(1).lower() if entry_reason_match else ""
+
+
 def _question_settlement_boundary_c(question: str) -> float | None:
     parsed = parse_weather_question(question)
     if (
@@ -929,6 +956,7 @@ def _first_optional_float(*values: Any) -> float | None:
 
 def _official_station_evidence(row: dict[str, Any]) -> dict[str, Any]:
     note = str(row.get("note") or "")
+    evidence_text = f"{note}; {row.get('reason') or ''}"
     nested_audit = row.get("station_audit") if isinstance(row.get("station_audit"), dict) else {}
     boundary = _first_optional_float(
         _note_token(note, "next_displayed_integer_c"),
@@ -939,8 +967,8 @@ def _official_station_evidence(row: dict[str, Any]) -> dict[str, Any]:
         _note_token(note, "buffer_to_next_integer_c"),
         _note_token(note, "buffer_to_lower_c"),
     )
-    allocation = _optional_float(_note_token(note, "entry_size_fraction_override"))
-    lock_strength = _note_token(note, "official_nowcast_lock")
+    allocation = _optional_float(_note_token(evidence_text, "entry_size_fraction_override"))
+    lock_strength = _station_lock_strength_from_row(row, evidence_text) or _note_token(note, "official_nowcast_lock")
     audit_keys = (
         "station_timezone",
         "target_date_local",
@@ -973,7 +1001,7 @@ def _official_station_evidence(row: dict[str, Any]) -> dict[str, Any]:
         "hours_to_close": _optional_float(_note_token(note, "hours_to_close")),
         "observed_high_c": _nowcast_c_from_note(note, "observed_high_c"),
         "observed_low_c": _nowcast_c_from_note(note, "observed_low_c"),
-        "observed_at": _note_token(note, "observed_at"),
+        "observed_at": _note_token(note, "observed_at") or str(row.get("station_observed_at") or ""),
         "station_source": _note_token(note, "nowcast_source"),
         **{
             key: row.get(key)
@@ -1226,6 +1254,7 @@ def _websocket_health(settings: Settings, runner_status: dict[str, Any]) -> dict
             "reconnect_count": 0,
             "last_message_at": "",
             "last_book_at": "",
+            "last_book_source": "",
             "stale_book_age_seconds": None,
             "stale": False,
             "last_error": "",
@@ -1273,6 +1302,7 @@ def _websocket_health(settings: Settings, runner_status: dict[str, Any]) -> dict
         "reconnect_count": int(_float(raw.get("reconnect_count"))),
         "last_message_at": str(raw.get("last_message_at") or ""),
         "last_book_at": last_book_at,
+        "last_book_source": str(raw.get("last_book_source") or ""),
         "stale_book_age_seconds": stale_book_age_seconds,
         "stale": stale,
         "last_error": last_error,
@@ -1750,6 +1780,7 @@ def build_dashboard_payload(settings: Settings | None = None, auth_required: boo
             latest_decision_by_market.get(str(p.get("market_id") or "")),
             settings.weather_taker_fee_rate,
             websocket_health,
+            settings.bankroll_usd,
         )
         for p in state.get("positions", [])
         if isinstance(p, dict)

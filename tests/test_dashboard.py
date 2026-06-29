@@ -237,16 +237,22 @@ def test_dashboard_template_displays_probability_calibration_and_executable_size
 
 
 def test_dashboard_template_displays_station_clock_formation_rollover_and_clob_state():
-    assert "관측소 현지 날짜" in HTML
-    assert "관측소 현지 시각" in HTML
-    assert "전략 관찰" in HTML
-    assert "최종 최고 형성" in HTML
-    assert "최종 최저 형성" in HTML
-    assert "추가 움직임 확률" in HTML
-    assert "자정 초기화" in HTML
-    assert "자료 차단 이유" in HTML
-    assert "CLOB 주문" in HTML
-    assert "전략 허용 근거" in HTML
+    assert "봇 판단 시간" in HTML
+    assert "오늘 실제 기록" in HTML
+    assert "전략 시간표" in HTML
+    assert "과거 통계" in HTML
+    assert "자료 상태" in HTML
+    assert "주문장" in HTML
+    assert "전략 판단" in HTML
+
+
+def test_dashboard_template_has_beginner_explanations_for_position_audit_fields():
+    assert "function strategyReasonKo" in HTML
+    assert "function dailyExtremesKo" in HTML
+    assert "function bookSourceKo" in HTML
+    assert "actual_entry_fraction" in HTML
+    assert "오늘 실제 기록" in HTML
+    assert "과거 통계" in HTML
 
 
 def test_dashboard_station_evidence_preserves_formation_and_rollover_fields():
@@ -1580,6 +1586,73 @@ def test_dashboard_open_position_uses_latest_station_decision_not_entry_snapshot
     assert position["nowcast_high_c"] == pytest.approx(24.0)
     assert position["station_lock_strength"] == "strong_no"
     assert position["station_allocation_fraction"] == pytest.approx(0.50)
+
+
+def test_dashboard_open_position_recovers_lock_size_and_observation_from_decision_columns(tmp_path):
+    state_path = tmp_path / "state.json"
+    decisions_path = tmp_path / "decisions.csv"
+    state_path.write_text(
+        json.dumps(
+            {
+                "cash_usd": 900.0,
+                "positions": [
+                    {
+                        "position_id": "p-seoul",
+                        "market_id": "m-seoul-21",
+                        "question": "Will the lowest temperature in Seoul be 21째C on June 29?",
+                        "side": "NO",
+                        "entry_price": 0.761,
+                        "shares": 108.28,
+                        "cost_usd": 83.35,
+                        "opened_at": "2026-06-28T21:37:46+00:00",
+                        "last_mark_price": 0.761,
+                        "metadata": {"city": "seoul", "station_id": "RKSI"},
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    write_csv(
+        decisions_path,
+        [
+            {
+                "ts": "2026-06-28T21:37:43+00:00",
+                "market_id": "m-seoul-21",
+                "question": "Will the lowest temperature in Seoul be 21째C on June 29?",
+                "side": "NO",
+                "city": "seoul",
+                "station_id": "RKSI",
+                "signal_source": "official-station-lock-strong_no",
+                "entry_fraction": "0.460749",
+                "station_observed_at": "2026-06-28T21:30:00+00:00",
+                "station_local_date": "2026-06-29",
+                "station_local_time": "06:39",
+                "daily_extremes_status": "complete",
+                "strategy_allowed_reason": "verified same-day observation irreversibly broke the bucket",
+                "note": "observed_low_c=20.0; observed_at=2026-06-28T21:30:00+00:00",
+                "reason": (
+                    "entry_size_reason=official_nowcast_lock=strong_no; "
+                    "entry_size_fraction_override=0.460749"
+                ),
+            }
+        ],
+    )
+
+    payload = build_dashboard_payload(
+        Settings(
+            bankroll_usd=1000.0,
+            state_path=str(state_path),
+            decisions_csv_path=str(decisions_path),
+        )
+    )
+
+    position = payload["positions"][0]
+    assert position["station_lock_strength"] == "strong_no"
+    assert position["station_allocation_fraction"] == pytest.approx(0.460749)
+    assert position["entry_fraction"] == pytest.approx(0.460749)
+    assert position["actual_entry_fraction"] == pytest.approx(0.08335)
+    assert position["observed_at"] == "2026-06-28T21:30:00+00:00"
 
 
 def test_dashboard_open_position_link_points_to_weather_event_slug(tmp_path):

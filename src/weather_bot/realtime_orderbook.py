@@ -343,6 +343,8 @@ class OrderBookMarketStream:
         self._last_message_at: datetime | None = None
         self._last_book_at: datetime | None = None
         self._last_book_at_by_token: dict[str, datetime] = {}
+        self._last_book_source_by_token: dict[str, str] = {}
+        self._last_book_source = ""
         self._reconnect_count = 0
         self._last_error = ""
         self._last_rest_snapshot_at: datetime | None = None
@@ -405,8 +407,10 @@ class OrderBookMarketStream:
         if executable_updated:
             with self._health_lock:
                 self._last_book_at = now
+                self._last_book_source = "websocket"
                 for token_id in executable_updated:
                     self._last_book_at_by_token[token_id] = now
+                    self._last_book_source_by_token[token_id] = "websocket"
         if executable_updated and self.on_update is not None:
             self.on_update(executable_updated)
         return updated
@@ -417,10 +421,16 @@ class OrderBookMarketStream:
             now = _utc_now()
             token_id = next(iter(updated))
             with self._health_lock:
+                self._last_book_at = now
+                self._last_book_source = "rest"
+                self._last_book_at_by_token[token_id] = now
+                self._last_book_source_by_token[token_id] = "rest"
                 self._last_rest_snapshot_at = now
                 self._last_rest_snapshot_token_id = token_id
                 self._rest_snapshot_count += 1
                 self._last_rest_snapshot_error = ""
+            if self.on_update is not None:
+                self.on_update(updated)
         return updated
 
     def _record_reconnect(self, exc: BaseException | None = None) -> None:
@@ -442,6 +452,8 @@ class OrderBookMarketStream:
             last_message_at = self._last_message_at
             last_book_at = self._last_book_at
             last_book_at_by_token = dict(self._last_book_at_by_token)
+            last_book_source_by_token = dict(self._last_book_source_by_token)
+            last_book_source = self._last_book_source
             reconnect_count = self._reconnect_count
             last_error = self._last_error
             last_rest_snapshot_at = self._last_rest_snapshot_at
@@ -499,6 +511,11 @@ class OrderBookMarketStream:
                 token_id: _utc_iso(last_seen_at)
                 for token_id, last_seen_at in sorted(last_book_at_by_token.items())
             },
+            "last_book_source_by_token": {
+                token_id: last_book_source_by_token.get(token_id, "")
+                for token_id in sorted(last_book_at_by_token)
+            },
+            "last_book_source": last_book_source,
             "stale_book_age_seconds": stale_book_age_seconds,
             "stale": stale,
             "last_error": last_error,
@@ -518,6 +535,7 @@ class OrderBookMarketStream:
             started_at = self._started_at
             last_message_at = self._last_message_at
             last_book_at = self._last_book_at_by_token.get(token)
+            last_book_source = self._last_book_source_by_token.get(token, "")
             reconnect_count = self._reconnect_count
             last_error = self._last_error
 
@@ -567,6 +585,7 @@ class OrderBookMarketStream:
             "last_message_at": _utc_iso(last_message_at) if last_message_at else None,
             "last_message_age_seconds": last_message_age_seconds,
             "last_book_at": _utc_iso(last_book_at) if last_book_at else None,
+            "last_book_source": last_book_source,
             "stale_book_age_seconds": stale_book_age_seconds,
             "stale": stale,
             "last_error": last_error,

@@ -2342,6 +2342,10 @@ def _store_exit_assessment_metadata(
     pos.metadata["last_target_exit_price"] = assessment.target_exit_price
     pos.metadata["last_market_heat_score"] = assessment.market_heat_score
     pos.metadata["last_exit_assessment"] = assessment.reason if blocked_by is None else blocked_by
+    if blocked_by:
+        pos.metadata["last_exit_blocker"] = blocked_by
+    else:
+        pos.metadata.pop("last_exit_blocker", None)
     if assessment.should_close:
         pos.metadata["last_exit_signal_trigger"] = assessment.trigger
         pos.metadata["last_exit_signal_reason"] = assessment.reason

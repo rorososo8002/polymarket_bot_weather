@@ -434,6 +434,95 @@ def test_stream_registry_reconstructs_open_position_when_market_hydration_fails(
     assert registry["held"].no_token_id == "held-no"
 
 
+def test_stream_markets_force_include_held_position_token_when_discovery_market_lacks_it():
+    discovered = RawMarket(
+        market_id="held",
+        question="Will the lowest temperature in Seoul be 21째C on June 29?",
+        slug="held",
+        active=True,
+        closed=False,
+        yes_token_id="discovered-yes",
+        no_token_id=None,
+    )
+    broker = type(
+        "Broker",
+        (),
+        {
+            "state": PaperState(
+                cash_usd=900.0,
+                positions=[
+                    PaperPosition(
+                        position_id="p1",
+                        market_id="held",
+                        question=discovered.question,
+                        token_id="held-no",
+                        side="NO",
+                        entry_price=0.76,
+                        shares=108.0,
+                        cost_usd=83.0,
+                        opened_at="2026-06-28T21:37:46+00:00",
+                    )
+                ],
+            )
+        },
+    )()
+
+    stream_markets = runner_module._ensure_open_position_stream_tokens([discovered], broker)
+
+    assert len(stream_markets) == 1
+    assert stream_markets[0].yes_token_id == "discovered-yes"
+    assert stream_markets[0].no_token_id == "held-no"
+
+
+def test_stream_token_registry_prioritizes_held_position_tokens():
+    seoul = RawMarket(
+        market_id="seoul",
+        question="Will the lowest temperature in Seoul be 21째C on June 29?",
+        slug="seoul",
+        active=True,
+        closed=False,
+        yes_token_id="seoul-yes",
+        no_token_id="seoul-no",
+    )
+    tokyo = RawMarket(
+        market_id="tokyo",
+        question="Will the lowest temperature in Tokyo be 21째C on June 29?",
+        slug="tokyo",
+        active=True,
+        closed=False,
+        yes_token_id="tokyo-yes",
+        no_token_id="tokyo-no",
+    )
+    broker = type(
+        "Broker",
+        (),
+        {
+            "state": PaperState(
+                cash_usd=900.0,
+                positions=[
+                    PaperPosition(
+                        position_id="p1",
+                        market_id="seoul",
+                        question=seoul.question,
+                        token_id="seoul-no",
+                        side="NO",
+                        entry_price=0.76,
+                        shares=108.0,
+                        cost_usd=83.0,
+                        opened_at="2026-06-28T21:37:46+00:00",
+                    )
+                ],
+            )
+        },
+    )()
+
+    market_by_token = runner_module._market_by_token_with_held_positions_first([tokyo, seoul], broker)
+
+    assert list(market_by_token)[:1] == ["seoul-no"]
+    assert market_by_token["seoul-no"].market_id == "seoul"
+    assert market_by_token["tokyo-yes"].market_id == "tokyo"
+
+
 def test_realtime_forever_settles_resolved_open_positions_before_streaming(tmp_path, monkeypatch):
     state_path = tmp_path / "state.json"
     trades_path = tmp_path / "trades.csv"

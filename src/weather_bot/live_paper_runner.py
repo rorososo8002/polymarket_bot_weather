@@ -1704,6 +1704,40 @@ def _stream_market_registry(
     return market_by_id
 
 
+def _ensure_open_position_stream_tokens(
+    stream_markets: list[RawMarket],
+    broker: PaperBroker,
+) -> list[RawMarket]:
+    market_by_id = {market.market_id: market for market in stream_markets}
+    order = [market.market_id for market in stream_markets]
+    for pos in broker.state.positions:
+        market = market_by_id.get(pos.market_id) or _market_from_position(pos)
+        if pos.side == "YES" and market.yes_token_id != pos.token_id:
+            market = replace(market, yes_token_id=pos.token_id)
+        elif pos.side == "NO" and market.no_token_id != pos.token_id:
+            market = replace(market, no_token_id=pos.token_id)
+        if pos.market_id not in market_by_id:
+            order.append(pos.market_id)
+        market_by_id[pos.market_id] = market
+    return [market_by_id[market_id] for market_id in order]
+
+
+def _market_by_token_with_held_positions_first(
+    stream_markets: list[RawMarket],
+    broker: PaperBroker,
+) -> dict[str, RawMarket]:
+    market_by_id = {market.market_id: market for market in stream_markets}
+    market_by_token: dict[str, RawMarket] = {}
+    for pos in broker.state.positions:
+        if not pos.token_id:
+            continue
+        market_by_token[pos.token_id] = market_by_id.get(pos.market_id) or _market_from_position(pos)
+    for market in stream_markets:
+        for token_id in _market_token_ids(market):
+            market_by_token.setdefault(token_id, market)
+    return market_by_token
+
+
 def _settle_resolved_positions_before_streaming(
     broker: PaperBroker,
     market_by_id: dict[str, RawMarket],
@@ -2547,12 +2581,11 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
                         stream_markets.append(market)
                     continue
                 stream_markets.append(market)
+            stream_markets = _ensure_open_position_stream_tokens(stream_markets, broker)
+            for market in stream_markets:
+                market_by_id[market.market_id] = market
             coverage = _discovery_coverage(stream_markets)
-            market_by_token = {
-                token_id: market
-                for market in stream_markets
-                for token_id in _market_token_ids(market)
-            }
+            market_by_token = _market_by_token_with_held_positions_first(stream_markets, broker)
             discovery_status = {
                 "raw_discovered_markets": raw_discovered_count,
                 "temperature_markets": temperature_coverage["markets"],

@@ -1043,27 +1043,98 @@ function minuteOfDay(value) {
   return `${String(Math.floor(normalized / 60)).padStart(2, "0")}:${String(normalized % 60).padStart(2, "0")}`;
 }
 
+function strategyReasonKo(reason) {
+  const raw = String(reason || "").trim();
+  const lower = raw.toLowerCase();
+  if (!raw) return "아직 전략 허용/차단 이유가 기록되지 않았습니다.";
+  if (lower.includes("irreversibly broke") || lower.includes("verified bucket break")) {
+    return "공식 당일 관측값이 이미 선택 온도칸을 벗어났습니다. 최고/최저 기록은 되돌릴 수 없어서 이 방향을 허용했습니다.";
+  }
+  if (lower.includes("formation monitoring started")) {
+    return "이 도시·이 달의 과거 통계상 이제부터 판단해도 되는 시간대입니다. 남은 움직임 확률까지 보고 있습니다.";
+  }
+  if (lower.includes("has not started")) return "아직 이 도시의 보통 최고/최저가 만들어지는 시간 전이라 신규 진입을 막았습니다.";
+  if (lower.includes("q75")) return "과거 늦은 날까지 포함한 안전 시간 전이라 정확한 온도칸 진입을 기다립니다.";
+  if (lower.includes("16:00")) return "최고기온 정확한 온도칸은 오후 4시 이후에만 봅니다.";
+  if (lower.includes("rain/dewpoint")) return "비/이슬점 때문에 밤에 최저기온이 더 내려갈 수 있어 막았습니다.";
+  if (lower.includes("clob closes before high")) return "주문장이 최고기온이 보통 만들어지는 시간보다 먼저 닫혀서 최고기온 전략을 막았습니다.";
+  return raw.replace(/[-_]/g, " ");
+}
+
+function dataBlockReasonKo(reason) {
+  const raw = String(reason || "").trim();
+  const lower = raw.toLowerCase();
+  if (!raw) return "없음";
+  if (lower === "low-exact-no-rain-dewpoint-risk") return "비와 이슬점 때문에 최저기온이 한 칸 더 내려갈 위험이 있어 차단";
+  if (lower === "metar-daily-extremes-baseline-missing") return "서버 재시작 등으로 오늘 00:00부터의 온도표 기준이 부족해 차단";
+  if (lower === "formation-q75-not-reached") return "과거 통계상 아직 너무 이른 시간이라 차단";
+  if (lower === "clob-closes-before-high-formation") return "주문장이 최고기온 형성 시간보다 먼저 닫혀 차단";
+  return raw.replace(/[-_]/g, " ");
+}
+
+function dailyExtremesKo(status, complete) {
+  const raw = String(status || "").toLowerCase();
+  const ok = raw === "complete" || String(complete).toLowerCase() === "true";
+  if (ok) return "사용 가능: 현지 00:00부터 현재까지 최고/최저 온도표가 이어져 있습니다.";
+  if (raw === "blocked") return "사용 금지: 오늘 온도표가 끊겼거나 기준값이 부족합니다.";
+  return "확인 중: 오늘 온도표가 충분한지 검사 중입니다.";
+}
+
+function midnightResetKo(status) {
+  const raw = String(status || "").trim().toLowerCase();
+  if (!raw || raw === "해당 없음" || raw === "none") return "해당 없음: 홍콩 HKO 자정 이월 방어용 검사입니다.";
+  if (raw === "verified") return "확인됨: 새 날짜 값으로 초기화됐습니다.";
+  if (raw.includes("block")) return "차단됨: 전날 값이 섞였을 가능성이 있습니다.";
+  return status;
+}
+
+function monitoringStatusKo(status) {
+  const raw = String(status || "").toLowerCase();
+  if (raw === "started") return "관찰 시작 후";
+  if (raw === "before_start") return "관찰 시작 전";
+  if (raw === "missing") return "과거 통계 없음";
+  return "확인 중";
+}
+
+function formationWindowText(label, q25, median, q75) {
+  const early = minuteOfDay(q25);
+  const mid = minuteOfDay(median);
+  const late = minuteOfDay(q75);
+  if (early === "--" && mid === "--" && late === "--") return `${label}: 과거 통계 없음`;
+  return `${label}: 보통 ${mid}쯤, 빠른 날 ${early}쯤, 늦은 날 ${late}쯤`;
+}
+
+function bookSourceKo(source) {
+  const raw = String(source || "").toLowerCase();
+  if (raw === "websocket") return "웹소켓 실시간 호가";
+  if (raw === "rest") return "REST 보조 호가";
+  return "호가 출처 확인 중";
+}
+
 function stationStrategyAuditLine(row) {
   const localDate = String(row.station_local_date || row.target_date_local || "--");
   const localTime = String(row.station_local_time || "--");
   const monitoring = String(row.formation_monitoring_status || "not_available");
-  const monitoringKo = monitoring === "started" ? "시작 후" : monitoring === "before_start" ? "시작 전" : monitoring === "missing" ? "자료 없음" : "미확인";
-  const highRange = [row.first_final_high_local_minute_q25, row.first_final_high_local_minute_median, row.first_final_high_local_minute_q75].map(minuteOfDay).join(" / ");
-  const lowRange = [row.first_final_low_local_minute_q25, row.first_final_low_local_minute_median, row.first_final_low_local_minute_q75].map(minuteOfDay).join(" / ");
+  const highRange = formationWindowText("최고기온", row.first_final_high_local_minute_q25, row.first_final_high_local_minute_median, row.first_final_high_local_minute_q75);
+  const lowRange = formationWindowText("최저기온", row.first_final_low_local_minute_q25, row.first_final_low_local_minute_median, row.first_final_low_local_minute_q75);
   const movement = row.remaining_movement_probability == null || row.remaining_movement_probability === "" ? "--" : probPct(row.remaining_movement_probability);
-  const reset = String(row.midnight_reset_status || "해당 없음");
-  const dailyExtremes = String(row.daily_extremes_status || (String(row.daily_extremes_complete).toLowerCase() === "true" ? "complete" : "unverified"));
-  const blocker = String(row.data_block_reason || "없음");
+  const reset = midnightResetKo(row.midnight_reset_status || "");
+  const dailyExtremes = dailyExtremesKo(row.daily_extremes_status, row.daily_extremes_complete);
+  const blocker = dataBlockReasonKo(row.data_block_reason || "");
   const accepting = String(row.clob_accepting_orders ?? "unknown").toLowerCase();
   const orderbook = String(row.clob_enable_order_book ?? "unknown").toLowerCase();
-  const clob = accepting === "true" && orderbook === "true" ? "허용" : accepting === "false" || orderbook === "false" ? "차단" : "미확인";
-  const strategyReason = String(row.strategy_allowed_reason || (monitoring === "started" ? "형성시간 관찰 시작 후 확률 검토" : monitoring === "before_start" ? "형성시간 관찰 시작 전이라 차단" : "검증 자료를 기다리는 중"));
+  const clob = accepting === "true" && orderbook === "true" ? "주문 가능" : accepting === "false" || orderbook === "false" ? "주문 불가" : "주문 상태 미확인";
+  const strategyReason = strategyReasonKo(row.strategy_allowed_reason || (monitoring === "started" ? "formation monitoring started" : monitoring === "before_start" ? "station-local formation monitoring has not started" : ""));
+  const actualRecord = row.nowcast_high_c != null
+    ? `현재까지 최고 ${tempC(row.nowcast_high_c)}${row.observed_at ? ` · 기록 확인 ${shortDateTime(row.observed_at)}` : ""}`
+    : (row.nowcast_low_c != null ? `현재까지 최저 ${tempC(row.nowcast_low_c)}${row.observed_at ? ` · 기록 확인 ${shortDateTime(row.observed_at)}` : ""}` : "현재까지 공식 최고/최저 기록 없음");
   return `<div class="detail-line strategy-audit">
-    <strong>관측소 현지 날짜</strong> ${esc(localDate)} · <strong>관측소 현지 시각</strong> ${esc(localTime)}<br>
-    <strong>전략 관찰</strong> ${esc(monitoringKo)} (${minuteOfDay(row.monitoring_start_local_minute)}부터) · <strong>추가 움직임 확률</strong> ${esc(movement)}<br>
-    <strong>최종 최고 형성</strong> ${esc(highRange)} · <strong>최종 최저 형성</strong> ${esc(lowRange)} (25% / 중앙 / 75%)<br>
-    <strong>자정 초기화</strong> ${esc(reset)} · <strong>당일 누적 최고/최저</strong> ${esc(dailyExtremes)} · <strong>자료 차단 이유</strong> ${esc(blocker)}<br>
-    <strong>CLOB 주문</strong> ${esc(clob)} · <strong>전략 허용 근거</strong> ${esc(strategyReason)}
+    <strong>봇 판단 시간</strong> 관측소 현지 ${esc(localDate)} ${esc(localTime)} · 이 시각 기준으로 공식 관측값과 주문장을 평가했습니다.<br>
+    <strong>오늘 실제 기록</strong> ${esc(actualRecord)}<br>
+    <strong>전략 시간표</strong> ${esc(monitoringStatusKo(monitoring))} (${minuteOfDay(row.monitoring_start_local_minute)}부터 검사) · 남은 시간에 더 움직일 과거확률 ${esc(movement)}<br>
+    <strong>과거 통계</strong> ${esc(highRange)} · ${esc(lowRange)} · 오늘 기록 시간이 아니라 같은 관측소/같은 달의 과거 분포입니다.<br>
+    <strong>자료 상태</strong> ${esc(dailyExtremes)} · 자정 초기화 ${esc(reset)} · 차단 이유 ${esc(blocker)}<br>
+    <strong>주문장</strong> ${esc(clob)} · <strong>전략 판단</strong> ${esc(strategyReason)}
   </div>`;
 }
 
@@ -1073,7 +1144,7 @@ function cardForPosition(p) {
   const bidDepthPnlSign = bidDepthPnl >= 0 ? "+" : "-";
   const exitStatus = p.exit_liquidity_status || "unknown";
   const exitBlocker = p.exit_blocker ? ` · 차단 ${esc(p.exit_blocker)}` : "";
-  const wsAge = p.websocket_stale_book_age_seconds != null ? ` · 호가 ${duration(p.websocket_stale_book_age_seconds)} 전` : "";
+  const wsAge = p.websocket_stale_book_age_seconds != null ? ` · ${bookSourceKo(p.websocket_last_book_source)} ${duration(p.websocket_stale_book_age_seconds)} 전` : "";
   const sideRaw = (p.side || "").toUpperCase();
   const qLower = (p.question || "").toLowerCase();
   const isHighest = qLower.includes("highest") || qLower.includes("high");
@@ -1090,9 +1161,14 @@ function cardForPosition(p) {
     ? `<span class="badge obs-temp">${nowcastLabel} ${tempC(nowcastVal)}</span>`
     : `<span class="badge muted-badge">${esc(nowcastUnavailableKo(p.nowcast_unavailable_reason))}</span>`;
   const lockBadge = `<span class="badge ${stationLockClass(p.station_lock_strength)}">${esc(stationLockLabel(p.station_lock_strength))}</span>`;
-  const allocationBadge = p.station_allocation_fraction != null
-    ? `<span class="badge neutral">진입 비중 ${(Number(p.station_allocation_fraction) * 100).toFixed(0)}%</span>`
-    : `<span class="badge muted-badge">진입 비중 --</span>`;
+  const allocationBadge = p.actual_entry_fraction != null
+    ? `<span class="badge neutral">실제 투입 ${(Number(p.actual_entry_fraction) * 100).toFixed(1)}%</span>`
+    : (p.station_allocation_fraction != null
+      ? `<span class="badge neutral">전략 목표 ${(Number(p.station_allocation_fraction) * 100).toFixed(0)}%</span>`
+      : `<span class="badge muted-badge">실제 투입 기록 없음</span>`);
+  const requestedAllocationBadge = p.entry_fraction != null
+    ? `<span class="badge muted-badge">전략 요청 ${(Number(p.entry_fraction) * 100).toFixed(1)}%</span>`
+    : "";
   const boundaryLine = stationBoundaryText(p);
   const stationLabel = p.station_name && p.station_id && p.station_name !== p.station_id
     ? `${p.station_name} (${p.station_id})`
@@ -1117,12 +1193,13 @@ function cardForPosition(p) {
       ${nowcastBadge}
       ${lockBadge}
       ${allocationBadge}
+      ${requestedAllocationBadge}
     </div>
     <div class="pos-row">
       <span class="badge price">진입 ${price(p.entry_price)}</span>
       <span class="badge price">진입금액 ${money(p.cost_usd)}</span>
       <span class="badge neutral">진입시간 ${shortDateTime(p.opened_at)}</span>
-      <span class="badge current-price">현재가 ${price(p.mark_price)}</span>
+      <span class="badge current-price" title="보유 수량을 지금 청산할 때 쓰는 기준가입니다. 시장에서 새로 사는 가격이 아닙니다.">청산기준 ${price(p.mark_price)}</span>
       <span class="badge ${bidDepthPnlClass}">청산PnL ${bidDepthPnlSign}${money(Math.abs(bidDepthPnl))}</span>
     </div>
     <div class="pos-row">
@@ -1146,7 +1223,7 @@ function cardForPosition(p) {
     </div>
     <div class="detail-line">
       매도가능 ${qty(p.exit_available_shares)} / ${qty(p.shares)} · 청산가치 ${money(p.bid_depth_market_value)}
-      · 웹소켓 ${statusKo(p.websocket_status)}${p.websocket_stale ? " · 오래됨" : ""}${wsAge}${exitBlocker}
+      · 호가수신 ${statusKo(p.websocket_status)}${p.websocket_stale ? " · 오래됨" : ""}${wsAge}${exitBlocker}
     </div>
   </div>`;
 }
