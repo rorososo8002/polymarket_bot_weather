@@ -23,7 +23,7 @@ Answer in Korean. Explain developer terms in beginner language.
   - `docs/strategy-validation-roadmap.md`: only for multi-day validation/reporting.
   - `docs/codex/runtime-data.md`: only for cleanup/archive/runtime-data work.
 
-## Fresh Task Read Set
+## Mandatory Fresh-Task Read Set
 
 For non-trivial coding, debugging, deployment, server, or strategy work, read:
 

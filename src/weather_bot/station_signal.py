@@ -386,7 +386,12 @@ def _low_exact_no_weather_risk(
         return None
 
     dewpoint_c = _payload_float(payload, "latest_dewpoint_c")
-    dewpoint_near = dewpoint_c is not None and dewpoint_c <= bucket_lower + LOW_EXACT_NO_WEATHER_BUFFER_C
+    dewpoint_near = (
+        dewpoint_c is not None
+        and bucket_lower - LOW_EXACT_NO_WEATHER_BUFFER_C
+        <= dewpoint_c
+        <= bucket_lower + LOW_EXACT_NO_WEATHER_BUFFER_C
+    )
     precip = _has_precipitation(payload)
     flags = [f"gap_c={gap_c:.2f}"]
     if dewpoint_near:

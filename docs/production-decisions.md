@@ -130,6 +130,9 @@ Low exact NO weather risk:
 
 ## 9. Validation
 
+Experiment-readiness reporting lives in `docs/paper-validation-runbook.md`;
+read it only for readiness reports or experiment resets.
+
 Behavior changes require:
 
 1. Failing regression test first.

@@ -435,6 +435,36 @@ def test_low_exact_no_one_degree_buffer_caps_size_when_dewpoint_near_target() ->
     assert "low_weather_risk=penalty" in signal.note
 
 
+def test_low_exact_no_weather_risk_ignores_dewpoint_far_below_target_bucket() -> None:
+    store = FakeResidualProfileStore(
+        _residual_estimate(
+            raw=0.07,
+            yes=0.05,
+            no=0.91,
+            profile_key="RJTT|month:06|0330|low|C",
+        )
+    )
+
+    signal = estimate_station_signal(
+        "Will the lowest temperature in Tokyo be 21C today?",
+        settings=Settings(),
+        observation_provider=ExactTemperatureProvider(
+            observed_low_c=22.0,
+            latest_temp_c=22.0,
+            latest_dewpoint_c=17.0,
+            low_rise_observed_at=datetime(2026, 6, 27, 18, 0, tzinfo=timezone.utc),
+        ),
+        now=datetime(2026, 6, 27, 20, 40, tzinfo=timezone.utc),
+        residual_profile_store=store,
+    )
+
+    assert signal.source == "official-station-residual-low-no"
+    assert signal.selected_side_probability == pytest.approx(0.91)
+    assert signal.probability_tier == "90"
+    assert signal.entry_size_fraction_override == pytest.approx(0.30)
+    assert "low_weather_risk" not in signal.note
+
+
 def test_hko_carryover_observation_cannot_create_strong_no() -> None:
     provider = ExactTemperatureProvider(observed_high_c=33.1)
     original = provider.observed_temperature_extremes_so_far
