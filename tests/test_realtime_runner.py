@@ -70,6 +70,30 @@ def test_stream_backed_client_reads_order_books_from_websocket_cache():
     assert book.best_ask == 0.50
 
 
+def test_fetch_books_keeps_available_side_when_other_side_snapshot_missing():
+    class PartialClient:
+        def get_order_book(self, token_id: str) -> OrderBook:
+            if token_id == "yes-token":
+                raise KeyError("no websocket orderbook snapshot for token yes-token")
+            return OrderBook("no-token", bids=[OrderLevel(0.70, 10)], asks=[OrderLevel(0.72, 12)])
+
+    market = RawMarket(
+        market_id="m1",
+        question="Will the highest temperature in Seoul be 29°C on June 29?",
+        slug="seoul-high",
+        active=True,
+        closed=False,
+        yes_token_id="yes-token",
+        no_token_id="no-token",
+    )
+
+    books, error = runner_module._fetch_books(market, PartialClient())
+
+    assert error is None
+    assert set(books) == {"NO"}
+    assert books["NO"].best_ask == 0.72
+
+
 def test_probability_estimator_receives_residual_profile_store() -> None:
     profile_store = object()
     received: dict[str, object] = {}

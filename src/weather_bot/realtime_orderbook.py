@@ -360,7 +360,19 @@ class OrderBookMarketStream:
         self._last_rest_snapshot_error = ""
 
     def get_order_book(self, token_id: str) -> OrderBook:
-        return self.cache.get_order_book(token_id)
+        try:
+            return self.cache.get_order_book(token_id)
+        except KeyError as missing_snapshot:
+            if not self.rest_snapshot_enabled or self.rest_snapshot_fetcher is None:
+                raise
+            try:
+                self.apply_rest_snapshot(self.rest_snapshot_fetcher(str(token_id)))
+                return self.cache.get_order_book(token_id)
+            except KeyError:
+                raise missing_snapshot
+            except Exception as exc:
+                self._record_rest_snapshot_error(exc)
+                raise missing_snapshot from exc
 
     def start(self, asset_ids: Iterable[str]) -> None:
         self._asset_ids = [str(asset_id) for asset_id in asset_ids if str(asset_id)]

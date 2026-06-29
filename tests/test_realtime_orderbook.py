@@ -164,6 +164,39 @@ def test_rest_snapshot_can_seed_executable_depth_as_verification_cache(monkeypat
     assert calls == [{"yes"}, {"yes"}]
 
 
+def test_missing_stream_snapshot_fetches_rest_snapshot_on_demand(monkeypatch):
+    now = datetime(2026, 6, 1, 0, 0, tzinfo=timezone.utc)
+    fetched: list[str] = []
+    updates: list[set[str]] = []
+
+    def fetch_snapshot(token_id: str) -> OrderBook:
+        fetched.append(token_id)
+        return OrderBook(
+            token_id,
+            bids=[OrderLevel(0.84, 11)],
+            asks=[OrderLevel(0.86, 13)],
+            book_hash="rest-on-demand",
+        )
+
+    monkeypatch.setattr("weather_bot.realtime_orderbook._utc_now", lambda: now)
+    stream = OrderBookMarketStream(
+        rest_snapshot_fetcher=fetch_snapshot,
+        rest_snapshot_enabled=True,
+        on_update=lambda token_ids: updates.append(set(token_ids)),
+    )
+
+    book = stream.get_order_book("candidate-token")
+
+    assert fetched == ["candidate-token"]
+    assert updates == [{"candidate-token"}]
+    assert book.best_bid == 0.84
+    assert book.best_ask == 0.86
+    health = stream.health_snapshot(now=now)
+    assert health["last_rest_snapshot_token_id"] == "candidate-token"
+    assert health["rest_snapshot_count"] == 1
+    assert health["last_book_source"] == "rest"
+
+
 def test_rest_snapshot_can_seed_bid_only_depth_for_held_position_exit(monkeypatch):
     now = datetime(2026, 6, 1, 0, 0, tzinfo=timezone.utc)
     calls: list[set[str]] = []

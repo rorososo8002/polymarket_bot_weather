@@ -819,13 +819,16 @@ def _side_liquidity_reason(side: str, book: OrderBook, settings: Settings, marke
 
 def _fetch_books(market: RawMarket, client: PolymarketClient) -> tuple[dict[str, OrderBook], str | None]:
     books: dict[str, OrderBook] = {}
-    try:
-        if market.yes_token_id:
-            books["YES"] = client.get_order_book(market.yes_token_id)
-        if market.no_token_id:
-            books["NO"] = client.get_order_book(market.no_token_id)
-    except Exception as exc:  # noqa: BLE001
-        return books, f"order book error: {exc}"
+    errors: list[str] = []
+    for side, token_id in (("YES", market.yes_token_id), ("NO", market.no_token_id)):
+        if not token_id:
+            continue
+        try:
+            books[side] = client.get_order_book(token_id)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"{side}: {exc}")
+    if not books and errors:
+        return books, f"order book error: {'; '.join(errors)}"
     return books, None
 
 
