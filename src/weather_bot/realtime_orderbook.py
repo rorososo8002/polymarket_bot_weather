@@ -12,7 +12,7 @@ from .orderbook_validation import finite_float, valid_level_size, valid_orderboo
 
 MARKET_STREAM_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 WEBSOCKET_CLIENT_MISSING_MESSAGE = "Install websocket-client to use real-time Polymarket orderbook streaming."
-REST_SNAPSHOT_MAX_TOKENS = 256
+REST_SNAPSHOT_MAX_TOKENS = 64
 
 
 def _utc_now() -> datetime:
