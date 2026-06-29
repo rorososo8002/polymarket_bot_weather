@@ -26,9 +26,10 @@ docs/active/current-task.md and docs/production-decisions.md. If current-task
 is active, continue from Next Action. If current-task is none, use my latest
 request and read only the conditional documents needed for that task.
 
-For strategy-validation work, also read docs/strategy-validation-roadmap.md.
-Keep the project paper-only unless I
-explicitly approve a separate live-trading safety project.
+Do not read roadmap, runbook, runtime-data, station audit, live-safety, logs,
+ledgers, archives, caches, or docs/solutions unless the exact task needs them.
+Keep the project paper-only unless I explicitly approve a separate
+live-trading safety project.
 ```
 
 ## Update Rule

@@ -12,8 +12,8 @@ Use the user's latest request.
 
 ## Next Action
 
-Read `AGENTS.md`, this card, and `docs/production-decisions.md`. For
-strategy-validation work, also read `docs/strategy-validation-roadmap.md`.
+Read `AGENTS.md`, this card, and `docs/production-decisions.md`. Read extra
+docs only when `AGENTS.md` says the current task specifically needs them.
 
 ## New Chat Prompt
 
