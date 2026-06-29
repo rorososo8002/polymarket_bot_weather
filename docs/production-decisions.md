@@ -1,213 +1,144 @@
 # Production Decisions
 
-This is the active rule book for the paper-only Polymarket temperature bot.
-History belongs in a matching `docs/solutions/` note; active work belongs in
-`docs/active/current-task.md`. Evidence and readiness gates are in
-`docs/paper-validation-runbook.md`.
+Active rule book for the paper-only temperature bot. Keep this file short.
+Move history, investigations, and long explanations to focused `docs/solutions/`
+notes only when they prevent a repeated mistake.
 
-## 1. Safety Boundary
+## 1. Safety
 
-The current phase is `paper-only strategy validation`. Never add or enable a
-wallet, private key, signing, real order, redemption, claim, copy trading, or a
-hidden live path. Passing paper gates does not authorize live trading; it only
-permits discussion of a separate live-trading safety project.
-
-Paper PnL is credible only when entry uses executable ask depth, exit uses
-executable bid depth, fees and slippage are included, official settlement-
-station evidence is replayable, and uncertain inputs fail closed.
-
-## 2. Supported Markets
-
+- Paper-only. No wallet, private key, signing, real order, redemption, claim,
+  copy trading, or hidden live path.
 - Temperature markets only.
-- Use `TRADING_READY_STATION_MAP`; Karachi remains excluded until its station
-  rule is reconciled.
-- Verify question, rule/source, station, unit, bucket shape, station-local date,
-  UTC window, outcome labels, and token IDs. Any conflict blocks the market.
-- Unsupported, unknown, stale, malformed, missing, suspicious, or conflicting
-  evidence must stop before signal calculation, book subscription, or trade
-  logging.
+- Unknown, stale, malformed, conflicting, unsupported, wrong-station, or
+  unverified evidence fails closed before signal, book subscription, or trade.
+- Measurement day is settlement-station local `00:00` to just before next
+  local `00:00`. Never use UTC date as a shortcut.
 
-The measurement day is the settlement station's local `00:00` through the
-instant before its next local `00:00`. Never substitute a UTC calendar day.
-DST zones must use timezone-aware local-day boundaries.
+## 2. Official Observations
 
-## 3. Official Observations
+- Entries use the mapped official settlement station, not generic forecasts.
+- AWC METAR:
+  - Poll bulk API at most once per minute; one response covers supported ICAO
+    stations.
+  - Request official `hours=4` only as restart bridge. Persistent station
+    history supplies the full local-day high/low.
+  - 400-row response means likely truncated; block entry.
+  - METAR reports may be 30-90 minutes old; polling every minute can return the
+    same station report.
+  - Keep two station-local dates and first timestamps for daily high/low.
+    Restart gap, missing baseline, date regression, or incomplete day blocks.
+  - Seoul RKSI and Busan RKPK use this AWC path.
+- HKO:
+  - Poll official since-midnight max/min at most once per 10 minutes.
+  - Block after midnight until reset is proven. Same prior-day pair is not reset.
+  - After reset, same-day high decrease or low increase blocks HKO.
+  - Restart without prior-day baseline fails closed.
+  - Do not invent fixed allow-after times.
 
-Entries come from the mapped official settlement station, not generic weather
-forecasts. The realtime runner refreshes every trading-ready station on its
-cache cadence even when no order-book price changes occur.
+## 3. Formation And Probability
 
-AWC METAR rules:
+- Use residual profile + manifest by station/month/direction:
+  `monitoring_start_local_minute`, high/low q25/median/q75 formation times,
+  remaining movement probability, sample count.
+- Before monitoring start, ordinary residual entries are blocked.
+- Exact-bucket entries wait for that direction’s q75.
+- High exact residual entries also require local 16:00, two observations in the
+  same integer high bucket, and later lower observation confirming rollover.
+- Low exact residual YES entries require later higher observation confirming
+  rollover.
+- If same-day verified observation already breaks an exact bucket irreversibly,
+  strong NO can happen earlier.
+- Missing/thin/wrong-unit/hash-mismatched profiles fail closed.
+- Current temperature alone is never enough.
 
-- Poll the bulk API no more than once per minute; one response covers supported
-  ICAO stations.
-- Request documented `hours=4` as a restart bridge. The persistent station
-  history, not one response, supplies the complete local-day maximum/minimum.
-- A response reaching the 400-row provider cap is incomplete and blocks entry.
-- A station report may be up to 90 minutes old because routine METAR publication
-  is commonly hourly; polling every minute often returns the same report.
-- Persist two station-local dates and the first observation timestamp at which
-  each daily high/low was reached. A restart gap, missing baseline, date
-  regression, or incomplete day blocks entry.
-- Seoul RKSI and Busan RKPK use this same AWC path.
-- For low-temperature exact NO entries, same-station METAR rain/precipitation
-  and dewpoint are risk filters, not entry evidence. If the current low is only
-  1°C above the selected exact bucket and both precipitation is observed and
-  dewpoint is within 1°C of the selected bucket, block the entry. If only one
-  weather-risk flag is present, reduce the selected-side probability and cap
-  entry size to 5% of bankroll.
+## 4. Precision And Buckets
 
-HKO rules:
+- Whole-degree display: integer `N` means `[N.0, N+1.0)`.
+- High exact `N`: `observed_high >= N+1.0` makes YES impossible.
+- Low exact `N`: `observed_low < N` makes YES impossible.
+- Tail markets must follow exact wording: above, at-or-above, below, and
+  at-or-below are different.
+- HKO decimal markets remain `needs_audit`; no 100% certainty or concentrated
+  sizing until settlement audit proves bucket mapping.
 
-- Poll the official since-midnight max/min source no more than once per 10
-  minutes; accept a row for at most 20 minutes.
-- Persist the previous day's final max/min and two local dates of first-
-  confirmed extreme timestamps.
-- After midnight, block until the new pair is proven reset. An unchanged prior-
-  day pair is not evidence of reset.
-- After reset, a same-day high decrease or low increase blocks HKO immediately.
-  A restart without the prior-day baseline fails closed.
-- Do not invent a fixed allow-after clock time.
+## 5. CLOB And Execution
 
-Provider failures must respect retry floors. Do not retry-bomb a source.
+- Gamma `endDate` is not enough. Before entry require active market, not closed
+  or archived, CLOB `accepting_orders=true`, `enable_order_book=true`, valid
+  YES/NO tokens, fresh executable ask VWAP, spread/fee/edge/cash/exposure gates,
+  and fresh complete station evidence.
+- Entry price = executable ask-side VWAP.
+- Exit price = executable bid-side VWAP.
+- No bid depth = HOLD. Partial depth = partial close or HOLD. Never fake a zero
+  close or midpoint fill.
+- WebSocket market stream is primary. REST `/book` is bounded seed/resync helper.
+  PING/PONG proves connection, not fresh executable depth.
+- Fresh REST helper snapshots with executable bid/ask depth may refresh per-token
+  freshness and wake exit evaluation, but dashboard must label them REST helper
+  depth, not millisecond WebSocket depth.
+- Held-position tokens must stay subscribed and be checked first even if market
+  discovery omits the market or returns incomplete YES/NO token pair.
 
-## 4. Formation And Residual Probability
+## 6. Sizing
 
-Read the verified station/month/direction metadata from the residual profile
-and its manifest:
+Default mode: `hybrid_observation_edge`.
 
-- `monitoring_start_local_minute`
-- high and low final-formation q25 / median / q75
-- residual movement histogram and sample count
+Allowed signal families:
 
-Before monitoring starts, ordinary residual entries are blocked. Exact-bucket
-entries also wait for that direction's q75 formation minute. High exact
-residual entries additionally require station-local 16:00, two observations in
-the same integer high bucket, and a later lower observation confirming the high
-has rolled over. Low exact residual YES entries require a later higher
-observation confirming the low has rolled over. A reset-verified observation
-that has already crossed an exact bucket's irreversible boundary may produce
-strong NO earlier.
+```text
+lock_only
+intraday_observation_edge
+abnormal_official_station_mispricing
+```
 
-Profiles are stored on 30-minute checkpoints. When the current local minute has
-no exact checkpoint, use the latest available checkpoint at or before now.
-Never use a future checkpoint. Missing, thin, wrong-unit, or hash-mismatched
-profiles fail closed.
+Sizing targets before liquidity/edge/cash cuts:
 
-The probability must combine the current complete local-day high/low with how
-often that station, month, direction, and time historically moved farther.
-"Current temperature" alone is never enough.
+- Below 90% calibrated selected-side probability: at most 20% of bankroll per
+  ordinary city exposure.
+- 90% to below 95%: target 30% for one exclusive city-date position.
+- 95% or higher: target 50% for one exclusive city-date position.
 
-## 5. Settlement Precision And Buckets
-
-Every station/source has an explicit unit, reporting precision, bucket model,
-confidence, and note.
-
-- Whole-degree display: integer `N` uses `[N.0, N+1.0)`.
-- One-decimal display: use a range-containing interpretation only when audited
-  rules or settlements support it.
-- Unknown precision blocks entry.
-
-HKO remains `one_decimal_range_containing / needs_audit`. Until historical
-Polymarket outcomes are reconciled with HKO Absolute Daily Max/Min, do not treat
-its result as 100% certain or give it concentrated size.
-
-For a daily high exact `N`, `observed_high >= N+1.0` makes YES impossible. For
-a daily low exact `N`, `observed_low < N` makes YES impossible. Tail markets
-must follow their exact wording; above, at-or-above, below, and at-or-below are
-not interchangeable.
-
-## 6. Final CLOB Tradability
-
-Gamma `endDate` is not proof that orders are accepted. Immediately before a new
-paper entry require:
-
-- market active, not closed, and not archived;
-- CLOB `accepting_orders=true` and `enable_order_book=true`;
-- valid YES/NO token IDs;
-- fresh executable ask depth and final size-aware VWAP;
-- spread, fee-aware edge, expected return, cash, and exposure gates;
-- fresh complete same-station evidence.
-
-Unknown tradability, disabled books, or rejected orders receive stable SKIP
-reasons. If an actual CLOB close time precedes historical high formation, block
-the high strategy and prefer a feasible low strategy. Do not infer this from
-Gamma `endDate` alone.
-
-## 7. Execution Realism
-
-The CLOB WebSocket market stream is primary. REST `/book` is only a bounded
-seed, verification, or resync helper. PING/PONG proves a socket exists, not that
-its executable depth is fresh; rebuild a stale stream even if its thread lives.
-Fresh REST helper snapshots with executable bid/ask depth may refresh per-token
-freshness and wake exit evaluation, but the dashboard must show them as REST
-helper depth rather than millisecond WebSocket depth.
-Held-position tokens must remain subscribed and be checked first even when
-market discovery omits the market or returns an incomplete YES/NO token pair.
-
-- Entry price = ask-side executable VWAP for the final size.
-- Exit price = bid-side executable VWAP for the final close size.
-- No bid depth means HOLD, never a fake zero-price close.
-- Partial depth means partial close or hold, never a fake full close.
-- Indicative best prices and midpoints are not fills.
-
-## 8. Strategy And Sizing
-
-Default mode is `hybrid_observation_edge`. Allowed signal families are
-`lock_only`, `intraday_observation_edge`, and
-`abnormal_official_station_mispricing`.
-
-- Below 90% calibrated selected-side probability: ordinary city exposure stays
-  at or below 20% of bankroll.
-- From 90% to below 95%: target 30% of bankroll for one exclusive city-date
-  position.
-- At or above 95%: target 50% of bankroll for one exclusive city-date position.
-
-These are paper allocation targets, not permission to ignore liquidity. Final
-VWAP impact, positive fee-aware edge, complete observations, CLOB status, cash,
-and the 50% single-market ceiling may reduce or block a fill. HKO `needs_audit`
+Final executable VWAP, fee-aware edge, complete observations, CLOB state, cash,
+and 50% single-market ceiling may reduce or block a fill. HKO `needs_audit`
 cannot use concentrated residual sizing.
 
-Reuse a fresh cached official signal at final pre-trade and recalculate the
-CLOB economics. Refetch the station only after its evidence TTL expires; do not
-create a second provider-failure opportunity seconds after a valid fetch.
+Low exact NO weather risk:
 
-## 9. Portfolio And Exit Safety
+- If current low is only 1°C above selected bucket and both precipitation is
+  observed and dewpoint is within 1°C of selected bucket, block entry.
+- If only one weather-risk flag exists, reduce probability and cap size to 5%.
 
-- Opposite sides of the same market are blocked.
-- Same-side add-ons must pass all current price, probability, edge, cash, and
+## 7. Portfolio And Exit Safety
+
+- Block opposite sides of the same market.
+- Same-side add-ons must pass current price, probability, edge, cash, and
   exposure gates.
-- Correlated city-date buckets share one risk budget. Different NO buckets are
-  not automatic diversification.
-- Concentrated sizing requires one exclusive city-date position.
-- A closed position cannot rotate into a sibling bucket using the identical
-  station observation timestamp; require newer evidence.
-- `SKIP` means no valid new probability. It is not NO and must never be
-  complemented into an exit signal.
+- Correlated city-date buckets share one risk budget.
+- A closed position cannot rotate into a sibling bucket with the same station
+  observation timestamp; require newer evidence.
+- `SKIP` means no valid new probability. Never complement it into an exit signal.
 - Drawdown breakers block entries only; exits and settlements continue.
 
-## 10. Ledgers And Runtime Evidence
+## 8. Runtime Data
 
-`paper_state.json` is the paper account book: cash, positions, cost, and PnL.
-`paper_trades.csv` is the execution receipt ledger. `paper_decisions.csv` is the
-strategy evidence ledger. They are not disposable cache files, and corruption
-or disagreement fails closed instead of silently creating a fresh account.
+- `paper_state.json`: 종이계좌 장부.
+- `paper_trades.csv`: 체결 영수증.
+- `paper_decisions.csv`: 전략 판단 장부.
+- Do not delete/truncate those three except after explicit experiment reset.
+- Raw snapshots and diagnostics are bounded by runtime cleanup policy; inspect
+  sizes/counts/tails, not full files.
 
-New rows retain strategy family, market identity, station/date evidence,
-observed extremes, side probability, VWAP, spread, fees, expected return,
-precision confidence, and stable reason. Old rows missing newer columns remain
-readable.
+## 9. Validation
 
-High-volume raw snapshots and SKIP diagnostics are bounded, rotated, and safe
-to delete only under the runtime cleanup policy in `docs/codex/runtime-data.md`.
+Behavior changes require:
 
-## 11. Validation
+1. Failing regression test first.
+2. Focused tests.
+3. Full local pytest.
+4. Transactional Oracle deploy.
+5. Full Oracle pytest.
+6. Restart services only after tests pass.
 
-The paper report must separate realistic net PnL, opens/closes/partial closes,
-liquidity and tradability blockers, strategy family, city, high/low direction,
-precision confidence, and HKO `needs_audit` exposure. A short profitable result
-without these breakdowns is not evidence.
-
-Behavior changes require a failing regression test first, focused tests, the
-full local suite, and the full Oracle VPS suite before service restart. Keep the
-paper-only boundary and the readiness gates in `docs/paper-validation-runbook.md`.
+Paper profit is credible only when PnL is separated by strategy family, city,
+high/low direction, probability tier, skip reason, liquidity blocker, fees, and
+executable bid/ask depth.

@@ -3,6 +3,9 @@
 Use these verified shapes before inventing a new pytest, SSH, or VPS command.
 Run git mutations and pytest processes serially.
 
+Token rule: read only the section that matches the operation. Do not read this
+whole file just to run one known command.
+
 ## Local Tests
 
 Full suite from the repository root:

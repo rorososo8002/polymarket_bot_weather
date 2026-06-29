@@ -1,5 +1,9 @@
 # Strategy Validation Roadmap
 
+Do not read this during normal coding/debugging/deployment. Read it only for
+multi-day paper-performance validation, experiment reports, or calibration
+roadmap work.
+
 This roadmap tracks evidence still needed to judge the paper strategy honestly.
 It is not the current task list; use `docs/active/current-task.md` for that.
 Long-window readiness gates are in `docs/paper-validation-runbook.md`.
