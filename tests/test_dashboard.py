@@ -187,24 +187,13 @@ def test_dashboard_payload_explains_official_nowcast_entry_only_skips_in_korean(
     assert skip["station_name"] == "Chengdu Shuangliu International Airport Station"
 
 
-def test_dashboard_payload_lists_supported_official_station_registry_with_provider_floors(tmp_path):
+def test_dashboard_payload_omits_static_station_registry_from_default_refresh(tmp_path):
     state_path = tmp_path / "state.json"
     state_path.write_text(json.dumps({"cash_usd": 100.0, "positions": []}), encoding="utf-8")
 
     payload = build_dashboard_payload(Settings(state_path=str(state_path)))
 
-    registry = payload["scanner"]["station_registry"]
-    assert len(registry) == 49
-    seoul = next(row for row in registry if row["city"] == "seoul")
-    assert seoul["station_id"] == "RKSI"
-    assert seoul["station_name"] == "Incheon Intl Airport Station"
-    assert seoul["nowcast_min_real_request_interval_seconds"] == 60
-    assert seoul["nowcast_call_rule_ko"].startswith("AWC METAR 공식 API는")
-    assert seoul["display_station_references"][0]["station_id"] == "108"
-    assert "표시용 참고" in seoul["display_station_references"][0]["usage_ko"]
-    hong_kong = next(row for row in registry if row["city"] == "hong kong")
-    assert hong_kong["nowcast_min_real_request_interval_seconds"] == 600
-    assert "10분" in hong_kong["nowcast_call_rule_ko"]
+    assert "station_registry" not in payload["scanner"]
 
 
 def test_dashboard_html_is_official_station_first():
@@ -217,9 +206,8 @@ def test_dashboard_html_is_official_station_first():
     assert "정산 경계" in HTML
     assert "진입 비중" in HTML
     assert "최근 스킵" in HTML
-    assert "공식 관측소 목록" in HTML
     assert "skip.reason_ko" in HTML
-    assert "stationRegistryCard" in HTML
+    assert "stationRegistryCard" not in HTML
     assert 'id="r-city-entries"' in HTML
     assert "function cityEntryCard(row)" in HTML
 

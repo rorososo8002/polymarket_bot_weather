@@ -15,8 +15,7 @@ from .config import Settings, load_settings
 from .dashboard_template import HTML
 from .edge import polymarket_taker_fee_usdc
 from .runner_status import read_runner_status
-from .nowcast import AWC_METAR_MIN_REAL_REQUEST_INTERVAL_SECONDS, HKO_MAXMIN_MIN_REAL_REQUEST_INTERVAL_SECONDS
-from .stations import TRADING_READY_STATION_MAP, station_audit_rows
+from .stations import TRADING_READY_STATION_MAP
 from .weather_client import parse_weather_question
 
 
@@ -1109,60 +1108,6 @@ def _skip_reason_ko(row: dict[str, Any]) -> str:
     return "조건을 통과하지 못해 진입하지 않았습니다."
 
 
-def _station_registry_rows() -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    for row in station_audit_rows():
-        nowcast_source_type = str(row.get("nowcast_source_type") or "")
-        min_interval_seconds: int | None
-        call_rule_ko: str
-        if nowcast_source_type == "metar":
-            min_interval_seconds = AWC_METAR_MIN_REAL_REQUEST_INTERVAL_SECONDS
-            call_rule_ko = "AWC METAR 공식 API는 실제 HTTP 호출을 최소 60초 간격으로 제한합니다."
-        elif nowcast_source_type == "hko_maxmin_since_midnight":
-            min_interval_seconds = HKO_MAXMIN_MIN_REAL_REQUEST_INTERVAL_SECONDS
-            call_rule_ko = "HKO 공식 max/min 자료는 실제 HTTP 호출을 최소 10분 간격으로 제한합니다."
-        elif nowcast_source_type == "metar_unavailable":
-            min_interval_seconds = None
-            call_rule_ko = "공식 관측 제공자가 아직 검증되지 않아 호출하지 않습니다."
-        else:
-            min_interval_seconds = None
-            call_rule_ko = "지원하지 않는 관측 제공자라 호출하지 않습니다."
-
-        references = []
-        for reference in row.get("display_station_references") or []:
-            if not isinstance(reference, dict):
-                continue
-            role = str(reference.get("role") or "")
-            references.append(
-                {
-                    **reference,
-                    "usage_ko": (
-                        "표시용 참고 관측소입니다. 폴리마켓 정산 관측소가 아니므로 매매 판단에는 쓰지 않습니다."
-                        if role == "display_only_reference"
-                        else "참고 관측소입니다."
-                    ),
-                }
-            )
-
-        rows.append(
-            {
-                "city": str(row.get("city") or ""),
-                "station_id": str(row.get("station_id") or ""),
-                "station_name": str(row.get("station_name") or ""),
-                "timezone": str(row.get("timezone") or ""),
-                "trading_ready": bool(row.get("trading_ready")),
-                "nowcast_source_type": nowcast_source_type,
-                "nowcast_provider_status": str(row.get("nowcast_provider_status") or ""),
-                "nowcast_confidence_grade": str(row.get("nowcast_confidence_grade") or ""),
-                "nowcast_min_real_request_interval_seconds": min_interval_seconds,
-                "nowcast_call_rule_ko": call_rule_ko,
-                "polymarket_rule_station_text": str(row.get("polymarket_rule_station_text") or ""),
-                "display_station_references": references,
-            }
-        )
-    return sorted(rows, key=lambda item: item["city"])
-
-
 def _bucket_display_label(threshold_c: float | None, condition_label: str) -> str:
     if threshold_c is None:
         return ""
@@ -1840,7 +1785,6 @@ def build_dashboard_payload(settings: Settings | None = None, auth_required: boo
             "actual_closes": int(trade_totals["closes"]),
             "latest_station_at": station_health["last_success_at"],
             "station_observations": station_observations,
-            "station_registry": _station_registry_rows(),
             "station_signals": _station_signal_rows(decisions),
             "recent_skips": _recent_skip_rows(settings),
         },
