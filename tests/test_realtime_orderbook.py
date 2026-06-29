@@ -149,6 +149,38 @@ def test_rest_snapshot_can_seed_executable_depth_as_verification_cache(monkeypat
     assert calls == [{"yes"}, {"yes"}]
 
 
+def test_rest_snapshot_can_seed_bid_only_depth_for_held_position_exit(monkeypatch):
+    now = datetime(2026, 6, 1, 0, 0, tzinfo=timezone.utc)
+    calls: list[set[str]] = []
+
+    class AliveThread:
+        def is_alive(self):
+            return True
+
+    monkeypatch.setattr("weather_bot.realtime_orderbook._utc_now", lambda: now)
+    stream = OrderBookMarketStream(stale_seconds=60, on_update=lambda token_ids: calls.append(set(token_ids)))
+    stream._thread = AliveThread()
+    stream._started_at = now - timedelta(seconds=120)
+
+    updated = stream.apply_rest_snapshot(
+        OrderBook(
+            "held-no",
+            bids=[OrderLevel(0.99, 120)],
+            asks=[],
+            book_hash="rest-bid-only",
+        )
+    )
+
+    assert updated == {"held-no"}
+    assert calls == [{"held-no"}]
+    book = stream.get_order_book("held-no")
+    assert book.best_bid == 0.99
+    assert book.best_ask is None
+    token_health = stream.token_health_snapshot("held-no", now=now)
+    assert token_health["stale"] is False
+    assert token_health["last_book_source"] == "rest"
+
+
 def test_price_change_without_prior_book_snapshot_does_not_create_executable_depth():
     cache = OrderBookStreamCache()
 

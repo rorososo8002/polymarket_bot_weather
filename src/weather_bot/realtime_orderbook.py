@@ -111,7 +111,7 @@ def _set_level(levels: list[OrderLevel], price: float, size: float, *, reverse: 
 
 
 def _has_executable_depth(book: OrderBook) -> bool:
-    return book.best_bid is not None and book.best_ask is not None
+    return book.best_bid is not None or book.best_ask is not None
 
 
 class OrderBookStreamCache:
