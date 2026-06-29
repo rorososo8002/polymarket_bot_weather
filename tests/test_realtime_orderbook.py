@@ -6,7 +6,13 @@ import pytest
 
 from weather_bot.edge import executable_buy_price, executable_sell_price
 from weather_bot.models import OrderBook, OrderLevel
-from weather_bot.realtime_orderbook import OrderBookMarketStream, OrderBookStreamCache, market_subscription_message
+from weather_bot.realtime_orderbook import (
+    REST_SNAPSHOT_MAX_TOKENS,
+    OrderBookMarketStream,
+    OrderBookStreamCache,
+    _rest_snapshot_asset_ids,
+    market_subscription_message,
+)
 
 
 def test_market_subscription_uses_token_ids_with_custom_features():
@@ -110,6 +116,15 @@ def test_rest_snapshot_replaces_cache_without_triggering_realtime_evaluation():
         )
     )
     assert updated == set()
+
+
+def test_rest_snapshot_asset_ids_keep_front_tokens_and_cap_background_load():
+    asset_ids = [f"token-{index}" for index in range(REST_SNAPSHOT_MAX_TOKENS + 5)]
+
+    selected = _rest_snapshot_asset_ids(asset_ids)
+
+    assert selected == asset_ids[:REST_SNAPSHOT_MAX_TOKENS]
+    assert len(selected) == REST_SNAPSHOT_MAX_TOKENS
 
 
 def test_rest_snapshot_can_seed_executable_depth_as_verification_cache(monkeypatch):

@@ -12,6 +12,7 @@ from .orderbook_validation import finite_float, valid_level_size, valid_orderboo
 
 MARKET_STREAM_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 WEBSOCKET_CLIENT_MISSING_MESSAGE = "Install websocket-client to use real-time Polymarket orderbook streaming."
+REST_SNAPSHOT_MAX_TOKENS = 256
 
 
 def _utc_now() -> datetime:
@@ -78,6 +79,11 @@ def _executable_orderbook_update_token_ids(message: str | dict[str, Any] | list[
 
 def _contains_executable_orderbook_update(message: str | dict[str, Any] | list[dict[str, Any]]) -> bool:
     return bool(_executable_orderbook_update_token_ids(message))
+
+
+def _rest_snapshot_asset_ids(asset_ids: Iterable[str]) -> list[str]:
+    # ponytail: first tokens include held positions; add a dynamic priority set if newly opened positions need REST boost.
+    return [str(asset_id) for asset_id in asset_ids if str(asset_id)][:REST_SNAPSHOT_MAX_TOKENS]
 
 
 def market_subscription_message(asset_ids: Iterable[str]) -> dict[str, Any]:
@@ -623,7 +629,7 @@ class OrderBookMarketStream:
         if fetcher is None:
             return
         while not self._stop.is_set():
-            asset_ids = list(self._asset_ids)
+            asset_ids = _rest_snapshot_asset_ids(self._asset_ids)
             if not asset_ids:
                 if self._stop.wait(self.rest_snapshot_interval_seconds):
                     return
