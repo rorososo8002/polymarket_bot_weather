@@ -53,6 +53,7 @@ ENTRY_BANKROLL_FAIL_CLOSED_REASON = "기존 포지션을 안전하게 평가할 
 
 ENTRY_DEPTH_AUDIT_TARGET_USD = 100.0
 REALTIME_EVALUATION_QUEUE_MAX_EVENTS = 256
+REALTIME_EVALUATION_BATCH_MAX_EVENTS = 8
 REALTIME_EVALUATION_COALESCE_SECONDS = 0.25
 
 
@@ -391,12 +392,14 @@ class RealtimeEvaluationCoalescer:
         event_key_by_token: dict[str, str],
         evaluator: Callable[[set[str]], None],
         max_pending_events: int = REALTIME_EVALUATION_QUEUE_MAX_EVENTS,
+        max_batch_events: int = REALTIME_EVALUATION_BATCH_MAX_EVENTS,
         coalesce_seconds: float = REALTIME_EVALUATION_COALESCE_SECONDS,
         status_update: Callable[[dict[str, object]], None] | None = None,
     ) -> None:
         self.event_key_by_token = {str(token): str(event_key) for token, event_key in event_key_by_token.items()}
         self.evaluator = evaluator
         self.max_pending_events = max(1, int(max_pending_events))
+        self.max_batch_events = max(1, int(max_batch_events))
         self.coalesce_seconds = max(0.0, float(coalesce_seconds))
         self.status_update = status_update
         self._condition = threading.Condition()
@@ -478,6 +481,7 @@ class RealtimeEvaluationCoalescer:
                 "thread_alive": bool(self._thread is not None and self._thread.is_alive()),
                 "queue_depth": len(self._pending_tokens_by_event),
                 "max_pending_events": self.max_pending_events,
+                "max_batch_events": self.max_batch_events,
                 "coalesce_seconds": self.coalesce_seconds,
                 "inflight_event_count": self._inflight_event_count,
                 "enqueued_update_count": self._enqueued_update_count,
@@ -509,24 +513,42 @@ class RealtimeEvaluationCoalescer:
                         break
                     self._condition.wait(timeout=remaining)
 
-                pending = self._pending_tokens_by_event
-                self._pending_tokens_by_event = {}
-                self._inflight_event_count = len(pending)
+                pending = self._pop_next_pending_batch_locked()
 
-            updated_token_ids = {token for tokens in pending.values() for token in tokens}
-            started_at = time.monotonic()
-            try:
-                self.evaluator(updated_token_ids)
-            except Exception as exc:  # noqa: BLE001
-                self._record_error(exc)
-            finally:
-                duration = time.monotonic() - started_at
-                with self._condition:
-                    self._processed_batch_count += 1
-                    self._processed_event_count += len(pending)
-                    self._inflight_event_count = 0
-                    self._last_evaluated_at = utc_now_iso()
-                    self._last_evaluation_duration_seconds = round(duration, 3)
+            self._evaluate_pending_batch(pending)
+
+    def _pop_next_pending_batch_locked(self) -> dict[str, set[str]]:
+        event_keys = list(self._pending_tokens_by_event)[: self.max_batch_events]
+        pending = {
+            event_key: self._pending_tokens_by_event.pop(event_key)
+            for event_key in event_keys
+        }
+        self._inflight_event_count = len(pending)
+        return pending
+
+    def _run_pending_batch_once(self) -> bool:
+        with self._condition:
+            if not self._pending_tokens_by_event:
+                return False
+            pending = self._pop_next_pending_batch_locked()
+        self._evaluate_pending_batch(pending)
+        return True
+
+    def _evaluate_pending_batch(self, pending: dict[str, set[str]]) -> None:
+        updated_token_ids = {token for tokens in pending.values() for token in tokens}
+        started_at = time.monotonic()
+        try:
+            self.evaluator(updated_token_ids)
+        except Exception as exc:  # noqa: BLE001
+            self._record_error(exc)
+        finally:
+            duration = time.monotonic() - started_at
+            with self._condition:
+                self._processed_batch_count += 1
+                self._processed_event_count += len(pending)
+                self._inflight_event_count = 0
+                self._last_evaluated_at = utc_now_iso()
+                self._last_evaluation_duration_seconds = round(duration, 3)
 
     def _record_error(self, exc: BaseException) -> None:
         safe_error = " ".join(str(exc).split())[:240]

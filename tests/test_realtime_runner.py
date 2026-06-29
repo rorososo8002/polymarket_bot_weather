@@ -277,6 +277,28 @@ def test_realtime_evaluation_coalescer_bounds_pending_events_and_counts_drops():
     assert status["dropped_update_count"] == 1
 
 
+def test_realtime_evaluation_coalescer_processes_large_backlog_in_small_batches():
+    calls: list[set[str]] = []
+    event_key_by_token = {f"token-{index}": f"event-{index}" for index in range(10)}
+    worker = RealtimeEvaluationCoalescer(
+        event_key_by_token=event_key_by_token,
+        evaluator=lambda tokens: calls.append(set(tokens)),
+        coalesce_seconds=0.0,
+    )
+
+    assert worker.enqueue_tokens(set(event_key_by_token)) == 10
+    worker._run_pending_batch_once()
+    worker._run_pending_batch_once()
+
+    assert len(calls) == 2
+    assert len(calls[0]) == 8
+    assert len(calls[1]) == 2
+    status = worker.status_snapshot()
+    assert status["queue_depth"] == 0
+    assert status["processed_batch_count"] == 2
+    assert status["processed_event_count"] == 10
+
+
 def test_run_forever_uses_websocket_mode_by_default(monkeypatch):
     calls: list[str] = []
 
