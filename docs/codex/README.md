@@ -1,9 +1,14 @@
 # Codex Situation-Specific Rules
 
-`AGENTS.md` stays short so normal coding tasks use less context. Read only the document needed for the current task:
+This folder is a router, not required reading. Do not read every file here.
+Open only the one file, or matching section, needed for the current task:
 
-- `vps-dashboard.md`: VPS deployment, dashboard access, systemd, and health checks.
-- `ssh-powershell.md`: safe SSH commands from Windows PowerShell.
-- `known-good-commands.md`: first commands for local pytest and Oracle VPS work.
-- `runtime-data.md`: large runtime files and dashboard data readers.
-- `strategy-research.md`: strategy research and production trading guardrails.
+- `known-good-commands.md`: matching section only before local pytest, SSH, VPS,
+  deployment, or cleanup commands.
+- `vps-dashboard.md`: only for VPS deployment, dashboard access, systemd, and
+  service health checks.
+- `ssh-powershell.md`: only when Windows PowerShell SSH quoting fails.
+- `runtime-data.md`: only for ledgers, diagnostics, rotation, dashboard data
+  readers, or disk cleanup.
+- `strategy-research.md`: only for explicit strategy research or production
+  trading guardrail changes.
