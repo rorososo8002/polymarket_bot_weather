@@ -31,6 +31,9 @@ if TYPE_CHECKING:
     from .polymarket_client import PolymarketClient
 
 
+LOCK_ONLY_HIGH_EXACT_NO_TIER = "lock_high_exact_no"
+
+
 @dataclass(frozen=True)
 class EntryBankrollSnapshot:
     usable: bool
@@ -65,6 +68,20 @@ def structured_event_cap_override_fraction(
     """Return the tier-specific station override only when signal and result agree."""
     if signal is None:
         return None
+    parsed = signal.parsed
+    if (
+        result.side == "NO"
+        and result.signal_family == "lock_only"
+        and result.probability_tier == LOCK_ONLY_HIGH_EXACT_NO_TIER
+        and result.event_cap_override_fraction == 1.0
+        and signal.source == "official-station-lock-strong_no"
+        and signal.settlement_precision_confidence == "verified"
+        and parsed is not None
+        and parsed.variable == "temperature"
+        and parsed.temperature_metric == "max"
+        and parsed.temperature_bucket == "exact"
+    ):
+        return 1.0
     probability = (
         min(signal.selected_side_probability, result.selected_side_probability)
         if (
@@ -888,15 +905,17 @@ def select_event_portfolio(
             override = structured_event_cap_override_fraction(candidate.signal, candidate.result, settings)
             event_fraction = override or ordinary_event_cap_fraction
             city_fraction = override or settings.max_city_exposure_fraction
+            total_fraction = override or settings.max_total_exposure_fraction
+            single_fraction = override or settings.max_single_market_fraction
             available_budget = min(
                 entry_bankroll.entry_bankroll * event_fraction - existing_event_exposure,
                 entry_bankroll.entry_bankroll * city_fraction - broker.city_exposure(city),
-                entry_bankroll.entry_bankroll * settings.max_total_exposure_fraction - broker.total_exposure(),
+                entry_bankroll.entry_bankroll * total_fraction - broker.total_exposure(),
                 broker.state.cash_usd,
             )
             single_limit = min(
                 available_budget,
-                entry_bankroll.entry_bankroll * settings.max_single_market_fraction,
+                entry_bankroll.entry_bankroll * single_fraction,
             )
             for size_usd in _allocation_sizes(
                 min(single_limit, candidate.result.size_usd),

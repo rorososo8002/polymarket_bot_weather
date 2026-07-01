@@ -113,6 +113,7 @@ def test_discovery_does_not_treat_end_date_as_closed() -> None:
             closed=False,
             endDate="2020-01-01T00:00:00Z",
             acceptingOrders=True,
+            enableOrderBook=True,
         )
     )
 
@@ -132,13 +133,24 @@ def test_discovery_excludes_accepting_orders_false_when_explicit() -> None:
     assert markets == []
 
 
-def test_discovery_keeps_accepting_orders_unknown_for_final_check() -> None:
+def test_discovery_excludes_accepting_orders_unknown() -> None:
     client = _DiscoveryClient(_weather_market_row(active=True, closed=False))
 
     markets = client.discover_weather_markets(max_pages=1, page_size=10)
 
-    assert [market.market_id for market in markets] == ["market-1"]
-    assert markets[0].accepting_orders is None
+    assert markets == []
+
+
+def test_discovery_excludes_orderbook_unknown_or_disabled() -> None:
+    for enable_order_book in (None, False):
+        row = _weather_market_row(active=True, closed=False, acceptingOrders=True)
+        if enable_order_book is not None:
+            row["enableOrderBook"] = enable_order_book
+        client = _DiscoveryClient(row)
+
+        markets = client.discover_weather_markets(max_pages=1, page_size=10)
+
+        assert markets == []
 
 
 def test_get_clob_market_tradability_parses_response_and_uses_cache() -> None:

@@ -6,6 +6,7 @@ import csv
 import io
 import json
 import os
+import uuid
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
@@ -377,7 +378,7 @@ class AviationWeatherMetarNowcastProvider:
         if path is None:
             return
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
         try:
             tmp.write_text(
                 json.dumps(self._metar_daily_extremes_state, ensure_ascii=False, sort_keys=True),
@@ -519,7 +520,7 @@ class AviationWeatherMetarNowcastProvider:
         if path is None:
             return
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
         try:
             tmp.write_text(
                 json.dumps(self._hko_rollover_state, ensure_ascii=False, sort_keys=True),

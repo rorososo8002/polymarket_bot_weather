@@ -361,7 +361,11 @@ class PolymarketClient:
             _first_present_value(row, "accepting_orders", "acceptingOrders"),
             default=None,
         )
-        return active is True and closed is False and accepting_orders is not False
+        enable_order_book = parse_api_bool(
+            _first_present_value(row, "enable_order_book", "enableOrderBook"),
+            default=None,
+        )
+        return active is True and closed is False and accepting_orders is True and enable_order_book is True
 
     def _parse_market(
         self,

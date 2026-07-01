@@ -51,9 +51,13 @@ estimate_station_probability = estimate_station_signal
 
 ENTRY_BANKROLL_FAIL_CLOSED_REASON = "기존 포지션을 안전하게 평가할 수 없어 신규 진입 차단"
 
+MAX_ENTRY_EXECUTION_PRICE = 0.90
+LOCK_ONLY_HIGH_EXACT_NO_MAX_ENTRY_PRICE = 0.92
+LOCK_ONLY_HIGH_EXACT_NO_MIN_NET_RETURN_PCT = 0.08
+LOCK_ONLY_HIGH_EXACT_NO_TIER = "lock_high_exact_no"
 ENTRY_DEPTH_AUDIT_TARGET_USD = 100.0
 REALTIME_EVALUATION_QUEUE_MAX_EVENTS = 256
-REALTIME_EVALUATION_BATCH_MAX_EVENTS = 8
+REALTIME_EVALUATION_BATCH_MAX_EVENTS = 32
 REALTIME_EVALUATION_COALESCE_SECONDS = 0.25
 
 
@@ -101,6 +105,36 @@ def _base_signal_family(signal: WeatherSignal) -> str:
     if _is_official_nowcast_lock(signal):
         return "lock_only"
     return ""
+
+
+def _is_lock_only_high_exact_no(side: str, signal: WeatherSignal) -> bool:
+    parsed = signal.parsed
+    nowcast = signal.nowcast if isinstance(signal.nowcast, dict) else {}
+    station_id = str(nowcast.get("station_id") or "").upper()
+    return (
+        side == "NO"
+        and parsed is not None
+        and parsed.variable == "temperature"
+        and parsed.temperature_metric == "max"
+        and parsed.temperature_bucket == "exact"
+        and signal.source == "official-station-lock-strong_no"
+        and signal.p_true <= 1e-12
+        and signal.settlement_precision_confidence == "verified"
+        and station_id != "HKO"
+        and not str(nowcast.get("data_block_reason") or "")
+    )
+
+
+def _entry_price_cap(side: str, signal: WeatherSignal) -> float:
+    if _is_lock_only_high_exact_no(side, signal):
+        return LOCK_ONLY_HIGH_EXACT_NO_MAX_ENTRY_PRICE
+    return MAX_ENTRY_EXECUTION_PRICE
+
+
+def _entry_min_return_pct(side: str, signal: WeatherSignal, settings: Settings) -> float:
+    if _is_lock_only_high_exact_no(side, signal):
+        return max(settings.entry_min_expected_net_return_pct, LOCK_ONLY_HIGH_EXACT_NO_MIN_NET_RETURN_PCT)
+    return settings.entry_min_expected_net_return_pct
 
 
 def _observation_edge_fraction(
@@ -566,6 +600,15 @@ class RealtimeEvaluationCoalescer:
                 pass
 
 
+def _enqueue_realtime_update(
+    evaluator_worker: RealtimeEvaluationCoalescer | None,
+    updated_token_ids: set[str],
+) -> int:
+    if evaluator_worker is None:
+        return 0
+    return evaluator_worker.enqueue_tokens(updated_token_ids)
+
+
 def position_size_usd(
     side_probability: float,
     p_eff: float,
@@ -882,6 +925,96 @@ def _max_executable_buy_target_usd(book: OrderBook, fee_rate: float) -> float:
     return total
 
 
+def _settlement_return_pct_for_budget(
+    book: OrderBook,
+    size_usd: float,
+    settings: Settings,
+) -> tuple[float, float] | None:
+    p_exec, shares, _slip = executable_buy_price(
+        book,
+        size_usd,
+        fee_rate=settings.weather_taker_fee_rate,
+    )
+    if p_exec is None or shares <= 0:
+        return None
+    estimate = estimate_executable_net_return(
+        shares=shares,
+        entry_vwap=p_exec,
+        expected_exit_price=1.0,
+        fee_rate=settings.weather_taker_fee_rate,
+        hold_to_settlement=True,
+    )
+    return p_exec, estimate.expected_net_return_pct
+
+
+def _lock_only_high_exact_no_budget(
+    side: str,
+    book: OrderBook,
+    signal: WeatherSignal,
+    settings: Settings,
+    bankroll_before_entry: float,
+) -> float | None:
+    if not _is_lock_only_high_exact_no(side, signal):
+        return None
+    limit = min(
+        bankroll_before_entry,
+        _max_executable_buy_target_usd(book, settings.weather_taker_fee_rate),
+    )
+    if limit < settings.min_order_usd:
+        return None
+
+    def clears(size_usd: float) -> bool:
+        result = _settlement_return_pct_for_budget(book, size_usd, settings)
+        if result is None:
+            return False
+        p_exec, return_pct = result
+        return (
+            p_exec <= LOCK_ONLY_HIGH_EXACT_NO_MAX_ENTRY_PRICE + 1e-12
+            and return_pct >= LOCK_ONLY_HIGH_EXACT_NO_MIN_NET_RETURN_PCT - 1e-12
+        )
+
+    if not clears(settings.min_order_usd):
+        return None
+    if clears(limit):
+        return limit
+
+    low = settings.min_order_usd
+    high = limit
+    for _ in range(40):
+        mid = (low + high) / 2.0
+        if clears(mid):
+            low = mid
+        else:
+            high = mid
+    return low if low >= settings.min_order_usd else None
+
+
+def _entry_price_cap_skip_result(
+    side: str,
+    signal: WeatherSignal,
+    settings: Settings,
+    p_exec: float,
+    market_type: str,
+) -> EdgeResult | None:
+    cap = _entry_price_cap(side, signal)
+    if p_exec <= cap + 1e-12:
+        return None
+    _entry_fee_per_share, edge, _side_probability = _side_edge_metrics(side, signal, p_exec, settings)
+    return EdgeResult(
+        "SKIP",
+        signal.p_true,
+        p_exec,
+        edge,
+        0.0,
+        0.0,
+        (
+            f"SKIP_ENTRY_PRICE_TOO_HIGH: {side} p_exec_vwap={p_exec:.4f} "
+            f"> max_entry_price={cap:.4f}; edge={edge:.4f} "
+            f"[{market_type}]"
+        ),
+    )
+
+
 def _entry_ask_depth_top5_json(
     book: OrderBook,
     *,
@@ -964,7 +1097,11 @@ def _side_result(
             0.0,
             f"SKIP_NO_EXECUTABLE_DEPTH: {side} liquidity filter: insufficient ask depth [{market_type}]",
         )
+    price_cap_result = _entry_price_cap_skip_result(side, signal, settings, p_exec, market_type)
+    if price_cap_result is not None:
+        return price_cap_result
 
+    lock_only_high_exact_no = _is_lock_only_high_exact_no(side, signal)
     entry_fee_per_share = 0.0
     edge = -999.0
     size_usd = 0.0
@@ -991,17 +1128,44 @@ def _side_result(
             else effective_entry_fraction
         )
         effective_entry_fraction = size_fraction_override
-        requested_size_usd = position_size_usd(
-            side_probability,
-            p_eff,
+        lock_budget = _lock_only_high_exact_no_budget(
+            side,
+            book,
+            signal,
             settings,
             bankroll_before_entry,
-            size_fraction_override,
-            net_edge=edge,
-            min_edge=min_edge,
-            confidence=signal.confidence,
-            min_confidence=min_confidence,
         )
+        if lock_only_high_exact_no:
+            if lock_budget is None:
+                return EdgeResult(
+                    "SKIP",
+                    signal.p_true,
+                    p_exec,
+                    edge,
+                    0.0,
+                    0.0,
+                    (
+                        "SKIP_LOCK_ONLY_FULL_BANKROLL_NO_DEPTH: "
+                        f"{side} exact high lock has no executable ask budget clearing "
+                        f"max_entry_price={LOCK_ONLY_HIGH_EXACT_NO_MAX_ENTRY_PRICE:.4f} "
+                        f"and min_settlement_net_return={LOCK_ONLY_HIGH_EXACT_NO_MIN_NET_RETURN_PCT:.2%} "
+                        f"[{market_type}]"
+                    ),
+                )
+            requested_size_usd = lock_budget
+            effective_entry_fraction = min(1.0, requested_size_usd / bankroll_before_entry) if bankroll_before_entry > 0 else 0.0
+        else:
+            requested_size_usd = position_size_usd(
+                side_probability,
+                p_eff,
+                settings,
+                bankroll_before_entry,
+                size_fraction_override,
+                net_edge=edge,
+                min_edge=min_edge,
+                confidence=signal.confidence,
+                min_confidence=min_confidence,
+            )
         size_usd = requested_size_usd
         if size_usd < settings.min_order_usd:
             break
@@ -1048,6 +1212,9 @@ def _side_result(
             partial_fill_reason = (
                 f", partial_fill=${capped_size_usd:.2f}/${requested_size_usd:.2f}"
             )
+        price_cap_result = _entry_price_cap_skip_result(side, signal, settings, checked_p_exec, market_type)
+        if price_cap_result is not None:
+            return price_cap_result
         if abs(checked_p_exec - p_exec) <= 1e-12 and abs(checked_slip - slip) <= 1e-12:
             break
         p_exec = checked_p_exec
@@ -1070,24 +1237,25 @@ def _side_result(
         )
         return EdgeResult("SKIP", signal.p_true, p_exec, edge, 0.0, 0.0, reason)
 
-    price_impact_reason = _price_impact_guard_reason(
-        side,
-        book,
-        p_exec,
-        slip,
-        settings,
-        market_type,
-    )
-    if price_impact_reason:
-        return EdgeResult(
-            "SKIP",
-            signal.p_true,
+    if not lock_only_high_exact_no:
+        price_impact_reason = _price_impact_guard_reason(
+            side,
+            book,
             p_exec,
-            edge,
-            0.0,
-            0.0,
-            price_impact_reason,
+            slip,
+            settings,
+            market_type,
         )
+        if price_impact_reason:
+            return EdgeResult(
+                "SKIP",
+                signal.p_true,
+                p_exec,
+                edge,
+                0.0,
+                0.0,
+                price_impact_reason,
+            )
 
     estimate_shares = fee_adjusted_entry_shares(size_usd, p_exec, settings.weather_taker_fee_rate)
     spread = max(0.0, (book.best_ask or p_exec) - (book.best_bid or p_exec))
@@ -1112,11 +1280,12 @@ def _side_result(
         (expected_exit_estimate, settlement_estimate),
         key=lambda estimate: estimate.expected_net_return_pct,
     )
-    return_ok = return_estimate.expected_net_return_pct >= settings.entry_min_expected_net_return_pct
+    min_return_pct = _entry_min_return_pct(side, signal, settings)
+    return_ok = return_estimate.expected_net_return_pct >= min_return_pct
     is_trade = edge > min_edge and size_usd >= settings.min_order_usd and return_ok
     rejection = ""
     if not return_ok:
-        rejection = f", reject=expected net return below {settings.entry_min_expected_net_return_pct:.2%}"
+        rejection = f", reject=expected net return below {min_return_pct:.2%}"
     confidence_multiplier = confidence_size_multiplier(
         signal.confidence,
         min_confidence=min_confidence,
@@ -1128,6 +1297,12 @@ def _side_result(
             f", official_nowcast_lock=true, entry_size_reason={signal.entry_size_reason}, "
             f"entry_size_fraction_override={(signal.entry_size_fraction_override or 0.0):.2f}"
         )
+        if lock_only_high_exact_no:
+            official_lock_note += (
+                ", lock_only_high_exact_no_full_bankroll=true, "
+                f"max_entry_price={LOCK_ONLY_HIGH_EXACT_NO_MAX_ENTRY_PRICE:.4f}, "
+                f"min_settlement_net_return={LOCK_ONLY_HIGH_EXACT_NO_MIN_NET_RETURN_PCT:.2%}"
+            )
     elif _is_intraday_observation_edge(signal):
         official_lock_note = (
             f", intraday_observation_edge=true, entry_size_reason={signal.entry_size_reason}, "
@@ -1172,11 +1347,17 @@ def _side_result(
         calibration_profile_key=signal.calibration_profile_key,
         calibration_status=signal.calibration_status,
         probability_tier=(
+            LOCK_ONLY_HIGH_EXACT_NO_TIER
+            if lock_only_high_exact_no
+            else
             observation_tier.probability_tier
             if observation_tier is not None
             else signal.probability_tier
         ),
         event_cap_override_fraction=(
+            1.0
+            if lock_only_high_exact_no
+            else
             observation_tier.event_cap_override_fraction
             if observation_tier is not None
             else signal.event_cap_override_fraction
@@ -1241,17 +1422,33 @@ def _final_pre_trade_entry_result(
             f"{result.side} insufficient ask depth "
             f"for ${result.size_usd:.2f} [{market_type}]",
         )
-
-    price_impact_reason = _price_impact_guard_reason(
+    price_cap_result = _entry_price_cap_skip_result(
         result.side,
-        book,
-        checked_p_exec,
-        checked_slip,
+        signal,
         settings,
+        checked_p_exec,
         market_type,
     )
-    if price_impact_reason:
-        return _skip_entry_result(result, f"{price_impact_reason}; final_pre_trade=true")
+    if price_cap_result is not None:
+        return _skip_entry_result(
+            result,
+            f"final pre-trade check failed: {price_cap_result.reason}",
+            p_exec=checked_p_exec,
+            net_edge=price_cap_result.net_edge,
+        )
+
+    lock_only_high_exact_no = _is_lock_only_high_exact_no(result.side, signal)
+    if not lock_only_high_exact_no:
+        price_impact_reason = _price_impact_guard_reason(
+            result.side,
+            book,
+            checked_p_exec,
+            checked_slip,
+            settings,
+            market_type,
+        )
+        if price_impact_reason:
+            return _skip_entry_result(result, f"{price_impact_reason}; final_pre_trade=true")
 
     _entry_fee_per_share, edge, final_side_probability = _side_edge_metrics(
         result.side,
@@ -1282,13 +1479,14 @@ def _final_pre_trade_entry_result(
         (expected_exit_estimate, settlement_estimate),
         key=lambda estimate: estimate.expected_net_return_pct,
     )
-    return_ok = return_estimate.expected_net_return_pct >= settings.entry_min_expected_net_return_pct
+    min_return_pct = _entry_min_return_pct(result.side, signal, settings)
+    return_ok = return_estimate.expected_net_return_pct >= min_return_pct
     if edge <= min_edge or not return_ok:
         return _skip_entry_result(
             result,
             f"SKIP_FINAL_EDGE: final pre-trade check failed: edge={edge:.4f} "
             f"threshold={min_edge:.4f}, expected_net_return={return_estimate.expected_net_return_pct:.2%} "
-            f"threshold={settings.entry_min_expected_net_return_pct:.2%} [{market_type}]",
+            f"threshold={min_return_pct:.2%} [{market_type}]",
             p_exec=checked_p_exec,
             net_edge=edge,
         )
@@ -2670,7 +2868,7 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
             evaluator_worker.start()
 
             def on_update(updated_token_ids: set[str]) -> None:
-                evaluator_worker.enqueue_tokens(updated_token_ids)
+                _enqueue_realtime_update(evaluator_worker, updated_token_ids)
 
             def build_stream() -> OrderBookMarketStream:
                 rest_snapshot_fetcher = getattr(discovery_client, "get_order_book", None)

@@ -1320,16 +1320,18 @@ class PaperBroker:
         risk_bankroll = min(bankroll_before, entry_bankroll_usd) if entry_bankroll_usd is not None else bankroll_before
         event_cap_override = structured_event_cap_override_fraction(signal, result, self.settings)
         market_exposure = sum(position.cost_usd for position in market_positions)
-        single_market_limit = risk_bankroll * self.settings.max_single_market_fraction
+        single_fraction = event_cap_override or self.settings.max_single_market_fraction
+        single_market_limit = risk_bankroll * single_fraction
         if market_exposure + result.size_usd > single_market_limit:
             reason = (
                 f"SKIP_SINGLE_MARKET_CAP: market exposure={market_exposure:.2f}+{result.size_usd:.2f} "
                 f"> limit={single_market_limit:.2f} "
-                f"({self.settings.max_single_market_fraction:.0%} bankroll)"
+                f"({single_fraction:.0%} bankroll)"
             )
             self.log_trade("SKIP_SINGLE_MARKET_CAP", market, result.side, token_id, 0, result.p_exec, 0, reason)
             return None
-        allowed_exposure = risk_bankroll * self.settings.max_total_exposure_fraction
+        total_fraction = event_cap_override or self.settings.max_total_exposure_fraction
+        allowed_exposure = risk_bankroll * total_fraction
         if self.total_exposure() + result.size_usd > allowed_exposure:
             self.log_trade("SKIP_EXPOSURE_CAP", market, result.side, token_id, 0, result.p_exec, 0, "total exposure cap")
             return None

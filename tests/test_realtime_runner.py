@@ -213,6 +213,10 @@ def test_realtime_evaluation_coalescer_does_not_evaluate_on_enqueue():
         worker.stop(drain=False)
 
 
+def test_realtime_update_callback_ignores_late_stream_update_after_worker_stop():
+    assert runner_module._enqueue_realtime_update(None, {"late-token"}) == 0
+
+
 def test_realtime_evaluation_coalescer_merges_burst_updates_by_event():
     calls: list[set[str]] = []
     evaluated = threading.Event()
@@ -301,7 +305,7 @@ def test_realtime_evaluation_coalescer_bounds_pending_events_and_counts_drops():
     assert status["dropped_update_count"] == 1
 
 
-def test_realtime_evaluation_coalescer_processes_large_backlog_in_small_batches():
+def test_realtime_evaluation_coalescer_keeps_normal_burst_in_one_batch():
     calls: list[set[str]] = []
     event_key_by_token = {f"token-{index}": f"event-{index}" for index in range(10)}
     worker = RealtimeEvaluationCoalescer(
@@ -312,14 +316,12 @@ def test_realtime_evaluation_coalescer_processes_large_backlog_in_small_batches(
 
     assert worker.enqueue_tokens(set(event_key_by_token)) == 10
     worker._run_pending_batch_once()
-    worker._run_pending_batch_once()
 
-    assert len(calls) == 2
-    assert len(calls[0]) == 8
-    assert len(calls[1]) == 2
+    assert len(calls) == 1
+    assert len(calls[0]) == 10
     status = worker.status_snapshot()
     assert status["queue_depth"] == 0
-    assert status["processed_batch_count"] == 2
+    assert status["processed_batch_count"] == 1
     assert status["processed_event_count"] == 10
 
 

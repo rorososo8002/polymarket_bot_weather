@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import threading
 from datetime import date, datetime, timezone
 from pathlib import Path
 
+from weather_bot import nowcast as nowcast_module
 from weather_bot.nowcast import AviationWeatherMetarNowcastProvider, DEFAULT_NOWCAST_SOURCES
 from weather_bot.stations import STATION_MAP, station_audit_rows
 
@@ -46,6 +48,35 @@ def test_aviationweather_provider_default_cache_ttl_matches_provider_floor():
     provider = AviationWeatherMetarNowcastProvider(http_get=lambda *_args, **_kwargs: FakeResponse({}))
 
     assert provider.cache_ttl_seconds == 60
+
+
+def test_metar_daily_extremes_state_writes_use_thread_safe_temp_files(tmp_path, monkeypatch):
+    state_path = tmp_path / "metar_daily_extremes_state.json"
+    provider = AviationWeatherMetarNowcastProvider(metar_daily_extremes_state_path=state_path)
+    provider._metar_daily_extremes_state = {"schema_version": 1, "stations": {"RJTT": {"days": {}}}}
+    replace_sources: list[str] = []
+
+    def record_replace(src, _dst):
+        replace_sources.append(Path(src).name)
+
+    monkeypatch.setattr(nowcast_module.os, "replace", record_replace)
+    errors: list[BaseException] = []
+
+    def write_state() -> None:
+        try:
+            provider._write_metar_daily_extremes_state()
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target=write_state) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert errors == []
+    assert len(replace_sources) == 2
+    assert len(set(replace_sources)) == 2
 
 
 def provider_for(

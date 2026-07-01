@@ -127,6 +127,8 @@ def binary_token_fields(yes_token_id: str, no_token_id: str) -> dict[str, str]:
     return {
         "outcomes": json.dumps(["Yes", "No"]),
         "clobTokenIds": json.dumps([yes_token_id, no_token_id]),
+        "acceptingOrders": True,
+        "enableOrderBook": True,
     }
 
 
@@ -1085,7 +1087,7 @@ def test_entry_net_return_filter_rejects_thin_high_price_trade(tmp_path):
     assert "reject=expected net return below 6.00%" in (tmp_path / "decisions.csv").read_text(encoding="utf-8")
 
 
-def test_entry_net_return_filter_allows_high_price_settlement_candidate():
+def test_entry_net_return_filter_allows_settlement_candidate_below_chase_cap():
     settings = Settings(
         min_net_edge=0.01,
         entry_min_expected_net_return_pct=0.06,
@@ -1098,8 +1100,8 @@ def test_entry_net_return_filter_allows_high_price_settlement_candidate():
     )
     client = FakePolymarketClient(
         books={
-            "yes": book("yes", bid=0.92, ask=0.93, bid_size=1000.0, ask_size=1000.0),
-            "no": book("no", bid=0.06, ask=0.07, bid_size=1000.0, ask_size=1000.0),
+            "yes": book("yes", bid=0.88, ask=0.89, bid_size=1000.0, ask_size=1000.0),
+            "no": book("no", bid=0.10, ask=0.11, bid_size=1000.0, ask_size=1000.0),
         }
     )
 
@@ -1109,6 +1111,31 @@ def test_entry_net_return_filter_allows_high_price_settlement_candidate():
     assert per_side["YES"].side == "YES"
     assert "route=settlement" in result.reason
     assert "expected_net_return=" in result.reason
+
+
+def test_entry_rejects_chasing_prices_above_ninety_cents_even_with_edge():
+    settings = Settings(
+        min_net_edge=0.08,
+        entry_min_expected_net_return_pct=0.04,
+        weather_taker_fee_rate=0.0,
+        model_error_margin=0.0,
+        resolution_error_margin=0.0,
+        size_mode="fixed_fraction",
+        entry_fraction=0.10,
+        require_date_hint_for_trade=True,
+    )
+    client = FakePolymarketClient(
+        books={
+            "yes": book("yes", bid=0.90, ask=0.91, bid_size=1000.0, ask_size=1000.0),
+            "no": book("no", bid=0.08, ask=0.09, bid_size=1000.0, ask_size=1000.0),
+        }
+    )
+
+    result, per_side = evaluate_market(temp_market(), temp_signal(p_true=1.0), client, settings, 1000.0, "temperature")
+
+    assert result.side == "SKIP"
+    assert per_side["YES"].net_edge > settings.min_net_edge
+    assert "SKIP_ENTRY_PRICE_TOO_HIGH" in result.reason
 
 
 def test_high_yes_no_ask_sum_still_uses_side_specific_edge():

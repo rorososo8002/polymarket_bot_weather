@@ -123,6 +123,7 @@ def test_rest_snapshot_asset_ids_keep_front_tokens_and_cap_background_load():
 
     selected = _rest_snapshot_asset_ids(asset_ids)
 
+    assert REST_SNAPSHOT_MAX_TOKENS >= 256
     assert selected == asset_ids[:REST_SNAPSHOT_MAX_TOKENS]
     assert len(selected) == REST_SNAPSHOT_MAX_TOKENS
 
