@@ -18,6 +18,7 @@ from weather_bot.live_paper_runner import (
     run_forever,
 )
 from weather_bot.models import (
+    MarketRuleProvenance,
     MarketTradability,
     OrderBook,
     OrderLevel,
@@ -323,6 +324,93 @@ def test_realtime_evaluation_coalescer_keeps_normal_burst_in_one_batch():
     assert status["queue_depth"] == 0
     assert status["processed_batch_count"] == 1
     assert status["processed_event_count"] == 10
+
+
+def test_realtime_evaluation_coalescer_prioritizes_urgent_events_before_old_queue():
+    calls: list[set[str]] = []
+    priority = {
+        "future-event": (10, "future-event"),
+        "today-lock-candidate": (1, "today-lock-candidate"),
+    }
+    worker = RealtimeEvaluationCoalescer(
+        event_key_by_token={
+            "future-token": "future-event",
+            "today-token": "today-lock-candidate",
+        },
+        evaluator=lambda tokens: calls.append(set(tokens)),
+        max_batch_events=1,
+        coalesce_seconds=0.0,
+        event_priority=lambda event_key: priority[event_key],
+    )
+
+    assert worker.enqueue_tokens({"future-token"}) == 1
+    assert worker.enqueue_tokens({"today-token"}) == 1
+
+    worker._run_pending_batch_once()
+    worker._run_pending_batch_once()
+
+    assert calls == [{"today-token"}, {"future-token"}]
+
+
+def test_realtime_event_priorities_rank_same_day_high_exact_before_future_events():
+    now = datetime(2026, 7, 1, 3, 0, tzinfo=timezone.utc)
+    today_high = RawMarket(
+        "today-high",
+        "Will the highest temperature in Taipei be 30°C on July 1?",
+        "today-high",
+        True,
+        False,
+        "today-yes",
+        "today-no",
+        event_id="today-high-event",
+        rule_provenance=MarketRuleProvenance(
+            market_id="today-high",
+            question="Will the highest temperature in Taipei be 30°C on July 1?",
+            event_date_local="2026-07-01",
+            event_timezone="Asia/Taipei",
+        ),
+    )
+    today_low = RawMarket(
+        "today-low",
+        "Will the lowest temperature in Taipei be 24°C on July 1?",
+        "today-low",
+        True,
+        False,
+        "today-low-yes",
+        "today-low-no",
+        event_id="today-low-event",
+        rule_provenance=MarketRuleProvenance(
+            market_id="today-low",
+            question="Will the lowest temperature in Taipei be 24°C on July 1?",
+            event_date_local="2026-07-01",
+            event_timezone="Asia/Taipei",
+        ),
+    )
+    future_high = RawMarket(
+        "future-high",
+        "Will the highest temperature in Taipei be 30°C on July 2?",
+        "future-high",
+        True,
+        False,
+        "future-yes",
+        "future-no",
+        event_id="future-high-event",
+        rule_provenance=MarketRuleProvenance(
+            market_id="future-high",
+            question="Will the highest temperature in Taipei be 30°C on July 2?",
+            event_date_local="2026-07-02",
+            event_timezone="Asia/Taipei",
+        ),
+    )
+
+    priorities = runner_module._realtime_event_priorities(
+        [future_high, today_low, today_high],
+        open_market_ids=set(),
+        now=now,
+    )
+
+    assert priorities["today-high-event"] < priorities["today-low-event"]
+    assert priorities["today-low-event"] < priorities["future-high-event"]
 
 
 def test_run_forever_uses_websocket_mode_by_default(monkeypatch):

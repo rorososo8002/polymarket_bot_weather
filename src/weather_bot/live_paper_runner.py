@@ -24,6 +24,7 @@ from .edge import (
     polymarket_taker_fee_per_share,
     yes_net_edge,
 )
+from .event_dates import event_date_window_from_hint
 from .exit_policy import conservative_settlement_value, model_fair_price, target_exit_price
 from .market_rules import market_rule_mismatch_reason
 from .models import EdgeResult, MarketDecision, MarketTradability, OrderBook, PaperPosition, RawMarket, WeatherSignal
@@ -428,6 +429,7 @@ class RealtimeEvaluationCoalescer:
         max_pending_events: int = REALTIME_EVALUATION_QUEUE_MAX_EVENTS,
         max_batch_events: int = REALTIME_EVALUATION_BATCH_MAX_EVENTS,
         coalesce_seconds: float = REALTIME_EVALUATION_COALESCE_SECONDS,
+        event_priority: Callable[[str], tuple] | None = None,
         status_update: Callable[[dict[str, object]], None] | None = None,
     ) -> None:
         self.event_key_by_token = {str(token): str(event_key) for token, event_key in event_key_by_token.items()}
@@ -435,6 +437,7 @@ class RealtimeEvaluationCoalescer:
         self.max_pending_events = max(1, int(max_pending_events))
         self.max_batch_events = max(1, int(max_batch_events))
         self.coalesce_seconds = max(0.0, float(coalesce_seconds))
+        self.event_priority = event_priority
         self.status_update = status_update
         self._condition = threading.Condition()
         self._pending_tokens_by_event: dict[str, set[str]] = {}
@@ -552,7 +555,10 @@ class RealtimeEvaluationCoalescer:
             self._evaluate_pending_batch(pending)
 
     def _pop_next_pending_batch_locked(self) -> dict[str, set[str]]:
-        event_keys = list(self._pending_tokens_by_event)[: self.max_batch_events]
+        event_keys = list(self._pending_tokens_by_event)
+        if self.event_priority is not None:
+            event_keys = sorted(event_keys, key=self.event_priority)
+        event_keys = event_keys[: self.max_batch_events]
         pending = {
             event_key: self._pending_tokens_by_event.pop(event_key)
             for event_key in event_keys
@@ -1993,6 +1999,91 @@ def _group_weather_markets_by_event(markets: list[RawMarket]) -> list[list[RawMa
     return list(groups.values())
 
 
+def _market_is_active_for_realtime_priority(market: RawMarket) -> bool:
+    if not market.active or market.closed or market.archived is True:
+        return False
+    if market.accepting_orders is False or market.enable_order_book is False:
+        return False
+    return bool(market.yes_token_id or market.no_token_id)
+
+
+def _market_event_date_for_priority(market: RawMarket, now: datetime) -> tuple[date | None, date]:
+    provenance = market.rule_provenance
+    timezone_name = (
+        provenance.event_timezone
+        if provenance is not None and provenance.event_timezone
+        else "UTC"
+    )
+    try:
+        local_today = now.astimezone(ZoneInfo(timezone_name)).date()
+    except ZoneInfoNotFoundError:
+        timezone_name = "UTC"
+        local_today = now.astimezone(timezone.utc).date()
+    if provenance is not None and provenance.event_date_local:
+        try:
+            return date.fromisoformat(provenance.event_date_local), local_today
+        except ValueError:
+            pass
+    parsed = parse_weather_question(market.question)
+    window = event_date_window_from_hint(
+        parsed.date_hint,
+        timezone_name,
+        now=now,
+        source_texts=(market.question, market.slug or "", market.event_slug or ""),
+    )
+    return (window.event_date_local if window is not None else None), local_today
+
+
+def _market_is_high_exact_candidate(market: RawMarket) -> bool:
+    parsed = parse_weather_question(market.question)
+    return (
+        parsed.variable == "temperature"
+        and parsed.temperature_metric == "max"
+        and parsed.temperature_bucket == "exact"
+    )
+
+
+def _realtime_event_priorities(
+    markets: list[RawMarket],
+    *,
+    open_market_ids: set[str],
+    now: datetime,
+) -> dict[str, tuple[int, int, str]]:
+    priorities: dict[str, tuple[int, int, str]] = {}
+    groups: dict[str, list[RawMarket]] = {}
+    for market in markets:
+        groups.setdefault(_market_event_key(market), []).append(market)
+    for event_key, group in groups.items():
+        if any(market.market_id in open_market_ids for market in group):
+            priorities[event_key] = (0, 0, event_key)
+            continue
+        live = [market for market in group if _market_is_active_for_realtime_priority(market)]
+        if not live:
+            priorities[event_key] = (9, 9999, event_key)
+            continue
+        date_deltas: list[int] = []
+        same_day = False
+        for market in live:
+            event_date, local_today = _market_event_date_for_priority(market, now)
+            if event_date is None:
+                continue
+            delta = (event_date - local_today).days
+            date_deltas.append(abs(delta))
+            same_day = same_day or delta == 0
+        nearest_day_distance = min(date_deltas) if date_deltas else 9999
+        high_exact = any(_market_is_high_exact_candidate(market) for market in live)
+        if same_day and high_exact:
+            tier = 1
+        elif same_day:
+            tier = 2
+        elif high_exact:
+            tier = 3
+        else:
+            tier = 4
+        priorities[event_key] = (tier, nearest_day_distance, event_key)
+    return priorities
+
+
 def _discovery_coverage(markets: list[RawMarket]) -> dict[str, int]:
     groups = _group_weather_markets_by_event(markets)
     cities = {
@@ -2838,6 +2929,11 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
                 token_id: _market_event_key(market)
                 for token_id, market in market_by_token.items()
             }
+            event_priorities = _realtime_event_priorities(
+                list(market_by_id.values()),
+                open_market_ids=open_market_ids,
+                now=datetime.now(timezone.utc),
+            )
 
             def evaluate_queued_update(updated_token_ids: set[str]) -> None:
                 with update_lock:
@@ -2863,6 +2959,7 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
             evaluator_worker = RealtimeEvaluationCoalescer(
                 event_key_by_token=event_key_by_token,
                 evaluator=evaluate_queued_update,
+                event_priority=lambda event_key: event_priorities.get(str(event_key), (9, 9999, str(event_key))),
                 status_update=update_evaluator_status,
             )
             evaluator_worker.start()
