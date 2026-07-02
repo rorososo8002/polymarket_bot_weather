@@ -206,7 +206,7 @@ class Settings:
     max_consecutive_losses: int = 3
     city_loss_cooldown_hours: float = 24.0
     large_loss_threshold_fraction: float = 0.50
-    large_loss_cooldown_hours: float = 24.0
+    large_loss_cooldown_hours: float = 0.0
 
     # Paper weather-fee default from the official category schedule.
     # A separate live-execution project must query fee parameters per market.

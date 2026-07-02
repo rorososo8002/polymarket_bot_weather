@@ -225,6 +225,7 @@ def test_default_city_date_portfolio_caps_shrink_after_one_thousand_dollars():
     assert Settings.daily_realized_loss_limit_fraction == 0.50
     assert Settings.daily_unrealized_loss_limit_fraction == 0.50
     assert Settings.large_loss_threshold_fraction == 0.50
+    assert Settings.large_loss_cooldown_hours == 0.0
     assert Settings.max_total_exposure_fraction == 0.90
     assert Settings.min_order_usd == 10.0
     assert Settings.official_nowcast_lock_enabled is True
