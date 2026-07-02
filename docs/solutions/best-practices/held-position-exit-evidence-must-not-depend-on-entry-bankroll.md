@@ -1,7 +1,7 @@
 ---
 title: Held-position exit evidence must not depend on entry bankroll
 date: 2026-06-07
-last_updated: 2026-06-13
+last_updated: 2026-07-02
 category: docs/solutions/best-practices
 module: live_paper_runner
 problem_type: best_practice
@@ -50,6 +50,10 @@ Keep these two paths separate:
   refresh separate.
 - Held-position exits should still refresh weather probability, station nowcast,
   and per-side `latest_edges` whenever possible.
+- A neutral station signal (`confidence=0`, commonly represented as
+  `p_true=0.5`) means "no valid new probability." Do not write it into
+  held-position `latest_edges` unless it carries an explicit exit signal such
+  as nowcast bucket-lock risk.
 - If an exit signal fires but the book has no executable bid depth, log the real
   reason as "exit wanted, no liquidity" rather than falling back to a generic
   hold.
@@ -105,6 +109,14 @@ entry bankroll unsafe -> new entries blocked
 held exit refresh -> latest per-side probability/nowcast still recorded
 maybe_close_positions -> probability stop or nowcast-risk exit can fire
 no executable bid -> explicit no-liquidity exit blocker is logged
+```
+
+Neutral-signal guard:
+
+```text
+station evidence pending -> p_true=0.5, confidence=0
+held exit refresh -> do not replace the entry probability
+maybe_close_positions -> HOLD until a real probability or explicit risk arrives
 ```
 
 ## Related
