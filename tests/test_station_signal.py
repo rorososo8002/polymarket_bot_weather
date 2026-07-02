@@ -248,7 +248,7 @@ def test_unknown_precision_blocks_confident_entry(monkeypatch: pytest.MonkeyPatc
     assert provider.calls == 0
 
 
-def test_residual_high_exact_96_percent_forces_fifty_percent_target() -> None:
+def test_residual_high_exact_96_percent_caps_unconfirmed_target_at_twenty_percent() -> None:
     store = FakeResidualProfileStore(
         _residual_estimate(raw=0.97, yes=0.96, no=0.02)
     )
@@ -272,9 +272,9 @@ def test_residual_high_exact_96_percent_forces_fifty_percent_target() -> None:
     assert signal.conservative_yes_probability == pytest.approx(0.96)
     assert signal.conservative_no_probability == pytest.approx(0.02)
     assert signal.selected_side_probability == pytest.approx(0.96)
-    assert signal.entry_size_fraction_override == pytest.approx(0.50)
+    assert signal.entry_size_fraction_override == pytest.approx(0.20)
     assert signal.probability_tier == "95"
-    assert signal.event_cap_override_fraction == pytest.approx(0.50)
+    assert signal.event_cap_override_fraction == pytest.approx(0.20)
     assert signal.calibration_sample_days == 120
     assert signal.calibration_profile_key == "RKSI|month:06|0930|high|C"
     assert signal.calibration_status == "RESIDUAL_PROBABILITY_OK"
@@ -461,7 +461,7 @@ def test_low_exact_no_weather_risk_ignores_dewpoint_far_below_target_bucket() ->
     assert signal.source == "official-station-residual-low-no"
     assert signal.selected_side_probability == pytest.approx(0.91)
     assert signal.probability_tier == "90"
-    assert signal.entry_size_fraction_override == pytest.approx(0.30)
+    assert signal.entry_size_fraction_override == pytest.approx(0.20)
     assert "low_weather_risk" not in signal.note
 
 
@@ -508,8 +508,8 @@ def test_hko_reset_verified_strong_no_is_capped_because_settlement_needs_audit()
 @pytest.mark.parametrize(
     ("conservative_probability", "expected_tier", "expected_fraction", "expected_override"),
     [
-        (0.944, "90", 0.30, 0.30),
-        (0.90, "90", 0.30, 0.30),
+        (0.944, "90", 0.20, 0.20),
+        (0.90, "90", 0.20, 0.20),
         (0.84, "80", 0.10, None),
     ],
 )
@@ -637,7 +637,7 @@ def test_residual_high_exact_allows_entry_after_drop_after_high() -> None:
     )
 
     assert signal.confidence > 0.0
-    assert signal.entry_size_fraction_override == pytest.approx(0.30)
+    assert signal.entry_size_fraction_override == pytest.approx(0.20)
     assert signal.nowcast["data_block_reason"] == ""
     assert len(store.calls) == 1
 
@@ -819,8 +819,8 @@ def test_lower_tail_low_observed_below_threshold_gets_strong_yes() -> None:
     assert signal.parsed is not None
     assert signal.parsed.temperature_bucket == "lower_tail"
     assert signal.p_true == pytest.approx(0.98)
-    assert signal.entry_size_fraction_override == pytest.approx(0.50)
-    assert signal.event_cap_override_fraction == pytest.approx(0.50)
+    assert signal.entry_size_fraction_override == pytest.approx(0.20)
+    assert signal.event_cap_override_fraction == pytest.approx(0.20)
     assert signal.source == "official-station-residual-low-yes"
     assert store.calls[0]["direction"] == "low"
     assert store.calls[0]["observed_extreme"] == pytest.approx(69.0, abs=0.01)

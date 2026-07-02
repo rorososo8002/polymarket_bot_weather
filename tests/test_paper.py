@@ -76,10 +76,10 @@ def _concentrated_signal() -> WeatherSignal:
     return WeatherSignal(
         **{
             **_signal().__dict__,
-            "entry_size_fraction_override": 0.50,
+            "entry_size_fraction_override": 0.20,
             "selected_side_probability": 0.96,
             "probability_tier": "95",
-            "event_cap_override_fraction": 0.50,
+            "event_cap_override_fraction": 0.20,
         }
     )
 
@@ -298,13 +298,13 @@ def test_close_trade_preserves_entry_strategy_metadata(tmp_path):
     assert close_row["settlement_precision_confidence"] == "verified"
 
 
-def test_broker_allows_structured_95_tier_to_bypass_ordinary_city_event_caps(tmp_path):
+def test_broker_allows_structured_95_tier_to_use_twenty_percent_cap(tmp_path):
     broker = PaperBroker(_settings(tmp_path))
 
     position = broker.open_position(
         _market(),
         "yes",
-        _result(size_usd=50.0, probability_tier="95", event_cap_override_fraction=0.50),
+        _result(size_usd=20.0, probability_tier="95", event_cap_override_fraction=0.20),
         city="seoul",
         date_hint="today",
         entry_bankroll_usd=100.0,
@@ -312,7 +312,7 @@ def test_broker_allows_structured_95_tier_to_bypass_ordinary_city_event_caps(tmp
     )
 
     assert position is not None
-    assert position.cost_usd == 50.0
+    assert position.cost_usd == 20.0
 
 
 def test_broker_rejects_unstructured_95_tier_above_ordinary_event_cap(tmp_path):
@@ -345,7 +345,7 @@ def test_broker_rejects_direct_call_above_structured_event_cap(tmp_path):
     position = broker.open_position(
         _market(),
         "yes",
-        _result(size_usd=50.01, probability_tier="95", event_cap_override_fraction=0.50),
+        _result(size_usd=20.01, probability_tier="95", event_cap_override_fraction=0.20),
         city="seoul",
         date_hint="today",
         entry_bankroll_usd=100.0,

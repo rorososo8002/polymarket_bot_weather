@@ -93,14 +93,14 @@ abnormal_official_station_mispricing
 
 Sizing targets before liquidity/edge/cash cuts:
 
-- Below 90% calibrated selected-side probability: at most 20% of bankroll per
-  ordinary city exposure.
-- 90% to below 95%: target 30% for one exclusive city-date position.
-- 95% or higher: target 50% for one exclusive city-date position.
+- Non-lock residual probability entries are capped at 20% of bankroll per
+  ordinary city exposure, even above 90% or 95%.
+- Only verified lock-only exact high NO can override this and use up to all
+  remaining cash when executable VWAP and net-return gates pass.
 
 Final executable VWAP, fee-aware edge, complete observations, CLOB state, cash,
-and 50% single-market ceiling may reduce or block a fill. HKO `needs_audit`
-cannot use concentrated residual sizing.
+and single-market exposure gates may reduce or block a fill. HKO `needs_audit`
+cannot use concentrated sizing.
 
 Low exact NO weather risk:
 

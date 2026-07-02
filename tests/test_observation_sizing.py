@@ -56,7 +56,7 @@ def test_yes_tier_uses_separate_conservative_yes_probability():
     )
 
     assert yes_probability == pytest.approx(0.91)
-    assert observation_edge_entry_fraction(yes_probability) == ObservationSizingTier("90", 0.30, 0.30)
+    assert observation_edge_entry_fraction(yes_probability) == ObservationSizingTier("90", 0.20, 0.20)
 
 
 def test_no_tier_uses_separate_conservative_no_probability():
@@ -82,7 +82,7 @@ def test_no_tier_uses_separate_conservative_no_probability():
     assert signal.raw_probability == 0.04
     assert no_probability == pytest.approx(0.91)
     assert no_probability != pytest.approx(1.0 - signal.raw_probability)
-    assert tier == ObservationSizingTier("90", 0.30, 0.30)
+    assert tier == ObservationSizingTier("90", 0.20, 0.20)
 
 
 def test_weather_signal_and_edge_result_probability_metadata_defaults_are_backward_compatible():

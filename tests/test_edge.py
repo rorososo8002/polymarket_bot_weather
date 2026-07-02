@@ -56,9 +56,9 @@ def test_edge_functions_do_not_accept_separate_slippage_parameter():
 
 @pytest.mark.parametrize(
     ("probability", "tier", "fraction"),
-    [(0.90, "90", 0.30), (0.949, "90", 0.30), (0.95, "95", 0.50)],
+    [(0.90, "90", 0.20), (0.949, "90", 0.20), (0.95, "95", 0.20)],
 )
-def test_high_probability_tiers_force_requested_fraction_and_matching_event_cap(
+def test_high_probability_tiers_cap_unconfirmed_residual_size(
     probability: float,
     tier: str,
     fraction: float,

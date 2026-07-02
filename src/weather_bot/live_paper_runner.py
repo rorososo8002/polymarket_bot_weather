@@ -1834,6 +1834,8 @@ def _refresh_held_exit_edges_from_signal(
             reason,
         )
         edge = _with_exit_signal(pos.side, signal, edge)
+        if not edge.exit_signal and signal.confidence <= 0.0:
+            continue
         latest_edges[(pos.market_id, pos.side)] = edge
         refreshed[pos.side] = edge
     return refreshed

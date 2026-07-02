@@ -1642,15 +1642,15 @@ def test_partial_ask_liquidity_records_requested_and_executable_size(tmp_path):
         tmp_path,
         p_true=0.97,
         yes_ask=0.50,
-        yes_size=80.0,
+        yes_size=50.0,
     )
 
     assert result is not None
     assert result.side == "YES"
-    assert result.requested_size_usd == pytest.approx(100.0)
-    assert result.executable_size_usd == pytest.approx(40.0)
-    assert result.size_usd == pytest.approx(40.0)
-    assert broker.state.positions[0].cost_usd == pytest.approx(40.0)
+    assert result.requested_size_usd == pytest.approx(40.0)
+    assert result.executable_size_usd == pytest.approx(25.0)
+    assert result.size_usd == pytest.approx(25.0)
+    assert broker.state.positions[0].cost_usd == pytest.approx(25.0)
 
 
 def test_evaluate_market_blocks_excessive_vwap_price_impact(tmp_path):

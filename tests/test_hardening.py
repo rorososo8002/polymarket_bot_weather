@@ -2098,6 +2098,64 @@ def test_nowcast_above_exact_bucket_closes_held_yes_by_probability_stop(tmp_path
     assert "probability stop" in rows[0]["reason"]
 
 
+def test_neutral_held_signal_does_not_replace_probability_with_fifty_percent(tmp_path):
+    settings = Settings(
+        state_path=str(tmp_path / "state.json"),
+        trades_csv_path=str(tmp_path / "trades.csv"),
+        decisions_csv_path=str(tmp_path / "decisions.csv"),
+        raw_snapshots_path=str(tmp_path / "raw.jsonl"),
+        portfolio_decisions_jsonl_path=str(tmp_path / "portfolios.jsonl"),
+        probability_stop_drop_threshold=0.10,
+    )
+    question = "Will the highest temperature in Ankara be 31C on July 1?"
+    market = RawMarket(
+        market_id="ankara-31c",
+        question=question,
+        slug="ankara-31c",
+        active=True,
+        closed=False,
+        yes_token_id="yes",
+        no_token_id="no",
+    )
+    broker = PaperBroker(settings)
+    broker.state = PaperState(
+        cash_usd=350.0,
+        positions=[
+            PaperPosition(
+                position_id="p1",
+                market_id=market.market_id,
+                question=question,
+                token_id="yes",
+                side="YES",
+                entry_price=0.796,
+                shares=800.0,
+                cost_usd=650.0,
+                opened_at=datetime.now(timezone.utc).isoformat(),
+                metadata={
+                    "entry_p_true": 0.993,
+                    "selected_side_probability": 0.971,
+                    "probability_stop_threshold": 0.871,
+                },
+            )
+        ],
+    )
+    signal = WeatherSignal(
+        p_true=0.5,
+        confidence=0.0,
+        source="official-station-high-drop-confirmation",
+        note="high_drop_observed_at missing; exact high bucket entry blocked",
+        parsed=parse_weather_question(question),
+        nowcast={"observed_high_c": 31.0},
+        signal_family="",
+    )
+    latest_edges: dict[tuple[str, str], EdgeResult] = {}
+
+    refreshed = _refresh_held_exit_edges_from_signal(broker, market, signal, latest_edges, None)
+
+    assert refreshed == {}
+    assert latest_edges == {}
+
+
 def test_run_cycle_reuses_one_station_observation_provider_for_all_markets(monkeypatch, tmp_path):
     settings = Settings(
         state_path=str(tmp_path / "state.json"),

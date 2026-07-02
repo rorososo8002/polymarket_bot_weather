@@ -576,7 +576,7 @@ def test_event_portfolio_selects_one_profitable_leg(tmp_path):
     assert decision.expected_net_profit_usd == 1.25
 
 
-def test_event_portfolio_uses_fifty_percent_as_cap_without_forcing_size(tmp_path):
+def test_event_portfolio_caps_high_probability_residual_at_twenty_percent(tmp_path):
     broker = PaperBroker(settings(tmp_path, bankroll_usd=1000.0))
     strong = candidate(
         "seoul-26",
@@ -587,7 +587,7 @@ def test_event_portfolio_uses_fifty_percent_as_cap_without_forcing_size(tmp_path
         expected_net_profit_usd=92.0,
         selected_side_probability=0.96,
         probability_tier="95",
-        event_cap_override_fraction=0.50,
+        event_cap_override_fraction=0.20,
     )
     strong = replace(
         strong,
@@ -597,13 +597,13 @@ def test_event_portfolio_uses_fifty_percent_as_cap_without_forcing_size(tmp_path
 
     decision = select_event_portfolio(broker, [strong], usable_snapshot(1000.0))
 
-    assert decision.event_cap_fraction == pytest.approx(0.50)
-    assert decision.event_cap_usd == pytest.approx(500.0)
+    assert decision.event_cap_fraction == pytest.approx(0.20)
+    assert decision.event_cap_usd == pytest.approx(200.0)
     assert len(decision.selected) == 1
     assert decision.selected[0].result.size_usd == pytest.approx(200.0)
 
 
-def test_event_portfolio_allows_thirty_percent_tier_above_ordinary_city_cap(tmp_path):
+def test_event_portfolio_caps_ninety_percent_residual_at_twenty_percent(tmp_path):
     broker = PaperBroker(settings(tmp_path, bankroll_usd=1000.0))
     tier_90 = candidate(
         "seoul-26",
@@ -614,15 +614,15 @@ def test_event_portfolio_allows_thirty_percent_tier_above_ordinary_city_cap(tmp_
         expected_net_profit_usd=132.0,
         selected_side_probability=0.94,
         probability_tier="90",
-        event_cap_override_fraction=0.30,
+        event_cap_override_fraction=0.20,
     )
 
     decision = select_event_portfolio(broker, [tier_90], usable_snapshot(1000.0))
 
-    assert decision.event_cap_fraction == pytest.approx(0.30)
-    assert decision.event_cap_usd == pytest.approx(300.0)
+    assert decision.event_cap_fraction == pytest.approx(0.20)
+    assert decision.event_cap_usd == pytest.approx(200.0)
     assert len(decision.selected) == 1
-    assert decision.selected[0].result.size_usd == pytest.approx(300.0)
+    assert decision.selected[0].result.size_usd == pytest.approx(200.0)
 
 
 def test_event_portfolio_keeps_ordinary_cap_without_structured_override(tmp_path):

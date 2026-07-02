@@ -244,8 +244,8 @@ class Settings:
     observation_tier_90_probability: float = 0.90
     observation_tier_95_probability: float = 0.95
     observation_tier_80_fraction: float = 0.10
-    observation_tier_90_fraction: float = 0.30
-    observation_tier_95_fraction: float = 0.50
+    observation_tier_90_fraction: float = 0.20
+    observation_tier_95_fraction: float = 0.20
 
     official_nowcast_lock_enabled: bool = True
     official_nowcast_entry_only: bool = False
@@ -405,11 +405,15 @@ def _validate_observation_tiers(settings: Settings) -> None:
         "observation_tier_90_fraction",
         "observation_tier_95_fraction",
     )
-    for field_names in (probability_fields, fraction_fields):
-        values = tuple(_finite_number(settings, field_name) for field_name in field_names)
-        if not values[0] < values[1] < values[2]:
-            names = ", ".join(_setting_display_name(field_name) for field_name in field_names)
-            raise ValueError(f"{names} must be strictly ascending; got {values!r}")
+    probability_values = tuple(_finite_number(settings, field_name) for field_name in probability_fields)
+    if not probability_values[0] < probability_values[1] < probability_values[2]:
+        names = ", ".join(_setting_display_name(field_name) for field_name in probability_fields)
+        raise ValueError(f"{names} must be strictly ascending; got {probability_values!r}")
+
+    fraction_values = tuple(_finite_number(settings, field_name) for field_name in fraction_fields)
+    if not fraction_values[0] <= fraction_values[1] <= fraction_values[2]:
+        names = ", ".join(_setting_display_name(field_name) for field_name in fraction_fields)
+        raise ValueError(f"{names} must be ascending; got {fraction_values!r}")
 
     top_fraction = _finite_number(settings, "observation_tier_95_fraction")
     single_market_cap = _finite_number(settings, "max_single_market_fraction")

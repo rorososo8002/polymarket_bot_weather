@@ -46,8 +46,8 @@ def test_default_station_residual_probability_and_sizing_tiers():
     assert Settings.observation_tier_90_probability == pytest.approx(0.90)
     assert Settings.observation_tier_95_probability == pytest.approx(0.95)
     assert Settings.observation_tier_80_fraction == pytest.approx(0.10)
-    assert Settings.observation_tier_90_fraction == pytest.approx(0.30)
-    assert Settings.observation_tier_95_fraction == pytest.approx(0.50)
+    assert Settings.observation_tier_90_fraction == pytest.approx(0.20)
+    assert Settings.observation_tier_95_fraction == pytest.approx(0.20)
     assert Settings.observation_tier_95_fraction <= Settings.max_single_market_fraction
 
 
@@ -96,8 +96,8 @@ def test_station_residual_tier_values_must_be_probabilities(override, expected_n
     [
         ({"observation_tier_90_probability": 0.80}, "strictly ascending"),
         ({"observation_tier_95_probability": 0.89}, "strictly ascending"),
-        ({"observation_tier_90_fraction": 0.10}, "strictly ascending"),
-        ({"observation_tier_95_fraction": 0.24}, "strictly ascending"),
+        ({"observation_tier_90_fraction": 0.09}, "ascending"),
+        ({"observation_tier_95_fraction": 0.19}, "ascending"),
     ],
 )
 def test_station_residual_tiers_must_be_strictly_ascending(override, expected_reason):
@@ -417,6 +417,13 @@ def test_load_settings_reads_intraday_observation_edge_controls(monkeypatch):
     assert settings.intraday_exact_low_yes_enabled is True
     assert settings.intraday_us_exact_low_yes_enabled is False
     assert settings.intraday_enable_above_bucket_no is True
+
+
+def test_default_observation_tiers_cap_unconfirmed_probability_sizing():
+    settings = Settings()
+
+    assert settings.observation_tier_90_fraction == pytest.approx(0.20)
+    assert settings.observation_tier_95_fraction == pytest.approx(0.20)
 
 
 def test_load_settings_reads_station_nowcast_controls(monkeypatch):
