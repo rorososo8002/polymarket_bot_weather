@@ -73,6 +73,9 @@ notes only when they prevent a repeated mistake.
   close or midpoint fill.
 - WebSocket market stream is primary. REST `/book` is bounded seed/resync helper.
   PING/PONG proves connection, not fresh executable depth.
+- WebSocket subscribes only held positions and markets whose measurement date is
+  the station's current local date. Future-date markets cannot have valid
+  same-day station evidence yet and must not bloat the stream.
 - Fresh REST helper snapshots with executable bid/ask depth may refresh per-token
   freshness and wake exit evaluation, but dashboard must label them REST helper
   depth, not millisecond WebSocket depth.

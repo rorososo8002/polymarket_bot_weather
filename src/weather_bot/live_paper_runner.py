@@ -1969,6 +1969,33 @@ def _market_by_token_with_held_positions_first(
     return market_by_token
 
 
+def _market_is_current_local_measurement_day(market: RawMarket, now: datetime) -> bool:
+    event_date, local_today = _market_event_date_for_priority(market, now)
+    return event_date is not None and event_date == local_today
+
+
+def _select_realtime_stream_markets(
+    stream_markets: list[RawMarket],
+    broker: PaperBroker,
+    *,
+    now: datetime,
+) -> list[RawMarket]:
+    open_market_ids = {pos.market_id for pos in broker.state.positions}
+    selected: list[RawMarket] = []
+    seen_market_ids: set[str] = set()
+    for market in stream_markets:
+        should_stream = (
+            market.market_id in open_market_ids
+            or _market_is_current_local_measurement_day(market, now)
+        )
+        if not should_stream:
+            continue
+        if market.market_id not in seen_market_ids:
+            selected.append(market)
+            seen_market_ids.add(market.market_id)
+    return _ensure_open_position_stream_tokens(selected, broker)
+
+
 def _settle_resolved_positions_before_streaming(
     broker: PaperBroker,
     market_by_id: dict[str, RawMarket],
@@ -2897,7 +2924,11 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
                         stream_markets.append(market)
                     continue
                 stream_markets.append(market)
-            stream_markets = _ensure_open_position_stream_tokens(stream_markets, broker)
+            stream_markets = _select_realtime_stream_markets(
+                stream_markets,
+                broker,
+                now=datetime.now(timezone.utc),
+            )
             for market in stream_markets:
                 market_by_id[market.market_id] = market
             coverage = _discovery_coverage(stream_markets)

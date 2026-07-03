@@ -659,6 +659,69 @@ def test_stream_token_registry_prioritizes_held_position_tokens():
     assert market_by_token["tokyo-yes"].market_id == "tokyo"
 
 
+def test_realtime_stream_markets_exclude_future_events_but_keep_positions():
+    now = datetime(2026, 7, 3, 5, 0, tzinfo=timezone.utc)
+    today = RawMarket(
+        market_id="today",
+        question="Will the highest temperature in Seoul be 29°C on July 3?",
+        slug="today",
+        active=True,
+        closed=False,
+        yes_token_id="today-yes",
+        no_token_id="today-no",
+        event_id="today-event",
+        rule_provenance=MarketRuleProvenance(
+            market_id="today",
+            question="Will the highest temperature in Seoul be 29°C on July 3?",
+            event_date_local="2026-07-03",
+            event_timezone="Asia/Seoul",
+        ),
+    )
+    future = RawMarket(
+        market_id="future",
+        question="Will the highest temperature in Seoul be 29°C on July 5?",
+        slug="future",
+        active=True,
+        closed=False,
+        yes_token_id="future-yes",
+        no_token_id="future-no",
+        event_id="future-event",
+        rule_provenance=MarketRuleProvenance(
+            market_id="future",
+            question="Will the highest temperature in Seoul be 29°C on July 5?",
+            event_date_local="2026-07-05",
+            event_timezone="Asia/Seoul",
+        ),
+    )
+    held_future = replace(future, market_id="held-future", no_token_id="held-no")
+    broker = type(
+        "Broker",
+        (),
+        {
+            "state": PaperState(
+                cash_usd=900.0,
+                positions=[
+                    PaperPosition(
+                        position_id="p1",
+                        market_id="held-future",
+                        question=held_future.question,
+                        token_id="held-no",
+                        side="NO",
+                        entry_price=0.76,
+                        shares=108.0,
+                        cost_usd=83.0,
+                        opened_at="2026-07-03T04:50:00+00:00",
+                    )
+                ],
+            )
+        },
+    )()
+
+    selected = runner_module._select_realtime_stream_markets([future, today, held_future], broker, now=now)
+
+    assert [market.market_id for market in selected] == ["today", "held-future"]
+
+
 def test_realtime_forever_settles_resolved_open_positions_before_streaming(tmp_path, monkeypatch):
     state_path = tmp_path / "state.json"
     trades_path = tmp_path / "trades.csv"
@@ -777,7 +840,21 @@ def test_realtime_forever_filters_non_temperature_before_probability_estimator(t
     temperature_question = "Will NYC reach 90 F on May 25?"
     markets = [
         RawMarket("rain", rain_question, "rain", True, False, "rain-yes", "rain-no"),
-        RawMarket("temperature", temperature_question, "temperature", True, False, "temp-yes", "temp-no"),
+        RawMarket(
+            "temperature",
+            temperature_question,
+            "temperature",
+            True,
+            False,
+            "temp-yes",
+            "temp-no",
+            rule_provenance=MarketRuleProvenance(
+                market_id="temperature",
+                question=temperature_question,
+                event_date_local=datetime.now(timezone.utc).date().isoformat(),
+                event_timezone="UTC",
+            ),
+        ),
     ]
     probability_calls: list[str] = []
     stream_tokens: list[str] = []
