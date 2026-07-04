@@ -81,6 +81,9 @@ notes only when they prevent a repeated mistake.
   depth, not millisecond WebSocket depth.
 - Held-position tokens must stay subscribed and be checked first even if market
   discovery omits the market or returns incomplete YES/NO token pair.
+- If the whole WebSocket is reconnecting, a fresh per-token REST helper snapshot
+  may keep held-position exit evaluation running. It does not by itself reopen
+  broad new-entry permissions.
 
 ## 6. Sizing
 
@@ -116,10 +119,16 @@ Low exact NO weather risk:
 - Block opposite sides of the same market.
 - Same-side add-ons must pass current price, probability, edge, cash, and
   exposure gates.
+- Same-side add-ons normally require the price to improve. Exception: if the
+  current side probability is at least 95% and executable edge gates pass, the
+  add-on may proceed without waiting for a drawdown.
 - Correlated city-date buckets share one risk budget.
 - A closed position cannot rotate into a sibling bucket with the same station
   observation timestamp; require newer evidence.
 - `SKIP` means no valid new probability. Never complement it into an exit signal.
+- Loss of new-entry edge alone (`edge_faded`) is not an exit signal for an
+  already-held position. Close only on executable take-profit, max holding time,
+  explicit bucket-lock risk, or a real probability stop.
 - Drawdown breakers block entries only; exits and settlements continue.
 
 ## 8. Runtime Data

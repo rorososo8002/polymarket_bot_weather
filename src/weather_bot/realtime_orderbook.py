@@ -571,12 +571,22 @@ class OrderBookMarketStream:
             and started_at is not None
             and (current_time - started_at).total_seconds() > self.stale_seconds
         )
-        stale = (
-            not thread_alive
-            or waiting_too_long
-            or (stale_book_age_seconds is not None and stale_book_age_seconds > self.stale_seconds)
+        fresh_rest_depth = bool(
+            last_book_source == "rest"
+            and stale_book_age_seconds is not None
+            and stale_book_age_seconds <= self.stale_seconds
         )
-        if not thread_alive:
+        stale = (
+            not fresh_rest_depth
+            and (
+                not thread_alive
+                or waiting_too_long
+                or (stale_book_age_seconds is not None and stale_book_age_seconds > self.stale_seconds)
+            )
+        )
+        if fresh_rest_depth and not thread_alive:
+            status_reason = f"token {token} REST helper depth fresh; age={stale_book_age_seconds}s"
+        elif not thread_alive:
             status_reason = "websocket receiver thread is not running"
         elif waiting_too_long:
             status_reason = (

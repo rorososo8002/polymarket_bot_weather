@@ -230,6 +230,28 @@ def test_rest_snapshot_can_seed_bid_only_depth_for_held_position_exit(monkeypatc
     assert token_health["last_book_source"] == "rest"
 
 
+def test_fresh_rest_snapshot_keeps_held_token_usable_while_websocket_thread_reconnects(monkeypatch):
+    now = datetime(2026, 6, 1, 0, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr("weather_bot.realtime_orderbook._utc_now", lambda: now)
+    stream = OrderBookMarketStream(stale_seconds=60)
+
+    stream.apply_rest_snapshot(
+        OrderBook(
+            "held-no",
+            bids=[OrderLevel(0.98, 120)],
+            asks=[],
+            book_hash="rest-bid-only",
+        )
+    )
+
+    token_health = stream.token_health_snapshot("held-no", now=now)
+
+    assert token_health["thread_alive"] is False
+    assert token_health["stale"] is False
+    assert token_health["last_book_source"] == "rest"
+    assert "REST helper depth fresh" in token_health["status_reason"]
+
+
 def test_price_change_without_prior_book_snapshot_does_not_create_executable_depth():
     cache = OrderBookStreamCache()
 

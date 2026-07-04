@@ -29,6 +29,7 @@ from weather_bot.portfolio import (
     adaptive_event_cap_fraction,
     available_entry_bankroll,
     select_event_portfolio,
+    websocket_pricing_block_reason,
 )
 from weather_bot.weather_client import parse_weather_question
 
@@ -358,6 +359,21 @@ def test_entry_bankroll_explains_unhealthy_websocket_stream(tmp_path):
     assert "websocket order book stream unhealthy" in snapshot.reason
     assert "last executable order book depth age 61s exceeds 60s" in snapshot.reason
     assert "new entries blocked" in snapshot.reason
+
+
+def test_websocket_pricing_allows_fresh_rest_helper_depth_when_stream_thread_reconnects():
+    reason = websocket_pricing_block_reason(
+        {
+            "token_id": "held-token",
+            "thread_alive": False,
+            "stale": False,
+            "last_book_source": "rest",
+            "stale_book_age_seconds": 2,
+            "status_reason": "fresh REST helper depth for held token",
+        }
+    )
+
+    assert reason is None
 
 
 def test_evaluate_market_skips_when_entry_bankroll_is_zero(tmp_path):
@@ -975,6 +991,48 @@ def test_event_portfolio_blocks_same_side_add_before_ten_percent_discount(tmp_pa
 
     assert decision.selected == []
     assert any("add-on price has not fallen" in item.reason for item in decision.rejected)
+
+
+def test_event_portfolio_selects_same_side_add_without_discount_when_probability_is_strong(tmp_path):
+    broker = PaperBroker(settings(tmp_path, bankroll_usd=200.0, add_to_position_drop_pct=0.10))
+    broker.state = PaperState(
+        cash_usd=190.0,
+        positions=[
+            PaperPosition(
+                position_id="held",
+                market_id="jeddah-38",
+                question=market("jeddah-38", "38째C").question,
+                token_id="jeddah-38-no",
+                side="NO",
+                entry_price=0.60,
+                shares=16.0,
+                cost_usd=10.0,
+                opened_at="2026-06-01T00:00:00+00:00",
+                metadata={
+                    "city": "jeddah",
+                    "date_hint": "jul 3",
+                    "entry_p_true": 0.04,
+                    "entry_side_probability": 0.96,
+                    "selected_side_probability": 0.96,
+                    "probability_stop_threshold": 0.86,
+                },
+            )
+        ],
+    )
+    strong_same_side = candidate(
+        "jeddah-38",
+        "38째C",
+        side="NO",
+        p_true=0.03,
+        p_exec=0.63,
+        expected_net_profit_usd=3.0,
+        selected_side_probability=0.97,
+    )
+
+    decision = select_event_portfolio(broker, [strong_same_side], usable_snapshot(200.0))
+
+    assert decision.selected
+    assert decision.selected[0].add_to_existing_position_id == "held"
 
 
 def test_event_portfolio_blocks_same_side_add_when_probability_stop_is_broken(tmp_path):

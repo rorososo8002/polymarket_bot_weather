@@ -1748,6 +1748,62 @@ def test_stale_websocket_pauses_held_position_exit_evaluation(tmp_path):
     assert "last executable order book depth age 61s exceeds 60s" in broker.state.positions[0].metadata["last_exit_blocker"]
 
 
+def test_fresh_rest_token_depth_keeps_held_position_exit_running_during_stream_reconnect(tmp_path):
+    settings = Settings(
+        state_path=str(tmp_path / "state.json"),
+        trades_csv_path=str(tmp_path / "trades.csv"),
+        decisions_csv_path=str(tmp_path / "decisions.csv"),
+        raw_snapshots_path=str(tmp_path / "raw.jsonl"),
+        probability_stop_drop_threshold=0.10,
+        weather_taker_fee_rate=0.0,
+    )
+    broker = PaperBroker(settings)
+    broker.state.positions = [
+        PaperPosition(
+            position_id="p1",
+            market_id="m1",
+            question="Will NYC reach 90 F on May 25?",
+            token_id="yes",
+            side="YES",
+            entry_price=0.20,
+            shares=25.0,
+            cost_usd=5.0,
+            opened_at=datetime.now(timezone.utc).isoformat(),
+            metadata={"entry_p_true": 0.70, "probability_stop_threshold": 0.60},
+        )
+    ]
+    broker.state.cash_usd = 995.0
+    client = FakePolymarketClient(books={"yes": book("yes", bid=0.80, ask=0.82, bid_size=200.0)})
+
+    class ReconnectingStreamWithFreshRestToken:
+        def health_snapshot(self):
+            return {
+                "thread_alive": False,
+                "stale": True,
+                "status_reason": "websocket receiver thread is reconnecting",
+            }
+
+        def token_health_snapshot(self, token_id: str):
+            return {
+                "token_id": token_id,
+                "thread_alive": False,
+                "stale": False,
+                "last_book_source": "rest",
+                "stale_book_age_seconds": 2,
+                "status_reason": f"token {token_id} REST helper depth fresh; age=2s",
+            }
+
+    client.stream = ReconnectingStreamWithFreshRestToken()
+    latest_edges = {("m1", "YES"): EdgeResult("YES", 0.30, 0.80, -0.20, 0.0, 0.0, "probability stop")}
+
+    messages = maybe_close_positions(broker, client, {"m1": temp_market()}, latest_edges)
+
+    assert broker.state.positions == []
+    assert any(message.startswith("CLOSE YES") for message in messages)
+    rows = list(csv.DictReader((tmp_path / "trades.csv").open(encoding="utf-8")))
+    assert [row["action"] for row in rows] == ["CLOSE"]
+
+
 def test_token_stale_websocket_pauses_only_that_position_exit_evaluation(tmp_path):
     settings = Settings(
         state_path=str(tmp_path / "state.json"),

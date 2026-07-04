@@ -265,6 +265,45 @@ def test_edge_fade_uses_after_fee_loss_limit():
     assert "net_pnl" in assessment.reason
 
 
+def test_edge_fade_does_not_close_when_probability_thesis_is_alive():
+    settings = Settings(
+        exit_net_edge=0.0,
+        min_profit_pct=0.08,
+        weather_taker_fee_rate=0.0,
+    )
+    pos = PaperPosition(
+        position_id="p1",
+        market_id="m1",
+        question="Will the highest temperature in Jeddah be 38C or higher?",
+        token_id="t1",
+        side="NO",
+        entry_price=0.609,
+        shares=100,
+        cost_usd=60.9,
+        opened_at=datetime.now(timezone.utc).isoformat(),
+        metadata={
+            "entry_p_true": 0.03,
+            "selected_side_probability": 0.97,
+            "probability_stop_threshold": 0.87,
+        },
+    )
+    latest_edge = EdgeResult(
+        "NO",
+        0.03,
+        0.635,
+        -0.04,
+        0.0,
+        0.0,
+        "entry edge faded because market price caught up",
+        selected_side_probability=0.97,
+    )
+
+    assessment = assess_exit(pos, 0.635, latest_edge, settings, 1.0)
+
+    assert not assessment.should_close
+    assert assessment.trigger == "hold"
+
+
 def test_exit_reason_reports_after_fee_net_profit_when_closing():
     settings = Settings(
         min_profit_pct=0.03,

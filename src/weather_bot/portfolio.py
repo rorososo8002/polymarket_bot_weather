@@ -224,7 +224,12 @@ def websocket_pricing_block_reason(health: dict[str, Any]) -> str | None:
         return None
     thread_alive = bool(health.get("thread_alive"))
     stale = bool(health.get("stale"))
-    if thread_alive and not stale:
+    fresh_rest_token = (
+        bool(health.get("token_id"))
+        and str(health.get("last_book_source") or "").lower() == "rest"
+        and not stale
+    )
+    if (thread_alive and not stale) or fresh_rest_token:
         return None
 
     if health.get("status_reason"):
@@ -353,19 +358,25 @@ def _add_to_position_block_reason(
     if result.p_exec is None:
         return "not an executable add-on candidate"
 
-    add_trigger_price = pos.entry_price * (1.0 - settings.add_to_position_drop_pct)
-    if result.p_exec > add_trigger_price + 1e-12:
-        return (
-            f"add-on price has not fallen {settings.add_to_position_drop_pct:.0%}: "
-            f"p_exec={result.p_exec:.4f} > trigger={add_trigger_price:.4f}"
-        )
-
-    current_side_probability = side_true_probability(result.side, result.p_true)
+    current_side_probability = (
+        float(result.selected_side_probability)
+        if result.selected_side_probability is not None
+        else side_true_probability(result.side, result.p_true)
+    )
     stop_threshold = _position_stop_threshold(pos, candidate, settings)
     if current_side_probability <= stop_threshold:
         return (
             f"add-on blocked by probability stop: side_probability={current_side_probability:.3f} "
             f"<= threshold={stop_threshold:.3f}"
+        )
+    if current_side_probability >= 0.95:
+        return None
+
+    add_trigger_price = pos.entry_price * (1.0 - settings.add_to_position_drop_pct)
+    if result.p_exec > add_trigger_price + 1e-12:
+        return (
+            f"add-on price has not fallen {settings.add_to_position_drop_pct:.0%}: "
+            f"p_exec={result.p_exec:.4f} > trigger={add_trigger_price:.4f}"
         )
     return None
 

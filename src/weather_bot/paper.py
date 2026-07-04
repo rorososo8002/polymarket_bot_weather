@@ -2404,7 +2404,7 @@ def maybe_close_positions(
     if stream is not None and hasattr(stream, "health_snapshot"):
         health = stream.health_snapshot()
         stream_block_reason = websocket_pricing_block_reason(health)
-        if stream_block_reason:
+        if stream_block_reason and not hasattr(stream, "token_health_snapshot"):
             for pos in list(broker.state.positions):
                 market = _market_for_position(pos, market_by_id.get(pos.market_id))
                 market_type = str(pos.metadata.get("market_type", "temperature"))

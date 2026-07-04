@@ -234,21 +234,6 @@ def assess_exit(
             "overheated_take_profit",
         )
 
-    if (
-        latest_edge is not None
-        and latest_edge.p_exec is not None
-        and latest_edge.net_edge <= settings.exit_net_edge
-        and pnl.net_pct >= -settings.edge_fade_max_loss_pct
-    ):
-        return ExitAssessment(
-            True,
-            f"edge faded: latest_edge={latest_edge.net_edge:.4f}, {_pnl_reason(pnl)}",
-            fair,
-            target,
-            heat,
-            "edge_faded",
-        )
-
     if holding_hours >= settings.max_holding_hours:
         return ExitAssessment(True, f"max holding hours {holding_hours:.1f}", fair, target, heat, "max_holding")
 
