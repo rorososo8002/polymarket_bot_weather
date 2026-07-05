@@ -101,8 +101,10 @@ Sizing targets before liquidity/edge/cash cuts:
 
 - Non-lock residual probability entries are capped at 20% of bankroll per
   ordinary city exposure, even above 90% or 95%.
-- Only verified lock-only exact high NO can override this and use up to all
-  remaining cash when executable VWAP and net-return gates pass.
+- Only verified lock-only high NO can override this and use up to all remaining
+  cash when executable VWAP and net-return gates pass: exact buckets already
+  exceeded, or lower-tail high markets already broken by the same-day official
+  high. HKO `needs_audit` stays excluded.
 
 Final executable VWAP, fee-aware edge, complete observations, CLOB state, cash,
 and single-market exposure gates may reduce or block a fill. HKO `needs_audit`

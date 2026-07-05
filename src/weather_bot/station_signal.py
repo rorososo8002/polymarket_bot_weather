@@ -124,6 +124,26 @@ def _official_station_exact_lock(
 ) -> _OfficialStationLock | None:
     if not settings.official_nowcast_lock_enabled or observed_value_c is None:
         return None
+    if (
+        parsed.temperature_metric == "max"
+        and parsed.temperature_bucket == "lower_tail"
+        and parsed.threshold_unit == "C"
+        and parsed.threshold_original is not None
+    ):
+        upper_c = float(parsed.threshold_original)
+        if observed_value_c > upper_c:
+            return _OfficialStationLock(
+                p_true=0.0,
+                lock_name="strong_no",
+                adjustment="official-lock-observed-high-above-lower-tail-threshold",
+                entry_fraction=settings.official_nowcast_lock_strong_entry_fraction,
+                size_reason=(
+                    f"official_nowcast_lock=strong_no; observed_high_c={observed_value_c:.1f} "
+                    f"> lower_tail_upper_c={upper_c:.1f}"
+                ),
+            )
+        return None
+
     bucket_c = _whole_celsius_exact_bucket(parsed)
     if bucket_c is None:
         return None

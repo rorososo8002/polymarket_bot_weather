@@ -242,6 +242,64 @@ def test_lock_only_high_exact_no_can_use_remaining_cash_when_settlement_return_c
     assert broker.state.positions[0].cost_usd > 900.0
 
 
+def test_lock_only_high_lower_tail_no_can_use_remaining_cash_despite_price_impact(tmp_path):
+    cfg = settings(
+        tmp_path,
+        bankroll_usd=1000.0,
+        min_order_usd=10.0,
+        min_net_edge=0.01,
+        weather_taker_fee_rate=0.0,
+        model_error_margin=0.0,
+        resolution_error_margin=0.0,
+        entry_min_expected_net_return_pct=0.01,
+        max_entry_spread_abs=0.20,
+        max_entry_spread_pct=1.0,
+        max_single_market_fraction=0.50,
+        max_city_exposure_fraction=0.50,
+        max_event_date_exposure_fraction=0.50,
+        large_bankroll_event_date_exposure_fraction=0.50,
+        max_total_exposure_fraction=0.50,
+    )
+    raw_market = market("seoul-27-below", "27°C or below")
+    signal = WeatherSignal(
+        0.0,
+        1.0,
+        "official-station-lock-strong_no",
+        "official_nowcast_lock=strong_no; observed_high_c=28.0 > lower_tail_upper_c=27.0",
+        parse_weather_question(raw_market.question),
+        nowcast={
+            "station_id": "RKSI",
+            "target_date_local": "2026-05-25",
+            "observed_high_c": 28.0,
+        },
+        settlement_precision_confidence="verified",
+    )
+    client = FakeClient(
+        {
+            raw_market.yes_token_id: orderbook(raw_market.yes_token_id, 0.01, 0.99),
+            raw_market.no_token_id: OrderBook(
+                raw_market.no_token_id,
+                bids=[OrderLevel(0.23, 2000.0)],
+                asks=[OrderLevel(0.24, 1.0), OrderLevel(0.80, 2000.0)],
+            ),
+        }
+    )
+
+    result, _per_side = evaluate_market(
+        raw_market,
+        signal,
+        client,
+        cfg,
+        1000.0,
+        "temperature",
+    )
+
+    assert result.side == "NO"
+    assert result.size_usd > 900.0
+    assert result.probability_tier == "lock_high_exact_no"
+    assert "SKIP_EXCESSIVE_PRICE_IMPACT" not in result.reason
+
+
 def test_adaptive_city_date_cap_drops_from_ten_to_five_percent_at_one_thousand(tmp_path):
     cfg = settings(tmp_path)
 

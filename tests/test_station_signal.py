@@ -186,6 +186,21 @@ def test_whole_celsius_high_exact_bucket_24_0_breaks_23() -> None:
     assert "official-station-lock" in signal.source
 
 
+def test_lower_tail_high_above_threshold_gets_strong_no() -> None:
+    signal = estimate_station_signal(
+        "Will the highest temperature in Seoul be 27C or below today?",
+        settings=Settings(),
+        observation_provider=ExactTemperatureProvider(observed_high_c=28.0),
+        now=datetime(2026, 6, 19, 7, 0, tzinfo=timezone.utc),
+    )
+
+    assert signal.p_true == pytest.approx(0.0)
+    assert signal.entry_size_fraction_override == pytest.approx(0.50)
+    assert signal.source == "official-station-lock-strong_no"
+    assert "official_nowcast_lock=strong_no" in signal.note
+    assert "observed_high_c=28.0 > lower_tail_upper_c=27.0" in signal.note
+
+
 def test_whole_celsius_low_exact_bucket_22_9_breaks_23() -> None:
     signal = estimate_station_signal(
         "Will the lowest temperature in Seoul be 23C today?",

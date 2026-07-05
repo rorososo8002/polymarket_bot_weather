@@ -117,7 +117,7 @@ def _is_lock_only_high_exact_no(side: str, signal: WeatherSignal) -> bool:
         and parsed is not None
         and parsed.variable == "temperature"
         and parsed.temperature_metric == "max"
-        and parsed.temperature_bucket == "exact"
+        and parsed.temperature_bucket in {"exact", "lower_tail"}
         and signal.source == "official-station-lock-strong_no"
         and signal.p_true <= 1e-12
         and signal.settlement_precision_confidence == "verified"
