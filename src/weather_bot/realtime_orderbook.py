@@ -374,6 +374,17 @@ class OrderBookMarketStream:
                 self._record_rest_snapshot_error(exc)
                 raise missing_snapshot from exc
 
+    def refresh_order_book(self, token_id: str) -> OrderBook:
+        if not self.rest_snapshot_enabled or self.rest_snapshot_fetcher is None:
+            return self.get_order_book(token_id)
+        token = str(token_id)
+        try:
+            self.apply_rest_snapshot(self.rest_snapshot_fetcher(token))
+            return self.cache.get_order_book(token)
+        except Exception as exc:
+            self._record_rest_snapshot_error(exc)
+            raise
+
     def start(self, asset_ids: Iterable[str]) -> None:
         self._asset_ids = [str(asset_id) for asset_id in asset_ids if str(asset_id)]
         if not self._asset_ids:

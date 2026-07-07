@@ -218,6 +218,65 @@ def test_realtime_update_callback_ignores_late_stream_update_after_worker_stop()
     assert runner_module._enqueue_realtime_update(None, {"late-token"}) == 0
 
 
+def test_station_refresh_enqueues_high_exact_no_probe_and_expires_cached_signals():
+    high_29 = RawMarket(
+        "seoul-high-29",
+        "Will the highest temperature in Seoul be 29C on July 8?",
+        "seoul-high-29",
+        True,
+        False,
+        "high-29-yes",
+        "high-29-no",
+        event_id="seoul-high-event",
+    )
+    high_30_same_event = RawMarket(
+        "seoul-high-30",
+        "Will the highest temperature in Seoul be 30C on July 8?",
+        "seoul-high-30",
+        True,
+        False,
+        "high-30-yes",
+        "high-30-no",
+        event_id="seoul-high-event",
+    )
+    low_22 = RawMarket(
+        "seoul-low-22",
+        "Will the lowest temperature in Seoul be 22C on July 8?",
+        "seoul-low-22",
+        True,
+        False,
+        "low-22-yes",
+        "low-22-no",
+        event_id="seoul-low-event",
+    )
+    signal_refreshed_at = {
+        high_29.market_id: datetime(2026, 7, 8, 3, 0, tzinfo=timezone.utc),
+        high_30_same_event.market_id: datetime(2026, 7, 8, 3, 0, tzinfo=timezone.utc),
+        low_22.market_id: datetime(2026, 7, 8, 3, 0, tzinfo=timezone.utc),
+    }
+    worker = RealtimeEvaluationCoalescer(
+        event_key_by_token={
+            "high-29-no": "seoul-high-event",
+            "high-30-no": "seoul-high-event",
+            "low-22-no": "seoul-low-event",
+        },
+        evaluator=lambda _tokens: None,
+    )
+
+    accepted = runner_module._enqueue_station_refresh_high_exact_no_probes(
+        worker,
+        [high_29, high_30_same_event, low_22],
+        signal_refreshed_at,
+    )
+
+    assert accepted == 1
+    assert worker.status_snapshot()["queue_depth"] == 1
+    assert worker._pending_tokens_by_event == {"seoul-high-event": {"high-29-no"}}
+    assert high_29.market_id not in signal_refreshed_at
+    assert high_30_same_event.market_id not in signal_refreshed_at
+    assert low_22.market_id in signal_refreshed_at
+
+
 def test_realtime_evaluation_coalescer_merges_burst_updates_by_event():
     calls: list[set[str]] = []
     evaluated = threading.Event()
@@ -2127,6 +2186,128 @@ def test_final_pre_trade_blocks_new_excessive_vwap_price_impact(tmp_path):
     assert result.side == "SKIP"
     assert "SKIP_EXCESSIVE_PRICE_IMPACT" in result.reason
     assert broker.state.positions == []
+
+
+def test_final_pre_trade_refreshes_lock_only_no_book_with_rest_helper(tmp_path):
+    question = "Will the highest temperature in Seoul be 29C on July 8?"
+    settings = _entry_gate_settings(tmp_path)
+    signal = WeatherSignal(
+        0.0,
+        1.0,
+        "official-station-lock-strong_no",
+        "official_nowcast_lock=strong_no",
+        parse_weather_question(question),
+        nowcast={"station_id": "RKSI"},
+        settlement_precision_confidence="verified",
+    )
+    market = _entry_gate_market(
+        market_id="seoul-29c",
+        question=question,
+        yes_token_id="yes",
+        no_token_id="no",
+    )
+    selected = runner_module.EdgeResult(
+        "NO",
+        0.0,
+        0.91,
+        0.08,
+        100.0,
+        109.0,
+        "selected lock-only no",
+    )
+
+    class RestRefreshingClient(_FinalGateClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.book = OrderBook(
+                "no",
+                bids=[OrderLevel(0.98, 1000.0)],
+                asks=[OrderLevel(0.99, 1000.0)],
+            )
+            self.refresh_calls: list[str] = []
+
+        def refresh_order_book(self, token_id: str) -> OrderBook:
+            self.refresh_calls.append(token_id)
+            self.book = OrderBook(
+                token_id,
+                bids=[OrderLevel(0.87, 1000.0)],
+                asks=[OrderLevel(0.88, 1000.0)],
+            )
+            return self.book
+
+        def get_order_book(self, token_id: str) -> OrderBook:
+            self.book_calls.append(token_id)
+            return self.book
+
+    client = RestRefreshingClient()
+
+    result = runner_module._final_pre_trade_entry_result(
+        market,
+        signal,
+        selected,
+        "no",
+        client,
+        settings,
+        "temperature",
+    )
+
+    assert client.refresh_calls == ["no"]
+    assert result.side == "NO"
+    assert result.p_exec == pytest.approx(0.88)
+    assert "final_book_source=rest_helper" in result.reason
+
+
+def test_evaluate_market_refreshes_lock_only_no_book_before_candidate_selection(tmp_path):
+    question = "Will the highest temperature in Seoul be 29C on July 8?"
+    signal = WeatherSignal(
+        0.0,
+        1.0,
+        "official-station-lock-strong_no",
+        "official_nowcast_lock=strong_no",
+        parse_weather_question(question),
+        nowcast={"station_id": "RKSI"},
+        settlement_precision_confidence="verified",
+    )
+    market = _entry_gate_market(
+        market_id="seoul-29c",
+        question=question,
+        yes_token_id="yes",
+        no_token_id="no",
+    )
+
+    class RestRefreshingClient(_FinalGateClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.books = {
+                "yes": OrderBook("yes", bids=[OrderLevel(0.01, 1000.0)], asks=[OrderLevel(0.02, 1000.0)]),
+                "no": OrderBook("no", bids=[OrderLevel(0.98, 1000.0)], asks=[OrderLevel(0.99, 1000.0)]),
+            }
+            self.refresh_calls: list[str] = []
+
+        def refresh_order_book(self, token_id: str) -> OrderBook:
+            self.refresh_calls.append(token_id)
+            self.books[token_id] = OrderBook(
+                token_id,
+                bids=[OrderLevel(0.87, 1000.0)],
+                asks=[OrderLevel(0.88, 1000.0)],
+            )
+            return self.books[token_id]
+
+        def get_order_book(self, token_id: str) -> OrderBook:
+            self.book_calls.append(token_id)
+            return self.books[token_id]
+
+    result, per_side = runner_module.evaluate_market(
+        market,
+        signal,
+        RestRefreshingClient(),
+        _entry_gate_settings(tmp_path),
+        100.0,
+        "temperature",
+    )
+
+    assert result.side == "NO"
+    assert per_side["NO"].p_exec == pytest.approx(0.88)
 
 
 def test_final_pre_trade_revalidates_station_signal_and_blocks_probability_drop(tmp_path):

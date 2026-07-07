@@ -455,6 +455,9 @@ class StreamBackedPolymarketClient(PolymarketClient):
     def get_order_book(self, token_id: str) -> OrderBook:
         return self.stream.get_order_book(token_id)
 
+    def refresh_order_book(self, token_id: str) -> OrderBook:
+        return self.stream.refresh_order_book(token_id)
+
 
 class RealtimeEvaluationCoalescer:
     """Coalesce WebSocket token updates before running strategy evaluation."""
@@ -651,6 +654,44 @@ def _enqueue_realtime_update(
     if evaluator_worker is None:
         return 0
     return evaluator_worker.enqueue_tokens(updated_token_ids)
+
+
+def _station_refresh_high_exact_no_probe_tokens(
+    markets: list[RawMarket],
+) -> tuple[set[str], set[str]]:
+    token_ids: set[str] = set()
+    market_ids_to_expire: set[str] = set()
+    seen_events: set[str] = set()
+    for market in markets:
+        try:
+            parsed = parse_weather_question(market.question)
+        except Exception:  # noqa: BLE001
+            continue
+        if (
+            parsed.variable != "temperature"
+            or parsed.temperature_metric != "max"
+            or parsed.temperature_bucket not in {"exact", "lower_tail"}
+        ):
+            continue
+        market_ids_to_expire.add(market.market_id)
+        event_key = _market_event_key(market)
+        if event_key in seen_events or not market.no_token_id:
+            continue
+        seen_events.add(event_key)
+        token_ids.add(market.no_token_id)
+    return token_ids, market_ids_to_expire
+
+
+def _enqueue_station_refresh_high_exact_no_probes(
+    evaluator_worker: RealtimeEvaluationCoalescer | None,
+    markets: list[RawMarket],
+    signal_refreshed_at_by_market: dict[str, datetime] | None,
+) -> int:
+    token_ids, market_ids_to_expire = _station_refresh_high_exact_no_probe_tokens(markets)
+    if signal_refreshed_at_by_market is not None:
+        for market_id in market_ids_to_expire:
+            signal_refreshed_at_by_market.pop(market_id, None)
+    return _enqueue_realtime_update(evaluator_worker, token_ids)
 
 
 def position_size_usd(
@@ -1111,6 +1152,53 @@ def _entry_ask_depth_top5_json(
     return json.dumps(payload, separators=(",", ":"), sort_keys=True)
 
 
+def _refresh_lock_only_order_book_before_entry(
+    client: PolymarketClient,
+    token_id: str,
+    side: str,
+    signal: WeatherSignal,
+    market_type: str,
+) -> tuple[OrderBook | None, str | None, str]:
+    if not _is_lock_only_high_exact_no(side, signal):
+        return None, None, "stream"
+    refresh = getattr(client, "refresh_order_book", None)
+    if not callable(refresh):
+        return None, None, "stream"
+    try:
+        return refresh(token_id), None, "rest_helper"
+    except Exception as exc:  # noqa: BLE001
+        return (
+            None,
+            "SKIP_TRADABILITY_UNKNOWN: pre-trade REST helper book refresh "
+            f"failed for lock-only {side}: {exc.__class__.__name__}: {exc} "
+            f"[{market_type}]",
+            "rest_helper_failed",
+        )
+
+
+def _refresh_lock_only_no_book_for_candidate_selection(
+    books: dict[str, OrderBook],
+    market: RawMarket,
+    signal: WeatherSignal,
+    client: PolymarketClient,
+    market_type: str,
+) -> str | None:
+    if not market.no_token_id:
+        return None
+    refreshed_book, refresh_error, _source = _refresh_lock_only_order_book_before_entry(
+        client,
+        market.no_token_id,
+        "NO",
+        signal,
+        market_type,
+    )
+    if refresh_error:
+        return refresh_error
+    if refreshed_book is not None:
+        books["NO"] = refreshed_book
+    return None
+
+
 def _side_result(
     side: str,
     book: OrderBook,
@@ -1444,8 +1532,17 @@ def _final_pre_trade_entry_result(
             result,
             f"SKIP_RULE_MISMATCH: final pre-trade check failed: {rule_mismatch}",
         )
+    refreshed_book, refresh_error, final_book_source = _refresh_lock_only_order_book_before_entry(
+        client,
+        token_id,
+        result.side,
+        signal,
+        market_type,
+    )
+    if refresh_error:
+        return _skip_entry_result(result, refresh_error)
     try:
-        book = client.get_order_book(token_id)
+        book = refreshed_book if refreshed_book is not None else client.get_order_book(token_id)
     except Exception as exc:  # noqa: BLE001
         return _skip_entry_result(
             result,
@@ -1564,6 +1661,7 @@ def _final_pre_trade_entry_result(
         f"expected_net_return={return_estimate.expected_net_return_pct:.2%}, "
         f"best_bid={(book.best_bid or 0.0):.4f}, best_ask={(book.best_ask or 0.0):.4f}, "
         f"spread_audit={spread:.4f}, slip_audit={checked_slip:.4f}, "
+        f"final_book_source={final_book_source}, "
         f"price_anomaly={str(price_anomaly).lower()}, strategy_mode={settings.strategy_mode}, "
         f"signal_family={signal_family}"
     )
@@ -1795,6 +1893,16 @@ def evaluate_market(
     books, fetch_error = _fetch_books(market, client)
     if fetch_error:
         result = EdgeResult("SKIP", signal.p_true, None, -999.0, 0.0, 0.0, fetch_error)
+        return result, {}
+    lock_refresh_error = _refresh_lock_only_no_book_for_candidate_selection(
+        books,
+        market,
+        signal,
+        client,
+        market_type,
+    )
+    if lock_refresh_error:
+        result = EdgeResult("SKIP", signal.p_true, None, -999.0, 0.0, 0.0, lock_refresh_error)
         return result, {}
 
     best_result = EdgeResult("SKIP", signal.p_true, None, -999.0, 0.0, 0.0, "No valid side evaluated.")
@@ -3140,6 +3248,12 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
                             observation_provider,
                             now=now,
                         )
+                        with update_lock:
+                            _enqueue_station_refresh_high_exact_no_probes(
+                                evaluator_worker,
+                                stream_markets,
+                                signal_refreshed_at_by_market,
+                            )
                         station_refreshed_at = now
                     if (now - status_updated_at).total_seconds() >= settings.runner_health_status_interval_seconds:
                         failed_phase = "runner_status_update"
