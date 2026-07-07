@@ -746,6 +746,7 @@ def test_fee_adjusted_shares_drive_portfolio_scenario_and_open_position(tmp_path
     cfg = settings(
         tmp_path,
         min_net_edge=0.01,
+        min_order_usd=1.0,
         entry_min_expected_net_return_pct=0.01,
         weather_taker_fee_rate=0.05,
         model_error_margin=0.0,
@@ -1666,6 +1667,7 @@ def test_run_cycle_opens_city_date_candidates_as_one_logged_portfolio(monkeypatc
         tmp_path,
         bankroll_usd=200.0,
         min_net_edge=0.01,
+        min_order_usd=1.0,
         size_mode="fixed_fraction",
         entry_fraction=0.10,
         entry_min_expected_net_return_pct=0.01,
@@ -1865,6 +1867,7 @@ def test_realtime_update_reselects_the_whole_city_date_event(monkeypatch, tmp_pa
         tmp_path,
         bankroll_usd=200.0,
         min_net_edge=0.01,
+        min_order_usd=1.0,
         size_mode="fixed_fraction",
         entry_fraction=0.10,
         entry_min_expected_net_return_pct=0.01,

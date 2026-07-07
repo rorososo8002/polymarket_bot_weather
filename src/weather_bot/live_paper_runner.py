@@ -56,6 +56,9 @@ MAX_ENTRY_EXECUTION_PRICE = 0.90
 LOCK_ONLY_HIGH_EXACT_NO_MAX_ENTRY_PRICE = 0.92
 LOCK_ONLY_HIGH_EXACT_NO_MIN_NET_RETURN_PCT = 0.08
 LOCK_ONLY_HIGH_EXACT_NO_TIER = "lock_high_exact_no"
+YES_SIZE_CAP_95 = 0.20
+YES_SIZE_CAP_93 = 0.10
+YES_SIZE_CAP_DEFAULT = 0.05
 ENTRY_DEPTH_AUDIT_TARGET_USD = 100.0
 REALTIME_EVALUATION_QUEUE_MAX_EVENTS = 256
 REALTIME_EVALUATION_BATCH_MAX_EVENTS = 32
@@ -136,6 +139,41 @@ def _entry_min_return_pct(side: str, signal: WeatherSignal, settings: Settings) 
     if _is_lock_only_high_exact_no(side, signal):
         return max(settings.entry_min_expected_net_return_pct, LOCK_ONLY_HIGH_EXACT_NO_MIN_NET_RETURN_PCT)
     return settings.entry_min_expected_net_return_pct
+
+
+def _yes_probability_size_cap(side_probability: float) -> float:
+    if side_probability >= 0.95:
+        return YES_SIZE_CAP_95
+    if side_probability >= 0.93:
+        return YES_SIZE_CAP_93
+    return YES_SIZE_CAP_DEFAULT
+
+
+def _cap_yes_observation_tier(
+    side: str,
+    side_probability: float,
+    observation_tier: ObservationSizingTier | None,
+    size_fraction_override: float | None,
+) -> tuple[ObservationSizingTier | None, float | None]:
+    if side != "YES":
+        return observation_tier, size_fraction_override
+    cap = _yes_probability_size_cap(side_probability)
+    capped_fraction = min(size_fraction_override, cap) if size_fraction_override is not None else cap
+    if observation_tier is None:
+        return observation_tier, capped_fraction
+    capped_event_cap = (
+        min(observation_tier.event_cap_override_fraction, cap)
+        if observation_tier.event_cap_override_fraction is not None
+        else None
+    )
+    return (
+        replace(
+            observation_tier,
+            entry_fraction=capped_fraction,
+            event_cap_override_fraction=capped_event_cap,
+        ),
+        capped_fraction,
+    )
 
 
 def _observation_edge_fraction(
@@ -1133,6 +1171,12 @@ def _side_result(
             if observation_tier is not None
             else effective_entry_fraction
         )
+        observation_tier, size_fraction_override = _cap_yes_observation_tier(
+            side,
+            side_probability,
+            observation_tier,
+            size_fraction_override,
+        )
         effective_entry_fraction = size_fraction_override
         lock_budget = _lock_only_high_exact_no_budget(
             side,
@@ -1717,6 +1761,23 @@ def evaluate_market(
 
     if settings.require_parse_for_trade and signal.confidence < min_confidence:
         result = EdgeResult("SKIP", signal.p_true, None, -999.0, 0.0, 0.0, f"confidence too low: {signal.confidence:.2f} < {min_confidence:.2f} [{market_type}]")
+        return result, {}
+
+    if rule_mismatch := market_rule_mismatch_reason(market):
+        reason_code = (
+            "SKIP_WRH_TIMESERIES_UNVERIFIED"
+            if "WRH timeseries" in rule_mismatch
+            else "SKIP_RULE_MISMATCH"
+        )
+        result = EdgeResult(
+            "SKIP",
+            signal.p_true,
+            None,
+            -999.0,
+            0.0,
+            0.0,
+            f"{reason_code}: {rule_mismatch} [{market_type}]",
+        )
         return result, {}
 
     if bankroll_before_entry <= 0:

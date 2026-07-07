@@ -34,6 +34,10 @@ notes only when they prevent a repeated mistake.
   - After reset, same-day high decrease or low increase blocks HKO.
   - Restart without prior-day baseline fails closed.
   - Do not invent fixed allow-after times.
+- NOAA WRH timeseries:
+  - Markets resolving from `weather.gov/wrh/timeseries` need direct `Temp`
+    table verification. AWC/METAR evidence alone is not settlement evidence, so
+    these markets fail closed until a direct WRH verifier exists.
 
 ## 3. Formation And Probability
 
@@ -101,10 +105,14 @@ Sizing targets before liquidity/edge/cash cuts:
 
 - Non-lock residual probability entries are capped at 20% of bankroll per
   ordinary city exposure, even above 90% or 95%.
+- YES entries are capped harder because recent validation showed repeated
+  reversals: `>=95%` uses at most 20%, `>=93%` at most 10%, otherwise at most
+  5%.
 - Only verified lock-only high NO can override this and use up to all remaining
   cash when executable VWAP and net-return gates pass: exact buckets already
   exceeded, or lower-tail high markets already broken by the same-day official
-  high. HKO `needs_audit` stays excluded.
+  high. HKO `needs_audit` and NOAA WRH timeseries without direct `Temp`
+  verification stay excluded.
 
 Final executable VWAP, fee-aware edge, complete observations, CLOB state, cash,
 and single-market exposure gates may reduce or block a fill. HKO `needs_audit`

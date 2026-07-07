@@ -1714,6 +1714,119 @@ def test_abnormal_price_still_requires_executable_depth(tmp_path):
     assert broker.state.positions == []
 
 
+def test_wrh_timeseries_market_blocks_awc_lock_only_entry(tmp_path):
+    question = "Will the highest temperature in Moscow be 20°C on July 7?"
+    market = RawMarket(
+        "moscow-wrh",
+        question,
+        "highest-temperature-in-moscow-on-july-7-2026",
+        True,
+        False,
+        "yes",
+        "no",
+        condition_id="condition-1",
+        accepting_orders=True,
+        enable_order_book=True,
+        archived=False,
+        rule_provenance=MarketRuleProvenance(
+            market_id="moscow-wrh",
+            question=question,
+            description=(
+                "This market will resolve according to NOAA WRH timeseries "
+                "https://www.weather.gov/wrh/timeseries?site=UUWW using the Temp column."
+            ),
+            city="Moscow",
+            station_id="UUWW",
+            unit="C",
+            condition_type="exact",
+            exact_value=20.0,
+        ),
+    )
+    signal = WeatherSignal(
+        0.0,
+        0.95,
+        "official-station-lock-strong_no",
+        "official same-day high broke exact bucket",
+        parse_weather_question(question),
+        nowcast={
+            "station_id": "UUWW",
+            "station_timezone": "Europe/Moscow",
+            "target_date_local": "2026-07-07",
+            "observed_high_c": 21.0,
+            "latest_observation_source": "aviationweather-metar",
+            "data_block_reason": "",
+        },
+        settlement_precision_confidence="verified",
+    )
+    client = _AbnormalPriceClient(
+        OrderBook("yes", bids=[OrderLevel(0.11, 1000.0)], asks=[OrderLevel(0.12, 1000.0)]),
+        OrderBook("no", bids=[OrderLevel(0.88, 1000.0)], asks=[OrderLevel(0.89, 1000.0)]),
+    )
+
+    result, per_side = runner_module.evaluate_market(
+        market,
+        signal,
+        client,
+        _abnormal_settings(tmp_path),
+        1000.0,
+        "temperature",
+    )
+
+    assert result.side == "SKIP"
+    assert "SKIP_WRH_TIMESERIES_UNVERIFIED" in result.reason
+    assert per_side == {}
+    assert client.book_calls == []
+
+
+@pytest.mark.parametrize(
+    ("probability", "expected_fraction", "expected_size"),
+    [
+        (0.96, 0.20, 40.0),
+        (0.94, 0.10, 20.0),
+        (0.92, 0.05, 10.0),
+    ],
+)
+def test_yes_entries_use_conservative_probability_size_caps(
+    tmp_path,
+    probability,
+    expected_fraction,
+    expected_size,
+):
+    question = "Will the highest temperature in NYC be 90F today?"
+    market = _abnormal_market()
+    signal = WeatherSignal(
+        probability,
+        1.0,
+        "official-station-residual-high-yes",
+        "signal_family=intraday_observation_edge",
+        parse_weather_question(question),
+        entry_size_fraction_override=0.50,
+        conservative_yes_probability=probability,
+        conservative_no_probability=0.01,
+        selected_side_probability=probability,
+        probability_tier="95",
+        event_cap_override_fraction=0.50,
+    )
+    client = _AbnormalPriceClient(
+        OrderBook("yes", bids=[OrderLevel(0.49, 1000.0)], asks=[OrderLevel(0.50, 1000.0)]),
+        OrderBook("no", bids=[OrderLevel(0.49, 1000.0)], asks=[OrderLevel(0.50, 1000.0)]),
+    )
+
+    result, _per_side = runner_module.evaluate_market(
+        market,
+        signal,
+        client,
+        _abnormal_settings(tmp_path, max_single_market_fraction=0.90),
+        200.0,
+        "temperature",
+    )
+
+    assert result.side == "YES"
+    assert result.entry_size_fraction_override == pytest.approx(expected_fraction)
+    assert result.requested_size_usd == pytest.approx(expected_size)
+    assert result.size_usd == pytest.approx(expected_size)
+
+
 def test_partial_ask_liquidity_records_requested_and_executable_size(tmp_path):
     result, _per_side, broker = _evaluate_and_open_abnormal_candidate(
         tmp_path,
@@ -1790,11 +1903,11 @@ def test_abnormal_price_uses_size_override_but_obeys_caps(tmp_path):
     assert result.price_anomaly is True
     assert result.strategy_mode == "hybrid_observation_edge"
     assert result.signal_family == "abnormal_official_station_mispricing"
-    assert result.entry_size_fraction_override == pytest.approx(0.30)
+    assert result.entry_size_fraction_override == pytest.approx(0.20)
     assert result.probability_tier == "95"
     assert result.event_cap_override_fraction is None
-    assert result.size_usd == pytest.approx(60.0)
-    assert broker.state.positions[0].cost_usd == pytest.approx(60.0)
+    assert result.size_usd == pytest.approx(40.0)
+    assert broker.state.positions[0].cost_usd == pytest.approx(40.0)
 
 
 def test_evaluate_market_does_not_create_event_override_from_probability_alone(tmp_path):
@@ -1832,7 +1945,7 @@ def test_evaluate_market_does_not_create_event_override_from_probability_alone(t
         "temperature",
     )
 
-    assert result.entry_size_fraction_override == pytest.approx(0.25)
+    assert result.entry_size_fraction_override == pytest.approx(0.20)
     assert result.probability_tier == "90"
     assert result.event_cap_override_fraction is None
 
@@ -1882,9 +1995,9 @@ def test_evaluate_market_skip_preserves_calibration_audit_fields(tmp_path):
     assert result.calibration_sample_days == 1460
     assert result.calibration_profile_key == "RKSI|month=6|minute=900|high|C"
     assert result.calibration_status == "RESIDUAL_PROBABILITY_OK"
-    assert result.requested_size_usd == pytest.approx(100.0)
-    assert result.executable_size_usd == pytest.approx(100.0)
-    assert result.event_cap_override_fraction == pytest.approx(0.50)
+    assert result.requested_size_usd == pytest.approx(40.0)
+    assert result.executable_size_usd == pytest.approx(40.0)
+    assert result.event_cap_override_fraction == pytest.approx(0.20)
 
 
 def _assert_evaluation_skips_untradable_market(market_overrides, expected_reason):

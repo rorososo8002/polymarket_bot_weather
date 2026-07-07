@@ -52,6 +52,11 @@ KNOWN_SOURCE_CONFLICTS = {
         "so AWC METAR ZGSZ cannot be used as settlement evidence",
     ),
 }
+WRH_TIMESERIES_SOURCE_NEEDLE = "weather.gov/wrh/timeseries"
+WRH_TIMESERIES_UNVERIFIED_REASON = (
+    "NOAA WRH timeseries settlement source requires direct WRH Temp-column verification; "
+    "AWC/METAR station evidence alone cannot be used as settlement evidence"
+)
 
 
 def build_market_rule_provenance(
@@ -142,6 +147,8 @@ def _known_source_conflict_reason(provenance: MarketRuleProvenance) -> str:
         provenance.resolution_source,
         provenance.resolution_rules_text,
     ).lower()
+    if WRH_TIMESERIES_SOURCE_NEEDLE in source_text:
+        return WRH_TIMESERIES_UNVERIFIED_REASON
     needle, reason = KNOWN_SOURCE_CONFLICTS.get(city, ("", ""))
     if needle and needle in source_text:
         return reason
