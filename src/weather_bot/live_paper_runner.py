@@ -724,6 +724,14 @@ def _realtime_evaluation_trigger_tokens(
     return trigger_tokens
 
 
+def _orderbook_update_tokens_for_realtime_evaluation(
+    updated_token_ids: set[str],
+    broker: PaperBroker,
+) -> set[str]:
+    held_tokens = {str(pos.token_id) for pos in broker.state.positions if pos.token_id}
+    return {str(token_id) for token_id in updated_token_ids if str(token_id) in held_tokens}
+
+
 def _enqueue_station_refresh_high_exact_no_probes(
     evaluator_worker: RealtimeEvaluationCoalescer | None,
     markets: list[RawMarket],
@@ -3206,7 +3214,10 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
             evaluator_worker.start()
 
             def on_update(updated_token_ids: set[str]) -> None:
-                _enqueue_realtime_update(evaluator_worker, updated_token_ids)
+                _enqueue_realtime_update(
+                    evaluator_worker,
+                    _orderbook_update_tokens_for_realtime_evaluation(updated_token_ids, broker),
+                )
 
             def build_stream() -> OrderBookMarketStream:
                 rest_snapshot_fetcher = getattr(discovery_client, "get_order_book", None)

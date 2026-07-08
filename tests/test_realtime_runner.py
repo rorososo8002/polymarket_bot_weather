@@ -370,6 +370,38 @@ def test_realtime_evaluation_trigger_tokens_use_representative_no_and_held_posit
     }
 
 
+def test_realtime_orderbook_updates_only_wake_held_position_tokens():
+    broker = runner_module.PaperBroker(
+        Settings(
+            state_path=":memory:",
+            trades_csv_path=":memory:",
+            decisions_csv_path=":memory:",
+            raw_snapshots_path=":memory:",
+        )
+    )
+    broker.state.positions = [
+        PaperPosition(
+            position_id="held",
+            market_id="held-market",
+            question="Will the highest temperature in Jeddah be 38C or higher on July 8?",
+            token_id="held-no",
+            side="NO",
+            entry_price=0.40,
+            shares=10,
+            cost_usd=4,
+            opened_at=datetime.now(timezone.utc).isoformat(),
+            metadata={},
+        )
+    ]
+
+    tokens = runner_module._orderbook_update_tokens_for_realtime_evaluation(
+        {"held-no", "high-29-no", "random-token"},
+        broker,
+    )
+
+    assert tokens == {"held-no"}
+
+
 def test_realtime_evaluation_coalescer_merges_burst_updates_by_event():
     calls: list[set[str]] = []
     evaluated = threading.Event()
