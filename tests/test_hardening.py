@@ -1471,12 +1471,29 @@ def test_profit_exit_holds_full_position_as_settlement_runner(tmp_path):
         shares=100.0,
         cost_usd=20.0,
         opened_at=datetime.now(timezone.utc).isoformat(),
-        metadata={"entry_p_true": 0.95, "probability_stop_threshold": 0.85},
+        metadata={
+            "entry_p_true": 0.95,
+            "probability_stop_threshold": 0.85,
+            "signal_family": "lock_only",
+            "probability_tier": "lock_high_exact_no",
+        },
     )
     broker.state.positions = [pos]
     broker.state.cash_usd = 980.0
     client = FakePolymarketClient(books={"yes": book("yes", bid=0.80, ask=0.82, bid_size=200.0)})
-    latest_edges = {("m1", "YES"): EdgeResult("YES", 0.95, 0.80, 0.10, 0.0, 0.0, "latest")}
+    latest_edges = {
+        ("m1", "YES"): EdgeResult(
+            "YES",
+            0.95,
+            0.80,
+            0.10,
+            0.0,
+            0.0,
+            "latest",
+            signal_family="lock_only",
+            probability_tier="lock_high_exact_no",
+        )
+    }
 
     messages = maybe_close_positions(broker, client, {"m1": temp_market()}, latest_edges)
 
@@ -1491,6 +1508,128 @@ def test_profit_exit_holds_full_position_as_settlement_runner(tmp_path):
     assert [row["action"] for row in rows] == ["HOLD_RUNNER"]
     assert "tranche=settlement_runner" in rows[0]["reason"]
     assert "held_shares=100.0000" in rows[0]["reason"]
+
+
+def test_residual_profit_exit_closes_full_position_without_settlement_runner(tmp_path):
+    settings = Settings(
+        state_path=str(tmp_path / "state.json"),
+        trades_csv_path=str(tmp_path / "trades.csv"),
+        decisions_csv_path=str(tmp_path / "decisions.csv"),
+        raw_snapshots_path=str(tmp_path / "raw.jsonl"),
+        min_profit_pct=0.03,
+        weather_taker_fee_rate=0.0,
+        model_error_margin=0.0,
+        resolution_error_margin=0.0,
+        settlement_runner_max_fraction=1.00,
+    )
+    broker = PaperBroker(settings)
+    pos = PaperPosition(
+        position_id="p1",
+        market_id="m1",
+        question="Will the highest temperature in Jeddah be 38°C or higher on July 8?",
+        token_id="no",
+        side="NO",
+        entry_price=0.416,
+        shares=116.73,
+        cost_usd=50.0,
+        opened_at=datetime.now(timezone.utc).isoformat(),
+        metadata={
+            "entry_p_true": 0.117,
+            "probability_stop_threshold": 0.734,
+            "signal_family": "intraday_observation_edge",
+            "probability_tier": "80",
+        },
+    )
+    broker.state.positions = [pos]
+    broker.state.cash_usd = 950.0
+    client = FakePolymarketClient(books={"no": book("no", bid=0.85, ask=0.87, bid_size=200.0)})
+    latest_edges = {
+        ("m1", "NO"): EdgeResult(
+            "NO",
+            0.084,
+            0.85,
+            0.19,
+            0.0,
+            0.0,
+            "latest residual",
+            signal_family="intraday_observation_edge",
+            probability_tier="80",
+        )
+    }
+
+    messages = maybe_close_positions(broker, client, {"m1": temp_market()}, latest_edges)
+
+    assert any("CLOSE NO" in msg for msg in messages)
+    assert not any("HOLD_RUNNER NO" in msg for msg in messages)
+    assert broker.state.positions == []
+    rows = list(csv.DictReader((tmp_path / "trades.csv").open(encoding="utf-8")))
+    assert [row["action"] for row in rows] == ["CLOSE"]
+
+
+def test_stale_held_token_refreshes_rest_book_before_blocking_exit(tmp_path):
+    settings = Settings(
+        state_path=str(tmp_path / "state.json"),
+        trades_csv_path=str(tmp_path / "trades.csv"),
+        decisions_csv_path=str(tmp_path / "decisions.csv"),
+        raw_snapshots_path=str(tmp_path / "raw.jsonl"),
+        min_profit_pct=0.03,
+        weather_taker_fee_rate=0.0,
+        model_error_margin=0.0,
+        resolution_error_margin=0.0,
+        settlement_runner_max_fraction=0.0,
+    )
+    broker = PaperBroker(settings)
+    pos = PaperPosition(
+        position_id="p1",
+        market_id="m1",
+        question="Will the highest temperature in Jeddah be 38°C or higher on July 8?",
+        token_id="no",
+        side="NO",
+        entry_price=0.416,
+        shares=100.0,
+        cost_usd=41.6,
+        opened_at=datetime.now(timezone.utc).isoformat(),
+        metadata={"entry_p_true": 0.117, "probability_stop_threshold": 0.734},
+    )
+    broker.state.positions = [pos]
+    broker.state.cash_usd = 958.4
+
+    class StaleThenRestStream:
+        def __init__(self) -> None:
+            self.refreshed = False
+
+        def health_snapshot(self):
+            return {"thread_alive": True, "stale": False, "status_reason": "stream ok"}
+
+        def token_health_snapshot(self, token_id):
+            if self.refreshed:
+                return {"thread_alive": True, "stale": False, "status_reason": "REST helper depth fresh"}
+            return {
+                "thread_alive": True,
+                "stale": True,
+                "status_reason": f"token {token_id} executable order book depth age 81s exceeds 60s",
+            }
+
+    class RestRefreshClient(FakePolymarketClient):
+        def __init__(self) -> None:
+            super().__init__(books={"no": book("no", bid=0.85, ask=0.87, bid_size=200.0)})
+            self.stream = StaleThenRestStream()
+            self.refresh_calls: list[str] = []
+
+        def refresh_order_book(self, token_id: str) -> OrderBook:
+            self.refresh_calls.append(token_id)
+            self.stream.refreshed = True
+            return self.books[token_id]
+
+    client = RestRefreshClient()
+    latest_edges = {("m1", "NO"): EdgeResult("NO", 0.084, 0.85, 0.19, 0.0, 0.0, "latest")}
+
+    messages = maybe_close_positions(broker, client, {"m1": temp_market()}, latest_edges)
+
+    assert client.refresh_calls == ["no"]
+    assert any("CLOSE NO" in msg for msg in messages)
+    assert not any("HOLD_STREAM_UNHEALTHY" in msg for msg in messages)
+    assert broker.state.positions == []
 
 
 def test_probability_deterioration_still_full_closes_without_runner(tmp_path):
@@ -1682,12 +1821,26 @@ def test_active_runner_hold_log_reports_actual_held_shares(tmp_path):
                 "entry_p_true": 0.95,
                 "probability_stop_threshold": 0.85,
                 "settlement_runner_active": True,
+                "signal_family": "lock_only",
+                "probability_tier": "lock_high_exact_no",
             },
         )
     ]
     broker.state.cash_usd = 995.0
     client = FakePolymarketClient(books={"yes": book("yes", bid=0.80, ask=0.82, bid_size=200.0)})
-    latest_edges = {("m1", "YES"): EdgeResult("YES", 0.95, 0.80, 0.10, 0.0, 0.0, "latest")}
+    latest_edges = {
+        ("m1", "YES"): EdgeResult(
+            "YES",
+            0.95,
+            0.80,
+            0.10,
+            0.0,
+            0.0,
+            "latest",
+            signal_family="lock_only",
+            probability_tier="lock_high_exact_no",
+        )
+    }
 
     messages = maybe_close_positions(broker, client, {"m1": temp_market()}, latest_edges)
 
@@ -1921,12 +2074,29 @@ def test_low_liquidity_limits_runner_cap_tranche(tmp_path):
             shares=100.0,
             cost_usd=20.0,
             opened_at=datetime.now(timezone.utc).isoformat(),
-            metadata={"entry_p_true": 0.95, "probability_stop_threshold": 0.85},
+            metadata={
+                "entry_p_true": 0.95,
+                "probability_stop_threshold": 0.85,
+                "signal_family": "lock_only",
+                "probability_tier": "lock_high_exact_no",
+            },
         )
     ]
     broker.state.cash_usd = 980.0
     client = FakePolymarketClient(books={"yes": book("yes", bid=0.80, ask=0.82, bid_size=20.0)})
-    latest_edges = {("m1", "YES"): EdgeResult("YES", 0.95, 0.80, 0.10, 0.0, 0.0, "latest")}
+    latest_edges = {
+        ("m1", "YES"): EdgeResult(
+            "YES",
+            0.95,
+            0.80,
+            0.10,
+            0.0,
+            0.0,
+            "latest",
+            signal_family="lock_only",
+            probability_tier="lock_high_exact_no",
+        )
+    }
 
     messages = maybe_close_positions(broker, client, {"m1": temp_market()}, latest_edges)
 

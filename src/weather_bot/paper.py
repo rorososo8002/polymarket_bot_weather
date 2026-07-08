@@ -2252,6 +2252,9 @@ def _runner_decision(
         return SettlementRunnerDecision(False, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, "settlement runner blocked: disabled")
     if latest_edge is None:
         return SettlementRunnerDecision(False, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, "settlement runner blocked: missing latest probability")
+    signal_family = str(pos.metadata.get("signal_family") or latest_edge.signal_family or "")
+    if signal_family != "lock_only":
+        return SettlementRunnerDecision(False, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, f"settlement runner blocked: signal_family={signal_family or 'unknown'} is not lock_only")
 
     max_fraction = max(0.0, min(1.0, settings.settlement_runner_max_fraction))
     if max_fraction <= 0.0:
@@ -2432,36 +2435,49 @@ def maybe_close_positions(
             return messages
     for pos in list(broker.state.positions):
         try:
+            book: OrderBook | None = None
             token_block_reason: str | None = None
             token_health: dict[str, object] | None = None
             if stream is not None and hasattr(stream, "token_health_snapshot"):
                 token_health = stream.token_health_snapshot(pos.token_id)
                 token_block_reason = websocket_pricing_block_reason(token_health)
             if token_block_reason:
-                market = _market_for_position(pos, market_by_id.get(pos.market_id))
-                market_type = str(pos.metadata.get("market_type", "temperature"))
-                mark = pos.last_mark_price if pos.last_mark_price is not None else pos.entry_price
-                edge = latest_edges.get((pos.market_id, pos.side))
-                assessment = _exit_assessment_for_position(pos, mark, edge, broker.settings, now)
-                _store_exit_assessment_metadata(pos, assessment, blocked_by=token_block_reason)
-                pos.metadata["last_websocket_token_health"] = token_health
-                broker.log_trade(
-                    "HOLD_STREAM_UNHEALTHY",
-                    market,
-                    pos.side,
-                    pos.token_id,
-                    pos.shares,
-                    mark,
-                    0.0,
-                    token_block_reason,
-                    market_type,
-                )
-                messages.append(
-                    f"HOLD_STREAM_UNHEALTHY {pos.side} shares={pos.shares:.2f} "
-                    f"mark={mark:.4f} reason={token_block_reason}"
-                )
-                continue
-            book = client.get_order_book(pos.token_id)
+                refresh = getattr(client, "refresh_order_book", None)
+                if callable(refresh):
+                    try:
+                        book = refresh(pos.token_id)
+                        token_block_reason = None
+                        pos.metadata["last_exit_book_source"] = "rest_helper"
+                    except Exception as exc:  # noqa: BLE001
+                        token_block_reason = f"{token_block_reason}; REST helper refresh failed: {exc.__class__.__name__}: {exc}"
+                if token_block_reason is None:
+                    token_health = stream.token_health_snapshot(pos.token_id) if stream is not None and hasattr(stream, "token_health_snapshot") else token_health
+                if token_block_reason:
+                    market = _market_for_position(pos, market_by_id.get(pos.market_id))
+                    market_type = str(pos.metadata.get("market_type", "temperature"))
+                    mark = pos.last_mark_price if pos.last_mark_price is not None else pos.entry_price
+                    edge = latest_edges.get((pos.market_id, pos.side))
+                    assessment = _exit_assessment_for_position(pos, mark, edge, broker.settings, now)
+                    _store_exit_assessment_metadata(pos, assessment, blocked_by=token_block_reason)
+                    pos.metadata["last_websocket_token_health"] = token_health
+                    broker.log_trade(
+                        "HOLD_STREAM_UNHEALTHY",
+                        market,
+                        pos.side,
+                        pos.token_id,
+                        pos.shares,
+                        mark,
+                        0.0,
+                        token_block_reason,
+                        market_type,
+                    )
+                    messages.append(
+                        f"HOLD_STREAM_UNHEALTHY {pos.side} shares={pos.shares:.2f} "
+                        f"mark={mark:.4f} reason={token_block_reason}"
+                    )
+                    continue
+            if book is None:
+                book = client.get_order_book(pos.token_id)
             best_bid = book.best_bid
             if best_bid is None:
                 market = _market_for_position(pos, market_by_id.get(pos.market_id))

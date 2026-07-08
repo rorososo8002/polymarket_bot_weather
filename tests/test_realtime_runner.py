@@ -277,6 +277,31 @@ def test_station_refresh_enqueues_high_exact_no_probe_and_expires_cached_signals
     assert low_22.market_id in signal_refreshed_at
 
 
+def test_station_refresh_high_exact_no_probes_are_bounded_and_rotated():
+    markets = [
+        RawMarket(
+            f"market-{index}",
+            f"Will the highest temperature in Seoul be {29 + index}C on July 8?",
+            f"market-{index}",
+            True,
+            False,
+            f"yes-{index}",
+            f"no-{index}",
+            event_id=f"event-{index}",
+        )
+        for index in range(7)
+    ]
+    runner_module._station_refresh_probe_cursor = 0
+
+    first_tokens, first_expired = runner_module._station_refresh_high_exact_no_probe_tokens(markets, max_events=3)
+    second_tokens, second_expired = runner_module._station_refresh_high_exact_no_probe_tokens(markets, max_events=3)
+
+    assert first_tokens == {"no-0", "no-1", "no-2"}
+    assert first_expired == {"market-0", "market-1", "market-2"}
+    assert second_tokens == {"no-3", "no-4", "no-5"}
+    assert second_expired == {"market-3", "market-4", "market-5"}
+
+
 def test_realtime_evaluation_coalescer_merges_burst_updates_by_event():
     calls: list[set[str]] = []
     evaluated = threading.Event()
@@ -371,6 +396,7 @@ def test_realtime_evaluation_coalescer_keeps_normal_burst_in_one_batch():
     worker = RealtimeEvaluationCoalescer(
         event_key_by_token=event_key_by_token,
         evaluator=lambda tokens: calls.append(set(tokens)),
+        max_batch_events=10,
         coalesce_seconds=0.0,
     )
 
@@ -383,6 +409,23 @@ def test_realtime_evaluation_coalescer_keeps_normal_burst_in_one_batch():
     assert status["queue_depth"] == 0
     assert status["processed_batch_count"] == 1
     assert status["processed_event_count"] == 10
+
+
+def test_realtime_evaluation_coalescer_default_keeps_batches_short():
+    calls: list[set[str]] = []
+    event_key_by_token = {f"token-{index}": f"event-{index}" for index in range(10)}
+    worker = RealtimeEvaluationCoalescer(
+        event_key_by_token=event_key_by_token,
+        evaluator=lambda tokens: calls.append(set(tokens)),
+        coalesce_seconds=0.0,
+    )
+
+    assert worker.enqueue_tokens(set(event_key_by_token)) == 10
+    worker._run_pending_batch_once()
+
+    assert len(calls) == 1
+    assert len(calls[0]) <= 4
+    assert worker.status_snapshot()["queue_depth"] == 10 - len(calls[0])
 
 
 def test_realtime_evaluation_coalescer_prioritizes_urgent_events_before_old_queue():

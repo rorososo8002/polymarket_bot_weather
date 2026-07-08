@@ -61,8 +61,10 @@ YES_SIZE_CAP_93 = 0.10
 YES_SIZE_CAP_DEFAULT = 0.05
 ENTRY_DEPTH_AUDIT_TARGET_USD = 100.0
 REALTIME_EVALUATION_QUEUE_MAX_EVENTS = 256
-REALTIME_EVALUATION_BATCH_MAX_EVENTS = 32
+REALTIME_EVALUATION_BATCH_MAX_EVENTS = 4
 REALTIME_EVALUATION_COALESCE_SECONDS = 0.25
+REALTIME_STATION_REFRESH_PROBE_MAX_EVENTS = 8
+_station_refresh_probe_cursor = 0
 
 
 def _utc_datetime(value: datetime) -> datetime:
@@ -658,10 +660,12 @@ def _enqueue_realtime_update(
 
 def _station_refresh_high_exact_no_probe_tokens(
     markets: list[RawMarket],
+    *,
+    max_events: int = REALTIME_STATION_REFRESH_PROBE_MAX_EVENTS,
 ) -> tuple[set[str], set[str]]:
-    token_ids: set[str] = set()
-    market_ids_to_expire: set[str] = set()
-    seen_events: set[str] = set()
+    global _station_refresh_probe_cursor
+    candidates: list[tuple[str, str, set[str]]] = []
+    event_index: dict[str, int] = {}
     for market in markets:
         try:
             parsed = parse_weather_question(market.question)
@@ -673,12 +677,27 @@ def _station_refresh_high_exact_no_probe_tokens(
             or parsed.temperature_bucket not in {"exact", "lower_tail"}
         ):
             continue
-        market_ids_to_expire.add(market.market_id)
         event_key = _market_event_key(market)
-        if event_key in seen_events or not market.no_token_id:
+        if event_key in event_index:
+            candidates[event_index[event_key]][2].add(market.market_id)
             continue
-        seen_events.add(event_key)
-        token_ids.add(market.no_token_id)
+        if not market.no_token_id:
+            continue
+        event_index[event_key] = len(candidates)
+        candidates.append((event_key, market.no_token_id, {market.market_id}))
+    if not candidates:
+        return set(), set()
+
+    limit = min(len(candidates), max(1, int(max_events)))
+    start = _station_refresh_probe_cursor % len(candidates)
+    selected = [candidates[(start + offset) % len(candidates)] for offset in range(limit)]
+    _station_refresh_probe_cursor = (start + limit) % len(candidates)
+    token_ids = {token_id for _event_key, token_id, _market_ids in selected}
+    market_ids_to_expire = {
+        market_id
+        for _event_key, _token_id, market_ids in selected
+        for market_id in market_ids
+    }
     return token_ids, market_ids_to_expire
 
 
