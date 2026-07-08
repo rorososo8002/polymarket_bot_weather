@@ -658,12 +658,7 @@ def _enqueue_realtime_update(
     return evaluator_worker.enqueue_tokens(updated_token_ids)
 
 
-def _station_refresh_high_exact_no_probe_tokens(
-    markets: list[RawMarket],
-    *,
-    max_events: int = REALTIME_STATION_REFRESH_PROBE_MAX_EVENTS,
-) -> tuple[set[str], set[str]]:
-    global _station_refresh_probe_cursor
+def _station_refresh_high_exact_no_probe_candidates(markets: list[RawMarket]) -> list[tuple[str, str, set[str]]]:
     candidates: list[tuple[str, str, set[str]]] = []
     event_index: dict[str, int] = {}
     for market in markets:
@@ -685,6 +680,16 @@ def _station_refresh_high_exact_no_probe_tokens(
             continue
         event_index[event_key] = len(candidates)
         candidates.append((event_key, market.no_token_id, {market.market_id}))
+    return candidates
+
+
+def _station_refresh_high_exact_no_probe_tokens(
+    markets: list[RawMarket],
+    *,
+    max_events: int = REALTIME_STATION_REFRESH_PROBE_MAX_EVENTS,
+) -> tuple[set[str], set[str]]:
+    global _station_refresh_probe_cursor
+    candidates = _station_refresh_high_exact_no_probe_candidates(markets)
     if not candidates:
         return set(), set()
 
@@ -699,6 +704,24 @@ def _station_refresh_high_exact_no_probe_tokens(
         for market_id in market_ids
     }
     return token_ids, market_ids_to_expire
+
+
+def _realtime_evaluation_trigger_tokens(
+    stream_markets: list[RawMarket],
+    broker: PaperBroker,
+) -> dict[str, str]:
+    """Return the small token subset allowed to wake expensive strategy evaluation."""
+    trigger_tokens = {
+        token_id: event_key
+        for event_key, token_id, _market_ids in _station_refresh_high_exact_no_probe_candidates(stream_markets)
+    }
+    market_by_id = {market.market_id: market for market in stream_markets}
+    for pos in broker.state.positions:
+        if not pos.token_id:
+            continue
+        market = market_by_id.get(pos.market_id) or _market_from_position(pos)
+        trigger_tokens[str(pos.token_id)] = _market_event_key(market)
+    return trigger_tokens
 
 
 def _enqueue_station_refresh_high_exact_no_probes(
@@ -3146,10 +3169,7 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
             latest_edges: dict[tuple[str, str], EdgeResult] = {}
             update_lock = threading.RLock()
             stream_holder: dict[str, StreamBackedPolymarketClient] = {}
-            event_key_by_token = {
-                token_id: _market_event_key(market)
-                for token_id, market in market_by_token.items()
-            }
+            event_key_by_token = _realtime_evaluation_trigger_tokens(stream_markets, broker)
             event_priorities = _realtime_event_priorities(
                 list(market_by_id.values()),
                 open_market_ids=open_market_ids,

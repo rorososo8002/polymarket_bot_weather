@@ -302,6 +302,74 @@ def test_station_refresh_high_exact_no_probes_are_bounded_and_rotated():
     assert second_expired == {"market-3", "market-4", "market-5"}
 
 
+def test_realtime_evaluation_trigger_tokens_use_representative_no_and_held_positions():
+    high_29 = RawMarket(
+        "seoul-high-29",
+        "Will the highest temperature in Seoul be 29C on July 8?",
+        "seoul-high-29",
+        True,
+        False,
+        "high-29-yes",
+        "high-29-no",
+        event_id="seoul-high-event",
+    )
+    high_30_same_event = RawMarket(
+        "seoul-high-30",
+        "Will the highest temperature in Seoul be 30C on July 8?",
+        "seoul-high-30",
+        True,
+        False,
+        "high-30-yes",
+        "high-30-no",
+        event_id="seoul-high-event",
+    )
+    low_22 = RawMarket(
+        "seoul-low-22",
+        "Will the lowest temperature in Seoul be 22C on July 8?",
+        "seoul-low-22",
+        True,
+        False,
+        "low-22-yes",
+        "low-22-no",
+        event_id="seoul-low-event",
+    )
+    broker = runner_module.PaperBroker(
+        Settings(
+            state_path=":memory:",
+            trades_csv_path=":memory:",
+            decisions_csv_path=":memory:",
+            raw_snapshots_path=":memory:",
+        )
+    )
+    broker.state.positions = [
+        PaperPosition(
+            position_id="held",
+            market_id="held-market",
+            question="Will the highest temperature in Jeddah be 38C or higher on July 8?",
+            token_id="held-no",
+            side="NO",
+            entry_price=0.40,
+            shares=10,
+            cost_usd=4,
+            opened_at=datetime.now(timezone.utc).isoformat(),
+            metadata={},
+        )
+    ]
+
+    trigger_tokens = runner_module._realtime_evaluation_trigger_tokens(
+        [high_29, high_30_same_event, low_22],
+        broker,
+    )
+
+    held_event_key = runner_module._market_event_key(
+        runner_module._market_from_position(broker.state.positions[0])
+    )
+    assert trigger_tokens == {
+        "high-29-no": "seoul-high-event",
+        "held-no": held_event_key,
+    }
+
+
 def test_realtime_evaluation_coalescer_merges_burst_updates_by_event():
     calls: list[set[str]] = []
     evaluated = threading.Event()
