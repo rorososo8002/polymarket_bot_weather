@@ -302,6 +302,13 @@ def test_station_refresh_high_exact_no_probes_are_bounded_and_rotated():
     assert second_expired == {"market-3", "market-4", "market-5"}
 
 
+def test_station_refresh_default_probe_batch_fits_one_evaluation_batch():
+    assert (
+        runner_module.REALTIME_STATION_REFRESH_PROBE_MAX_EVENTS
+        <= runner_module.REALTIME_EVALUATION_BATCH_MAX_EVENTS
+    )
+
+
 def test_realtime_evaluation_trigger_tokens_use_representative_no_and_held_positions():
     high_29 = RawMarket(
         "seoul-high-29",
