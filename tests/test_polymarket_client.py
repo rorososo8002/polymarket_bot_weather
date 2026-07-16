@@ -13,6 +13,61 @@ def _binary_token_fields() -> dict[str, str]:
     }
 
 
+def test_get_order_books_uses_one_batch_request(monkeypatch) -> None:
+    calls: list[tuple[str, list[dict[str, str]], float]] = []
+
+    class Response:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> list[dict[str, Any]]:
+            return [
+                {
+                    "market": "condition-a",
+                    "asset_id": "token-a",
+                    "timestamp": "123",
+                    "hash": "hash-a",
+                    "bids": [{"price": "0.79", "size": "20"}],
+                    "asks": [{"price": "0.80", "size": "30"}],
+                    "min_order_size": "1",
+                    "tick_size": "0.01",
+                    "neg_risk": False,
+                    "last_trade_price": "0.79",
+                },
+                {
+                    "market": "condition-b",
+                    "asset_id": "token-b",
+                    "timestamp": "124",
+                    "hash": "hash-b",
+                    "bids": [],
+                    "asks": [{"price": "0.90", "size": "10"}],
+                    "min_order_size": "1",
+                    "tick_size": "0.01",
+                    "neg_risk": False,
+                    "last_trade_price": "0.89",
+                },
+            ]
+
+    def fake_post(url: str, *, json: list[dict[str, str]], timeout: float) -> Response:
+        calls.append((url, json, timeout))
+        return Response()
+
+    monkeypatch.setattr("weather_bot.polymarket_client.requests.post", fake_post)
+    client = PolymarketClient("https://gamma.example", "https://clob.example")
+
+    books = client.get_order_books(["token-a", "token-b"], timeout=1.5)
+
+    assert calls == [
+        (
+            "https://clob.example/books",
+            [{"token_id": "token-a"}, {"token_id": "token-b"}],
+            1.5,
+        )
+    ]
+    assert [book.token_id for book in books] == ["token-a", "token-b"]
+    assert books[0].best_ask == 0.80
+
+
 def _weather_market_row(**overrides: Any) -> dict[str, Any]:
     row: dict[str, Any] = {
         "id": "market-1",

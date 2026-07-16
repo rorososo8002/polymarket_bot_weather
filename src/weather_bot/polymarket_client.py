@@ -498,6 +498,38 @@ class PolymarketClient:
     def get_order_book(self, token_id: str) -> OrderBook:
         url = f"{self.clob_base}/book"
         data = self._get(url, params={"token_id": token_id})
+        return self._parse_order_book(token_id, data)
+
+    def get_order_books(
+        self,
+        token_ids: list[str],
+        *,
+        timeout: float | None = None,
+    ) -> list[OrderBook]:
+        """Fetch up to 500 books per official CLOB batch request."""
+        unique_tokens = list(dict.fromkeys(str(token_id) for token_id in token_ids if str(token_id)))
+        books: list[OrderBook] = []
+        for start in range(0, len(unique_tokens), 500):
+            batch = unique_tokens[start:start + 500]
+            response = requests.post(
+                f"{self.clob_base}/books",
+                json=[{"token_id": token_id} for token_id in batch],
+                timeout=self.timeout if timeout is None else timeout,
+            )
+            response.raise_for_status()
+            payload = response.json()
+            if not isinstance(payload, list):
+                raise ValueError("CLOB batch order-book response must be a list")
+            requested = set(batch)
+            for row in payload:
+                if not isinstance(row, dict):
+                    continue
+                token_id = str(row.get("asset_id") or row.get("token_id") or "")
+                if token_id in requested:
+                    books.append(self._parse_order_book(token_id, row))
+        return books
+
+    def _parse_order_book(self, token_id: str, data: dict[str, Any]) -> OrderBook:
         bids = self._parse_levels(data.get("bids") or [])
         asks = self._parse_levels(data.get("asks") or [])
         bids.sort(key=lambda x: x.price, reverse=True)

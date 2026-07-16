@@ -66,7 +66,6 @@ REALTIME_EVALUATION_BATCH_MAX_EVENTS = 64
 REALTIME_NORMAL_EVALUATION_BATCH_MAX_EVENTS = 1
 REALTIME_EVALUATION_COALESCE_SECONDS = 0.25
 REALTIME_FINAL_CHECK_MAX_WORKERS = 8
-REALTIME_CANDIDATE_BOOK_MAX_WORKERS = 16
 REALTIME_FINAL_PREFETCH_DEADLINE_SECONDS = 1.5
 REALTIME_FINAL_BOOK_PREFETCH_MAX_AGE_SECONDS = 5.0
 REALTIME_LAST_EVALUATION_SIDE = "_LAST_EVALUATION"
@@ -505,39 +504,40 @@ class StreamBackedPolymarketClient(PolymarketClient):
         return self.stream.refresh_order_book(token_id)
 
     def prefetch_candidate_order_books(self, token_ids: list[str]) -> dict[str, int]:
-        """Fetch candidate books concurrently without paying for final tradability checks."""
+        """Fetch candidate books in one official CLOB batch request."""
         unique_tokens = list(dict.fromkeys(str(token_id) for token_id in token_ids if str(token_id)))
         if not unique_tokens:
             return {"requested": 0, "book_ready": 0, "failed": 0, "deferred": 0}
 
-        max_workers = min(REALTIME_CANDIDATE_BOOK_MAX_WORKERS, len(unique_tokens))
-        executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="candidate-book")
-        future_tokens = {
-            executor.submit(self.stream.fetch_order_book_snapshot, token_id): token_id
-            for token_id in unique_tokens
-        }
-        completed, unfinished = wait(
-            list(future_tokens),
-            timeout=REALTIME_FINAL_PREFETCH_DEADLINE_SECONDS,
-        )
-        ready = 0
-        failed = 0
-        for future in completed:
+        try:
+            books = self.get_order_books(
+                unique_tokens,
+                timeout=REALTIME_FINAL_PREFETCH_DEADLINE_SECONDS,
+            )
+        except Exception:
+            return {
+                "requested": len(unique_tokens),
+                "book_ready": 0,
+                "failed": len(unique_tokens),
+                "deferred": 0,
+            }
+
+        ready_tokens: set[str] = set()
+        requested_tokens = set(unique_tokens)
+        for book in books:
+            token_id = str(book.token_id)
+            if token_id not in requested_tokens or token_id in ready_tokens:
+                continue
             try:
-                book = future.result()
                 self.stream.apply_rest_snapshot(book, notify=False)
-            except Exception:  # The market stays asleep until a later book update wakes it.
-                failed += 1
-            else:
-                ready += 1
-        for future in unfinished:
-            future.cancel()
-        executor.shutdown(wait=False, cancel_futures=True)
+            except Exception:
+                continue
+            ready_tokens.add(token_id)
         return {
             "requested": len(unique_tokens),
-            "book_ready": ready,
-            "failed": failed,
-            "deferred": len(unfinished),
+            "book_ready": len(ready_tokens),
+            "failed": len(unique_tokens) - len(ready_tokens),
+            "deferred": 0,
         }
 
     def prefetch_final_entry_checks(self, checks: list[tuple[str, str]]) -> dict[str, int]:
@@ -1150,19 +1150,25 @@ def _realtime_price_watch_token_ids(
     settings: Settings,
 ) -> set[str]:
     watched = {str(pos.token_id) for pos in broker.state.positions if pos.token_id}
-    min_confidence, _min_edge, _entry_fraction = _market_params(settings, "temperature")
     for market in markets:
         if not market.no_token_id:
             continue
         signal = signals_by_market.get(market.market_id)
-        if signal is None or signal.confidence < min_confidence:
-            continue
-        if settings.official_nowcast_entry_only and not _is_official_station_entry_signal(signal):
-            continue
-        if settings.no_only_new_entries and _preferred_entry_side(signal) != "NO":
+        if signal is None or not _realtime_signal_allows_new_entry(signal, settings):
             continue
         watched.add(str(market.no_token_id))
     return watched
+
+
+def _realtime_signal_allows_new_entry(signal: WeatherSignal, settings: Settings) -> bool:
+    min_confidence, _min_edge, _entry_fraction = _market_params(settings, "temperature")
+    if signal.confidence < min_confidence:
+        return False
+    if settings.official_nowcast_entry_only and not _is_official_station_entry_signal(signal):
+        return False
+    if settings.no_only_new_entries and _preferred_entry_side(signal) != "NO":
+        return False
+    return True
 
 
 def _enqueue_station_refresh_high_exact_no_probes(
@@ -3515,6 +3521,19 @@ def _evaluate_realtime_update(
         now=current,
     )
     signal_prefetch_duration_seconds = time.monotonic() - signal_prefetch_started_at
+    signal_ineligible_market_ids = {
+        market.market_id
+        for market in markets_ready_for_evaluation
+        if callable(candidate_book)
+        and market.market_id not in held_market_ids
+        and market.market_id not in signal_prefetch_errors
+        and market.market_id in signals_by_market
+        and not _realtime_signal_allows_new_entry(signals_by_market[market.market_id], settings)
+    }
+    evaluation_market_ids = ready_market_ids - signal_ineligible_market_ids
+    markets_selected_for_evaluation = [
+        market for market in markets_ready_for_evaluation if market.market_id in evaluation_market_ids
+    ]
     market_evaluation_started_at = time.monotonic()
     pending_event_candidates: list[list[PortfolioCandidate]] = []
     for event_key in sorted(touched_events):
@@ -3528,7 +3547,7 @@ def _evaluate_realtime_update(
                 market.market_id in updated_market_ids
                 or market.market_id in held_market_ids
             )
-            and market.market_id in ready_market_ids
+            and market.market_id in evaluation_market_ids
         ]
         for market in markets_to_evaluate:
             market_type = market_types.get(market.market_id, "temperature")
@@ -3685,9 +3704,11 @@ def _evaluate_realtime_update(
     portfolio_apply_duration_seconds = time.monotonic() - portfolio_apply_started_at
     breakdown = {
         "event_count": len(touched_events),
-        "market_count": len(markets_ready_for_evaluation),
+        "market_count": len(markets_selected_for_evaluation),
         "book_unavailable_market_count": len(book_unavailable_market_ids),
         "book_unavailable_market_ids_sample": sorted(book_unavailable_market_ids)[:10],
+        "signal_ineligible_market_count": len(signal_ineligible_market_ids),
+        "signal_ineligible_market_ids_sample": sorted(signal_ineligible_market_ids)[:10],
         "candidate_book_prefetch": candidate_prefetch_status,
         "candidate_book_prefetch_seconds": round(candidate_prefetch_duration_seconds, 3),
         "signal_prefetch_seconds": round(signal_prefetch_duration_seconds, 3),
