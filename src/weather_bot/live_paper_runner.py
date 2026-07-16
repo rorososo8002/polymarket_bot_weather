@@ -66,6 +66,7 @@ REALTIME_EVALUATION_BATCH_MAX_EVENTS = 64
 REALTIME_NORMAL_EVALUATION_BATCH_MAX_EVENTS = 1
 REALTIME_EVALUATION_COALESCE_SECONDS = 0.25
 REALTIME_FINAL_CHECK_MAX_WORKERS = 8
+REALTIME_CANDIDATE_BOOK_MAX_WORKERS = 16
 REALTIME_FINAL_PREFETCH_DEADLINE_SECONDS = 1.5
 REALTIME_FINAL_BOOK_PREFETCH_MAX_AGE_SECONDS = 5.0
 REALTIME_LAST_EVALUATION_SIDE = "_LAST_EVALUATION"
@@ -502,6 +503,42 @@ class StreamBackedPolymarketClient(PolymarketClient):
                 with self._final_prefetch_lock:
                     self._final_prefetch_generation[token] = self._final_prefetch_generation.get(token, 0) + 1
         return self.stream.refresh_order_book(token_id)
+
+    def prefetch_candidate_order_books(self, token_ids: list[str]) -> dict[str, int]:
+        """Fetch candidate books concurrently without paying for final tradability checks."""
+        unique_tokens = list(dict.fromkeys(str(token_id) for token_id in token_ids if str(token_id)))
+        if not unique_tokens:
+            return {"requested": 0, "book_ready": 0, "failed": 0, "deferred": 0}
+
+        max_workers = min(REALTIME_CANDIDATE_BOOK_MAX_WORKERS, len(unique_tokens))
+        executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="candidate-book")
+        future_tokens = {
+            executor.submit(self.stream.fetch_order_book_snapshot, token_id): token_id
+            for token_id in unique_tokens
+        }
+        completed, unfinished = wait(
+            list(future_tokens),
+            timeout=REALTIME_FINAL_PREFETCH_DEADLINE_SECONDS,
+        )
+        ready = 0
+        failed = 0
+        for future in completed:
+            try:
+                book = future.result()
+                self.stream.apply_rest_snapshot(book, notify=False)
+            except Exception:  # The market stays asleep until a later book update wakes it.
+                failed += 1
+            else:
+                ready += 1
+        for future in unfinished:
+            future.cancel()
+        executor.shutdown(wait=False, cancel_futures=True)
+        return {
+            "requested": len(unique_tokens),
+            "book_ready": ready,
+            "failed": failed,
+            "deferred": len(unfinished),
+        }
 
     def prefetch_final_entry_checks(self, checks: list[tuple[str, str]]) -> dict[str, int]:
         """Warm independent final REST checks concurrently; ledger writes remain serialized."""
@@ -3348,6 +3385,7 @@ def _evaluate_realtime_update(
     observation_provider: Any | None = None,
     residual_profile_store: ResidualProfileStore | None = None,
     now: datetime | None = None,
+    wake_when_book_returns: set[str] | None = None,
 ) -> dict[str, object]:
     evaluation_started_at = time.monotonic()
     current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
@@ -3397,12 +3435,11 @@ def _evaluate_realtime_update(
         "deferred": 0,
     }
     prefetch = getattr(client, "prefetch_final_entry_checks", None)
+    prefetch_candidate_books = getattr(client, "prefetch_candidate_order_books", None)
     candidate_book = getattr(client, "get_candidate_order_book", None)
-    if callable(prefetch) and callable(candidate_book):
-        candidate_checks: list[tuple[str, str]] = []
+    if callable(prefetch_candidate_books) and callable(candidate_book):
+        candidate_token_ids: list[str] = []
         for market in markets_to_prefetch:
-            if not market.condition_id:
-                continue
             token_by_side = {
                 "YES": market.yes_token_id,
                 "NO": market.no_token_id,
@@ -3414,16 +3451,61 @@ def _evaluate_realtime_update(
                 try:
                     book = candidate_book(token_id)
                 except Exception:  # noqa: BLE001
-                    candidate_checks.append((market.condition_id, token_id))
+                    candidate_token_ids.append(token_id)
                 else:
-                    if _book_is_crossed(book):
-                        candidate_checks.append((market.condition_id, token_id))
-        candidate_prefetch_status = prefetch(candidate_checks)
+                    if _book_is_crossed(book) or book.best_ask is None:
+                        candidate_token_ids.append(token_id)
+        candidate_prefetch_status = prefetch_candidate_books(candidate_token_ids)
     candidate_prefetch_duration_seconds = time.monotonic() - candidate_prefetch_started_at
+
+    ready_market_ids: set[str] = set()
+    book_unavailable_market_ids: set[str] = set()
+    missing_book_tokens: set[str] = set()
+    for market in markets_to_prefetch:
+        if market.market_id in held_market_ids or not callable(candidate_book):
+            ready_market_ids.add(market.market_id)
+            continue
+        token_by_side = {
+            "YES": market.yes_token_id,
+            "NO": market.no_token_id,
+        }
+        entry_tokens = {
+            str(token_by_side[side])
+            for side in allowed_sides_by_market[market.market_id]
+            if token_by_side.get(side)
+        }
+        executable_ask_found = False
+        for token_id in entry_tokens:
+            try:
+                book = candidate_book(token_id)
+            except Exception:  # noqa: BLE001
+                missing_book_tokens.add(token_id)
+                continue
+            if _book_is_crossed(book) or book.best_ask is None:
+                missing_book_tokens.add(token_id)
+                continue
+            executable_ask_found = True
+        if executable_ask_found:
+            ready_market_ids.add(market.market_id)
+        else:
+            book_unavailable_market_ids.add(market.market_id)
+
+    touched_candidate_tokens = {
+        str(token_id)
+        for market in markets_to_prefetch
+        for token_id in (market.yes_token_id, market.no_token_id)
+        if token_id
+    }
+    if wake_when_book_returns is not None:
+        wake_when_book_returns.difference_update(touched_candidate_tokens)
+        wake_when_book_returns.update(missing_book_tokens)
+    markets_ready_for_evaluation = [
+        market for market in markets_to_prefetch if market.market_id in ready_market_ids
+    ]
 
     signal_prefetch_started_at = time.monotonic()
     signal_prefetch_errors = _prefetch_realtime_signals(
-        markets_to_prefetch,
+        markets_ready_for_evaluation,
         settings,
         signals_by_market,
         signal_refreshed_at_by_market,
@@ -3446,6 +3528,7 @@ def _evaluate_realtime_update(
                 market.market_id in updated_market_ids
                 or market.market_id in held_market_ids
             )
+            and market.market_id in ready_market_ids
         ]
         for market in markets_to_evaluate:
             market_type = market_types.get(market.market_id, "temperature")
@@ -3602,7 +3685,9 @@ def _evaluate_realtime_update(
     portfolio_apply_duration_seconds = time.monotonic() - portfolio_apply_started_at
     breakdown = {
         "event_count": len(touched_events),
-        "market_count": len(markets_to_prefetch),
+        "market_count": len(markets_ready_for_evaluation),
+        "book_unavailable_market_count": len(book_unavailable_market_ids),
+        "book_unavailable_market_ids_sample": sorted(book_unavailable_market_ids)[:10],
         "candidate_book_prefetch": candidate_prefetch_status,
         "candidate_book_prefetch_seconds": round(candidate_prefetch_duration_seconds, 3),
         "signal_prefetch_seconds": round(signal_prefetch_duration_seconds, 3),
@@ -3976,6 +4061,7 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
                 signals_by_market,
                 settings,
             )
+            wake_when_book_returns: set[str] = set()
             event_priorities = _realtime_event_priorities(
                 list(market_by_id.values()),
                 open_market_ids=open_market_ids,
@@ -3999,13 +4085,14 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
                             signal_refreshed_at_by_market=signal_refreshed_at_by_market,
                             observation_provider=observation_provider,
                             residual_profile_store=residual_profile_store,
+                            wake_when_book_returns=wake_when_book_returns,
                         )
                         price_watch_token_ids = _realtime_price_watch_token_ids(
                             stream_markets,
                             broker,
                             signals_by_market,
                             settings,
-                        )
+                        ) | wake_when_book_returns
 
             def update_evaluator_status(status: dict[str, object]) -> None:
                 update_runner_status_fields(settings, realtime_evaluator=status)

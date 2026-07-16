@@ -128,6 +128,49 @@ def test_stream_backed_client_prefetches_final_books_concurrently_and_reuses_the
     assert sorted(stream.refresh_calls) == ["token-a", "token-b"]
 
 
+def test_stream_backed_client_prefetches_candidate_books_without_tradability_lookup():
+    class Cache:
+        def __init__(self) -> None:
+            self.books: dict[str, OrderBook] = {}
+
+        def get_order_book(self, token_id: str) -> OrderBook:
+            return self.books[token_id]
+
+    class CandidateStream:
+        def __init__(self) -> None:
+            self.cache = Cache()
+            self.barrier = threading.Barrier(2)
+            self.fetch_calls: list[str] = []
+
+        def fetch_order_book_snapshot(self, token_id: str) -> OrderBook:
+            self.fetch_calls.append(token_id)
+            self.barrier.wait(timeout=1.0)
+            return OrderBook(
+                token_id,
+                bids=[OrderLevel(0.79, 100.0)],
+                asks=[OrderLevel(0.80, 100.0)],
+            )
+
+        def apply_rest_snapshot(self, book: OrderBook, *, notify: bool = True) -> None:
+            self.cache.books[str(book.token_id)] = book
+
+    stream = CandidateStream()
+    client = StreamBackedPolymarketClient(
+        "https://gamma.example",
+        "https://clob.example",
+        stream,
+    )
+    client._fetch_clob_market_tradability_uncached = (  # type: ignore[method-assign]
+        lambda _condition_id: (_ for _ in ()).throw(AssertionError("candidate prefetch must not fetch tradability"))
+    )
+
+    status = client.prefetch_candidate_order_books(["token-a", "token-b"])
+
+    assert status == {"requested": 2, "book_ready": 2, "failed": 0, "deferred": 0}
+    assert sorted(stream.fetch_calls) == ["token-a", "token-b"]
+    assert stream.cache.get_order_book("token-a").best_ask == pytest.approx(0.80)
+
+
 def test_stream_backed_client_does_not_wait_for_one_slow_final_prefetch(monkeypatch):
     class Cache:
         def __init__(self) -> None:
@@ -2216,19 +2259,29 @@ def test_realtime_update_prefetches_missing_no_book_before_evaluation(tmp_path):
     class PrefetchClient:
         def __init__(self) -> None:
             self.books: dict[str, OrderBook] = {}
-            self.prefetch_calls: list[list[tuple[str, str]]] = []
+            self.candidate_prefetch_calls: list[list[str]] = []
+            self.final_prefetch_calls: list[list[tuple[str, str]]] = []
 
         def get_candidate_order_book(self, token_id: str) -> OrderBook:
             return self.books[token_id]
 
-        def prefetch_final_entry_checks(self, checks: list[tuple[str, str]]) -> dict[str, int]:
-            self.prefetch_calls.append(list(checks))
-            for _condition_id, token_id in checks:
+        def prefetch_candidate_order_books(self, token_ids: list[str]) -> dict[str, int]:
+            self.candidate_prefetch_calls.append(list(token_ids))
+            for token_id in token_ids:
                 self.books[token_id] = OrderBook(
                     token_id,
                     bids=[OrderLevel(0.45, 100.0)],
                     asks=[OrderLevel(0.50, 100.0)],
                 )
+            return {
+                "requested": len(token_ids),
+                "book_ready": len(token_ids),
+                "failed": 0,
+                "deferred": 0,
+            }
+
+        def prefetch_final_entry_checks(self, checks: list[tuple[str, str]]) -> dict[str, int]:
+            self.final_prefetch_calls.append(list(checks))
             return {
                 "requested": len(checks),
                 "book_ready": len(checks),
@@ -2269,14 +2322,75 @@ def test_realtime_update_prefetches_missing_no_book_before_evaluation(tmp_path):
         {},
     )
 
-    assert client.prefetch_calls[0] == [("condition-no", "no-token")]
-    assert client.prefetch_calls[1] == []
+    assert client.candidate_prefetch_calls == [["no-token"]]
+    assert client.final_prefetch_calls == [[]]
     assert breakdown["candidate_book_prefetch"] == {
         "requested": 1,
         "book_ready": 1,
         "failed": 0,
         "deferred": 0,
     }
+
+
+def test_realtime_update_defers_no_ask_market_until_book_becomes_executable(tmp_path):
+    question = "Will the highest temperature in Seoul be 27C today?"
+    market = RawMarket(
+        "seoul-no-ask",
+        question,
+        "seoul-no-ask",
+        True,
+        False,
+        "yes-token",
+        "no-token",
+        condition_id="condition-no",
+        event_id="seoul-today",
+    )
+
+    class BidOnlyClient:
+        def get_candidate_order_book(self, token_id: str) -> OrderBook:
+            return OrderBook(token_id, bids=[OrderLevel(0.20, 100.0)], asks=[])
+
+        def prefetch_candidate_order_books(self, token_ids: list[str]) -> dict[str, int]:
+            return {
+                "requested": len(token_ids),
+                "book_ready": 0,
+                "failed": 0,
+                "deferred": len(token_ids),
+            }
+
+        def prefetch_final_entry_checks(self, checks: list[tuple[str, str]]) -> dict[str, int]:
+            return {"requested": 0, "book_ready": 0, "failed": 0, "deferred": 0}
+
+    settings = Settings(
+        state_path=str(tmp_path / "state.json"),
+        trades_csv_path=str(tmp_path / "trades.csv"),
+        decisions_csv_path=str(tmp_path / "decisions.csv"),
+        raw_snapshots_path=str(tmp_path / "raw.jsonl"),
+        portfolio_decisions_jsonl_path=str(tmp_path / "portfolio.jsonl"),
+        no_only_new_entries=True,
+    )
+    broker = runner_module.PaperBroker(settings)
+    wake_when_book_returns: set[str] = set()
+
+    breakdown = runner_module._evaluate_realtime_update(
+        {"no-token"},
+        BidOnlyClient(),
+        broker,
+        settings,
+        {"yes-token": market, "no-token": market},
+        {},
+        {market.market_id: "temperature"},
+        {},
+        signal_refreshed_at_by_market={},
+        probability_estimator=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("signal calculation must wait for an executable NO ask")
+        ),
+        wake_when_book_returns=wake_when_book_returns,
+    )
+
+    assert wake_when_book_returns == {"no-token"}
+    assert breakdown["market_count"] == 0
+    assert breakdown["book_unavailable_market_count"] == 1
 
 
 def test_realtime_price_update_evaluates_only_the_changed_market_in_event(tmp_path):
