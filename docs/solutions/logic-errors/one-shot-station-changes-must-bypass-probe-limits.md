@@ -3,7 +3,7 @@ title: One-shot station changes must bypass bounded probe limits
 date: 2026-07-17
 last_updated: 2026-07-17
 category: logic-errors
-module: weather_bot.live_paper_runner
+module: "weather_bot.live_paper_runner, weather_bot.polymarket_client"
 problem_type: logic_error
 component: background_job
 symptoms:
@@ -11,10 +11,11 @@ symptoms:
   - "Station-driven candidates waited behind ordinary order-book updates or disappeared after one evaluator exception."
   - "Later cities reached final REST price checks only after the executable ask had already moved near 0.99."
   - "Production urgent completion lag remained 21-23 seconds while four-event normal batches were in flight."
+  - "After queue fixes, per-token REST books and evaluations without executable asks still kept urgent work near 5 seconds."
 root_cause: logic_error
 resolution_type: code_fix
 severity: high
-tags: [official-station, one-shot-event, urgent-queue, urgent-latency, coalescer, parallel-prefetch, fail-closed, paper-trading]
+tags: [official-station, urgent-queue, urgent-latency, batch-orderbook, executable-ask, wake-on-book-return, signal-eligibility, fail-closed]
 ---
 
 # One-shot station changes must bypass bounded probe limits
@@ -60,6 +61,14 @@ candidate or skip-decision stage.
   ordinary batch contains four non-preemptible events.
 - Abandoning a timed-out future without invalidation lets its older response
   arrive later and overwrite a newer book.
+- Sending many individual `/book` requests concurrently still spends one HTTP
+  round trip per token and scales poorly when a station event has many buckets.
+- Computing official signals before checking for an executable ask wastes the
+  expensive part of evaluation on markets that cannot be entered.
+- Dropping ask-less markets permanently would be fast but wrong: a later book
+  update must be able to wake them again.
+- Watching every price update, including YES-leaning or low-confidence signals,
+  turns ordinary book noise back into expensive strategy work.
 - A two-leg portfolio search can multiply every candidate pair by 50 allocation
   sizes per leg, making one city consume minutes on a small VPS.
 
@@ -107,6 +116,30 @@ city-month q75, and station-local 16:00 crossings are urgent. A residual
 30-minute-bin transition is queued as ordinary preemptible work. Therefore a
 time-only eligibility change does not depend on another book or METAR update.
 
+## Prune Work Before Signal Evaluation
+
+The price watcher now keeps only held-position tokens and new-entry NO tokens
+whose current official signal has enough confidence and prefers NO. Held
+positions remain watched regardless of entry eligibility because exit evidence
+must not be lost. Station changes and timer thresholds still enqueue directly,
+so narrowing the price watcher cannot hide a newly eligible market.
+
+For a station or timer wakeup, the runner first collects every required token
+and uses Polymarket's official `POST /books` endpoint. The endpoint accepts up
+to 500 tokens per request, replacing dozens of per-token `/book` round trips
+with one batch response.
+
+After that response, a new-entry market proceeds only when its allowed side has
+a non-crossed book with an executable ask. Missing or ask-less tokens are added
+to `wake_when_book_returns`; a later WebSocket book update wakes the market and
+tries again. This is a temporary defer, not a permanent exclusion. Held markets
+bypass the entry-ask filter so bid-side exit evaluation continues.
+
+Signals are then prepared only for price-ready markets. Before detailed edge
+and portfolio evaluation, known signals are filtered again: production new
+entries require an official station signal, confidence at least 0.50, and a NO
+preference under the NO-only policy.
+
 On process start, the first official-station refresh only establishes the
 comparison baseline. Treating a missing previous key as a change creates a
 false all-city urgent burst, which defeats normal-batch preemption immediately
@@ -149,6 +182,14 @@ completion samples fell to 6.078 and 4.414 seconds, with zero evaluator errors
 and zero urgent drops. This is the relevant service-level measurement; the
 aggregate processed-event count is only a throughput diagnostic.
 
+Stage-level production measurements then exposed the remaining bottleneck. An
+urgent update still took 5.432 seconds because 37 candidate books were fetched
+individually and markets without asks continued downstream. Replacing those
+requests with `POST /books` and pruning ineligible work produced final urgent
+completion samples of 0.815 and 0.905 seconds. In the first final sample, 10
+books arrived in one 0.518-second request and queue wait was 0.282 seconds.
+Evaluator errors, dropped updates, and dropped urgent updates remained zero.
+
 Cash, exposure, positions, `paper_state.json`, and CSV ledger writes remain
 serialized. Before each event portfolio is applied, the runner recalculates
 the current entry bankroll and exposure room.
@@ -185,12 +226,18 @@ Keep regression tests for all of these cases:
 - an existing backlog drains without repeated coalescing delay;
 - high-departure and low-rebound changes alter the station-state key;
 - final book reads overlap instead of running serially;
+- candidate books use one official batch request rather than one request per
+  token, with duplicate removal and 500-token chunking;
+- ask-less new-entry markets stop before signal calculation and are registered
+  to wake when their book becomes executable;
+- YES-leaning, low-confidence, and non-official signals do not stay in the
+  new-entry price watcher, while held positions do;
 - one slow prefetch does not delay a ready token or trigger a serial retry;
 - a timed-out old response cannot overwrite a newer book;
 - the default ordinary batch contains exactly one event;
 - many skip diagnostics are appended once per realtime evaluator batch without
   dropping any row;
-- focused realtime tests and the full 790-test local suite pass;
+- focused realtime tests and the full 801-test local and server suites pass;
 
 ## Prevention Checklist
 
@@ -203,6 +250,13 @@ Keep regression tests for all of these cases:
 - Keep queue limits and retry limits finite.
 - Never publish a background response after its generation was invalidated.
 - Do not put a long serialized fallback behind a bounded concurrent deadline.
+- Prefer an official batch API over many concurrent single-item requests when
+  the same update fans out across many candidate tokens.
+- Check executable ask availability before expensive signal and portfolio work.
+- Every deferred market needs an explicit wake condition; defer-and-forget is
+  another form of event loss.
+- Keep new-entry price watching limited to eligible NO signals, but never apply
+  that filter to held-position exits.
 - Batch append-only diagnostic rows on the hot path; never defer account state
   or executed-trade ledger writes.
 - Do not interpret initial state registration as a state transition.
@@ -210,3 +264,6 @@ Keep regression tests for all of these cases:
 - Measure last-city completion lag, not aggregate throughput or first-batch
   dispatch time. A statement such as "60 events in 40 seconds" does not prove
   that one urgent city completed promptly.
+- Treat synthetic benchmarks as component checks, not proof of production
+  latency. Persist queue, book-fetch, signal, market-evaluation, final-check,
+  portfolio, and total timings, then verify them after deployment.
