@@ -144,6 +144,11 @@ non-accounting skip lines for the current evaluator batch and appends them in
 one file write. Trade receipts and `paper_state.json` accounting remain
 immediate and serialized.
 
+After that batching change was deployed, the next two production urgent
+completion samples fell to 6.078 and 4.414 seconds, with zero evaluator errors
+and zero urgent drops. This is the relevant service-level measurement; the
+aggregate processed-event count is only a throughput diagnostic.
+
 Cash, exposure, positions, `paper_state.json`, and CSV ledger writes remain
 serialized. Before each event portfolio is applied, the runner recalculates
 the current entry bankroll and exposure room.
