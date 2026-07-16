@@ -224,7 +224,7 @@ def test_default_city_date_portfolio_caps_shrink_after_one_thousand_dollars():
     assert Settings.max_event_date_exposure_fraction == 0.10
     assert Settings.large_bankroll_event_date_exposure_fraction == 0.05
     assert Settings.event_date_exposure_transition_usd == 1000.0
-    assert Settings.max_event_portfolio_legs == 2
+    assert Settings.max_event_portfolio_legs == 1
     assert Settings.daily_realized_loss_limit_fraction == 0.0
     assert Settings.daily_unrealized_loss_limit_fraction == 0.0
     assert Settings.large_loss_threshold_fraction == 0.50

@@ -54,6 +54,8 @@ candidate or skip-decision stage.
   ready city.
 - Abandoning a timed-out future without invalidation lets its older response
   arrive later and overwrite a newer fallback book.
+- A two-leg portfolio search can multiply every candidate pair by 50 allocation
+  sizes per leg, making one city consume minutes on a small VPS.
 
 ## Root Cause
 
@@ -105,6 +107,11 @@ response cannot overwrite a newer fallback book when it eventually returns.
 Cash, exposure, positions, `paper_state.json`, and CSV ledger writes remain
 serialized. Before each event portfolio is applied, the runner recalculates
 the current entry bankroll and exposure room.
+
+The production strongest-NO profile defaults to one portfolio leg per city and
+local date. This removes the quadratic two-leg allocation grid from the hot
+path. Multi-leg paper experiments must opt in explicitly rather than slowing
+every production city by default.
 
 ## Why This Works
 

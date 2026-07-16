@@ -120,6 +120,10 @@ notes only when they prevent a repeated mistake.
 Default mode: `hybrid_observation_edge` with `NO_ONLY_NEW_ENTRIES=true`.
 New YES entries and YES add-ons are disabled. A legacy YES position, if one
 exists, remains eligible for normal executable bid-side exit handling.
+The default event portfolio limit is one open leg per city and local date.
+This keeps the production path aligned with the strongest-NO plan and prevents
+two-leg allocation-grid searches from delaying other cities. Multi-leg paper
+experiments must opt in explicitly with `MAX_EVENT_PORTFOLIO_LEGS=2`.
 
 Allowed signal families:
 

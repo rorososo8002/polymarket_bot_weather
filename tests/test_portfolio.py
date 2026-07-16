@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from weather_bot import portfolio as portfolio_module
 from weather_bot.config import Settings
 from weather_bot.edge import polymarket_taker_fee_per_share
 from weather_bot.live_paper_runner import _apply_event_portfolio, _evaluate_realtime_update, evaluate_market, run_cycle
@@ -651,6 +652,36 @@ def test_event_portfolio_selects_one_profitable_leg(tmp_path):
     assert decision.expected_net_profit_usd == 1.25
 
 
+def test_default_single_leg_skips_quadratic_pair_allocation_search(monkeypatch, tmp_path):
+    broker = PaperBroker(settings(tmp_path, bankroll_usd=1000.0))
+    candidates = [
+        candidate(
+            f"seoul-{bucket}",
+            f"{bucket}\u00b0C",
+            side="NO",
+            size_usd=20.0,
+            p_true=0.05,
+            p_exec=0.80,
+            expected_net_profit_usd=2.0,
+        )
+        for bucket in range(20, 32)
+    ]
+    build_calls = 0
+    original_build_plan = portfolio_module._build_plan
+
+    def counted_build_plan(*args, **kwargs):
+        nonlocal build_calls
+        build_calls += 1
+        return original_build_plan(*args, **kwargs)
+
+    monkeypatch.setattr(portfolio_module, "_build_plan", counted_build_plan)
+
+    decision = select_event_portfolio(broker, candidates, usable_snapshot(1000.0))
+
+    assert len(decision.selected) <= 1
+    assert build_calls <= len(candidates) * portfolio_module._MAX_ALLOCATION_SIZE_CANDIDATES
+
+
 def test_event_portfolio_caps_high_probability_residual_at_twenty_percent(tmp_path):
     broker = PaperBroker(settings(tmp_path, bankroll_usd=1000.0))
     strong = candidate(
@@ -921,7 +952,7 @@ def test_range_temperature_interval_uses_displayed_bounds_without_half_step():
 
 
 def test_event_portfolio_keeps_displayed_range_ladder_separate_from_held_position(tmp_path):
-    broker = PaperBroker(settings(tmp_path, bankroll_usd=200.0))
+    broker = PaperBroker(settings(tmp_path, bankroll_usd=200.0, max_event_portfolio_legs=2))
     broker.state.positions = [
         PaperPosition(
             position_id="held-range",
@@ -1130,7 +1161,7 @@ def test_event_portfolio_blocks_same_side_add_when_probability_stop_is_broken(tm
 
 
 def test_event_portfolio_splits_shared_budget_instead_of_multiplying_it(tmp_path):
-    broker = PaperBroker(settings(tmp_path, bankroll_usd=200.0))
+    broker = PaperBroker(settings(tmp_path, bankroll_usd=200.0, max_event_portfolio_legs=2))
 
     decision = select_event_portfolio(
         broker,
@@ -1318,7 +1349,7 @@ def test_event_portfolio_tolerates_tiny_probability_sum_dust_without_fail_closed
 
 
 def test_event_portfolio_log_reconstructs_budget_legs_rejections_and_scenarios(tmp_path):
-    broker = PaperBroker(settings(tmp_path, bankroll_usd=200.0))
+    broker = PaperBroker(settings(tmp_path, bankroll_usd=200.0, max_event_portfolio_legs=2))
     decision = select_event_portfolio(
         broker,
         [
@@ -1348,7 +1379,7 @@ def test_event_portfolio_log_reconstructs_budget_legs_rejections_and_scenarios(t
 
 
 def test_event_portfolio_log_payload_is_compact_summary(tmp_path):
-    broker = PaperBroker(settings(tmp_path, bankroll_usd=200.0))
+    broker = PaperBroker(settings(tmp_path, bankroll_usd=200.0, max_event_portfolio_legs=2))
     decision = select_event_portfolio(
         broker,
         [
@@ -1374,7 +1405,7 @@ def test_event_portfolio_log_payload_is_compact_summary(tmp_path):
 
 
 def test_broker_small_account_allows_two_legs_inside_shared_ten_percent_cap(tmp_path):
-    broker = PaperBroker(settings(tmp_path, bankroll_usd=200.0))
+    broker = PaperBroker(settings(tmp_path, bankroll_usd=200.0, max_event_portfolio_legs=2))
     first = candidate("seoul-26", "26°C", side="YES")
     second = candidate("seoul-27", "27°C", side="YES")
     third = candidate("seoul-28", "28°C", side="YES")
@@ -1438,7 +1469,7 @@ def test_broker_thousand_dollar_account_uses_five_percent_city_date_cap(tmp_path
 
 
 def test_broker_blocks_third_city_date_leg_even_when_small_orders_fit_budget(tmp_path):
-    broker = PaperBroker(settings(tmp_path, bankroll_usd=300.0))
+    broker = PaperBroker(settings(tmp_path, bankroll_usd=300.0, max_event_portfolio_legs=2))
     positions = []
     for market_id, bucket in [("seoul-26", "26°C"), ("seoul-27", "27°C"), ("seoul-28", "28°C")]:
         item = candidate(market_id, bucket, side="YES", size_usd=10.0)
@@ -1573,7 +1604,7 @@ def test_broker_total_open_exposure_cap_is_ninety_percent(tmp_path):
 
 
 def test_runner_applies_selected_event_portfolio_and_writes_one_event_log(tmp_path):
-    broker = PaperBroker(settings(tmp_path, bankroll_usd=200.0))
+    broker = PaperBroker(settings(tmp_path, bankroll_usd=200.0, max_event_portfolio_legs=2))
     client = FakeClient(
         {
             "seoul-26-yes": orderbook("seoul-26-yes", 0.19, 0.20),
@@ -1739,6 +1770,7 @@ def test_run_cycle_opens_city_date_candidates_as_one_logged_portfolio(monkeypatc
         weather_taker_fee_rate=0.0,
         model_error_margin=0.0,
         resolution_error_margin=0.0,
+        max_event_portfolio_legs=2,
     )
     markets = [market("seoul-26", "26°C"), market("seoul-27", "27°C")]
     books = {
@@ -1886,6 +1918,7 @@ def test_run_cycle_blocks_overlapping_profitable_no_legs_for_same_event(monkeypa
         weather_taker_fee_rate=0.0,
         model_error_margin=0.0,
         resolution_error_margin=0.0,
+        max_event_portfolio_legs=2,
     )
     markets = [market("seoul-26", "26°C"), market("seoul-27", "27°C")]
     books = {
@@ -1939,6 +1972,7 @@ def test_realtime_update_reselects_the_whole_city_date_event(monkeypatch, tmp_pa
         weather_taker_fee_rate=0.0,
         model_error_margin=0.0,
         resolution_error_margin=0.0,
+        max_event_portfolio_legs=2,
     )
     broker = PaperBroker(cfg)
     markets = [market("seoul-26", "26°C"), market("seoul-27", "27°C")]

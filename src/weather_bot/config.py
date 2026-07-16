@@ -200,7 +200,7 @@ class Settings:
     max_event_date_exposure_fraction: float = 0.10
     large_bankroll_event_date_exposure_fraction: float = 0.05
     event_date_exposure_transition_usd: float = 1000.0
-    max_event_portfolio_legs: int = 2
+    max_event_portfolio_legs: int = 1
     daily_realized_loss_limit_fraction: float = 0.0
     daily_unrealized_loss_limit_fraction: float = 0.0
     max_consecutive_losses: int = 0
