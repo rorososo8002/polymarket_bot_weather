@@ -63,7 +63,7 @@ YES_SIZE_CAP_DEFAULT = 0.05
 ENTRY_DEPTH_AUDIT_TARGET_USD = 100.0
 REALTIME_EVALUATION_QUEUE_MAX_EVENTS = 256
 REALTIME_EVALUATION_BATCH_MAX_EVENTS = 64
-REALTIME_NORMAL_EVALUATION_BATCH_MAX_EVENTS = 4
+REALTIME_NORMAL_EVALUATION_BATCH_MAX_EVENTS = 1
 REALTIME_EVALUATION_COALESCE_SECONDS = 0.25
 REALTIME_FINAL_CHECK_MAX_WORKERS = 8
 REALTIME_FINAL_PREFETCH_DEADLINE_SECONDS = 1.5
@@ -465,6 +465,16 @@ class StreamBackedPolymarketClient(PolymarketClient):
         self._final_prefetch_lock = threading.Lock()
         self._final_book_prefetched_at: dict[str, float] = {}
         self._final_prefetch_generation: dict[str, int] = {}
+        self._failed_prefetch_conditions: set[str] = set()
+        self._failed_prefetch_tokens: set[str] = set()
+
+    def get_clob_market_tradability(self, condition_id: str) -> MarketTradability:
+        condition = str(condition_id)
+        with self._final_prefetch_lock:
+            if condition in self._failed_prefetch_conditions:
+                self._failed_prefetch_conditions.discard(condition)
+                raise RuntimeError("concurrent final check exceeded its deadline or failed")
+        return super().get_clob_market_tradability(condition)
 
     def get_order_book(self, token_id: str) -> OrderBook:
         return self.stream.get_order_book(token_id)
@@ -475,6 +485,9 @@ class StreamBackedPolymarketClient(PolymarketClient):
     def refresh_order_book(self, token_id: str) -> OrderBook:
         token = str(token_id)
         with self._final_prefetch_lock:
+            if token in self._failed_prefetch_tokens:
+                self._failed_prefetch_tokens.discard(token)
+                raise RuntimeError("concurrent final check exceeded its deadline or failed")
             prefetched_at = self._final_book_prefetched_at.pop(token, None)
             use_prefetched = (
                 prefetched_at is not None
@@ -503,6 +516,8 @@ class StreamBackedPolymarketClient(PolymarketClient):
         scheduled: list[tuple[str, str, int]] = []
         with self._final_prefetch_lock:
             for condition_id, token_id in unique_checks:
+                self._failed_prefetch_conditions.discard(condition_id)
+                self._failed_prefetch_tokens.discard(token_id)
                 generation = self._final_prefetch_generation.get(token_id, 0) + 1
                 self._final_prefetch_generation[token_id] = generation
                 scheduled.append((condition_id, token_id, generation))
@@ -536,16 +551,24 @@ class StreamBackedPolymarketClient(PolymarketClient):
             futures,
             timeout=REALTIME_FINAL_PREFETCH_DEADLINE_SECONDS,
         )
-        results = [future.result() for future in completed]
+        ready = 0
         with self._final_prefetch_lock:
+            for future in completed:
+                condition_id, token_id, _generation = future_context[future]
+                if future.result():
+                    ready += 1
+                else:
+                    self._failed_prefetch_conditions.add(condition_id)
+                    self._failed_prefetch_tokens.add(token_id)
             for future in unfinished:
-                _condition_id, token_id, generation = future_context[future]
+                condition_id, token_id, generation = future_context[future]
                 if self._final_prefetch_generation.get(token_id) == generation:
                     self._final_prefetch_generation[token_id] = generation + 1
+                self._failed_prefetch_conditions.add(condition_id)
+                self._failed_prefetch_tokens.add(token_id)
         for future in unfinished:
             future.cancel()
         executor.shutdown(wait=False, cancel_futures=True)
-        ready = sum(results)
         return {
             "requested": len(unique_checks),
             "book_ready": ready,

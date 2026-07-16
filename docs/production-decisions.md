@@ -115,7 +115,7 @@ notes only when they prevent a repeated mistake.
   never discard the fifth or later changed city. Urgent station events run
   ahead of ordinary order-book wakeups.
 - Ordinary WebSocket price changes reevaluate only the changed market and held
-  positions, in preemptible batches of at most four events. An official station
+  positions, in preemptible batches of one event. An official station
   change instead queues every supported NO token for each affected event and
   may use the full urgent batch. This prevents ordinary startup book noise from
   blocking a later station change.

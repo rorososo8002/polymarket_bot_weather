@@ -1,6 +1,7 @@
 ---
 title: One-shot station changes must bypass bounded probe limits
 date: 2026-07-17
+last_updated: 2026-07-17
 category: logic-errors
 module: weather_bot.live_paper_runner
 problem_type: logic_error
@@ -9,10 +10,11 @@ symptoms:
   - "Only the first four city events were reevaluated after one official-station refresh changed several stations."
   - "Station-driven candidates waited behind ordinary order-book updates or disappeared after one evaluator exception."
   - "Later cities reached final REST price checks only after the executable ask had already moved near 0.99."
+  - "Production urgent completion lag remained 21-23 seconds while four-event normal batches were in flight."
 root_cause: logic_error
 resolution_type: code_fix
 severity: high
-tags: [official-station, one-shot-event, urgent-queue, retry, coalescer, parallel-prefetch, paper-trading]
+tags: [official-station, one-shot-event, urgent-queue, urgent-latency, coalescer, parallel-prefetch, fail-closed, paper-trading]
 ---
 
 # One-shot station changes must bypass bounded probe limits
@@ -52,8 +54,12 @@ candidate or skip-decision stage.
   another chance to be processed.
 - Parallel REST calls without a deadline can let one slow request block every
   ready city.
+- A deadline does not bound latency when the timed-out request is immediately
+  repeated by a serialized fallback with a 15-second timeout.
+- Giving urgent work queue priority is insufficient when an already running
+  ordinary batch contains four non-preemptible events.
 - Abandoning a timed-out future without invalidation lets its older response
-  arrive later and overwrite a newer fallback book.
+  arrive later and overwrite a newer book.
 - A two-leg portfolio search can multiply every candidate pair by 50 allocation
   sizes per leg, making one city consume minutes on a small VPS.
 
@@ -80,7 +86,7 @@ The realtime coalescer now:
 
 - marks station changes as urgent;
 - processes urgent events ahead of ordinary book noise;
-- keeps ordinary book work in preemptible four-event batches and does not mix
+- keeps ordinary book work in one-event batches and does not mix
   ordinary work into a waiting urgent batch;
 - promotes an already queued ordinary event when its station changes;
 - evicts one ordinary event for an urgent event when the bounded queue is full;
@@ -119,9 +125,17 @@ book reads are prefetched with at most eight workers. The global prefetch
 deadline is 1.5 seconds, so one slow city cannot hold every ready city.
 
 Only raw responses are fetched in worker threads. A per-token generation
-number is checked before publishing a result into the shared cache. A timed-out
-worker is invalidated before the serialized fallback begins, so its older
-response cannot overwrite a newer fallback book when it eventually returns.
+number is checked before publishing a result into the shared cache. A failed or
+timed-out prefetch marks its condition and token as unavailable for that
+evaluation. The final serialized stage fails closed immediately instead of
+repeating the same network request with a 15-second timeout. The next genuine
+market or station update clears the marker and tries a new bounded prefetch.
+
+Production measurements exposed why both limits matter. Queue priority alone
+still produced urgent completion lags of 23.015 and 21.586 seconds because a
+running four-event ordinary batch could not be interrupted. Limiting ordinary
+batches to one event reduces that non-preemptible window; the 64-event batch is
+reserved for urgent fanout.
 
 Cash, exposure, positions, `paper_state.json`, and CSV ledger writes remain
 serialized. Before each event portfolio is applied, the runner recalculates
@@ -140,6 +154,10 @@ ordinary price noise, and a transient failure gets one more chance without an
 infinite retry loop. Independent network waiting is overlapped, while all
 money-changing paper-account operations retain one authoritative order.
 
+The 1.5-second final-check deadline is now a real upper bound for that stage,
+not the opening act of a slower serial retry. Missing final evidence still
+blocks the paper entry; speed never substitutes a cached or invented price.
+
 The safety gates remain intact: a candidate still needs fresh same-station
 evidence, an active and accepting CLOB market, executable ask-side depth,
 spread and fee checks, expected return, and available exposure.
@@ -155,19 +173,24 @@ Keep regression tests for all of these cases:
 - an existing backlog drains without repeated coalescing delay;
 - high-departure and low-rebound changes alter the station-state key;
 - final book reads overlap instead of running serially;
-- one slow prefetch does not delay a ready token;
-- a timed-out old response cannot overwrite a newer fallback book;
-- the full local test suite passes before deployment.
+- one slow prefetch does not delay a ready token or trigger a serial retry;
+- a timed-out old response cannot overwrite a newer book;
+- the default ordinary batch contains exactly one event;
+- focused realtime tests and the full 789-test local suite pass;
 
 ## Prevention Checklist
 
 - Do not reuse bounded sampling helpers for non-repeatable change events.
-- Keep ordinary price batches short enough that a later urgent event can
-  preempt them; reserve the full batch for urgent station work.
+- Keep ordinary price batches at one event so a later urgent event waits for at
+  most one already-running ordinary evaluation; reserve the full batch for
+  urgent station work.
 - Make delivery guarantees explicit for every background event source.
 - Track urgent processed, waiting, lag, and dropped counts in runner status.
 - Keep queue limits and retry limits finite.
 - Never publish a background response after its generation was invalidated.
+- Do not put a long serialized fallback behind a bounded concurrent deadline.
 - Do not interpret initial state registration as a state transition.
 - Parallelize independent reads, not account or ledger mutations.
-- Measure last-city completion lag, not only first-batch dispatch time.
+- Measure last-city completion lag, not aggregate throughput or first-batch
+  dispatch time. A statement such as "60 events in 40 seconds" does not prove
+  that one urgent city completed promptly.

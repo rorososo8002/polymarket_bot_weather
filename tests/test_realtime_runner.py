@@ -176,13 +176,17 @@ def test_stream_backed_client_does_not_wait_for_one_slow_final_prefetch(monkeypa
     assert elapsed < 0.3
     assert status == {"requested": 2, "book_ready": 1, "failed": 0, "deferred": 1}
     assert client.refresh_order_book("fast-token").best_ask == pytest.approx(0.85)
-    assert client.refresh_order_book("slow-token").best_ask == pytest.approx(0.82)
+    with pytest.raises(RuntimeError, match="concurrent final check exceeded"):
+        client.get_clob_market_tradability("condition-slow")
+    with pytest.raises(RuntimeError, match="concurrent final check exceeded"):
+        client.refresh_order_book("slow-token")
 
     stream.release_slow.set()
     assert stream.slow_fetch_finished.wait(timeout=1.0)
     time.sleep(0.05)
 
-    assert stream.cache.get_order_book("slow-token").best_ask == pytest.approx(0.82)
+    with pytest.raises(KeyError):
+        stream.cache.get_order_book("slow-token")
     assert "slow-token" not in client._final_book_prefetched_at
 
 
@@ -1064,6 +1068,7 @@ def test_realtime_evaluation_coalescer_default_keeps_normal_batches_preemptible(
     assert worker.enqueue_tokens(set(event_key_by_token)) == 10
     worker._run_pending_batch_once()
 
+    assert runner_module.REALTIME_NORMAL_EVALUATION_BATCH_MAX_EVENTS == 1
     assert len(calls) == 1
     assert len(calls[0]) == min(
         len(event_key_by_token),
