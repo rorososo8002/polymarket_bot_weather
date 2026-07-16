@@ -937,6 +937,90 @@ def test_realtime_evaluation_trigger_includes_upper_tail_high_no():
     assert trigger_tokens == {"upper-tail-no": "kuala-lumpur-high-event"}
 
 
+def test_realtime_price_watch_ignores_ineligible_signals_but_keeps_strong_no_and_held():
+    waiting = RawMarket(
+        "waiting-market",
+        "Will the highest temperature in Seoul be 29C on July 8?",
+        "waiting-market",
+        True,
+        False,
+        "waiting-yes",
+        "waiting-no",
+    )
+    strong_no = RawMarket(
+        "strong-no-market",
+        "Will the highest temperature in London be 25C on July 8?",
+        "strong-no-market",
+        True,
+        False,
+        "strong-no-yes",
+        "strong-no-no",
+    )
+    strong_yes = RawMarket(
+        "strong-yes-market",
+        "Will the highest temperature in Toronto be 28C on July 8?",
+        "strong-yes-market",
+        True,
+        False,
+        "strong-yes-yes",
+        "strong-yes-no",
+    )
+    settings = Settings(
+        state_path=":memory:",
+        trades_csv_path=":memory:",
+        decisions_csv_path=":memory:",
+        raw_snapshots_path=":memory:",
+        no_only_new_entries=True,
+    )
+    broker = runner_module.PaperBroker(settings)
+    broker.state.positions = [
+        PaperPosition(
+            position_id="held",
+            market_id="held-market",
+            question="Will the highest temperature in Jeddah be 38C on July 8?",
+            token_id="held-yes",
+            side="YES",
+            entry_price=0.40,
+            shares=10,
+            cost_usd=4,
+            opened_at=datetime.now(timezone.utc).isoformat(),
+            metadata={},
+        )
+    ]
+    signals = {
+        waiting.market_id: WeatherSignal(
+            0.50,
+            0.0,
+            "official-station-formation-window",
+            "waiting",
+            parse_weather_question(waiting.question),
+        ),
+        strong_no.market_id: WeatherSignal(
+            0.05,
+            0.9,
+            "official-station-residual-high-no",
+            "strong no",
+            parse_weather_question(strong_no.question),
+        ),
+        strong_yes.market_id: WeatherSignal(
+            0.95,
+            0.9,
+            "official-station-residual-high-yes",
+            "strong yes",
+            parse_weather_question(strong_yes.question),
+        ),
+    }
+
+    watched = runner_module._realtime_price_watch_token_ids(
+        [waiting, strong_no, strong_yes],
+        broker,
+        signals,
+        settings,
+    )
+
+    assert watched == {"strong-no-no", "held-yes"}
+
+
 def test_empty_changed_station_set_enqueues_no_fallback_probe():
     market = RawMarket(
         "seoul-high-29",

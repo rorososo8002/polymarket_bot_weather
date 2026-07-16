@@ -1106,6 +1106,28 @@ def _orderbook_update_tokens_for_realtime_evaluation(
     }
 
 
+def _realtime_price_watch_token_ids(
+    markets: list[RawMarket],
+    broker: PaperBroker,
+    signals_by_market: dict[str, WeatherSignal],
+    settings: Settings,
+) -> set[str]:
+    watched = {str(pos.token_id) for pos in broker.state.positions if pos.token_id}
+    min_confidence, _min_edge, _entry_fraction = _market_params(settings, "temperature")
+    for market in markets:
+        if not market.no_token_id:
+            continue
+        signal = signals_by_market.get(market.market_id)
+        if signal is None or signal.confidence < min_confidence:
+            continue
+        if settings.official_nowcast_entry_only and not _is_official_station_entry_signal(signal):
+            continue
+        if settings.no_only_new_entries and _preferred_entry_side(signal) != "NO":
+            continue
+        watched.add(str(market.no_token_id))
+    return watched
+
+
 def _enqueue_station_refresh_high_exact_no_probes(
     evaluator_worker: RealtimeEvaluationCoalescer | None,
     markets: list[RawMarket],
@@ -3948,6 +3970,12 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
             latest_realtime_evaluation: dict[str, object] | None = None
             latest_official_station_refresh: dict[str, object] | None = None
             event_key_by_token = _realtime_evaluation_trigger_tokens(stream_markets, broker)
+            price_watch_token_ids = _realtime_price_watch_token_ids(
+                stream_markets,
+                broker,
+                signals_by_market,
+                settings,
+            )
             event_priorities = _realtime_event_priorities(
                 list(market_by_id.values()),
                 open_market_ids=open_market_ids,
@@ -3955,7 +3983,7 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
             )
 
             def evaluate_queued_update(updated_token_ids: set[str]) -> None:
-                nonlocal latest_realtime_evaluation
+                nonlocal latest_realtime_evaluation, price_watch_token_ids
                 with update_lock, broker.batch_skip_diagnostics():
                     stream_client = stream_holder.get("client")
                     if stream_client is not None:
@@ -3971,6 +3999,12 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
                             signal_refreshed_at_by_market=signal_refreshed_at_by_market,
                             observation_provider=observation_provider,
                             residual_profile_store=residual_profile_store,
+                        )
+                        price_watch_token_ids = _realtime_price_watch_token_ids(
+                            stream_markets,
+                            broker,
+                            signals_by_market,
+                            settings,
                         )
 
             def update_evaluator_status(status: dict[str, object]) -> None:
@@ -3990,7 +4024,7 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
                     _orderbook_update_tokens_for_realtime_evaluation(
                         updated_token_ids,
                         broker,
-                        set(event_key_by_token),
+                        price_watch_token_ids,
                     ),
                 )
 
