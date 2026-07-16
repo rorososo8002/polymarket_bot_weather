@@ -514,13 +514,41 @@ class StreamBackedPolymarketClient(PolymarketClient):
             return {"requested": 0, "book_ready": 0, "failed": 0, "deferred": 0}
 
         scheduled: list[tuple[str, str, int]] = []
+        cached_ready = 0
         with self._final_prefetch_lock:
             for condition_id, token_id in unique_checks:
                 self._failed_prefetch_conditions.discard(condition_id)
                 self._failed_prefetch_tokens.discard(token_id)
+                current = time.monotonic()
+                cached_tradability = self._tradability_cache.get(condition_id)
+                cached_book_at = self._final_book_prefetched_at.get(token_id)
+                tradability_is_fresh = (
+                    cached_tradability is not None
+                    and current - cached_tradability[0] < self.tradability_cache_ttl_seconds
+                )
+                book_is_fresh = (
+                    cached_book_at is not None
+                    and current - cached_book_at <= REALTIME_FINAL_BOOK_PREFETCH_MAX_AGE_SECONDS
+                )
+                if tradability_is_fresh and book_is_fresh:
+                    try:
+                        self.stream.cache.get_order_book(token_id)
+                    except KeyError:
+                        pass
+                    else:
+                        cached_ready += 1
+                        continue
                 generation = self._final_prefetch_generation.get(token_id, 0) + 1
                 self._final_prefetch_generation[token_id] = generation
                 scheduled.append((condition_id, token_id, generation))
+
+        if not scheduled:
+            return {
+                "requested": len(unique_checks),
+                "book_ready": cached_ready,
+                "failed": 0,
+                "deferred": 0,
+            }
 
         def prefetch_one(check: tuple[str, str, int]) -> bool:
             condition_id, token_id, generation = check
@@ -551,12 +579,14 @@ class StreamBackedPolymarketClient(PolymarketClient):
             futures,
             timeout=REALTIME_FINAL_PREFETCH_DEADLINE_SECONDS,
         )
-        ready = 0
+        ready = cached_ready
+        scheduled_ready = 0
         with self._final_prefetch_lock:
             for future in completed:
                 condition_id, token_id, _generation = future_context[future]
                 if future.result():
                     ready += 1
+                    scheduled_ready += 1
                 else:
                     self._failed_prefetch_conditions.add(condition_id)
                     self._failed_prefetch_tokens.add(token_id)
@@ -572,7 +602,7 @@ class StreamBackedPolymarketClient(PolymarketClient):
         return {
             "requested": len(unique_checks),
             "book_ready": ready,
-            "failed": len(completed) - ready,
+            "failed": len(completed) - scheduled_ready,
             "deferred": len(unfinished),
         }
 
@@ -1375,6 +1405,7 @@ def _fetch_books(
     client: PolymarketClient,
     *,
     preferred_side: str | None = None,
+    allowed_sides: set[str] | None = None,
 ) -> tuple[dict[str, OrderBook], str | None]:
     books: dict[str, OrderBook] = {}
     errors: list[str] = []
@@ -1383,7 +1414,7 @@ def _fetch_books(
         fetch_book = client.get_order_book
     refresh_book = getattr(client, "refresh_order_book", None)
     for side, token_id in (("YES", market.yes_token_id), ("NO", market.no_token_id)):
-        if not token_id:
+        if not token_id or (allowed_sides is not None and side not in allowed_sides):
             continue
         book: OrderBook | None = None
         try:
@@ -2244,6 +2275,8 @@ def evaluate_market(
     bankroll_before_entry: float,
     market_type: str = "temperature",
     entry_bankroll_reason: str | None = None,
+    *,
+    allowed_sides: set[str] | None = None,
 ) -> tuple[EdgeResult, dict[str, EdgeResult]]:
     """Evaluate live YES/NO books and return the best executable paper result."""
     min_confidence, min_edge, entry_fraction_override = _market_params(settings, market_type)
@@ -2314,7 +2347,12 @@ def evaluate_market(
     books, fetch_error = _fetch_books(
         market,
         client,
-        preferred_side=_preferred_entry_side(signal),
+        preferred_side=(
+            _preferred_entry_side(signal)
+            if allowed_sides is None or len(allowed_sides) != 1
+            else next(iter(allowed_sides))
+        ),
+        allowed_sides=allowed_sides,
     )
     if fetch_error:
         result = EdgeResult("SKIP", signal.p_true, None, -999.0, 0.0, 0.0, fetch_error)
@@ -3288,7 +3326,8 @@ def _evaluate_realtime_update(
     observation_provider: Any | None = None,
     residual_profile_store: ResidualProfileStore | None = None,
     now: datetime | None = None,
-) -> None:
+) -> dict[str, object]:
+    evaluation_started_at = time.monotonic()
     current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     websocket_health: dict[str, object] = {}
     stream = getattr(client, "stream", None)
@@ -3309,7 +3348,10 @@ def _evaluate_realtime_update(
     event_groups: dict[str, list[RawMarket]] = {}
     for market in market_by_id.values():
         event_groups.setdefault(_market_event_key(market), []).append(market)
-    held_market_ids = {position.market_id for position in broker.state.positions}
+    held_sides_by_market: dict[str, set[str]] = {}
+    for position in broker.state.positions:
+        held_sides_by_market.setdefault(position.market_id, set()).add(position.side)
+    held_market_ids = set(held_sides_by_market)
     markets_to_prefetch = [
         market
         for event_key in sorted(touched_events)
@@ -3319,6 +3361,45 @@ def _evaluate_realtime_update(
             or market.market_id in held_market_ids
         )
     ]
+    allowed_sides_by_market: dict[str, set[str]] = {}
+    for market in markets_to_prefetch:
+        allowed_sides = {"NO"} if settings.no_only_new_entries else {"YES", "NO"}
+        allowed_sides.update(held_sides_by_market.get(market.market_id, set()))
+        allowed_sides_by_market[market.market_id] = allowed_sides
+
+    candidate_prefetch_started_at = time.monotonic()
+    candidate_prefetch_status = {
+        "requested": 0,
+        "book_ready": 0,
+        "failed": 0,
+        "deferred": 0,
+    }
+    prefetch = getattr(client, "prefetch_final_entry_checks", None)
+    candidate_book = getattr(client, "get_candidate_order_book", None)
+    if callable(prefetch) and callable(candidate_book):
+        candidate_checks: list[tuple[str, str]] = []
+        for market in markets_to_prefetch:
+            if not market.condition_id:
+                continue
+            token_by_side = {
+                "YES": market.yes_token_id,
+                "NO": market.no_token_id,
+            }
+            for side in allowed_sides_by_market[market.market_id]:
+                token_id = token_by_side.get(side)
+                if not token_id:
+                    continue
+                try:
+                    book = candidate_book(token_id)
+                except Exception:  # noqa: BLE001
+                    candidate_checks.append((market.condition_id, token_id))
+                else:
+                    if _book_is_crossed(book):
+                        candidate_checks.append((market.condition_id, token_id))
+        candidate_prefetch_status = prefetch(candidate_checks)
+    candidate_prefetch_duration_seconds = time.monotonic() - candidate_prefetch_started_at
+
+    signal_prefetch_started_at = time.monotonic()
     signal_prefetch_errors = _prefetch_realtime_signals(
         markets_to_prefetch,
         settings,
@@ -3329,6 +3410,8 @@ def _evaluate_realtime_update(
         residual_profile_store=residual_profile_store,
         now=current,
     )
+    signal_prefetch_duration_seconds = time.monotonic() - signal_prefetch_started_at
+    market_evaluation_started_at = time.monotonic()
     pending_event_candidates: list[list[PortfolioCandidate]] = []
     for event_key in sorted(touched_events):
         entry_bankroll = available_entry_bankroll(broker, client)
@@ -3407,6 +3490,7 @@ def _evaluate_realtime_update(
                     entry_bankroll.entry_bankroll,
                     market_type,
                     entry_bankroll.reason,
+                    allowed_sides=allowed_sides_by_market.get(market.market_id),
                 )
                 for side, edge_result in per_side.items():
                     latest_edges[(market.market_id, side)] = edge_result
@@ -3452,6 +3536,8 @@ def _evaluate_realtime_update(
                 candidates.extend(_event_portfolio_candidates(market, signal, result, {}, market_type))
         pending_event_candidates.append(candidates)
 
+    market_evaluation_duration_seconds = time.monotonic() - market_evaluation_started_at
+    final_prefetch_started_at = time.monotonic()
     final_checks: list[tuple[str, str]] = []
     for candidates in pending_event_candidates:
         for candidate in _new_entry_candidates_for_strategy(candidates, settings):
@@ -3464,7 +3550,6 @@ def _evaluate_realtime_update(
             )
             if candidate.market.condition_id and token_id:
                 final_checks.append((candidate.market.condition_id, token_id))
-    prefetch = getattr(client, "prefetch_final_entry_checks", None)
     prefetch_status = (
         prefetch(final_checks)
         if callable(prefetch)
@@ -3477,7 +3562,9 @@ def _evaluate_realtime_update(
             "updated_at": utc_now_iso(),
         },
     )
+    final_prefetch_duration_seconds = time.monotonic() - final_prefetch_started_at
 
+    portfolio_apply_started_at = time.monotonic()
     for candidates in pending_event_candidates:
         entry_bankroll = available_entry_bankroll(broker, client)
         _apply_event_portfolio(
@@ -3490,6 +3577,24 @@ def _evaluate_realtime_update(
         )
     for message in maybe_close_positions(broker, client, market_by_id, latest_edges):
         print(message)
+    portfolio_apply_duration_seconds = time.monotonic() - portfolio_apply_started_at
+    breakdown = {
+        "event_count": len(touched_events),
+        "market_count": len(markets_to_prefetch),
+        "candidate_book_prefetch": candidate_prefetch_status,
+        "candidate_book_prefetch_seconds": round(candidate_prefetch_duration_seconds, 3),
+        "signal_prefetch_seconds": round(signal_prefetch_duration_seconds, 3),
+        "market_evaluation_seconds": round(market_evaluation_duration_seconds, 3),
+        "final_prefetch_seconds": round(final_prefetch_duration_seconds, 3),
+        "portfolio_apply_seconds": round(portfolio_apply_duration_seconds, 3),
+        "total_seconds": round(time.monotonic() - evaluation_started_at, 3),
+        "completed_at": utc_now_iso(),
+    }
+    update_runner_status_fields(
+        settings,
+        realtime_evaluation_breakdown=breakdown,
+    )
+    return breakdown
 
 
 def _refresh_realtime_signal_if_needed(
@@ -3840,6 +3945,8 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
             latest_edges: dict[tuple[str, str], EdgeResult] = {}
             update_lock = threading.RLock()
             stream_holder: dict[str, StreamBackedPolymarketClient] = {}
+            latest_realtime_evaluation: dict[str, object] | None = None
+            latest_official_station_refresh: dict[str, object] | None = None
             event_key_by_token = _realtime_evaluation_trigger_tokens(stream_markets, broker)
             event_priorities = _realtime_event_priorities(
                 list(market_by_id.values()),
@@ -3848,10 +3955,11 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
             )
 
             def evaluate_queued_update(updated_token_ids: set[str]) -> None:
+                nonlocal latest_realtime_evaluation
                 with update_lock, broker.batch_skip_diagnostics():
                     stream_client = stream_holder.get("client")
                     if stream_client is not None:
-                        _evaluate_realtime_update(
+                        latest_realtime_evaluation = _evaluate_realtime_update(
                             updated_token_ids,
                             stream_client,
                             broker,
@@ -3928,6 +4036,8 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
                     open_positions=len(broker.state.positions),
                     websocket=websocket_health,
                     realtime_evaluator=evaluator_worker.status_snapshot() if evaluator_worker is not None else None,
+                    realtime_evaluation_breakdown=latest_realtime_evaluation,
+                    official_station_refresh=latest_official_station_refresh,
                     strategy={
                         "mode": settings.strategy_mode,
                         "no_only_new_entries": settings.no_only_new_entries,
@@ -4003,14 +4113,15 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
                                 evaluator_worker,
                                 normal_timer_tokens,
                             )
+                        latest_official_station_refresh = {
+                            "duration_seconds": station_refresh_duration_seconds,
+                            "changed_station_count": len(changed_station_ids),
+                            "changed_station_ids": sorted(changed_station_ids),
+                            "completed_at": utc_now_iso(),
+                        }
                         update_runner_status_fields(
                             settings,
-                            official_station_refresh={
-                                "duration_seconds": station_refresh_duration_seconds,
-                                "changed_station_count": len(changed_station_ids),
-                                "changed_station_ids": sorted(changed_station_ids),
-                                "completed_at": utc_now_iso(),
-                            },
+                            official_station_refresh=latest_official_station_refresh,
                         )
                         station_refreshed_at = now
                     if (now - status_updated_at).total_seconds() >= settings.runner_health_status_interval_seconds:

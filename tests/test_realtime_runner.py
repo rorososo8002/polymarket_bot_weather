@@ -117,6 +117,13 @@ def test_stream_backed_client_prefetches_final_books_concurrently_and_reuses_the
 
     assert status == {"requested": 2, "book_ready": 2, "failed": 0, "deferred": 0}
     assert sorted(stream.refresh_calls) == ["token-a", "token-b"]
+
+    cached_status = client.prefetch_final_entry_checks(
+        [("condition-a", "token-a"), ("condition-b", "token-b")]
+    )
+
+    assert cached_status == {"requested": 2, "book_ready": 2, "failed": 0, "deferred": 0}
+    assert sorted(stream.refresh_calls) == ["token-a", "token-b"]
     assert client.refresh_order_book("token-a").best_ask == pytest.approx(0.85)
     assert sorted(stream.refresh_calls) == ["token-a", "token-b"]
 
@@ -2048,6 +2055,144 @@ def test_realtime_update_without_signal_fails_closed_without_order_book_lookup(t
     assert rows[0]["side"] == "SKIP"
     assert "confidence too low" in rows[0]["reason"]
     assert broker.state.positions == []
+
+
+def test_realtime_no_only_evaluation_does_not_read_yes_book(tmp_path):
+    question = "Will the highest temperature in Seoul be 27C today?"
+    market = RawMarket(
+        "seoul-no-only",
+        question,
+        "seoul-no-only",
+        True,
+        False,
+        "yes-token",
+        "no-token",
+        event_id="seoul-today",
+    )
+
+    class RecordingClient:
+        def __init__(self) -> None:
+            self.book_calls: list[str] = []
+
+        def get_order_book(self, token_id: str) -> OrderBook:
+            self.book_calls.append(token_id)
+            return OrderBook(
+                token_id,
+                bids=[OrderLevel(0.45, 100.0)],
+                asks=[OrderLevel(0.50, 100.0)],
+            )
+
+    settings = Settings(
+        state_path=str(tmp_path / "state.json"),
+        trades_csv_path=str(tmp_path / "trades.csv"),
+        decisions_csv_path=str(tmp_path / "decisions.csv"),
+        raw_snapshots_path=str(tmp_path / "raw.jsonl"),
+        portfolio_decisions_jsonl_path=str(tmp_path / "portfolio.jsonl"),
+        no_only_new_entries=True,
+        min_net_edge=0.99,
+    )
+    broker = runner_module.PaperBroker(settings)
+    signal = WeatherSignal(
+        0.05,
+        1.0,
+        "official-station-lock-test",
+        "official_nowcast_lock=test",
+        parse_weather_question(question),
+    )
+    client = RecordingClient()
+
+    runner_module._evaluate_realtime_update(
+        {"no-token"},
+        client,
+        broker,
+        settings,
+        {"yes-token": market, "no-token": market},
+        {market.market_id: signal},
+        {market.market_id: "temperature"},
+        {},
+    )
+
+    assert client.book_calls == ["no-token"]
+
+
+def test_realtime_update_prefetches_missing_no_book_before_evaluation(tmp_path):
+    question = "Will the highest temperature in Seoul be 27C today?"
+    market = RawMarket(
+        "seoul-prefetch",
+        question,
+        "seoul-prefetch",
+        True,
+        False,
+        "yes-token",
+        "no-token",
+        condition_id="condition-no",
+        event_id="seoul-today",
+    )
+
+    class PrefetchClient:
+        def __init__(self) -> None:
+            self.books: dict[str, OrderBook] = {}
+            self.prefetch_calls: list[list[tuple[str, str]]] = []
+
+        def get_candidate_order_book(self, token_id: str) -> OrderBook:
+            return self.books[token_id]
+
+        def prefetch_final_entry_checks(self, checks: list[tuple[str, str]]) -> dict[str, int]:
+            self.prefetch_calls.append(list(checks))
+            for _condition_id, token_id in checks:
+                self.books[token_id] = OrderBook(
+                    token_id,
+                    bids=[OrderLevel(0.45, 100.0)],
+                    asks=[OrderLevel(0.50, 100.0)],
+                )
+            return {
+                "requested": len(checks),
+                "book_ready": len(checks),
+                "failed": 0,
+                "deferred": 0,
+            }
+
+        def refresh_order_book(self, token_id: str) -> OrderBook:
+            raise AssertionError(f"serial REST fallback must not run for {token_id}")
+
+    settings = Settings(
+        state_path=str(tmp_path / "state.json"),
+        trades_csv_path=str(tmp_path / "trades.csv"),
+        decisions_csv_path=str(tmp_path / "decisions.csv"),
+        raw_snapshots_path=str(tmp_path / "raw.jsonl"),
+        portfolio_decisions_jsonl_path=str(tmp_path / "portfolio.jsonl"),
+        no_only_new_entries=True,
+        min_net_edge=0.99,
+    )
+    broker = runner_module.PaperBroker(settings)
+    signal = WeatherSignal(
+        0.05,
+        1.0,
+        "official-station-lock-test",
+        "official_nowcast_lock=test",
+        parse_weather_question(question),
+    )
+    client = PrefetchClient()
+
+    breakdown = runner_module._evaluate_realtime_update(
+        {"no-token"},
+        client,
+        broker,
+        settings,
+        {"yes-token": market, "no-token": market},
+        {market.market_id: signal},
+        {market.market_id: "temperature"},
+        {},
+    )
+
+    assert client.prefetch_calls[0] == [("condition-no", "no-token")]
+    assert client.prefetch_calls[1] == []
+    assert breakdown["candidate_book_prefetch"] == {
+        "requested": 1,
+        "book_ready": 1,
+        "failed": 0,
+        "deferred": 0,
+    }
 
 
 def test_realtime_price_update_evaluates_only_the_changed_market_in_event(tmp_path):
