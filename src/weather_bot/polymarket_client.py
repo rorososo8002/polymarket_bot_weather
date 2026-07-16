@@ -236,6 +236,14 @@ class PolymarketClient:
         if cached is not None and now - cached[0] < self.tradability_cache_ttl_seconds:
             return cached[1]
 
+        tradability = self._fetch_clob_market_tradability_uncached(normalized_condition_id)
+        self._tradability_cache[normalized_condition_id] = (time.monotonic(), tradability)
+        return tradability
+
+    def _fetch_clob_market_tradability_uncached(
+        self,
+        normalized_condition_id: str,
+    ) -> MarketTradability:
         data = self._get(
             f"{self.clob_base}/clob-markets/{quote(normalized_condition_id, safe='')}"
         )
@@ -276,7 +284,6 @@ class PolymarketClient:
             source="clob",
             raw=data,
         )
-        self._tradability_cache[normalized_condition_id] = (now, tradability)
         return tradability
 
     @staticmethod

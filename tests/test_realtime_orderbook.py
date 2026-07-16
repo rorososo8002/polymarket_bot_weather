@@ -624,6 +624,27 @@ def test_market_stream_rest_snapshot_refreshes_token_freshness_and_evaluation_qu
     assert health["last_book_source"] == "rest"
 
 
+def test_identical_rest_snapshot_refreshes_freshness_without_requeueing_evaluation(monkeypatch):
+    now = [datetime(2026, 6, 1, 0, 0, tzinfo=timezone.utc)]
+    calls: list[set[str]] = []
+    monkeypatch.setattr("weather_bot.realtime_orderbook._utc_now", lambda: now[0])
+    stream = OrderBookMarketStream(on_update=lambda token_ids: calls.append(set(token_ids)))
+    book = OrderBook(
+        "rest-token",
+        bids=[OrderLevel(0.98, 10)],
+        asks=[OrderLevel(0.99, 10)],
+    )
+
+    assert stream.apply_rest_snapshot(book) == {"rest-token"}
+    now[0] += timedelta(seconds=30)
+    assert stream.apply_rest_snapshot(book) == set()
+
+    health = stream.token_health_snapshot("rest-token")
+    assert calls == [{"rest-token"}]
+    assert health["last_book_at"] == "2026-06-01T00:00:30+00:00"
+    assert stream.health_snapshot(now=now[0])["rest_snapshot_count"] == 2
+
+
 def test_market_stream_tracks_executable_book_freshness_by_token(monkeypatch):
     now = [datetime(2026, 6, 1, 0, 0, tzinfo=timezone.utc)]
 

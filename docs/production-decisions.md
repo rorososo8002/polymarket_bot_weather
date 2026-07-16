@@ -18,13 +18,24 @@ notes only when they prevent a repeated mistake.
 
 - Entries use the mapped official settlement station, not generic forecasts.
 - AWC METAR:
-  - Poll bulk API at most once per minute; one response covers supported ICAO
+  - Background monitoring polls the bulk API at most once per minute; one response covers supported ICAO
     stations.
+  - Final entry validation discards derived per-station results only after the
+    official one-request-per-minute floor has elapsed. Inside that floor it
+    reuses the newest allowed bulk response instead of risking an API block;
+    after the floor it performs one new official request for the selected batch.
+    Network error, truncated response, or missing station data from that allowed
+    real request blocks every affected entry, including lock NO. A failed response
+    is unavailable evidence, never a reason to reuse an older successful response.
   - Request official `hours=4` only as restart bridge. Persistent station
     history supplies the full local-day high/low.
   - 400-row response means likely truncated; block entry.
   - METAR reports may be 30-90 minutes old; polling every minute can return the
     same station report.
+  - Learn each station's next-report interval from recent actual observation
+    timestamps. When that learned boundary has passed but the next report has
+    not arrived, pause ordinary probability entries only; irreversible verified
+    lock NO remains allowed. Do not invent a global 30/60-minute schedule.
   - Keep two station-local dates and first timestamps for daily high/low.
     Restart gap, missing baseline, date regression, or incomplete day blocks.
   - Seoul RKSI and Busan RKPK use this AWC path.
@@ -44,6 +55,10 @@ notes only when they prevent a repeated mistake.
 - Use residual profile + manifest by station/month/direction:
   `monitoring_start_local_minute`, high/low q25/median/q75 formation times,
   remaining movement probability, sample count.
+- Preferred calibration years are complete local years 2021-2025. NCEI ended
+  ISD in August 2025, so exact-ICAO stations use its official GHCNh successor
+  for complete 2025 observations. Stations without an exact GHCNh ICAO mapping
+  retain complete 2020-2024 profiles; never substitute a nearby station.
 - Before monitoring start, ordinary residual entries are blocked.
 - Exact-bucket entries wait for that direction’s q75.
 - High exact residual entries also require local 16:00, two observations in the
@@ -54,6 +69,10 @@ notes only when they prevent a repeated mistake.
   strong NO can happen earlier.
 - Missing/thin/wrong-unit/hash-mismatched profiles fail closed.
 - Current temperature alone is never enough.
+- Recompute every intraday observation signal immediately before the paper fill;
+  a recently created candidate is not a substitute for final station revalidation.
+- Final station revalidation may reduce or cancel the portfolio-selected order,
+  but it must never increase the already selected dollar allocation.
 
 ## 4. Precision And Buckets
 
@@ -77,6 +96,9 @@ notes only when they prevent a repeated mistake.
   close or midpoint fill.
 - WebSocket market stream is primary. REST `/book` is bounded seed/resync helper.
   PING/PONG proves connection, not fresh executable depth.
+- If the modeled entry side has no WebSocket snapshot or a crossed book, refresh
+  only that side with REST. Recheck every finally selected entry with REST before
+  the paper fill. A crossed book is never executable evidence.
 - WebSocket subscribes only held positions and markets whose measurement date is
   the station's current local date. Future-date markets cannot have valid
   same-day station evidence yet and must not bloat the stream.
@@ -88,10 +110,16 @@ notes only when they prevent a repeated mistake.
 - If the whole WebSocket is reconnecting, a fresh per-token REST helper snapshot
   may keep held-position exit evaluation running. It does not by itself reopen
   broad new-entry permissions.
+- A changed official station report is an urgent evaluation trigger. Every
+  affected same-day event must be queued; the normal four-event probe cap must
+  never discard the fifth or later changed city. Urgent station events run
+  ahead of ordinary order-book wakeups.
 
 ## 6. Sizing
 
-Default mode: `hybrid_observation_edge`.
+Default mode: `hybrid_observation_edge` with `NO_ONLY_NEW_ENTRIES=true`.
+New YES entries and YES add-ons are disabled. A legacy YES position, if one
+exists, remains eligible for normal executable bid-side exit handling.
 
 Allowed signal families:
 
@@ -105,9 +133,6 @@ Sizing targets before liquidity/edge/cash cuts:
 
 - Non-lock residual probability entries are capped at 20% of bankroll per
   ordinary city exposure, even above 90% or 95%.
-- YES entries are capped harder because recent validation showed repeated
-  reversals: `>=95%` uses at most 20%, `>=93%` at most 10%, otherwise at most
-  5%.
 - Only verified lock-only high NO can override this and use up to all remaining
   cash when executable VWAP and net-return gates pass: exact buckets already
   exceeded, or lower-tail high markets already broken by the same-day official
@@ -140,6 +165,10 @@ Low exact NO weather risk:
   already-held position. Close only on executable take-profit, max holding time,
   explicit bucket-lock risk, or a real probability stop.
 - Drawdown breakers block entries only; exits and settlements continue.
+- Paper-validation defaults disable all four drawdown entry breakers (`0`):
+  daily realized loss, unrealized loss, consecutive losses, and per-city loss
+  cooldown. This is an evidence-gathering experiment; exits and settlements
+  remain active, and ordinary exposure/price/evidence gates still apply.
 
 ## 8. Runtime Data
 

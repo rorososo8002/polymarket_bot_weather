@@ -17,7 +17,23 @@ from weather_bot.stations import TRADING_READY_STATION_MAP
 PROFILE_PATH = Path("strategy_data/station_residual_profiles.json")
 MANIFEST_PATH = Path("strategy_data/station_residual_profiles.manifest.json")
 REQUESTED_PLAN_YEARS = [2021, 2022, 2023, 2024, 2025]
-ACTUAL_GENERATION_YEARS = [2020, 2021, 2022, 2023, 2024]
+ACTUAL_GENERATION_YEARS = [2020, 2021, 2022, 2023, 2024, 2025]
+PREFERRED_GENERATION_YEARS = [2021, 2022, 2023, 2024, 2025]
+LEGACY_GENERATION_YEARS = [2020, 2021, 2022, 2023, 2024]
+LEGACY_STATION_IDS = {
+    "CYYZ",
+    "EPWA",
+    "FACT",
+    "LFPB",
+    "LIMC",
+    "LLBG",
+    "LTAC",
+    "RCSS",
+    "UUWW",
+    "ZBAA",
+    "ZHHH",
+    "ZSQD",
+}
 ALLOWED_STATUSES = {
     "calibrated",
     "insufficient_history",
@@ -146,7 +162,12 @@ def test_calibrated_metar_manifest_metadata_matches_profile_content() -> None:
         scopes = {profile["scope"] for profile in station_profiles.values()}
         sample_days = [profile["sample_days"] for profile in station_profiles.values()]
 
-        assert entry["source_years"] == ACTUAL_GENERATION_YEARS
+        expected_years = (
+            LEGACY_GENERATION_YEARS
+            if entry["station_id"] in LEGACY_STATION_IDS
+            else PREFERRED_GENERATION_YEARS
+        )
+        assert entry["source_years"] == expected_years
         assert entry["timezone"] == station.timezone
         assert entry["unit"] == ("C" if station.temperature_unit == "celsius" else "F")
         assert entry["profile_count"] == len(station_profiles)
@@ -175,17 +196,18 @@ def test_calibrated_metar_manifest_metadata_matches_profile_content() -> None:
 
         source_files = entry["source_files"]
         assert [source_file["year"] for source_file in source_files] == (
-            ACTUAL_GENERATION_YEARS
+            expected_years
         )
         assert all(
             source_file["source_url"].startswith("https://www.ncei.noaa.gov/")
             for source_file in source_files
         )
         boundary_buffers = entry["boundary_buffer_files"]
-        assert [item["date"] for item in boundary_buffers] == [
-            "2019-12-31",
-            "2025-01-01",
-        ]
+        assert [item["date"] for item in boundary_buffers] == (
+            ["2019-12-31", "2025-01-01"]
+            if entry["station_id"] in LEGACY_STATION_IDS
+            else ["2020-12-31", "2026-01-01"]
+        )
         assert all(
             item["source_url"].startswith("https://www.ncei.noaa.gov/")
             and item["sha256"]
@@ -278,25 +300,44 @@ def test_seoul_and_each_required_region_have_an_audited_calibrated_station() -> 
         assert stations[city]["station_id"] == station_id
         assert station_id in grouped_profiles
         assert audit["source_url"].startswith("https://www.ncei.noaa.gov/")
-        assert audit["source_years"] == ACTUAL_GENERATION_YEARS
+        assert audit["source_years"] in [
+            PREFERRED_GENERATION_YEARS,
+            LEGACY_GENERATION_YEARS,
+        ]
         assert audit["checked"] is True
 
 
-def test_manifest_explains_why_incomplete_2025_was_replaced_with_2020() -> None:
+def test_manifest_uses_complete_2025_ghcnh_for_exact_icao_successors() -> None:
     manifest = _load_json(MANIFEST_PATH)
     exclusions = manifest["year_exclusions"]
     assert isinstance(exclusions, list)
-    assert exclusions == [
-        {
-            "year": 2025,
-            "reason": "incomplete_official_station_record",
-            "station_id": "RKSI",
-            "ncei_station_id": "47113199999",
-            "station_history_end": "2025-08-24",
-            "last_observation_utc": "2025-08-24T21:30:00",
-            "replacement_complete_year": 2020,
-        }
-    ]
+    assert {entry["station_id"] for entry in exclusions} == LEGACY_STATION_IDS
+    assert all(
+        entry["year"] == 2025
+        and entry["reason"] == "exact_icao_ghcnh_successor_unavailable"
+        and entry["replacement_complete_year"] == 2020
+        for entry in exclusions
+    )
+
+    seoul = manifest["stations"]["seoul"]
+    assert seoul["source_years"] == PREFERRED_GENERATION_YEARS
+    assert seoul["ghcnh_station_id"] == "KSI0000RKSI"
+    assert seoul["ghcnh_record_end"] == "2025-12-31"
+    source_2025 = [item for item in seoul["source_files"] if item["year"] == 2025]
+    assert len(source_2025) == 1
+    assert source_2025[0]["source_dataset"] == "NCEI GHCNh"
+    assert source_2025[0]["valid_observations"] > 365
+
+    for entry in manifest["stations"].values():
+        if entry["status"] != "calibrated" or entry["station_id"] in LEGACY_STATION_IDS:
+            continue
+        assert entry["source_years"] == PREFERRED_GENERATION_YEARS
+        assert entry["ghcnh_record_end"] == "2025-12-31"
+        source_2025 = [item for item in entry["source_files"] if item["year"] == 2025]
+        assert len(source_2025) == 1
+        assert source_2025[0]["source_dataset"] == "NCEI GHCNh"
+        assert source_2025[0]["ghcnh_station_id"] == entry["ghcnh_station_id"]
+        assert source_2025[0]["valid_observations"] > 365
 
 
 def test_seoul_archive_mapping_is_official_rksi_not_seoul_ab() -> None:
@@ -310,6 +351,7 @@ def test_seoul_archive_mapping_is_official_rksi_not_seoul_ab() -> None:
     assert seoul["ncei_station_id"] == "47113199999"
     assert seoul["ncei_station_name"] == "INCHEON INTL"
     assert seoul["ncei_record_end"] == "2025-08-24"
+    assert seoul["ghcnh_record_end"] == "2025-12-31"
     assert seoul["ncei_station_id"] != "47111099999"
 
 

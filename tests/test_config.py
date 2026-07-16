@@ -32,9 +32,12 @@ def test_default_station_strategy_is_hybrid_observation_edge():
     assert Settings.intraday_exact_low_yes_enabled is False
     assert Settings.intraday_us_exact_low_yes_enabled is True
     assert Settings.intraday_enable_above_bucket_no is False
+    assert Settings.no_only_new_entries is True
     assert Settings.official_nowcast_entry_only is False
     assert Settings.official_nowcast_lock_base_entry_fraction == 0.20
     assert Settings.official_nowcast_lock_strong_entry_fraction == 0.50
+    assert Settings.max_consecutive_losses == 0
+    assert Settings.city_loss_cooldown_hours == 0.0
 
 
 def test_default_station_residual_probability_and_sizing_tiers():
@@ -222,8 +225,8 @@ def test_default_city_date_portfolio_caps_shrink_after_one_thousand_dollars():
     assert Settings.large_bankroll_event_date_exposure_fraction == 0.05
     assert Settings.event_date_exposure_transition_usd == 1000.0
     assert Settings.max_event_portfolio_legs == 2
-    assert Settings.daily_realized_loss_limit_fraction == 0.50
-    assert Settings.daily_unrealized_loss_limit_fraction == 0.50
+    assert Settings.daily_realized_loss_limit_fraction == 0.0
+    assert Settings.daily_unrealized_loss_limit_fraction == 0.0
     assert Settings.large_loss_threshold_fraction == 0.50
     assert Settings.large_loss_cooldown_hours == 0.0
     assert Settings.max_total_exposure_fraction == 0.90
@@ -400,6 +403,7 @@ def test_load_settings_reads_intraday_observation_edge_controls(monkeypatch):
     monkeypatch.setenv("INTRADAY_EXACT_LOW_YES_ENABLED", "true")
     monkeypatch.setenv("INTRADAY_US_EXACT_LOW_YES_ENABLED", "false")
     monkeypatch.setenv("INTRADAY_ENABLE_ABOVE_BUCKET_NO", "true")
+    monkeypatch.setenv("NO_ONLY_NEW_ENTRIES", "false")
 
     settings = load_settings()
 
@@ -418,6 +422,7 @@ def test_load_settings_reads_intraday_observation_edge_controls(monkeypatch):
     assert settings.intraday_exact_low_yes_enabled is True
     assert settings.intraday_us_exact_low_yes_enabled is False
     assert settings.intraday_enable_above_bucket_no is True
+    assert settings.no_only_new_entries is False
 
 
 def test_default_observation_tiers_cap_unconfirmed_probability_sizing():

@@ -1128,6 +1128,33 @@ def estimate_station_signal(
             settlement_precision_confidence=precision_profile.confidence,
         )
 
+    if (
+        observation.source == "aviationweather-metar"
+        and observation.observation_due_status == "overdue"
+        and observation.next_observation_due_at is not None
+    ):
+        payload["data_block_reason"] = "next-learned-observation-pending"
+        payload["strategy_allowed_reason"] = (
+            "ordinary probability entry waits for the next report inferred from recent station observations"
+        )
+        return replace(
+            _neutral_signal(
+                parsed,
+                "official-station-observation-report-pending",
+                (
+                    f"{base_note}; signal_family=intraday_observation_edge; "
+                    "observation_report=pending; "
+                    f"learned_observation_interval_seconds="
+                    f"{observation.learned_observation_interval_seconds}; "
+                    f"next_observation_due_at={payload.get('next_observation_due_at')}; "
+                    "ordinary entry paused until a newer official observation arrives"
+                ),
+            ),
+            nowcast=payload,
+            strategy_mode=settings.strategy_mode,
+            settlement_precision_confidence=precision_profile.confidence,
+        )
+
     residual = _residual_observation_edge_signal(
         parsed,
         observed_value_c,

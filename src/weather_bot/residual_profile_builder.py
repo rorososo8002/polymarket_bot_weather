@@ -286,6 +286,45 @@ def parse_global_hourly_observations(
     )
 
 
+def iter_ghcnh_hourly_observations(
+    path: str | Path,
+    *,
+    station_id: str,
+    ghcnh_station_id: str,
+) -> Iterable[HistoricalTemperatureObservation]:
+    with Path(path).open("r", encoding="utf-8", newline="") as file:
+        yield from _iter_ghcnh_hourly_observation_rows(
+            csv.DictReader(file, delimiter="|"),
+            station_id=station_id,
+            ghcnh_station_id=ghcnh_station_id,
+        )
+
+
+def _iter_ghcnh_hourly_observation_rows(
+    rows: Iterable[Mapping[str, str]],
+    *,
+    station_id: str,
+    ghcnh_station_id: str,
+) -> Iterable[HistoricalTemperatureObservation]:
+    expected_ghcnh_id = ghcnh_station_id.strip().upper()
+    target_station_id = station_id.strip().upper()
+    for row in rows:
+        if (row.get("STATION") or "").strip().upper() != expected_ghcnh_id:
+            continue
+        observed_at = _parse_global_hourly_date(row.get("DATE"))
+        temperature_c = _parse_ghcnh_temperature_c(
+            row.get("temperature"),
+            row.get("temperature_Quality_Code"),
+        )
+        if observed_at is None or temperature_c is None:
+            continue
+        yield HistoricalTemperatureObservation(
+            station_id=target_station_id,
+            observed_at=observed_at,
+            temperature_c=temperature_c,
+        )
+
+
 def _iter_global_hourly_observation_rows(
     rows: Iterable[Mapping[str, str]],
     catalog: Mapping[str, NceiStationMapping],
@@ -343,6 +382,7 @@ def publish_residual_profiles(
     years: tuple[int, ...],
     catalog_path: str | Path | None = None,
     hourly_paths: Mapping[tuple[str, int], str | Path] | None = None,
+    ghcnh_paths: Mapping[tuple[str, int], tuple[str, str | Path]] | None = None,
     catalog_url: str | None = None,
     hourly_url_template: str | None = None,
     http_get: Callable[..., Any] = requests.get,
@@ -364,6 +404,7 @@ def publish_residual_profiles(
     )
     incomplete: list[dict[str, object]] = []
     hourly_paths = hourly_paths or {}
+    ghcnh_paths = ghcnh_paths or {}
 
     for station in sorted(stations.values(), key=lambda item: item.station_id):
         station_id = station.station_id.upper()
@@ -378,6 +419,23 @@ def publish_residual_profiles(
             )
             continue
         for year in years:
+            ghcnh_input = ghcnh_paths.get((station_id, year))
+            if ghcnh_input is not None:
+                ghcnh_station_id, ghcnh_path = ghcnh_input
+                added = _add_observations_to_accumulator(
+                    iter_ghcnh_hourly_observations(
+                        ghcnh_path,
+                        station_id=station_id,
+                        ghcnh_station_id=ghcnh_station_id,
+                    ),
+                    accumulator,
+                )
+                if added == 0:
+                    raise ProfileBuildError(
+                        f"no valid GHCNh observations for {station_id} {year} "
+                        f"from {ghcnh_path}"
+                    )
+                continue
             hourly_path = hourly_paths.get((station_id, year))
             if hourly_path is not None:
                 _add_observations_to_accumulator(
@@ -431,6 +489,13 @@ def main(argv: list[str] | None = None) -> int:
         help="Local Global Hourly CSV path for one ICAO station and year.",
     )
     parser.add_argument(
+        "--ghcnh",
+        action="append",
+        default=[],
+        metavar="STATION:YEAR:GHCNH_ID:PATH",
+        help="Local GHCNh PSV path and exact GHCNh station ID for one ICAO station and year.",
+    )
+    parser.add_argument(
         "--stations",
         choices=("trading-ready",),
         default="trading-ready",
@@ -443,12 +508,14 @@ def main(argv: list[str] | None = None) -> int:
     try:
         years = tuple(int(part.strip()) for part in args.years.split(",") if part.strip())
         hourly_paths = _parse_hourly_path_args(args.hourly)
+        ghcnh_paths = _parse_ghcnh_path_args(args.ghcnh)
         publish_residual_profiles(
             output_path=args.output,
             stations=TRADING_READY_STATION_MAP,
             years=years,
             catalog_path=args.catalog,
             hourly_paths=hourly_paths,
+            ghcnh_paths=ghcnh_paths,
             interval_minutes=args.interval_minutes,
             min_sample_days=args.min_sample_days,
         )
@@ -462,6 +529,19 @@ def _parse_hourly_path_args(values: Iterable[str]) -> dict[tuple[str, int], Path
     for value in values:
         station_id, year_text, path_text = value.split(":", 2)
         paths[(station_id.upper(), int(year_text))] = Path(path_text)
+    return paths
+
+
+def _parse_ghcnh_path_args(
+    values: Iterable[str],
+) -> dict[tuple[str, int], tuple[str, Path]]:
+    paths: dict[tuple[str, int], tuple[str, Path]] = {}
+    for value in values:
+        station_id, year_text, ghcnh_station_id, path_text = value.split(":", 3)
+        paths[(station_id.upper(), int(year_text))] = (
+            ghcnh_station_id.upper(),
+            Path(path_text),
+        )
     return paths
 
 
@@ -544,9 +624,12 @@ def _write_profiles_atomically(payload: Mapping[str, object], output_path: Path)
 def _add_observations_to_accumulator(
     observations: Iterable[HistoricalTemperatureObservation],
     accumulator: _ResidualProfileAccumulator,
-) -> None:
+) -> int:
+    added = 0
     for observation in observations:
         accumulator.add_observation(observation)
+        added += 1
+    return added
 
 
 def _add_temperature_to_daily_summary(
@@ -685,6 +768,23 @@ def _parse_tmp_celsius(value: str | None) -> float | None:
     if abs(tenths) == MISSING_TMP_TENTHS:
         return None
     temperature_c = tenths / 10.0
+    if not MIN_PLAUSIBLE_TEMPERATURE_C <= temperature_c <= MAX_PLAUSIBLE_TEMPERATURE_C:
+        return None
+    return temperature_c
+
+
+def _parse_ghcnh_temperature_c(
+    value: str | None,
+    quality_code: str | None,
+) -> float | None:
+    if (quality_code or "").strip() not in VALID_TMP_QUALITY_CODES:
+        return None
+    try:
+        temperature_c = float((value or "").strip())
+    except ValueError:
+        return None
+    if not math.isfinite(temperature_c):
+        return None
     if not MIN_PLAUSIBLE_TEMPERATURE_C <= temperature_c <= MAX_PLAUSIBLE_TEMPERATURE_C:
         return None
     return temperature_c

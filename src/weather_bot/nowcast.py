@@ -6,6 +6,7 @@ import csv
 import io
 import json
 import os
+import threading
 import uuid
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
@@ -77,6 +78,9 @@ class StationNowcastObservation:
     latest_dewpoint_c: float | None = None
     latest_weather: str = ""
     latest_raw_observation: str = ""
+    learned_observation_interval_seconds: int | None = None
+    next_observation_due_at: datetime | None = None
+    observation_due_status: str = ""
 
     @property
     def usable(self) -> bool:
@@ -131,6 +135,9 @@ class StationNowcastObservation:
             "latest_dewpoint_c": self.latest_dewpoint_c,
             "latest_weather": self.latest_weather,
             "latest_raw_observation": self.latest_raw_observation,
+            "learned_observation_interval_seconds": self.learned_observation_interval_seconds,
+            "next_observation_due_at": _iso_or_empty(self.next_observation_due_at),
+            "observation_due_status": self.observation_due_status,
         }
 
 
@@ -305,6 +312,21 @@ def _record_observed_at(record: dict[str, Any]) -> datetime | None:
     return None
 
 
+def _learned_observation_interval_seconds(observed_times: list[datetime]) -> int | None:
+    ordered = sorted(set(observed_times))
+    gaps = sorted(
+        int((current - previous).total_seconds())
+        for previous, current in zip(ordered, ordered[1:])
+        if 0 < (current - previous).total_seconds() <= AWC_METAR_MAX_CONTINUITY_GAP_SECONDS
+    )
+    if len(gaps) < 2:
+        return None
+    middle = len(gaps) // 2
+    if len(gaps) % 2:
+        return gaps[middle]
+    return int(round((gaps[middle - 1] + gaps[middle]) / 2.0))
+
+
 class AviationWeatherMetarNowcastProvider:
     """Pilot nowcast provider for explicitly mapped ICAO settlement stations."""
 
@@ -333,6 +355,7 @@ class AviationWeatherMetarNowcastProvider:
         self.sources = sources or PILOT_NOWCAST_SOURCES
         self._cache: dict[tuple[str, str], tuple[datetime, StationNowcastObservation]] = {}
         self._awc_metar_bulk_cache: _MetarBulkCacheEntry | None = None
+        self._observation_lock = threading.RLock()
         self._hko_rollover_state = self._load_hko_rollover_state()
         self._metar_daily_extremes_state = self._load_metar_daily_extremes_state()
 
@@ -688,6 +711,44 @@ class AviationWeatherMetarNowcastProvider:
         return self.observed_temperature_extremes_so_far(station, target_date=target_date, now=now)
 
     def observed_temperature_extremes_so_far(
+        self,
+        station: StationMeta,
+        *,
+        target_date: date,
+        now: datetime | None = None,
+    ) -> StationNowcastObservation:
+        with self._observation_lock:
+            return self._observed_temperature_extremes_so_far_unlocked(
+                station,
+                target_date=target_date,
+                now=now,
+            )
+
+    def discard_cached_observations_before_entry(self, *, now: datetime | None = None) -> None:
+        current = _as_utc(now or _utc_now())
+        with self._observation_lock:
+            retained: dict[tuple[str, str], tuple[datetime, StationNowcastObservation]] = {}
+            for cache_key, cached in self._cache.items():
+                source = self.sources.get(cache_key[0])
+                floor_seconds = (
+                    self._source_min_real_request_interval_seconds(source)
+                    if source is not None
+                    else 0
+                )
+                cached_at, _observation = cached
+                if floor_seconds > 0 and (current - cached_at).total_seconds() <= floor_seconds:
+                    retained[cache_key] = cached
+            self._cache = retained
+
+            bulk_cached = self._awc_metar_bulk_cache
+            if (
+                bulk_cached is not None
+                and (current - bulk_cached.cached_at).total_seconds()
+                > AWC_METAR_MIN_REAL_REQUEST_INTERVAL_SECONDS
+            ):
+                self._awc_metar_bulk_cache = None
+
+    def _observed_temperature_extremes_so_far_unlocked(
         self,
         station: StationMeta,
         *,
@@ -1058,6 +1119,7 @@ class AviationWeatherMetarNowcastProvider:
 
         zone = _zone(station.timezone)
         observations: list[tuple[datetime, float]] = []
+        cadence_observed_times: list[datetime] = []
         latest_record: dict[str, Any] | None = None
         latest_record_at: datetime | None = None
         for record in payload:
@@ -1068,7 +1130,10 @@ class AviationWeatherMetarNowcastProvider:
                 continue
             observed_at = _record_observed_at(record)
             temp_c = _extract_temperature_c(record)
-            if observed_at is None or temp_c is None:
+            if observed_at is None:
+                continue
+            cadence_observed_times.append(observed_at)
+            if temp_c is None:
                 continue
             if observed_at.astimezone(zone).date() == target_date:
                 observations.append((observed_at, temp_c))
@@ -1115,6 +1180,19 @@ class AviationWeatherMetarNowcastProvider:
         except (TypeError, ValueError):
             high_bucket_confirmations = 0
         freshness_seconds = max(0, int((now - latest_at).total_seconds()))
+        learned_interval_seconds = _learned_observation_interval_seconds(cadence_observed_times)
+        next_observation_due_at = (
+            latest_at + timedelta(seconds=learned_interval_seconds)
+            if learned_interval_seconds is not None
+            else None
+        )
+        observation_due_status = (
+            "unknown"
+            if next_observation_due_at is None
+            else "overdue"
+            if now >= next_observation_due_at
+            else "current"
+        )
         reason = (
             "stale-observation"
             if freshness_seconds > self._source_max_observation_age_seconds(source)
@@ -1151,6 +1229,9 @@ class AviationWeatherMetarNowcastProvider:
             latest_dewpoint_c=round(latest_dewpoint_c, 3) if latest_dewpoint_c is not None else None,
             latest_weather=latest_weather,
             latest_raw_observation=latest_raw,
+            learned_observation_interval_seconds=learned_interval_seconds,
+            next_observation_due_at=next_observation_due_at,
+            observation_due_status=observation_due_status,
         )
 
     def _parse_hko_payload(

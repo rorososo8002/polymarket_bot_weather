@@ -28,7 +28,6 @@ _POSITIVE_INTEGER_SETTINGS = (
     "discovery_max_pages",
     "discovery_page_size",
     "max_event_portfolio_legs",
-    "max_consecutive_losses",
     "raw_snapshots_max_bytes",
     "raw_snapshots_retention_days",
     "raw_snapshots_min_free_bytes",
@@ -38,6 +37,7 @@ _POSITIVE_INTEGER_SETTINGS = (
 
 _MINIMUM_INTEGER_SETTINGS = (
     ("station_residual_min_sample_days", 1),
+    ("max_consecutive_losses", 0),
 )
 
 _TCP_PORT_SETTINGS = (
@@ -201,10 +201,10 @@ class Settings:
     large_bankroll_event_date_exposure_fraction: float = 0.05
     event_date_exposure_transition_usd: float = 1000.0
     max_event_portfolio_legs: int = 2
-    daily_realized_loss_limit_fraction: float = 0.50
-    daily_unrealized_loss_limit_fraction: float = 0.50
-    max_consecutive_losses: int = 3
-    city_loss_cooldown_hours: float = 24.0
+    daily_realized_loss_limit_fraction: float = 0.0
+    daily_unrealized_loss_limit_fraction: float = 0.0
+    max_consecutive_losses: int = 0
+    city_loss_cooldown_hours: float = 0.0
     large_loss_threshold_fraction: float = 0.50
     large_loss_cooldown_hours: float = 0.0
 
@@ -223,6 +223,9 @@ class Settings:
     # Official same-station strategy modes. Intraday entries remain paper-only
     # and pass the same executable-depth and portfolio gates as station locks.
     strategy_mode: str = "hybrid_observation_edge"
+    # New paper entries are NO-only by default. Existing YES positions remain
+    # eligible for normal exit handling.
+    no_only_new_entries: bool = True
     intraday_observation_edge_enabled: bool = True
     intraday_min_side_probability: float = 0.90
     intraday_strong_side_probability: float = 0.97
@@ -601,6 +604,10 @@ def load_settings() -> Settings:
             Settings.settlement_runner_min_ev_margin_usd,
         ),
         strategy_mode=os.getenv("STRATEGY_MODE", Settings.strategy_mode),
+        no_only_new_entries=_bool_env(
+            "NO_ONLY_NEW_ENTRIES",
+            Settings.no_only_new_entries,
+        ),
         intraday_observation_edge_enabled=_bool_env(
             "INTRADAY_OBSERVATION_EDGE_ENABLED",
             Settings.intraday_observation_edge_enabled,

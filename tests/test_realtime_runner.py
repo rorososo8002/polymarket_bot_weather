@@ -71,6 +71,121 @@ def test_stream_backed_client_reads_order_books_from_websocket_cache():
     assert book.best_ask == 0.50
 
 
+def test_stream_backed_client_prefetches_final_books_concurrently_and_reuses_them():
+    class Cache:
+        def __init__(self) -> None:
+            self.books: dict[str, OrderBook] = {}
+
+        def get_order_book(self, token_id: str) -> OrderBook:
+            return self.books[token_id]
+
+    class ConcurrentStream:
+        def __init__(self) -> None:
+            self.cache = Cache()
+            self.barrier = threading.Barrier(2)
+            self.refresh_calls: list[str] = []
+
+        def fetch_order_book_snapshot(self, token_id: str) -> OrderBook:
+            self.refresh_calls.append(token_id)
+            self.barrier.wait(timeout=1.0)
+            return OrderBook(
+                token_id,
+                bids=[OrderLevel(0.84, 100.0)],
+                asks=[OrderLevel(0.85, 100.0)],
+            )
+
+        def apply_rest_snapshot(self, book: OrderBook) -> None:
+            token_id = str(book.token_id)
+            self.cache.books[token_id] = book
+
+        def refresh_order_book(self, token_id: str) -> OrderBook:
+            book = self.fetch_order_book_snapshot(token_id)
+            self.apply_rest_snapshot(book)
+            return book
+
+    stream = ConcurrentStream()
+    client = StreamBackedPolymarketClient(
+        "https://gamma.example",
+        "https://clob.example",
+        stream,
+    )
+    client._fetch_clob_market_tradability_uncached = lambda condition_id: condition_id  # type: ignore[method-assign]
+
+    status = client.prefetch_final_entry_checks(
+        [("condition-a", "token-a"), ("condition-b", "token-b")]
+    )
+
+    assert status == {"requested": 2, "book_ready": 2, "failed": 0, "deferred": 0}
+    assert sorted(stream.refresh_calls) == ["token-a", "token-b"]
+    assert client.refresh_order_book("token-a").best_ask == pytest.approx(0.85)
+    assert sorted(stream.refresh_calls) == ["token-a", "token-b"]
+
+
+def test_stream_backed_client_does_not_wait_for_one_slow_final_prefetch(monkeypatch):
+    class Cache:
+        def __init__(self) -> None:
+            self.books: dict[str, OrderBook] = {}
+
+        def get_order_book(self, token_id: str) -> OrderBook:
+            return self.books[token_id]
+
+    class PartiallySlowStream:
+        def __init__(self) -> None:
+            self.cache = Cache()
+            self.release_slow = threading.Event()
+            self.slow_fetch_finished = threading.Event()
+
+        def fetch_order_book_snapshot(self, token_id: str) -> OrderBook:
+            if token_id == "slow-token":
+                self.release_slow.wait(timeout=1.0)
+                self.slow_fetch_finished.set()
+            return OrderBook(
+                token_id,
+                bids=[OrderLevel(0.84, 100.0)],
+                asks=[OrderLevel(0.95 if token_id == "slow-token" else 0.85, 100.0)],
+            )
+
+        def apply_rest_snapshot(self, book: OrderBook) -> None:
+            token_id = str(book.token_id)
+            self.cache.books[token_id] = book
+
+        def refresh_order_book(self, token_id: str) -> OrderBook:
+            book = OrderBook(
+                token_id,
+                bids=[OrderLevel(0.81, 100.0)],
+                asks=[OrderLevel(0.82, 100.0)],
+            )
+            self.apply_rest_snapshot(book)
+            return book
+
+    stream = PartiallySlowStream()
+    client = StreamBackedPolymarketClient(
+        "https://gamma.example",
+        "https://clob.example",
+        stream,
+    )
+    client._fetch_clob_market_tradability_uncached = lambda condition_id: condition_id  # type: ignore[method-assign]
+    monkeypatch.setattr(runner_module, "REALTIME_FINAL_PREFETCH_DEADLINE_SECONDS", 0.05)
+
+    started = time.monotonic()
+    status = client.prefetch_final_entry_checks(
+        [("condition-fast", "fast-token"), ("condition-slow", "slow-token")]
+    )
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 0.3
+    assert status == {"requested": 2, "book_ready": 1, "failed": 0, "deferred": 1}
+    assert client.refresh_order_book("fast-token").best_ask == pytest.approx(0.85)
+    assert client.refresh_order_book("slow-token").best_ask == pytest.approx(0.82)
+
+    stream.release_slow.set()
+    assert stream.slow_fetch_finished.wait(timeout=1.0)
+    time.sleep(0.05)
+
+    assert stream.cache.get_order_book("slow-token").best_ask == pytest.approx(0.82)
+    assert "slow-token" not in client._final_book_prefetched_at
+
+
 def test_fetch_books_keeps_available_side_when_other_side_snapshot_missing():
     class PartialClient:
         def get_order_book(self, token_id: str) -> OrderBook:
@@ -93,6 +208,19 @@ def test_fetch_books_keeps_available_side_when_other_side_snapshot_missing():
     assert error is None
     assert set(books) == {"NO"}
     assert books["NO"].best_ask == 0.72
+
+
+def test_side_liquidity_rejects_crossed_order_book():
+    book = OrderBook(
+        "no-token",
+        bids=[OrderLevel(0.998, 100.0)],
+        asks=[OrderLevel(0.370, 100.0)],
+    )
+
+    reason = runner_module._side_liquidity_reason("NO", book, Settings(), "temperature")
+
+    assert reason is not None
+    assert "CROSSED_ORDER_BOOK" in reason
 
 
 def test_probability_estimator_receives_residual_profile_store() -> None:
@@ -218,7 +346,7 @@ def test_realtime_update_callback_ignores_late_stream_update_after_worker_stop()
     assert runner_module._enqueue_realtime_update(None, {"late-token"}) == 0
 
 
-def test_station_refresh_enqueues_high_exact_no_probe_and_expires_cached_signals():
+def test_station_refresh_enqueues_high_and_low_exact_no_probes_and_expires_cached_signals():
     high_29 = RawMarket(
         "seoul-high-29",
         "Will the highest temperature in Seoul be 29C on July 8?",
@@ -269,12 +397,15 @@ def test_station_refresh_enqueues_high_exact_no_probe_and_expires_cached_signals
         signal_refreshed_at,
     )
 
-    assert accepted == 1
-    assert worker.status_snapshot()["queue_depth"] == 1
-    assert worker._pending_tokens_by_event == {"seoul-high-event": {"high-29-no"}}
+    assert accepted == 2
+    assert worker.status_snapshot()["queue_depth"] == 2
+    assert worker._pending_tokens_by_event == {
+        "seoul-high-event": {"high-29-no"},
+        "seoul-low-event": {"low-22-no"},
+    }
     assert high_29.market_id not in signal_refreshed_at
     assert high_30_same_event.market_id not in signal_refreshed_at
-    assert low_22.market_id in signal_refreshed_at
+    assert low_22.market_id not in signal_refreshed_at
 
 
 def test_station_refresh_high_exact_no_probes_are_bounded_and_rotated():
@@ -302,6 +433,221 @@ def test_station_refresh_high_exact_no_probes_are_bounded_and_rotated():
     assert second_expired == {"market-3", "market-4", "market-5"}
 
 
+def test_changed_station_refresh_enqueues_every_changed_event_without_probe_cap():
+    cities = ("seoul", "london", "beijing", "shanghai", "wuhan", "tokyo", "singapore")
+    markets = [
+        RawMarket(
+            f"{city}-market",
+            f"Will the highest temperature in {city.title()} be 29C on July 8?",
+            f"{city}-market",
+            True,
+            False,
+            f"{city}-yes",
+            f"{city}-no",
+            event_id=f"{city}-event",
+        )
+        for city in cities
+    ]
+    calls: list[set[str]] = []
+    worker = RealtimeEvaluationCoalescer(
+        event_key_by_token={f"{city}-no": f"{city}-event" for city in cities},
+        evaluator=lambda tokens: calls.append(set(tokens)),
+    )
+    signal_refreshed_at = {
+        market.market_id: datetime(2026, 7, 8, 3, 0, tzinfo=timezone.utc)
+        for market in markets
+    }
+    changed_station_ids = {
+        runner_module.TRADING_READY_STATION_MAP[city].station_id for city in cities
+    }
+
+    accepted = runner_module._enqueue_station_refresh_high_exact_no_probes(
+        worker,
+        markets,
+        signal_refreshed_at,
+        station_ids=changed_station_ids,
+    )
+
+    assert accepted == len(cities)
+    assert worker.status_snapshot()["queue_depth"] == len(cities)
+    assert signal_refreshed_at == {}
+
+    assert worker._run_pending_batch_once() is True
+    assert calls == [{f"{city}-no" for city in cities}]
+    assert worker.status_snapshot()["queue_depth"] == 0
+
+
+def test_station_refresh_enqueues_only_changed_city_high_exact_no(monkeypatch):
+    seoul = runner_module.TRADING_READY_STATION_MAP["seoul"]
+    london = runner_module.TRADING_READY_STATION_MAP["london"]
+    monkeypatch.setattr(
+        runner_module,
+        "TRADING_READY_STATION_MAP",
+        {"seoul": seoul, "london": london},
+    )
+    now = datetime(2026, 7, 8, 7, 0, tzinfo=timezone.utc)
+    state_by_station = {}
+    high_by_station = {seoul.station_id: 29.0, london.station_id: 22.0}
+    observed_at_by_station = {seoul.station_id: now, london.station_id: now}
+
+    class FakeProvider:
+        def observed_temperature_extremes_so_far(self, station, *, target_date, now):
+            high = high_by_station[station.station_id]
+            return StationNowcastObservation(
+                station_id=station.station_id,
+                station_name=station.station_name,
+                observed_high_c=high,
+                observed_low_c=15.0,
+                observed_at=observed_at_by_station[station.station_id],
+                high_observed_at=observed_at_by_station[station.station_id],
+                low_observed_at=observed_at_by_station[station.station_id],
+                source="fixture",
+                source_url="https://example.test/source",
+                settlement_source_url="https://example.test/settlement",
+                freshness_seconds=0,
+                unavailable_reason="",
+            )
+
+    runner_module._refresh_official_station_observations(
+        FakeProvider(),
+        now=now,
+        station_state_by_id=state_by_station,
+    )
+    high_by_station[seoul.station_id] = 30.0
+    observed_at_by_station[seoul.station_id] = now + timedelta(minutes=30)
+    changed_station_ids = runner_module._refresh_official_station_observations(
+        FakeProvider(),
+        now=now + timedelta(minutes=30),
+        station_state_by_id=state_by_station,
+    )
+
+    seoul_market = RawMarket(
+        "seoul-high-29",
+        "Will the highest temperature in Seoul be 29C on July 8?",
+        "seoul-high-29",
+        True,
+        False,
+        "seoul-yes",
+        "seoul-no",
+        event_id="seoul-high-event",
+    )
+    london_market = RawMarket(
+        "london-high-21",
+        "Will the highest temperature in London be 21C on July 8?",
+        "london-high-21",
+        True,
+        False,
+        "london-yes",
+        "london-no",
+        event_id="london-high-event",
+    )
+    signal_refreshed_at = {
+        seoul_market.market_id: now,
+        london_market.market_id: now,
+    }
+    worker = RealtimeEvaluationCoalescer(
+        event_key_by_token={
+            "seoul-no": "seoul-high-event",
+            "london-no": "london-high-event",
+        },
+        evaluator=lambda _tokens: None,
+    )
+
+    accepted = runner_module._enqueue_station_refresh_high_exact_no_probes(
+        worker,
+        [seoul_market, london_market],
+        signal_refreshed_at,
+        station_ids=changed_station_ids,
+    )
+
+    assert changed_station_ids == {seoul.station_id}
+    assert accepted == 1
+    assert worker._pending_tokens_by_event == {"seoul-high-event": {"seoul-no"}}
+    assert seoul_market.market_id not in signal_refreshed_at
+    assert london_market.market_id in signal_refreshed_at
+
+
+def test_station_refresh_detects_high_drop_and_low_rise_reports(monkeypatch):
+    station = runner_module.TRADING_READY_STATION_MAP["seoul"]
+    monkeypatch.setattr(runner_module, "TRADING_READY_STATION_MAP", {"seoul": station})
+    now = datetime(2026, 7, 8, 7, 0, tzinfo=timezone.utc)
+    latest = {"temp": 30.0, "high_drop": None, "low_rise": None}
+
+    class FakeProvider:
+        def observed_temperature_extremes_so_far(self, _station, *, target_date, now):
+            del target_date
+            return StationNowcastObservation(
+                station_id=station.station_id,
+                station_name=station.station_name,
+                observed_high_c=30.0,
+                observed_low_c=21.0,
+                observed_at=now,
+                high_observed_at=now - timedelta(hours=1),
+                high_drop_observed_at=latest["high_drop"],
+                low_observed_at=now - timedelta(hours=2),
+                low_rise_observed_at=latest["low_rise"],
+                latest_temp_c=latest["temp"],
+                source="fixture",
+                source_url="https://example.test/source",
+                settlement_source_url="https://example.test/settlement",
+                freshness_seconds=0,
+                unavailable_reason="",
+            )
+
+    state_by_station: dict[str, tuple] = {}
+    runner_module._refresh_official_station_observations(
+        FakeProvider(),
+        now=now,
+        station_state_by_id=state_by_station,
+    )
+
+    latest.update(temp=29.0, high_drop=now + timedelta(minutes=30))
+    high_drop_changed = runner_module._refresh_official_station_observations(
+        FakeProvider(),
+        now=now + timedelta(minutes=30),
+        station_state_by_id=state_by_station,
+    )
+    latest.update(temp=22.0, low_rise=now + timedelta(hours=1))
+    low_rise_changed = runner_module._refresh_official_station_observations(
+        FakeProvider(),
+        now=now + timedelta(hours=1),
+        station_state_by_id=state_by_station,
+    )
+
+    assert high_drop_changed == {station.station_id}
+    assert low_rise_changed == {station.station_id}
+
+
+def test_station_state_key_detects_due_and_unavailable_status_changes():
+    station = runner_module.TRADING_READY_STATION_MAP["seoul"]
+    observation = StationNowcastObservation(
+        station_id=station.station_id,
+        station_name=station.station_name,
+        observed_high_c=30.0,
+        observed_low_c=21.0,
+        observed_at=datetime(2026, 7, 8, 7, 0, tzinfo=timezone.utc),
+        high_observed_at=datetime(2026, 7, 8, 6, 0, tzinfo=timezone.utc),
+        low_observed_at=datetime(2026, 7, 8, 5, 0, tzinfo=timezone.utc),
+        source="fixture",
+        source_url="https://example.test/source",
+        settlement_source_url="https://example.test/settlement",
+        freshness_seconds=0,
+        unavailable_reason="",
+        observation_due_status="current",
+    )
+
+    current = runner_module._station_observation_state_key(observation)
+    overdue = runner_module._station_observation_state_key(
+        replace(observation, observation_due_status="overdue")
+    )
+    unavailable = runner_module._station_observation_state_key(
+        replace(observation, unavailable_reason="stale-observation")
+    )
+
+    assert current != overdue
+    assert current != unavailable
+
+
 def test_station_refresh_default_probe_batch_fits_one_evaluation_batch():
     assert (
         runner_module.REALTIME_STATION_REFRESH_PROBE_MAX_EVENTS
@@ -309,7 +655,7 @@ def test_station_refresh_default_probe_batch_fits_one_evaluation_batch():
     )
 
 
-def test_realtime_evaluation_trigger_tokens_use_representative_no_and_held_positions():
+def test_realtime_evaluation_trigger_tokens_include_high_and_low_exact_no_and_held_positions():
     high_29 = RawMarket(
         "seoul-high-29",
         "Will the highest temperature in Seoul be 29C on July 8?",
@@ -373,11 +719,65 @@ def test_realtime_evaluation_trigger_tokens_use_representative_no_and_held_posit
     )
     assert trigger_tokens == {
         "high-29-no": "seoul-high-event",
+        "high-30-no": "seoul-high-event",
+        "low-22-no": "seoul-low-event",
         "held-no": held_event_key,
     }
 
 
-def test_realtime_orderbook_updates_only_wake_held_position_tokens():
+def test_realtime_evaluation_trigger_includes_upper_tail_high_no():
+    upper_tail = RawMarket(
+        "kuala-lumpur-36-plus",
+        "Will the highest temperature in Kuala Lumpur be 36C or higher on July 16?",
+        "kuala-lumpur-36-plus",
+        True,
+        False,
+        "upper-tail-yes",
+        "upper-tail-no",
+        event_id="kuala-lumpur-high-event",
+    )
+    broker = runner_module.PaperBroker(
+        Settings(
+            state_path=":memory:",
+            trades_csv_path=":memory:",
+            decisions_csv_path=":memory:",
+            raw_snapshots_path=":memory:",
+        )
+    )
+
+    trigger_tokens = runner_module._realtime_evaluation_trigger_tokens([upper_tail], broker)
+
+    assert trigger_tokens == {"upper-tail-no": "kuala-lumpur-high-event"}
+
+
+def test_empty_changed_station_set_enqueues_no_fallback_probe():
+    market = RawMarket(
+        "seoul-high-29",
+        "Will the highest temperature in Seoul be 29C on July 8?",
+        "seoul-high-29",
+        True,
+        False,
+        "high-29-yes",
+        "high-29-no",
+        event_id="seoul-high-event",
+    )
+    worker = RealtimeEvaluationCoalescer(
+        event_key_by_token={"high-29-no": "seoul-high-event"},
+        evaluator=lambda _tokens: None,
+    )
+
+    accepted = runner_module._enqueue_station_refresh_high_exact_no_probes(
+        worker,
+        [market],
+        {market.market_id: datetime.now(timezone.utc)},
+        station_ids=set(),
+    )
+
+    assert accepted == 0
+    assert worker.status_snapshot()["queue_depth"] == 0
+
+
+def test_realtime_orderbook_updates_wake_held_and_candidate_tokens():
     broker = runner_module.PaperBroker(
         Settings(
             state_path=":memory:",
@@ -404,9 +804,10 @@ def test_realtime_orderbook_updates_only_wake_held_position_tokens():
     tokens = runner_module._orderbook_update_tokens_for_realtime_evaluation(
         {"held-no", "high-29-no", "random-token"},
         broker,
+        {"high-29-no"},
     )
 
-    assert tokens == {"held-no"}
+    assert tokens == {"held-no", "high-29-no"}
 
 
 def test_realtime_evaluation_coalescer_merges_burst_updates_by_event():
@@ -438,6 +839,30 @@ def test_realtime_evaluation_coalescer_merges_burst_updates_by_event():
         assert status["coalesced_update_count"] == 1
     finally:
         worker.stop()
+
+
+def test_realtime_event_priority_does_not_favor_one_same_day_high_event_forever():
+    markets = [
+        RawMarket(
+            f"market-{index}",
+            f"Will the highest temperature in Seoul be {29 + index}C on July 8?",
+            f"market-{index}",
+            True,
+            False,
+            f"yes-{index}",
+            f"no-{index}",
+            event_id=f"event-{index}",
+        )
+        for index in (1, 2)
+    ]
+
+    priorities = runner_module._realtime_event_priorities(
+        markets,
+        open_market_ids=set(),
+        now=datetime(2026, 7, 8, 3, 0, tzinfo=timezone.utc),
+    )
+
+    assert priorities["event-1"] == priorities["event-2"]
 
 
 def test_realtime_evaluation_coalescer_records_worker_errors_and_keeps_running():
@@ -476,6 +901,32 @@ def test_realtime_evaluation_coalescer_records_worker_errors_and_keeps_running()
         assert "slow strategy evaluator failed" in str(status_updates[-1]["last_error"])
     finally:
         worker.stop()
+
+
+def test_realtime_evaluation_coalescer_retries_failed_urgent_event_once():
+    calls = 0
+
+    def evaluator(_tokens: set[str]) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("temporary failure")
+
+    worker = RealtimeEvaluationCoalescer(
+        event_key_by_token={"station-token": "station-event"},
+        evaluator=evaluator,
+        coalesce_seconds=0.0,
+        retry_backoff_seconds=0.0,
+    )
+
+    worker.enqueue_tokens({"station-token"}, urgent=True)
+    assert worker._run_pending_batch_once() is True
+    assert worker.status_snapshot()["queue_depth"] == 1
+    assert worker.status_snapshot()["urgent_queue_depth"] == 1
+
+    assert worker._run_pending_batch_once() is True
+    assert calls == 2
+    assert worker.status_snapshot()["queue_depth"] == 0
 
 
 def test_realtime_evaluation_coalescer_bounds_pending_events_and_counts_drops():
@@ -518,7 +969,7 @@ def test_realtime_evaluation_coalescer_keeps_normal_burst_in_one_batch():
     assert status["processed_event_count"] == 10
 
 
-def test_realtime_evaluation_coalescer_default_keeps_batches_short():
+def test_realtime_evaluation_coalescer_default_drains_current_city_set_in_one_batch():
     calls: list[set[str]] = []
     event_key_by_token = {f"token-{index}": f"event-{index}" for index in range(10)}
     worker = RealtimeEvaluationCoalescer(
@@ -531,7 +982,10 @@ def test_realtime_evaluation_coalescer_default_keeps_batches_short():
     worker._run_pending_batch_once()
 
     assert len(calls) == 1
-    assert len(calls[0]) <= 4
+    assert len(calls[0]) == min(
+        len(event_key_by_token),
+        runner_module.REALTIME_EVALUATION_BATCH_MAX_EVENTS,
+    )
     assert worker.status_snapshot()["queue_depth"] == 10 - len(calls[0])
 
 
@@ -561,7 +1015,91 @@ def test_realtime_evaluation_coalescer_prioritizes_urgent_events_before_old_queu
     assert calls == [{"today-token"}, {"future-token"}]
 
 
-def test_realtime_event_priorities_rank_same_day_high_exact_before_future_events():
+def test_realtime_evaluation_coalescer_station_change_jumps_ahead_of_normal_queue():
+    calls: list[set[str]] = []
+    worker = RealtimeEvaluationCoalescer(
+        event_key_by_token={
+            "normal-token": "normal-event",
+            "station-token": "station-event",
+        },
+        evaluator=lambda tokens: calls.append(set(tokens)),
+        max_batch_events=1,
+        coalesce_seconds=0.0,
+        event_priority=lambda event_key: (0 if event_key == "normal-event" else 9, event_key),
+    )
+
+    assert worker.enqueue_tokens({"normal-token"}) == 1
+    assert worker.enqueue_tokens({"station-token"}, urgent=True) == 1
+
+    worker._run_pending_batch_once()
+    worker._run_pending_batch_once()
+
+    assert calls == [{"station-token"}, {"normal-token"}]
+    status = worker.status_snapshot()
+    assert status["urgent_queue_depth"] == 0
+    assert status["urgent_processed_event_count"] == 1
+    assert status["last_urgent_enqueued_at"]
+    assert status["last_urgent_evaluated_at"]
+    assert status["last_urgent_evaluation_lag_seconds"] is not None
+
+
+def test_realtime_evaluation_coalescer_drains_existing_backlog_without_recoalescing():
+    completed = threading.Event()
+    calls: list[set[str]] = []
+    event_key_by_token = {f"token-{index}": f"event-{index}" for index in range(8)}
+
+    def evaluator(tokens: set[str]) -> None:
+        calls.append(set(tokens))
+        if len(calls) == 2:
+            completed.set()
+
+    worker = RealtimeEvaluationCoalescer(
+        event_key_by_token=event_key_by_token,
+        evaluator=evaluator,
+        max_batch_events=4,
+        coalesce_seconds=0.20,
+    )
+
+    started_at = time.monotonic()
+    worker.start()
+    try:
+        worker.enqueue_tokens(set(event_key_by_token), urgent=True)
+        assert completed.wait(1.0) is True
+        assert time.monotonic() - started_at < 0.35
+        assert len(calls) == 2
+    finally:
+        worker.stop(drain=False)
+
+
+def test_urgent_event_displaces_normal_when_queue_is_full_and_promotes_pending_event():
+    worker = RealtimeEvaluationCoalescer(
+        event_key_by_token={
+            "normal-one": "normal-one-event",
+            "normal-two": "normal-two-event",
+            "urgent-token": "urgent-event",
+        },
+        evaluator=lambda _tokens: None,
+        max_pending_events=2,
+        max_batch_events=1,
+        coalesce_seconds=0.0,
+    )
+
+    assert worker.enqueue_tokens({"normal-one", "normal-two"}) == 2
+    assert worker.enqueue_tokens({"urgent-token"}, urgent=True) == 1
+    assert worker.status_snapshot()["queue_depth"] == 2
+    assert worker.status_snapshot()["urgent_queue_depth"] == 1
+    assert "urgent-event" in worker._pending_tokens_by_event
+
+    remaining_normal_token = next(
+        token
+        for token in ("normal-one", "normal-two")
+        if worker.event_key_by_token[token] in worker._pending_tokens_by_event
+    )
+    assert worker.enqueue_tokens({remaining_normal_token}, urgent=True) == 1
+    assert worker.status_snapshot()["urgent_queue_depth"] == 2
+
+
+def test_realtime_event_priorities_rank_same_day_high_and_low_exact_before_future_events():
     now = datetime(2026, 7, 1, 3, 0, tzinfo=timezone.utc)
     today_high = RawMarket(
         "today-high",
@@ -618,7 +1156,7 @@ def test_realtime_event_priorities_rank_same_day_high_exact_before_future_events
         now=now,
     )
 
-    assert priorities["today-high-event"] < priorities["today-low-event"]
+    assert priorities["today-high-event"] == priorities["today-low-event"]
     assert priorities["today-low-event"] < priorities["future-high-event"]
 
 
@@ -1323,6 +1861,164 @@ def test_realtime_update_without_signal_fails_closed_without_order_book_lookup(t
     assert broker.state.positions == []
 
 
+def test_realtime_price_update_evaluates_only_the_changed_market_in_event(tmp_path):
+    now = datetime(2026, 7, 14, 0, 0, tzinfo=timezone.utc)
+    first = RawMarket(
+        "seoul-27c",
+        "Will the highest temperature in Seoul be 27C today?",
+        "seoul-27c",
+        True,
+        False,
+        "yes-27",
+        "no-27",
+        event_id="seoul-today",
+    )
+    second = RawMarket(
+        "seoul-28c",
+        "Will the highest temperature in Seoul be 28C today?",
+        "seoul-28c",
+        True,
+        False,
+        "yes-28",
+        "no-28",
+        event_id="seoul-today",
+    )
+
+    class FakeClient:
+        def get_order_book(self, token_id):
+            raise AssertionError(f"low-confidence market must not read order book for {token_id}")
+
+    settings = Settings(
+        state_path=str(tmp_path / "state.json"),
+        trades_csv_path=str(tmp_path / "trades.csv"),
+        decisions_csv_path=str(tmp_path / "decisions.csv"),
+        raw_snapshots_path=str(tmp_path / "raw.jsonl"),
+        portfolio_decisions_jsonl_path=str(tmp_path / "portfolio.jsonl"),
+        decisions_log_skip_enabled=True,
+    )
+    broker = runner_module.PaperBroker(settings)
+    signals = {
+        market.market_id: WeatherSignal(
+            0.50,
+            0.20,
+            "test",
+            "fresh low-confidence signal",
+            parse_weather_question(market.question),
+        )
+        for market in (first, second)
+    }
+    refreshed_at = {market.market_id: now for market in (first, second)}
+
+    runner_module._evaluate_realtime_update(
+        {"no-27"},
+        FakeClient(),
+        broker,
+        settings,
+        {
+            "yes-27": first,
+            "no-27": first,
+            "yes-28": second,
+            "no-28": second,
+        },
+        signals,
+        {first.market_id: "temperature", second.market_id: "temperature"},
+        {
+            (second.market_id, runner_module.REALTIME_LAST_EVALUATION_SIDE): runner_module.EdgeResult(
+                "SKIP", 0.50, None, -999.0, 0.0, 0.0, "already evaluated"
+            )
+        },
+        signal_refreshed_at_by_market=refreshed_at,
+        now=now,
+    )
+
+    with (tmp_path / "decisions.csv").open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+    assert [row["market_id"] for row in rows] == [first.market_id]
+
+
+def test_realtime_price_update_does_not_refresh_ttl_stale_sibling_market(tmp_path):
+    now = datetime(2026, 7, 14, 0, 0, tzinfo=timezone.utc)
+    first = RawMarket(
+        "seoul-27c",
+        "Will the highest temperature in Seoul be 27C today?",
+        "seoul-27c",
+        True,
+        False,
+        "yes-27",
+        "no-27",
+        event_id="seoul-today",
+    )
+    second = RawMarket(
+        "seoul-28c",
+        "Will the highest temperature in Seoul be 28C today?",
+        "seoul-28c",
+        True,
+        False,
+        "yes-28",
+        "no-28",
+        event_id="seoul-today",
+    )
+
+    class FakeClient:
+        def get_order_book(self, token_id):
+            raise AssertionError(f"low-confidence market must not read order book for {token_id}")
+
+    settings = Settings(
+        state_path=str(tmp_path / "state.json"),
+        trades_csv_path=str(tmp_path / "trades.csv"),
+        decisions_csv_path=str(tmp_path / "decisions.csv"),
+        raw_snapshots_path=str(tmp_path / "raw.jsonl"),
+        portfolio_decisions_jsonl_path=str(tmp_path / "portfolio.jsonl"),
+        decisions_log_skip_enabled=True,
+        station_nowcast_cache_ttl_seconds=60,
+    )
+    broker = runner_module.PaperBroker(settings)
+    signals = {
+        market.market_id: WeatherSignal(
+            0.50,
+            0.20,
+            "test",
+            "stale low-confidence signal",
+            parse_weather_question(market.question),
+        )
+        for market in (first, second)
+    }
+    stale_at = now - timedelta(seconds=61)
+    refreshed_at = {market.market_id: stale_at for market in (first, second)}
+    already_evaluated = {
+        (market.market_id, runner_module.REALTIME_LAST_EVALUATION_SIDE): runner_module.EdgeResult(
+            "SKIP", 0.50, None, -999.0, 0.0, 0.0, "already evaluated"
+        )
+        for market in (first, second)
+    }
+
+    def refresh_signal(question, **_kwargs):
+        return WeatherSignal(0.50, 0.20, "test", "refreshed", parse_weather_question(question))
+
+    runner_module._evaluate_realtime_update(
+        {"no-27"},
+        FakeClient(),
+        broker,
+        settings,
+        {
+            "yes-27": first,
+            "no-27": first,
+            "yes-28": second,
+            "no-28": second,
+        },
+        signals,
+        {first.market_id: "temperature", second.market_id: "temperature"},
+        already_evaluated,
+        signal_refreshed_at_by_market=refreshed_at,
+        probability_estimator=refresh_signal,
+        now=now,
+    )
+
+    with (tmp_path / "decisions.csv").open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+    assert [row["market_id"] for row in rows] == [first.market_id]
+
+
 def test_realtime_forever_records_missing_websocket_dependency_in_status(tmp_path, monkeypatch):
     question = "Will the highest temperature in Seoul be 27C or higher today?"
     market = RawMarket("seoul-27c", question, "seoul-27c", True, False, "yes", "no")
@@ -1622,7 +2318,7 @@ def test_open_position_if_needed_blocks_inactive_or_closed_markets():
     opened_market_ids: list[str] = []
 
     class FakeBroker:
-        settings = Settings()
+        settings = Settings(no_only_new_entries=False)
 
         def has_position(self, market_id, side):
             return False
@@ -1755,11 +2451,55 @@ def _entry_gate_settings(tmp_path) -> Settings:
         model_error_margin=0.0,
         resolution_error_margin=0.0,
         entry_min_expected_net_return_pct=0.01,
+        no_only_new_entries=False,
     )
 
 
 def _selected_entry_result() -> runner_module.EdgeResult:
     return runner_module.EdgeResult("YES", 0.95, 0.50, 0.45, 10.0, 20.0, "selected")
+
+
+def test_no_only_new_entries_blocks_yes_before_any_final_book_request(tmp_path):
+    broker = runner_module.PaperBroker(
+        replace(_entry_gate_settings(tmp_path), no_only_new_entries=True)
+    )
+    client = _FinalGateClient()
+
+    result = runner_module._open_position_if_needed(
+        broker,
+        _entry_gate_market(),
+        _entry_gate_signal(),
+        _selected_entry_result(),
+        "temperature",
+        client=client,
+    )
+
+    assert result.side == "SKIP"
+    assert "SKIP_NO_ONLY_NEW_ENTRY" in result.reason
+    assert client.tradability_calls == []
+    assert client.book_calls == []
+    assert broker.state.positions == []
+
+
+def test_no_only_new_entries_removes_yes_before_portfolio_selection():
+    market = _entry_gate_market()
+    signal = _entry_gate_signal()
+    candidates = [
+        runner_module.PortfolioCandidate(
+            market,
+            signal,
+            runner_module.EdgeResult(side, 0.95, 0.50, 0.40, 10.0, 20.0, side),
+            "temperature",
+        )
+        for side in ("YES", "NO")
+    ]
+
+    filtered = runner_module._new_entry_candidates_for_strategy(
+        candidates,
+        Settings(no_only_new_entries=True),
+    )
+
+    assert [candidate.result.side for candidate in filtered] == ["NO"]
 
 
 class _FinalGateClient:
@@ -1838,6 +2578,7 @@ def _abnormal_settings(tmp_path, **overrides) -> Settings:
         "max_city_exposure_fraction": 0.90,
         "max_event_date_exposure_fraction": 0.90,
         "large_bankroll_event_date_exposure_fraction": 0.90,
+        "no_only_new_entries": False,
     }
     values.update(overrides)
     return Settings(**values)
@@ -2407,7 +3148,62 @@ def test_final_pre_trade_refreshes_lock_only_no_book_with_rest_helper(tmp_path):
     assert "final_book_source=rest_helper" in result.reason
 
 
-def test_evaluate_market_refreshes_lock_only_no_book_before_candidate_selection(tmp_path):
+def test_final_pre_trade_refreshes_non_lock_selected_book_with_rest_helper(tmp_path):
+    question = "Will the highest temperature in Seoul be 31C on July 8?"
+    settings = _entry_gate_settings(tmp_path)
+    signal = WeatherSignal(
+        0.97,
+        1.0,
+        "official-station-residual-high-yes",
+        "signal_family=intraday_observation_edge",
+        parse_weather_question(question),
+        conservative_yes_probability=0.96,
+        conservative_no_probability=0.02,
+        selected_side_probability=0.96,
+        signal_family="intraday_observation_edge",
+        settlement_precision_confidence="verified",
+    )
+    market = _entry_gate_market(
+        market_id="seoul-31c",
+        question=question,
+        yes_token_id="yes",
+        no_token_id="no",
+    )
+    selected = runner_module.EdgeResult(
+        "YES", 0.97, 0.55, 0.35, 20.0, 35.0, "selected residual yes"
+    )
+
+    class RestRefreshingClient(_FinalGateClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.refresh_calls: list[str] = []
+
+        def refresh_order_book(self, token_id: str) -> OrderBook:
+            self.refresh_calls.append(token_id)
+            return OrderBook(
+                token_id,
+                bids=[OrderLevel(0.50, 1000.0)],
+                asks=[OrderLevel(0.52, 1000.0)],
+            )
+
+    client = RestRefreshingClient()
+    result = runner_module._final_pre_trade_entry_result(
+        market,
+        signal,
+        selected,
+        "yes",
+        client,
+        settings,
+        "temperature",
+    )
+
+    assert client.refresh_calls == ["yes"]
+    assert result.side == "YES"
+    assert result.p_exec == pytest.approx(0.52)
+    assert "final_book_source=rest_helper" in result.reason
+
+
+def test_evaluate_market_uses_stream_book_until_final_candidate_is_selected(tmp_path):
     question = "Will the highest temperature in Seoul be 29C on July 8?"
     signal = WeatherSignal(
         0.0,
@@ -2430,7 +3226,7 @@ def test_evaluate_market_refreshes_lock_only_no_book_before_candidate_selection(
             super().__init__()
             self.books = {
                 "yes": OrderBook("yes", bids=[OrderLevel(0.01, 1000.0)], asks=[OrderLevel(0.02, 1000.0)]),
-                "no": OrderBook("no", bids=[OrderLevel(0.98, 1000.0)], asks=[OrderLevel(0.99, 1000.0)]),
+                "no": OrderBook("no", bids=[OrderLevel(0.87, 1000.0)], asks=[OrderLevel(0.88, 1000.0)]),
             }
             self.refresh_calls: list[str] = []
 
@@ -2438,8 +3234,8 @@ def test_evaluate_market_refreshes_lock_only_no_book_before_candidate_selection(
             self.refresh_calls.append(token_id)
             self.books[token_id] = OrderBook(
                 token_id,
-                bids=[OrderLevel(0.87, 1000.0)],
-                asks=[OrderLevel(0.88, 1000.0)],
+                bids=[OrderLevel(0.98, 1000.0)],
+                asks=[OrderLevel(0.99, 1000.0)],
             )
             return self.books[token_id]
 
@@ -2447,17 +3243,105 @@ def test_evaluate_market_refreshes_lock_only_no_book_before_candidate_selection(
             self.book_calls.append(token_id)
             return self.books[token_id]
 
+    client = RestRefreshingClient()
     result, per_side = runner_module.evaluate_market(
         market,
         signal,
-        RestRefreshingClient(),
+        client,
         _entry_gate_settings(tmp_path),
         100.0,
         "temperature",
     )
 
+    assert client.refresh_calls == []
     assert result.side == "NO"
     assert per_side["NO"].p_exec == pytest.approx(0.88)
+
+
+def test_candidate_book_scan_uses_cache_only_without_rest_fallback():
+    market = _entry_gate_market(
+        market_id="seoul-29c",
+        question="Will the highest temperature in Seoul be 29C on July 8?",
+        yes_token_id="yes",
+        no_token_id="no",
+    )
+
+    class CandidateCacheClient:
+        def __init__(self) -> None:
+            self.rest_fallback_calls: list[str] = []
+
+        def get_candidate_order_book(self, token_id: str) -> OrderBook:
+            if token_id == "no":
+                return OrderBook("no", bids=[OrderLevel(0.87, 100.0)], asks=[OrderLevel(0.88, 100.0)])
+            raise KeyError(token_id)
+
+        def get_order_book(self, token_id: str) -> OrderBook:
+            self.rest_fallback_calls.append(token_id)
+            return OrderBook(token_id, bids=[], asks=[])
+
+    client = CandidateCacheClient()
+    books, error = runner_module._fetch_books(market, client)
+
+    assert error is None
+    assert set(books) == {"NO"}
+    assert client.rest_fallback_calls == []
+
+
+def test_candidate_book_scan_refreshes_only_preferred_missing_side():
+    market = _entry_gate_market(
+        market_id="paris-34c",
+        question="Will the highest temperature in Paris be 34C on July 14?",
+        yes_token_id="yes",
+        no_token_id="no",
+    )
+
+    class CandidateClient:
+        def __init__(self) -> None:
+            self.refresh_calls: list[str] = []
+
+        def get_candidate_order_book(self, token_id: str) -> OrderBook:
+            raise KeyError(token_id)
+
+        def refresh_order_book(self, token_id: str) -> OrderBook:
+            self.refresh_calls.append(token_id)
+            return OrderBook(token_id, bids=[OrderLevel(0.80, 100.0)], asks=[OrderLevel(0.82, 100.0)])
+
+    client = CandidateClient()
+    books, error = runner_module._fetch_books(market, client, preferred_side="NO")
+
+    assert error is None
+    assert set(books) == {"NO"}
+    assert client.refresh_calls == ["no"]
+
+
+def test_candidate_book_scan_refreshes_crossed_preferred_side():
+    market = _entry_gate_market(
+        market_id="paris-34c",
+        question="Will the highest temperature in Paris be 34C on July 14?",
+        yes_token_id="yes",
+        no_token_id="no",
+    )
+
+    class CandidateClient:
+        def __init__(self) -> None:
+            self.refresh_calls: list[str] = []
+
+        def get_candidate_order_book(self, token_id: str) -> OrderBook:
+            if token_id == "no":
+                return OrderBook(token_id, bids=[OrderLevel(0.998, 100.0)], asks=[OrderLevel(0.37, 100.0)])
+            raise KeyError(token_id)
+
+        def refresh_order_book(self, token_id: str) -> OrderBook:
+            self.refresh_calls.append(token_id)
+            return OrderBook(token_id, bids=[OrderLevel(0.80, 100.0)], asks=[OrderLevel(0.82, 100.0)])
+
+    client = CandidateClient()
+    books, error = runner_module._fetch_books(market, client, preferred_side="NO")
+
+    assert error is None
+    assert books["NO"].best_bid == pytest.approx(0.80)
+    assert books["NO"].best_ask == pytest.approx(0.82)
+    assert client.refresh_calls == ["no"]
 
 
 def test_final_pre_trade_revalidates_station_signal_and_blocks_probability_drop(tmp_path):
@@ -2536,11 +3420,11 @@ def test_final_pre_trade_revalidates_station_signal_and_blocks_probability_drop(
     assert broker.state.positions == []
 
 
-def test_final_pre_trade_reuses_just_verified_station_signal(tmp_path):
+def test_final_pre_trade_revalidates_even_when_decision_is_recent(tmp_path):
     question = "Will the highest temperature in Seoul be 23C today?"
     settings = _entry_gate_settings(tmp_path)
     broker = runner_module.PaperBroker(settings)
-    market = _entry_gate_market()
+    market = _entry_gate_market(question=question)
     signal = WeatherSignal(
         0.97,
         1.0,
@@ -2556,8 +3440,17 @@ def test_final_pre_trade_reuses_just_verified_station_signal(tmp_path):
         event_cap_override_fraction=0.50,
     )
 
-    def unavailable_estimator(_question, **_kwargs):
-        raise AssertionError("fresh station evidence must not be fetched again")
+    calls = []
+
+    def changed_estimator(question, **_kwargs):
+        calls.append(question)
+        return WeatherSignal(
+            0.5,
+            0.0,
+            "official-station-observation-report-pending",
+            "newer station evidence is pending",
+            parse_weather_question(question),
+        )
 
     final_result = runner_module._open_position_if_needed(
         broker,
@@ -2566,14 +3459,57 @@ def test_final_pre_trade_reuses_just_verified_station_signal(tmp_path):
         _selected_entry_result(),
         "temperature",
         client=_FinalGateClient(),
-        probability_estimator=unavailable_estimator,
+        probability_estimator=changed_estimator,
         observation_provider=object(),
         residual_profile_store=object(),
         decision_ts=datetime.now(timezone.utc).isoformat(),
     )
 
-    assert final_result.side == "YES"
-    assert len(broker.state.positions) == 1
+    assert calls == [question]
+    assert final_result.side == "SKIP"
+    assert "SKIP_FINAL_STATION_SIGNAL" in final_result.reason
+    assert broker.state.positions == []
+
+
+def test_final_pre_trade_revalidates_official_lock_signal(tmp_path):
+    question = "Will the highest temperature in Seoul be 23C today?"
+    broker = runner_module.PaperBroker(_entry_gate_settings(tmp_path))
+    market = _entry_gate_market(question=question)
+    signal = WeatherSignal(
+        0.0,
+        1.0,
+        "official-station-lock-strong_no",
+        "official_nowcast_lock=strong_no",
+        parse_weather_question(question),
+    )
+    selected = runner_module.EdgeResult("NO", 0.0, 0.50, 0.45, 10.0, 20.0, "selected lock")
+    calls = []
+
+    def changed_estimator(requested_question, **_kwargs):
+        calls.append(requested_question)
+        return WeatherSignal(
+            0.5,
+            0.0,
+            "official-station-unavailable",
+            "fresh official request failed",
+            parse_weather_question(requested_question),
+        )
+
+    final_result = runner_module._open_position_if_needed(
+        broker,
+        market,
+        signal,
+        selected,
+        "temperature",
+        client=_FinalGateClient(),
+        probability_estimator=changed_estimator,
+        observation_provider=object(),
+    )
+
+    assert calls == [question]
+    assert final_result.side == "SKIP"
+    assert "SKIP_FINAL_STATION_SIGNAL" in final_result.reason
+    assert broker.state.positions == []
 
 
 def test_final_pre_trade_blocks_when_clob_accepting_orders_false(tmp_path):
@@ -2687,6 +3623,7 @@ def test_open_position_if_needed_rechecks_fresh_spread_before_broker_open(tmp_pa
         entry_min_expected_net_return_pct=0.01,
         size_mode="fixed_fraction",
         entry_fraction=0.10,
+        no_only_new_entries=False,
     )
     broker = runner_module.PaperBroker(settings)
     market = RawMarket("m1", question, "open", True, False, "yes", "no", condition_id="condition-1")

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Callable, Mapping
+from concurrent.futures import ThreadPoolExecutor, wait
 from dataclasses import replace
 import inspect
 import json
@@ -61,9 +62,16 @@ YES_SIZE_CAP_93 = 0.10
 YES_SIZE_CAP_DEFAULT = 0.05
 ENTRY_DEPTH_AUDIT_TARGET_USD = 100.0
 REALTIME_EVALUATION_QUEUE_MAX_EVENTS = 256
-REALTIME_EVALUATION_BATCH_MAX_EVENTS = 4
+REALTIME_EVALUATION_BATCH_MAX_EVENTS = 64
 REALTIME_EVALUATION_COALESCE_SECONDS = 0.25
+REALTIME_FINAL_CHECK_MAX_WORKERS = 8
+REALTIME_FINAL_PREFETCH_DEADLINE_SECONDS = 1.5
+REALTIME_FINAL_BOOK_PREFETCH_MAX_AGE_SECONDS = 5.0
+REALTIME_LAST_EVALUATION_SIDE = "_LAST_EVALUATION"
 REALTIME_STATION_REFRESH_PROBE_MAX_EVENTS = 4
+NO_ONLY_NEW_ENTRY_REASON = (
+    "SKIP_NO_ONLY_NEW_ENTRY: 신규 YES 진입 중단 정책; 기존 YES 포지션 청산은 계속 허용"
+)
 _station_refresh_probe_cursor = 0
 
 
@@ -453,12 +461,96 @@ class StreamBackedPolymarketClient(PolymarketClient):
     def __init__(self, gamma_base: str, clob_base: str, stream: OrderBookMarketStream) -> None:
         super().__init__(gamma_base, clob_base)
         self.stream = stream
+        self._final_prefetch_lock = threading.Lock()
+        self._final_book_prefetched_at: dict[str, float] = {}
+        self._final_prefetch_generation: dict[str, int] = {}
 
     def get_order_book(self, token_id: str) -> OrderBook:
         return self.stream.get_order_book(token_id)
 
+    def get_candidate_order_book(self, token_id: str) -> OrderBook:
+        return self.stream.cache.get_order_book(token_id)
+
     def refresh_order_book(self, token_id: str) -> OrderBook:
+        token = str(token_id)
+        with self._final_prefetch_lock:
+            prefetched_at = self._final_book_prefetched_at.pop(token, None)
+            use_prefetched = (
+                prefetched_at is not None
+                and time.monotonic() - prefetched_at <= REALTIME_FINAL_BOOK_PREFETCH_MAX_AGE_SECONDS
+            )
+            if not use_prefetched:
+                self._final_prefetch_generation[token] = self._final_prefetch_generation.get(token, 0) + 1
+        if use_prefetched:
+            try:
+                return self.stream.cache.get_order_book(token)
+            except KeyError:
+                with self._final_prefetch_lock:
+                    self._final_prefetch_generation[token] = self._final_prefetch_generation.get(token, 0) + 1
         return self.stream.refresh_order_book(token_id)
+
+    def prefetch_final_entry_checks(self, checks: list[tuple[str, str]]) -> dict[str, int]:
+        """Warm independent final REST checks concurrently; ledger writes remain serialized."""
+        unique_checks = list(dict.fromkeys(
+            (str(condition_id), str(token_id))
+            for condition_id, token_id in checks
+            if str(condition_id) and str(token_id)
+        ))
+        if not unique_checks:
+            return {"requested": 0, "book_ready": 0, "failed": 0, "deferred": 0}
+
+        scheduled: list[tuple[str, str, int]] = []
+        with self._final_prefetch_lock:
+            for condition_id, token_id in unique_checks:
+                generation = self._final_prefetch_generation.get(token_id, 0) + 1
+                self._final_prefetch_generation[token_id] = generation
+                scheduled.append((condition_id, token_id, generation))
+
+        def prefetch_one(check: tuple[str, str, int]) -> bool:
+            condition_id, token_id, generation = check
+            try:
+                tradability = self._fetch_clob_market_tradability_uncached(condition_id)
+                book = self.stream.fetch_order_book_snapshot(token_id)
+            except Exception:  # The final serialized check retries and records the exact skip reason.
+                return False
+            with self._final_prefetch_lock:
+                if self._final_prefetch_generation.get(token_id) != generation:
+                    return False
+                try:
+                    self.stream.apply_rest_snapshot(book)
+                except Exception:
+                    return False
+                self._tradability_cache[condition_id] = (time.monotonic(), tradability)
+                self._final_book_prefetched_at[token_id] = time.monotonic()
+            return True
+
+        max_workers = min(REALTIME_FINAL_CHECK_MAX_WORKERS, len(unique_checks))
+        executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="final-entry-check")
+        future_context = {
+            executor.submit(prefetch_one, check): check
+            for check in scheduled
+        }
+        futures = list(future_context)
+        completed, unfinished = wait(
+            futures,
+            timeout=REALTIME_FINAL_PREFETCH_DEADLINE_SECONDS,
+        )
+        results = [future.result() for future in completed]
+        with self._final_prefetch_lock:
+            for future in unfinished:
+                _condition_id, token_id, generation = future_context[future]
+                if self._final_prefetch_generation.get(token_id) == generation:
+                    self._final_prefetch_generation[token_id] = generation + 1
+        for future in unfinished:
+            future.cancel()
+        executor.shutdown(wait=False, cancel_futures=True)
+        ready = sum(results)
+        return {
+            "requested": len(unique_checks),
+            "book_ready": ready,
+            "failed": len(completed) - ready,
+            "deferred": len(unfinished),
+        }
 
 
 class RealtimeEvaluationCoalescer:
@@ -474,6 +566,8 @@ class RealtimeEvaluationCoalescer:
         coalesce_seconds: float = REALTIME_EVALUATION_COALESCE_SECONDS,
         event_priority: Callable[[str], tuple] | None = None,
         status_update: Callable[[dict[str, object]], None] | None = None,
+        max_event_retries: int = 1,
+        retry_backoff_seconds: float = 0.5,
     ) -> None:
         self.event_key_by_token = {str(token): str(event_key) for token, event_key in event_key_by_token.items()}
         self.evaluator = evaluator
@@ -482,22 +576,33 @@ class RealtimeEvaluationCoalescer:
         self.coalesce_seconds = max(0.0, float(coalesce_seconds))
         self.event_priority = event_priority
         self.status_update = status_update
+        self.max_event_retries = max(0, int(max_event_retries))
+        self.retry_backoff_seconds = max(0.0, float(retry_backoff_seconds))
         self._condition = threading.Condition()
         self._pending_tokens_by_event: dict[str, set[str]] = {}
+        self._urgent_event_keys: set[str] = set()
+        self._urgent_enqueued_monotonic_by_event: dict[str, float] = {}
+        self._retry_count_by_event: dict[str, int] = {}
+        self._inflight_urgent_event_keys: set[str] = set()
         self._stop_requested = False
         self._drain_on_stop = True
         self._thread: threading.Thread | None = None
         self._enqueued_update_count = 0
         self._coalesced_update_count = 0
         self._dropped_update_count = 0
+        self._dropped_urgent_update_count = 0
         self._processed_batch_count = 0
         self._processed_event_count = 0
+        self._urgent_processed_event_count = 0
         self._error_count = 0
         self._inflight_event_count = 0
         self._last_error = ""
         self._last_error_at: str | None = None
         self._last_evaluated_at: str | None = None
         self._last_evaluation_duration_seconds: float | None = None
+        self._last_urgent_enqueued_at: str | None = None
+        self._last_urgent_evaluated_at: str | None = None
+        self._last_urgent_evaluation_lag_seconds: float | None = None
 
     def start(self) -> None:
         with self._condition:
@@ -518,12 +623,15 @@ class RealtimeEvaluationCoalescer:
             self._drain_on_stop = drain
             if not drain:
                 self._pending_tokens_by_event.clear()
+                self._urgent_event_keys.clear()
+                self._urgent_enqueued_monotonic_by_event.clear()
+                self._retry_count_by_event.clear()
             self._condition.notify_all()
             thread = self._thread
         if thread is not None and thread is not threading.current_thread():
             thread.join(timeout=max(0.0, float(timeout)))
 
-    def enqueue_tokens(self, updated_token_ids: set[str]) -> int:
+    def enqueue_tokens(self, updated_token_ids: set[str], *, urgent: bool = False) -> int:
         tokens_by_event: dict[str, set[str]] = {}
         for token_id in updated_token_ids:
             token = str(token_id)
@@ -537,21 +645,54 @@ class RealtimeEvaluationCoalescer:
         with self._condition:
             if self._stop_requested:
                 self._dropped_update_count += len(tokens_by_event)
+                if urgent:
+                    self._dropped_urgent_update_count += len(tokens_by_event)
                 return 0
             for event_key, tokens in tokens_by_event.items():
                 pending = self._pending_tokens_by_event.get(event_key)
                 if pending is not None:
                     pending.update(tokens)
+                    if urgent:
+                        self._urgent_event_keys.add(event_key)
+                        self._urgent_enqueued_monotonic_by_event.setdefault(
+                            event_key,
+                            time.monotonic(),
+                        )
                     self._coalesced_update_count += 1
                     accepted += 1
                     continue
                 if len(self._pending_tokens_by_event) >= self.max_pending_events:
-                    self._dropped_update_count += 1
-                    continue
+                    if urgent:
+                        normal_event_key = next(
+                            (
+                                key
+                                for key in reversed(self._pending_tokens_by_event)
+                                if key not in self._urgent_event_keys
+                            ),
+                            None,
+                        )
+                        if normal_event_key is not None:
+                            self._pending_tokens_by_event.pop(normal_event_key, None)
+                            self._dropped_update_count += 1
+                        else:
+                            self._dropped_update_count += 1
+                            self._dropped_urgent_update_count += 1
+                            continue
+                    else:
+                        self._dropped_update_count += 1
+                        continue
                 self._pending_tokens_by_event[event_key] = set(tokens)
+                if urgent:
+                    self._urgent_event_keys.add(event_key)
+                    self._urgent_enqueued_monotonic_by_event.setdefault(
+                        event_key,
+                        time.monotonic(),
+                    )
                 self._enqueued_update_count += 1
                 accepted += 1
             if accepted:
+                if urgent:
+                    self._last_urgent_enqueued_at = utc_now_iso()
                 self._condition.notify_all()
         return accepted
 
@@ -560,6 +701,9 @@ class RealtimeEvaluationCoalescer:
             return {
                 "thread_alive": bool(self._thread is not None and self._thread.is_alive()),
                 "queue_depth": len(self._pending_tokens_by_event),
+                "urgent_queue_depth": len(
+                    self._urgent_event_keys.intersection(self._pending_tokens_by_event)
+                ),
                 "max_pending_events": self.max_pending_events,
                 "max_batch_events": self.max_batch_events,
                 "coalesce_seconds": self.coalesce_seconds,
@@ -567,45 +711,61 @@ class RealtimeEvaluationCoalescer:
                 "enqueued_update_count": self._enqueued_update_count,
                 "coalesced_update_count": self._coalesced_update_count,
                 "dropped_update_count": self._dropped_update_count,
+                "dropped_urgent_update_count": self._dropped_urgent_update_count,
                 "processed_batch_count": self._processed_batch_count,
                 "processed_event_count": self._processed_event_count,
+                "urgent_processed_event_count": self._urgent_processed_event_count,
                 "error_count": self._error_count,
                 "last_error": self._last_error,
                 "last_error_at": self._last_error_at,
                 "last_evaluated_at": self._last_evaluated_at,
                 "last_evaluation_duration_seconds": self._last_evaluation_duration_seconds,
+                "last_urgent_enqueued_at": self._last_urgent_enqueued_at,
+                "last_urgent_evaluated_at": self._last_urgent_evaluated_at,
+                "last_urgent_evaluation_lag_seconds": self._last_urgent_evaluation_lag_seconds,
             }
 
     def _run(self) -> None:
+        coalesce_next_batch = True
         while True:
             with self._condition:
                 while not self._pending_tokens_by_event and not self._stop_requested:
                     self._condition.wait()
+                    coalesce_next_batch = True
                 if self._stop_requested and (not self._drain_on_stop or not self._pending_tokens_by_event):
                     return
 
-                deadline = time.monotonic() + self.coalesce_seconds
-                while True:
-                    if self._stop_requested and not self._drain_on_stop:
-                        return
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0:
-                        break
-                    self._condition.wait(timeout=remaining)
+                if coalesce_next_batch:
+                    deadline = time.monotonic() + self.coalesce_seconds
+                    while True:
+                        if self._stop_requested and not self._drain_on_stop:
+                            return
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            break
+                        self._condition.wait(timeout=remaining)
 
                 pending = self._pop_next_pending_batch_locked()
+                coalesce_next_batch = not self._pending_tokens_by_event
 
             self._evaluate_pending_batch(pending)
 
     def _pop_next_pending_batch_locked(self) -> dict[str, set[str]]:
         event_keys = list(self._pending_tokens_by_event)
-        if self.event_priority is not None:
-            event_keys = sorted(event_keys, key=self.event_priority)
+        def priority(event_key: str) -> tuple:
+            base = self.event_priority(event_key) if self.event_priority is not None else ()
+            if not isinstance(base, tuple):
+                base = (base,)
+            return (0 if event_key in self._urgent_event_keys else 1, *base)
+
+        event_keys = sorted(event_keys, key=priority)
         event_keys = event_keys[: self.max_batch_events]
         pending = {
             event_key: self._pending_tokens_by_event.pop(event_key)
             for event_key in event_keys
         }
+        self._inflight_urgent_event_keys = self._urgent_event_keys.intersection(event_keys)
+        self._urgent_event_keys.difference_update(event_keys)
         self._inflight_event_count = len(pending)
         return pending
 
@@ -619,19 +779,76 @@ class RealtimeEvaluationCoalescer:
 
     def _evaluate_pending_batch(self, pending: dict[str, set[str]]) -> None:
         updated_token_ids = {token for tokens in pending.values() for token in tokens}
+        urgent_event_keys = set(self._inflight_urgent_event_keys)
         started_at = time.monotonic()
         try:
             self.evaluator(updated_token_ids)
         except Exception as exc:  # noqa: BLE001
             self._record_error(exc)
+            self._retry_failed_batch(pending, urgent_event_keys)
+        else:
+            with self._condition:
+                urgent_completed = urgent_event_keys.intersection(pending)
+                if urgent_completed:
+                    completed_at = time.monotonic()
+                    enqueued_at = [
+                        self._urgent_enqueued_monotonic_by_event[event_key]
+                        for event_key in urgent_completed
+                        if event_key in self._urgent_enqueued_monotonic_by_event
+                    ]
+                    self._urgent_processed_event_count += len(urgent_completed)
+                    self._last_urgent_evaluated_at = utc_now_iso()
+                    self._last_urgent_evaluation_lag_seconds = (
+                        round(max(completed_at - started for started in enqueued_at), 3)
+                        if enqueued_at
+                        else None
+                    )
+                for event_key in pending:
+                    self._retry_count_by_event.pop(event_key, None)
+                    self._urgent_enqueued_monotonic_by_event.pop(event_key, None)
         finally:
             duration = time.monotonic() - started_at
             with self._condition:
                 self._processed_batch_count += 1
                 self._processed_event_count += len(pending)
                 self._inflight_event_count = 0
+                self._inflight_urgent_event_keys.clear()
                 self._last_evaluated_at = utc_now_iso()
                 self._last_evaluation_duration_seconds = round(duration, 3)
+
+    def _retry_failed_batch(
+        self,
+        pending: dict[str, set[str]],
+        urgent_event_keys: set[str],
+    ) -> None:
+        retryable: dict[str, set[str]] = {}
+        with self._condition:
+            for event_key, tokens in pending.items():
+                retry_count = self._retry_count_by_event.get(event_key, 0)
+                if retry_count >= self.max_event_retries:
+                    self._retry_count_by_event.pop(event_key, None)
+                    self._urgent_enqueued_monotonic_by_event.pop(event_key, None)
+                    continue
+                self._retry_count_by_event[event_key] = retry_count + 1
+                retryable[event_key] = tokens
+        if not retryable:
+            return
+        if self.retry_backoff_seconds:
+            time.sleep(self.retry_backoff_seconds)
+        normal_tokens = {
+            token
+            for event_key, tokens in retryable.items()
+            if event_key not in urgent_event_keys
+            for token in tokens
+        }
+        urgent_tokens = {
+            token
+            for event_key, tokens in retryable.items()
+            if event_key in urgent_event_keys
+            for token in tokens
+        }
+        self.enqueue_tokens(normal_tokens)
+        self.enqueue_tokens(urgent_tokens, urgent=True)
 
     def _record_error(self, exc: BaseException) -> None:
         safe_error = " ".join(str(exc).split())[:240]
@@ -652,25 +869,84 @@ class RealtimeEvaluationCoalescer:
 def _enqueue_realtime_update(
     evaluator_worker: RealtimeEvaluationCoalescer | None,
     updated_token_ids: set[str],
+    *,
+    urgent: bool = False,
 ) -> int:
     if evaluator_worker is None:
         return 0
-    return evaluator_worker.enqueue_tokens(updated_token_ids)
+    return evaluator_worker.enqueue_tokens(updated_token_ids, urgent=urgent)
 
 
-def _station_refresh_high_exact_no_probe_candidates(markets: list[RawMarket]) -> list[tuple[str, str, set[str]]]:
+def _datetime_state_text(value: Any) -> str:
+    if isinstance(value, datetime):
+        return _iso_datetime(value)
+    return str(value or "")
+
+
+def _station_observation_state_key(observation: Any) -> tuple[Any, ...]:
+    return (
+        str(getattr(observation, "station_id", "") or "").upper(),
+        _datetime_state_text(getattr(observation, "observed_at", None)),
+        _datetime_state_text(getattr(observation, "high_observed_at", None)),
+        _datetime_state_text(getattr(observation, "high_last_observed_at", None)),
+        _datetime_state_text(getattr(observation, "high_drop_observed_at", None)),
+        _datetime_state_text(getattr(observation, "low_observed_at", None)),
+        _datetime_state_text(getattr(observation, "low_last_observed_at", None)),
+        _datetime_state_text(getattr(observation, "low_rise_observed_at", None)),
+        _finite_float(getattr(observation, "observed_high_c", None)),
+        _finite_float(getattr(observation, "observed_low_c", None)),
+        _finite_float(getattr(observation, "latest_temp_c", None)),
+        int(getattr(observation, "high_bucket_confirmations", 0) or 0),
+        str(getattr(observation, "data_block_reason", "") or ""),
+        str(getattr(observation, "unavailable_reason", "") or ""),
+        str(getattr(observation, "observation_due_status", "") or ""),
+        bool(getattr(observation, "daily_extremes_complete", True)),
+        str(getattr(observation, "midnight_reset_status", "") or ""),
+    )
+
+
+def _market_station_id(market: RawMarket, parsed: Any) -> str:
+    provenance_station_id = (
+        market.rule_provenance.station_id
+        if market.rule_provenance is not None
+        else ""
+    )
+    if provenance_station_id:
+        return str(provenance_station_id).upper()
+    station = TRADING_READY_STATION_MAP.get(str(parsed.city or "").lower())
+    return station.station_id.upper() if station is not None else ""
+
+
+def _is_realtime_no_candidate(parsed: Any) -> bool:
+    return parsed.variable == "temperature" and (
+        (
+            parsed.temperature_metric == "max"
+            and parsed.temperature_bucket in {"exact", "lower_tail", "upper_tail"}
+        )
+        or (
+            parsed.temperature_metric == "min"
+            and parsed.temperature_bucket == "exact"
+        )
+    )
+
+
+def _station_refresh_high_exact_no_probe_candidates(
+    markets: list[RawMarket],
+    *,
+    station_ids: set[str] | None = None,
+) -> list[tuple[str, str, set[str]]]:
     candidates: list[tuple[str, str, set[str]]] = []
     event_index: dict[str, int] = {}
+    restrict_to_station_ids = station_ids is not None
+    allowed_station_ids = {str(station_id).upper() for station_id in station_ids or set()}
     for market in markets:
         try:
             parsed = parse_weather_question(market.question)
         except Exception:  # noqa: BLE001
             continue
-        if (
-            parsed.variable != "temperature"
-            or parsed.temperature_metric != "max"
-            or parsed.temperature_bucket not in {"exact", "lower_tail"}
-        ):
+        if restrict_to_station_ids and _market_station_id(market, parsed) not in allowed_station_ids:
+            continue
+        if not _is_realtime_no_candidate(parsed):
             continue
         event_key = _market_event_key(market)
         if event_key in event_index:
@@ -687,13 +963,17 @@ def _station_refresh_high_exact_no_probe_tokens(
     markets: list[RawMarket],
     *,
     max_events: int = REALTIME_STATION_REFRESH_PROBE_MAX_EVENTS,
+    station_ids: set[str] | None = None,
 ) -> tuple[set[str], set[str]]:
     global _station_refresh_probe_cursor
-    candidates = _station_refresh_high_exact_no_probe_candidates(markets)
+    candidates = _station_refresh_high_exact_no_probe_candidates(markets, station_ids=station_ids)
     if not candidates:
         return set(), set()
 
-    limit = min(len(candidates), max(1, int(max_events)))
+    if station_ids is not None:
+        limit = len(candidates)
+    else:
+        limit = min(len(candidates), max(1, int(max_events)))
     start = _station_refresh_probe_cursor % len(candidates)
     selected = [candidates[(start + offset) % len(candidates)] for offset in range(limit)]
     _station_refresh_probe_cursor = (start + limit) % len(candidates)
@@ -710,11 +990,15 @@ def _realtime_evaluation_trigger_tokens(
     stream_markets: list[RawMarket],
     broker: PaperBroker,
 ) -> dict[str, str]:
-    """Return the small token subset allowed to wake expensive strategy evaluation."""
-    trigger_tokens = {
-        token_id: event_key
-        for event_key, token_id, _market_ids in _station_refresh_high_exact_no_probe_candidates(stream_markets)
-    }
+    """Return candidate and held tokens allowed to wake strategy evaluation."""
+    trigger_tokens: dict[str, str] = {}
+    for market in stream_markets:
+        try:
+            parsed = parse_weather_question(market.question)
+        except Exception:  # noqa: BLE001
+            continue
+        if _is_realtime_no_candidate(parsed) and market.no_token_id:
+            trigger_tokens[str(market.no_token_id)] = _market_event_key(market)
     market_by_id = {market.market_id: market for market in stream_markets}
     for pos in broker.state.positions:
         if not pos.token_id:
@@ -727,21 +1011,29 @@ def _realtime_evaluation_trigger_tokens(
 def _orderbook_update_tokens_for_realtime_evaluation(
     updated_token_ids: set[str],
     broker: PaperBroker,
+    watched_token_ids: set[str] | None = None,
 ) -> set[str]:
     held_tokens = {str(pos.token_id) for pos in broker.state.positions if pos.token_id}
-    return {str(token_id) for token_id in updated_token_ids if str(token_id) in held_tokens}
+    watched_tokens = {str(token_id) for token_id in watched_token_ids or set() if str(token_id)}
+    return {
+        str(token_id)
+        for token_id in updated_token_ids
+        if str(token_id) in held_tokens or str(token_id) in watched_tokens
+    }
 
 
 def _enqueue_station_refresh_high_exact_no_probes(
     evaluator_worker: RealtimeEvaluationCoalescer | None,
     markets: list[RawMarket],
     signal_refreshed_at_by_market: dict[str, datetime] | None,
+    *,
+    station_ids: set[str] | None = None,
 ) -> int:
-    token_ids, market_ids_to_expire = _station_refresh_high_exact_no_probe_tokens(markets)
+    token_ids, market_ids_to_expire = _station_refresh_high_exact_no_probe_tokens(markets, station_ids=station_ids)
     if signal_refreshed_at_by_market is not None:
         for market_id in market_ids_to_expire:
             signal_refreshed_at_by_market.pop(market_id, None)
-    return _enqueue_realtime_update(evaluator_worker, token_ids)
+    return _enqueue_realtime_update(evaluator_worker, token_ids, urgent=True)
 
 
 def position_size_usd(
@@ -981,6 +1273,11 @@ def _side_liquidity_reason(side: str, book: OrderBook, settings: Settings, marke
         return f"SKIP_NO_EXECUTABLE_DEPTH: {side} liquidity filter: no bid [{market_type}]"
     if ask >= 1.0 or ask <= 0.0:
         return f"SKIP_NO_EXECUTABLE_DEPTH: {side} liquidity filter: invalid ask={ask:.3f} [{market_type}]"
+    if bid >= ask - 1e-12:
+        return (
+            f"SKIP_CROSSED_ORDER_BOOK: {side} liquidity filter: "
+            f"best_bid={bid:.4f} >= best_ask={ask:.4f}; refresh required [{market_type}]"
+        )
     spread_reason = _spread_guard_reason(side, ask, bid, settings, market_type)
     if spread_reason:
         return spread_reason
@@ -995,16 +1292,61 @@ def _side_liquidity_reason(side: str, book: OrderBook, settings: Settings, marke
     return None
 
 
-def _fetch_books(market: RawMarket, client: PolymarketClient) -> tuple[dict[str, OrderBook], str | None]:
+def _book_is_crossed(book: OrderBook) -> bool:
+    return (
+        book.best_bid is not None
+        and book.best_ask is not None
+        and book.best_bid >= book.best_ask - 1e-12
+    )
+
+
+def _preferred_entry_side(signal: WeatherSignal) -> str | None:
+    yes_probability = (
+        signal.conservative_yes_probability
+        if signal.conservative_yes_probability is not None
+        else signal.p_true
+    )
+    no_probability = (
+        signal.conservative_no_probability
+        if signal.conservative_no_probability is not None
+        else 1.0 - signal.p_true
+    )
+    if abs(yes_probability - no_probability) <= 1e-12:
+        return None
+    return "YES" if yes_probability > no_probability else "NO"
+
+
+def _fetch_books(
+    market: RawMarket,
+    client: PolymarketClient,
+    *,
+    preferred_side: str | None = None,
+) -> tuple[dict[str, OrderBook], str | None]:
     books: dict[str, OrderBook] = {}
     errors: list[str] = []
+    fetch_book = getattr(client, "get_candidate_order_book", None)
+    if not callable(fetch_book):
+        fetch_book = client.get_order_book
+    refresh_book = getattr(client, "refresh_order_book", None)
     for side, token_id in (("YES", market.yes_token_id), ("NO", market.no_token_id)):
         if not token_id:
             continue
+        book: OrderBook | None = None
         try:
-            books[side] = client.get_order_book(token_id)
+            book = fetch_book(token_id)
         except Exception as exc:  # noqa: BLE001
             errors.append(f"{side}: {exc}")
+        if (
+            side == preferred_side
+            and callable(refresh_book)
+            and (book is None or _book_is_crossed(book))
+        ):
+            try:
+                book = refresh_book(token_id)
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"{side} REST refresh: {exc}")
+        if book is not None:
+            books[side] = book
     if not books and errors:
         return books, f"order book error: {'; '.join(errors)}"
     return books, None
@@ -1202,15 +1544,13 @@ def _entry_ask_depth_top5_json(
     return json.dumps(payload, separators=(",", ":"), sort_keys=True)
 
 
-def _refresh_lock_only_order_book_before_entry(
+def _refresh_selected_order_book_before_entry(
     client: PolymarketClient,
     token_id: str,
     side: str,
     signal: WeatherSignal,
     market_type: str,
 ) -> tuple[OrderBook | None, str | None, str]:
-    if not _is_lock_only_high_exact_no(side, signal):
-        return None, None, "stream"
     refresh = getattr(client, "refresh_order_book", None)
     if not callable(refresh):
         return None, None, "stream"
@@ -1220,33 +1560,10 @@ def _refresh_lock_only_order_book_before_entry(
         return (
             None,
             "SKIP_TRADABILITY_UNKNOWN: pre-trade REST helper book refresh "
-            f"failed for lock-only {side}: {exc.__class__.__name__}: {exc} "
+            f"failed for selected {side}: {exc.__class__.__name__}: {exc} "
             f"[{market_type}]",
             "rest_helper_failed",
         )
-
-
-def _refresh_lock_only_no_book_for_candidate_selection(
-    books: dict[str, OrderBook],
-    market: RawMarket,
-    signal: WeatherSignal,
-    client: PolymarketClient,
-    market_type: str,
-) -> str | None:
-    if not market.no_token_id:
-        return None
-    refreshed_book, refresh_error, _source = _refresh_lock_only_order_book_before_entry(
-        client,
-        market.no_token_id,
-        "NO",
-        signal,
-        market_type,
-    )
-    if refresh_error:
-        return refresh_error
-    if refreshed_book is not None:
-        books["NO"] = refreshed_book
-    return None
 
 
 def _side_result(
@@ -1582,7 +1899,7 @@ def _final_pre_trade_entry_result(
             result,
             f"SKIP_RULE_MISMATCH: final pre-trade check failed: {rule_mismatch}",
         )
-    refreshed_book, refresh_error, final_book_source = _refresh_lock_only_order_book_before_entry(
+    refreshed_book, refresh_error, final_book_source = _refresh_selected_order_book_before_entry(
         client,
         token_id,
         result.side,
@@ -1940,21 +2257,14 @@ def evaluate_market(
         )
         return result, {}
 
-    books, fetch_error = _fetch_books(market, client)
+    books, fetch_error = _fetch_books(
+        market,
+        client,
+        preferred_side=_preferred_entry_side(signal),
+    )
     if fetch_error:
         result = EdgeResult("SKIP", signal.p_true, None, -999.0, 0.0, 0.0, fetch_error)
         return result, {}
-    lock_refresh_error = _refresh_lock_only_no_book_for_candidate_selection(
-        books,
-        market,
-        signal,
-        client,
-        market_type,
-    )
-    if lock_refresh_error:
-        result = EdgeResult("SKIP", signal.p_true, None, -999.0, 0.0, 0.0, lock_refresh_error)
-        return result, {}
-
     best_result = EdgeResult("SKIP", signal.p_true, None, -999.0, 0.0, 0.0, "No valid side evaluated.")
     per_side: dict[str, EdgeResult] = {}
     for side, book in books.items():
@@ -2027,6 +2337,15 @@ def _event_portfolio_candidates(
         if edge_result.side in {"YES", "NO"}
     ]
     return executable or [PortfolioCandidate(market, signal, result, market_type, decision_ts)]
+
+
+def _new_entry_candidates_for_strategy(
+    candidates: list[PortfolioCandidate],
+    settings: Settings,
+) -> list[PortfolioCandidate]:
+    if not settings.no_only_new_entries:
+        return candidates
+    return [candidate for candidate in candidates if candidate.result.side != "YES"]
 
 
 def _refresh_held_exit_edges_from_signal(
@@ -2282,32 +2601,23 @@ def _market_event_date_for_priority(market: RawMarket, now: datetime) -> tuple[d
     return (window.event_date_local if window is not None else None), local_today
 
 
-def _market_is_high_exact_candidate(market: RawMarket) -> bool:
-    parsed = parse_weather_question(market.question)
-    return (
-        parsed.variable == "temperature"
-        and parsed.temperature_metric == "max"
-        and parsed.temperature_bucket == "exact"
-    )
-
-
 def _realtime_event_priorities(
     markets: list[RawMarket],
     *,
     open_market_ids: set[str],
     now: datetime,
-) -> dict[str, tuple[int, int, str]]:
-    priorities: dict[str, tuple[int, int, str]] = {}
+) -> dict[str, tuple[int, int]]:
+    priorities: dict[str, tuple[int, int]] = {}
     groups: dict[str, list[RawMarket]] = {}
     for market in markets:
         groups.setdefault(_market_event_key(market), []).append(market)
     for event_key, group in groups.items():
         if any(market.market_id in open_market_ids for market in group):
-            priorities[event_key] = (0, 0, event_key)
+            priorities[event_key] = (0, 0)
             continue
         live = [market for market in group if _market_is_active_for_realtime_priority(market)]
         if not live:
-            priorities[event_key] = (9, 9999, event_key)
+            priorities[event_key] = (9, 9999)
             continue
         date_deltas: list[int] = []
         same_day = False
@@ -2319,16 +2629,19 @@ def _realtime_event_priorities(
             date_deltas.append(abs(delta))
             same_day = same_day or delta == 0
         nearest_day_distance = min(date_deltas) if date_deltas else 9999
-        high_exact = any(_market_is_high_exact_candidate(market) for market in live)
-        if same_day and high_exact:
+        realtime_no_candidate = any(
+            _is_realtime_no_candidate(parse_weather_question(market.question))
+            for market in live
+        )
+        if same_day and realtime_no_candidate:
             tier = 1
         elif same_day:
             tier = 2
-        elif high_exact:
+        elif realtime_no_candidate:
             tier = 3
         else:
             tier = 4
-        priorities[event_key] = (tier, nearest_day_distance, event_key)
+        priorities[event_key] = (tier, nearest_day_distance)
     return priorities
 
 
@@ -2613,6 +2926,19 @@ def _open_position_if_needed(
     if result.side not in {"YES", "NO"}:
         return result
     token_id = market.yes_token_id if result.side == "YES" else market.no_token_id
+    if result.side == "YES" and broker.settings.no_only_new_entries:
+        blocked = _skip_entry_result(
+            result,
+            NO_ONLY_NEW_ENTRY_REASON,
+        )
+        return _record_pre_trade_skip(
+            broker,
+            market,
+            result,
+            blocked,
+            token_id or "",
+            market_type,
+        )
     initial_reason = _market_tradability_skip_reason(
         market,
         client,
@@ -2649,71 +2975,73 @@ def _open_position_if_needed(
         return None
     final_signal = signal
     revalidated_result = result
-    if _is_intraday_observation_edge(signal) and (
+    if _is_official_station_entry_signal(signal) and (
         probability_estimator is not None
         or observation_provider is not None
         or residual_profile_store is not None
     ):
-        decision_at = _parse_iso_datetime(decision_ts)
         current = datetime.now(timezone.utc)
-        decision_age = (current - decision_at).total_seconds() if decision_at is not None else -1.0
-        if 0.0 <= decision_age < broker.settings.station_nowcast_cache_ttl_seconds:
-            revalidated_result = replace(
+        try:
+            final_signal = _call_probability_estimator(
+                probability_estimator or estimate_station_probability,
+                market.question,
+                settings=broker.settings,
+                observation_provider=observation_provider,
+                residual_profile_store=residual_profile_store,
+                now=current,
+            )
+            final_best, final_per_side = evaluate_market(
+                market,
+                final_signal,
+                client,
+                broker.settings,
+                entry_bankroll_usd
+                if entry_bankroll_usd is not None
+                else broker.current_bankroll_before_entry(),
+                market_type,
+            )
+        except Exception as exc:  # noqa: BLE001
+            final_best = EdgeResult(
+                "SKIP",
+                signal.p_true,
+                None,
+                -999.0,
+                0.0,
+                0.0,
+                f"SKIP_FINAL_STATION_SIGNAL: final station signal revalidation failed: {exc}",
+            )
+            final_per_side = {}
+        final_side = final_per_side.get(result.side)
+        if final_side is None or final_side.side != result.side:
+            final_result = _skip_entry_result(
                 result,
-                reason=f"{result.reason}; final_station_revalidation=fresh_signal_reused",
+                (
+                    "SKIP_FINAL_STATION_SIGNAL: final station signal revalidation "
+                    f"blocked {result.side}: {final_best.reason}"
+                ),
             )
-        else:
-            try:
-                final_signal = _call_probability_estimator(
-                    probability_estimator or estimate_station_probability,
-                    market.question,
-                    settings=broker.settings,
-                    observation_provider=observation_provider,
-                    residual_profile_store=residual_profile_store,
-                    now=current,
-                )
-                final_best, final_per_side = evaluate_market(
-                    market,
-                    final_signal,
-                    client,
-                    broker.settings,
-                    entry_bankroll_usd
-                    if entry_bankroll_usd is not None
-                    else broker.current_bankroll_before_entry(),
-                    market_type,
-                )
-            except Exception as exc:  # noqa: BLE001
-                final_best = EdgeResult(
-                    "SKIP",
-                    signal.p_true,
-                    None,
-                    -999.0,
-                    0.0,
-                    0.0,
-                    f"SKIP_FINAL_STATION_SIGNAL: final station signal revalidation failed: {exc}",
-                )
-                final_per_side = {}
-            final_side = final_per_side.get(result.side)
-            if final_side is None or final_side.side != result.side:
-                final_result = _skip_entry_result(
-                    result,
-                    (
-                        "SKIP_FINAL_STATION_SIGNAL: final station signal revalidation "
-                        f"blocked {result.side}: {final_best.reason}"
-                    ),
-                )
-                return _record_pre_trade_skip(
-                    broker,
-                    market,
-                    result,
-                    final_result,
-                    token_id,
-                    market_type,
-                )
-            revalidated_result = replace(
-                final_side,
-                reason=f"{result.reason}; final_station_revalidation=refetched; {final_side.reason}",
+            return _record_pre_trade_skip(
+                broker,
+                market,
+                result,
+                final_result,
+                token_id,
+                market_type,
             )
+        selected_size_usd = min(result.size_usd, final_side.size_usd)
+        selected_size_scale = (
+            selected_size_usd / final_side.size_usd
+            if final_side.size_usd > 0
+            else 0.0
+        )
+        revalidated_result = replace(
+            final_side,
+            size_usd=selected_size_usd,
+            size_shares=final_side.size_shares * selected_size_scale,
+            executable_size_usd=selected_size_usd,
+            expected_net_profit_usd=final_side.expected_net_profit_usd * selected_size_scale,
+            reason=f"{result.reason}; final_station_revalidation=refetched; {final_side.reason}",
+        )
     final_result = _final_pre_trade_entry_result(
         market,
         final_signal,
@@ -2758,11 +3086,63 @@ def _apply_event_portfolio(
     observation_provider: Any | None = None,
     residual_profile_store: ResidualProfileStore | None = None,
 ) -> EventPortfolioDecision:
+    if broker.settings.no_only_new_entries:
+        for candidate in candidates:
+            if candidate.result.side != "YES":
+                continue
+            blocked = _skip_entry_result(candidate.result, NO_ONLY_NEW_ENTRY_REASON)
+            broker.log_decision(
+                candidate.market,
+                blocked,
+                blocked.reason,
+                candidate.market_type,
+                signal=candidate.signal,
+            )
+    candidates = _new_entry_candidates_for_strategy(candidates, broker.settings)
     decision = select_event_portfolio(broker, candidates, entry_bankroll)
-    broker.log_event_portfolio_decision(
-        decision.to_log_payload(), has_selected=bool(decision.selected)
+    executable_candidate_reached_portfolio = any(
+        candidate.result.side in {"YES", "NO"}
+        and candidate.result.p_exec is not None
+        and candidate.result.size_usd > 0
+        for candidate in candidates
     )
+    broker.log_event_portfolio_decision(
+        decision.to_log_payload(),
+        has_selected=bool(decision.selected) or executable_candidate_reached_portfolio,
+    )
+    refresh_error = ""
+    if observation_provider is not None and any(
+        _is_official_station_entry_signal(candidate.signal)
+        for candidate in decision.selected
+    ):
+        discard = getattr(observation_provider, "discard_cached_observations_before_entry", None)
+        if not callable(discard):
+            refresh_error = "SKIP_FINAL_STATION_REFRESH: observation provider cannot force a fresh official request"
+        else:
+            try:
+                discard()
+            except Exception as exc:  # noqa: BLE001
+                refresh_error = (
+                    "SKIP_FINAL_STATION_REFRESH: fresh official observation request could not start: "
+                    f"{type(exc).__name__}: {exc}"
+                )
     for candidate in decision.selected:
+        if refresh_error and _is_official_station_entry_signal(candidate.signal):
+            token_id = (
+                candidate.market.yes_token_id
+                if candidate.result.side == "YES"
+                else candidate.market.no_token_id
+            ) or ""
+            blocked = _skip_entry_result(candidate.result, refresh_error)
+            _record_pre_trade_skip(
+                broker,
+                candidate.market,
+                candidate.result,
+                blocked,
+                token_id,
+                candidate.market_type,
+            )
+            continue
         _open_position_if_needed(
             broker,
             candidate.market,
@@ -2865,14 +3245,37 @@ def _evaluate_realtime_update(
         for token_id in updated_token_ids
         if token_id in market_by_token
     }
+    updated_market_ids_by_event: dict[str, set[str]] = {}
+    for token_id in updated_token_ids:
+        market = market_by_token.get(token_id)
+        if market is None:
+            continue
+        updated_market_ids_by_event.setdefault(_market_event_key(market), set()).add(market.market_id)
     market_by_id = {market.market_id: market for market in market_by_token.values()}
     event_groups: dict[str, list[RawMarket]] = {}
     for market in market_by_id.values():
         event_groups.setdefault(_market_event_key(market), []).append(market)
-    for event_key in touched_events:
+    held_market_ids = {position.market_id for position in broker.state.positions}
+    pending_event_candidates: list[list[PortfolioCandidate]] = []
+    for event_key in sorted(touched_events):
         entry_bankroll = available_entry_bankroll(broker, client)
         candidates: list[PortfolioCandidate] = []
-        for market in event_groups[event_key]:
+        updated_market_ids = updated_market_ids_by_event.get(event_key, set())
+        markets_to_evaluate = [
+            market
+            for market in event_groups[event_key]
+            if (
+                market.market_id in updated_market_ids
+                or market.market_id in held_market_ids
+                or market.market_id not in signals_by_market
+                or (market.market_id, REALTIME_LAST_EVALUATION_SIDE) not in latest_edges
+                or (
+                    signal_refreshed_at_by_market is not None
+                    and market.market_id not in signal_refreshed_at_by_market
+                )
+            )
+        ]
+        for market in markets_to_evaluate:
             market_type = market_types.get(market.market_id, "temperature")
             try:
                 drawdown_gate = _drawdown_entry_gate(market, broker, settings, current, market_type)
@@ -2888,6 +3291,7 @@ def _evaluate_realtime_update(
                             latest_edges,
                             result.reason,
                         )
+                    latest_edges[(market.market_id, REALTIME_LAST_EVALUATION_SIDE)] = result
                     decision_ts = broker.log_decision(market, result, signal.note, market_type, signal=signal)
                     candidates.extend(_event_portfolio_candidates(market, signal, result, per_side, market_type, decision_ts))
                     continue
@@ -2937,6 +3341,7 @@ def _evaluate_realtime_update(
                 )
                 for side, edge_result in per_side.items():
                     latest_edges[(market.market_id, side)] = edge_result
+                latest_edges[(market.market_id, REALTIME_LAST_EVALUATION_SIDE)] = result
                 held_exit_edges: dict[str, EdgeResult] = {}
                 if not per_side and "entry_bankroll=$" in result.reason:
                     held_exit_edges = _refresh_held_exit_edges_from_signal(
@@ -2976,6 +3381,36 @@ def _evaluate_realtime_update(
                     context="realtime_update",
                 )
                 candidates.extend(_event_portfolio_candidates(market, signal, result, {}, market_type))
+        pending_event_candidates.append(candidates)
+
+    final_checks: list[tuple[str, str]] = []
+    for candidates in pending_event_candidates:
+        for candidate in _new_entry_candidates_for_strategy(candidates, settings):
+            if candidate.result.side not in {"YES", "NO"}:
+                continue
+            token_id = (
+                candidate.market.yes_token_id
+                if candidate.result.side == "YES"
+                else candidate.market.no_token_id
+            )
+            if candidate.market.condition_id and token_id:
+                final_checks.append((candidate.market.condition_id, token_id))
+    prefetch = getattr(client, "prefetch_final_entry_checks", None)
+    prefetch_status = (
+        prefetch(final_checks)
+        if callable(prefetch)
+        else {"requested": 0, "book_ready": 0, "failed": 0, "deferred": 0}
+    )
+    update_runner_status_fields(
+        settings,
+        realtime_final_prefetch={
+            **prefetch_status,
+            "updated_at": utc_now_iso(),
+        },
+    )
+
+    for candidates in pending_event_candidates:
+        entry_bankroll = available_entry_bankroll(broker, client)
         _apply_event_portfolio(
             broker,
             candidates,
@@ -3060,15 +3495,25 @@ def _refresh_official_station_observations(
     observation_provider: Any,
     *,
     now: datetime,
-) -> None:
+    station_state_by_id: dict[str, tuple[Any, ...]] | None = None,
+) -> set[str]:
     current = _utc_datetime(now)
+    changed_station_ids: set[str] = set()
     for station in TRADING_READY_STATION_MAP.values():
         target_date = current.astimezone(ZoneInfo(station.timezone)).date()
-        observation_provider.observed_temperature_extremes_so_far(
+        observation = observation_provider.observed_temperature_extremes_so_far(
             station,
             target_date=target_date,
             now=current,
         )
+        if station_state_by_id is None:
+            continue
+        station_id = str(getattr(observation, "station_id", "") or station.station_id).upper()
+        state_key = _station_observation_state_key(observation)
+        if station_state_by_id.get(station_id) != state_key:
+            changed_station_ids.add(station_id)
+        station_state_by_id[station_id] = state_key
+    return changed_station_ids
 
 
 def _realtime_error_backoff_seconds(settings: Settings) -> float:
@@ -3208,7 +3653,7 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
             evaluator_worker = RealtimeEvaluationCoalescer(
                 event_key_by_token=event_key_by_token,
                 evaluator=evaluate_queued_update,
-                event_priority=lambda event_key: event_priorities.get(str(event_key), (9, 9999, str(event_key))),
+                event_priority=lambda event_key: event_priorities.get(str(event_key), (9, 9999)),
                 status_update=update_evaluator_status,
             )
             evaluator_worker.start()
@@ -3216,7 +3661,11 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
             def on_update(updated_token_ids: set[str]) -> None:
                 _enqueue_realtime_update(
                     evaluator_worker,
-                    _orderbook_update_tokens_for_realtime_evaluation(updated_token_ids, broker),
+                    _orderbook_update_tokens_for_realtime_evaluation(
+                        updated_token_ids,
+                        broker,
+                        set(event_key_by_token),
+                    ),
                 )
 
             def build_stream() -> OrderBookMarketStream:
@@ -3261,6 +3710,10 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
                     open_positions=len(broker.state.positions),
                     websocket=websocket_health,
                     realtime_evaluator=evaluator_worker.status_snapshot() if evaluator_worker is not None else None,
+                    strategy={
+                        "mode": settings.strategy_mode,
+                        "no_only_new_entries": settings.no_only_new_entries,
+                    },
                     discovery=discovery_status,
                     **_market_error_status_fields(market_error_count, last_market_error),
                 )
@@ -3268,6 +3721,7 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
             failed_phase = "runner_status_update"
             write_stream_status()
             status_updated_at = datetime.now(timezone.utc)
+            station_state_by_id: dict[str, tuple[Any, ...]] = {}
             station_refreshed_at = status_updated_at - timedelta(
                 seconds=settings.station_nowcast_cache_ttl_seconds
             )
@@ -3294,15 +3748,17 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
                         now - station_refreshed_at
                     ).total_seconds() >= settings.station_nowcast_cache_ttl_seconds:
                         failed_phase = "station_observation_refresh"
-                        _refresh_official_station_observations(
+                        changed_station_ids = _refresh_official_station_observations(
                             observation_provider,
                             now=now,
+                            station_state_by_id=station_state_by_id,
                         )
                         with update_lock:
                             _enqueue_station_refresh_high_exact_no_probes(
                                 evaluator_worker,
                                 stream_markets,
                                 signal_refreshed_at_by_market,
+                                station_ids=changed_station_ids,
                             )
                         station_refreshed_at = now
                     if (now - status_updated_at).total_seconds() >= settings.runner_health_status_interval_seconds:
@@ -3358,6 +3814,10 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
                 open_positions=len(broker.state.positions) if broker is not None else None,
                 websocket=websocket_health,
                 realtime_evaluator=evaluator_status,
+                strategy={
+                    "mode": settings.strategy_mode,
+                    "no_only_new_entries": settings.no_only_new_entries,
+                },
                 **_market_error_status_fields(market_error_count, last_market_error),
             )
             print(f"REALTIME ERROR: {message}")

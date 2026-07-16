@@ -164,9 +164,23 @@ class OrderBookStreamCache:
         if not token_id or not _has_executable_depth(book):
             return set()
         with self._lock:
+            previous = self._books.get(token_id)
+            changed = previous is None or (
+                previous.bids,
+                previous.asks,
+                previous.min_order_size,
+                previous.tick_size,
+                previous.neg_risk,
+            ) != (
+                book.bids,
+                book.asks,
+                book.min_order_size,
+                book.tick_size,
+                book.neg_risk,
+            )
             self._books[token_id] = book
             self._snapshot_token_ids.add(token_id)
-        return {token_id}
+        return {token_id} if changed else set()
 
     def _apply_book(self, message: dict[str, Any]) -> set[str]:
         token_id = str(message.get("asset_id") or "")
@@ -377,13 +391,19 @@ class OrderBookMarketStream:
     def refresh_order_book(self, token_id: str) -> OrderBook:
         if not self.rest_snapshot_enabled or self.rest_snapshot_fetcher is None:
             return self.get_order_book(token_id)
-        token = str(token_id)
         try:
-            self.apply_rest_snapshot(self.rest_snapshot_fetcher(token))
+            token = str(token_id)
+            self.apply_rest_snapshot(self.fetch_order_book_snapshot(token))
             return self.cache.get_order_book(token)
         except Exception as exc:
             self._record_rest_snapshot_error(exc)
             raise
+
+    def fetch_order_book_snapshot(self, token_id: str) -> OrderBook:
+        """Fetch a REST book without publishing it into the shared stream cache."""
+        if not self.rest_snapshot_enabled or self.rest_snapshot_fetcher is None:
+            raise RuntimeError("REST order book snapshots are disabled")
+        return self.rest_snapshot_fetcher(str(token_id))
 
     def start(self, asset_ids: Iterable[str]) -> None:
         self._asset_ids = [str(asset_id) for asset_id in asset_ids if str(asset_id)]
@@ -446,9 +466,9 @@ class OrderBookMarketStream:
 
     def apply_rest_snapshot(self, book: OrderBook) -> set[str]:
         updated = self.cache.replace_order_book(book)
-        if updated:
+        token_id = str(book.token_id or "")
+        if token_id and _has_executable_depth(book):
             now = _utc_now()
-            token_id = next(iter(updated))
             with self._health_lock:
                 self._last_book_at = now
                 self._last_book_source = "rest"
@@ -458,7 +478,7 @@ class OrderBookMarketStream:
                 self._last_rest_snapshot_token_id = token_id
                 self._rest_snapshot_count += 1
                 self._last_rest_snapshot_error = ""
-            if self.on_update is not None:
+            if updated and self.on_update is not None:
                 self.on_update(updated)
         return updated
 

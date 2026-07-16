@@ -721,6 +721,14 @@ HTML = r"""<!doctype html>
             <div id="r-stream-reason" class="health-detail">상태 설명 --</div>
           </div>
         </div>
+        <div class="health-box">
+          <div class="health-title"><span>전략 및 긴급 관측 처리</span><strong id="r-strategy-mode">--</strong></div>
+          <div id="r-no-only" class="health-detail">NO 신규 진입 전용 --</div>
+          <div id="r-urgent-processed" class="health-detail">긴급 관측 처리 --</div>
+          <div id="r-urgent-last" class="health-detail">마지막 긴급 평가 --</div>
+          <div id="r-urgent-lag" class="health-detail">긴급 평가 지연 --</div>
+          <div id="r-urgent-dropped" class="health-detail">긴급 누락 --</div>
+        </div>
         <div class="city-cards-section">
           <div class="city-cards-title">공식 관측소 최근 호출</div>
           <div id="r-station-observations" class="city-cards-list"><div class="small muted">로딩 중…</div></div>
@@ -1121,9 +1129,11 @@ function stationStrategyAuditLine(row) {
   const orderbook = String(row.clob_enable_order_book ?? "unknown").toLowerCase();
   const clob = accepting === "true" && orderbook === "true" ? "주문 가능" : accepting === "false" || orderbook === "false" ? "주문 불가" : "주문 상태 미확인";
   const strategyReason = strategyReasonKo(row.strategy_allowed_reason || (monitoring === "started" ? "formation monitoring started" : monitoring === "before_start" ? "station-local formation monitoring has not started" : ""));
-  const actualRecord = row.nowcast_high_c != null
-    ? `현재까지 최고 ${tempC(row.nowcast_high_c)}${row.observed_at ? ` · 기록 확인 ${shortDateTime(row.observed_at)}` : ""}`
-    : (row.nowcast_low_c != null ? `현재까지 최저 ${tempC(row.nowcast_low_c)}${row.observed_at ? ` · 기록 확인 ${shortDateTime(row.observed_at)}` : ""}` : "현재까지 공식 최고/최저 기록 없음");
+  const actualHigh = row.nowcast_high_c != null ? row.nowcast_high_c : row.observed_high_c;
+  const actualLow = row.nowcast_low_c != null ? row.nowcast_low_c : row.observed_low_c;
+  const actualRecord = actualHigh != null
+    ? `현재까지 최고 ${tempC(actualHigh)}${row.observed_at ? ` · 기록 확인 ${shortDateTime(row.observed_at)}` : ""}`
+    : (actualLow != null ? `현재까지 최저 ${tempC(actualLow)}${row.observed_at ? ` · 기록 확인 ${shortDateTime(row.observed_at)}` : ""}` : "현재까지 공식 최고/최저 기록 없음");
   return `<div class="detail-line strategy-audit">
     <strong>봇 판단 시간</strong> 관측소 현지 ${esc(localDate)} ${esc(localTime)} · 이 시각 기준으로 공식 관측값과 주문장을 평가했습니다.<br>
     <strong>오늘 실제 기록</strong> ${esc(actualRecord)}<br>
@@ -1611,6 +1621,13 @@ function render(payload) {
   streamPulse.className = streamStatusClass(streamStatus);
   setText("r-stream-summary", "감시 대상 " + Number(websocketHealth.stream_tokens || 0) + "토큰 · " + Number(websocketHealth.stream_markets || 0) + "마켓 · " + Number(websocketHealth.stream_cities || 0) + "도시");
   setText("r-stream-reason", "상태 설명 " + (websocketHealth.status_reason || (streamLive ? "주문장 메시지를 정상 수신 중" : "--")));
+  const realtimeEvaluator = (payload.health || {}).realtime_evaluator || {};
+  setText("r-strategy-mode", realtimeEvaluator.strategy_mode || "--");
+  setText("r-no-only", "NO 신규 진입 전용 " + (realtimeEvaluator.no_only_new_entries === true ? "켜짐" : (realtimeEvaluator.no_only_new_entries === false ? "꺼짐" : "--")));
+  setText("r-urgent-processed", "긴급 관측 처리 " + Number(realtimeEvaluator.urgent_processed_event_count || 0) + "건 · 대기 " + Number(realtimeEvaluator.urgent_queue_depth || 0) + "건");
+  setText("r-urgent-last", "마지막 긴급 평가 " + shortDateTime(realtimeEvaluator.last_urgent_evaluated_at));
+  setText("r-urgent-lag", "긴급 평가 지연 " + (realtimeEvaluator.last_urgent_evaluation_lag_seconds == null ? "--" : duration(realtimeEvaluator.last_urgent_evaluation_lag_seconds)));
+  setText("r-urgent-dropped", "긴급 누락 " + Number(realtimeEvaluator.dropped_urgent_update_count || 0) + "건 · 전체 누락 " + Number(realtimeEvaluator.dropped_update_count || 0) + "건");
   const stationObservations = (payload.scanner || {}).station_observations || [];
   document.getElementById("r-station-observations").innerHTML = stationObservations.length
     ? stationObservations.map(cityNowcastCard).join("")

@@ -525,6 +525,24 @@ def test_skip_decision_writes_bounded_diagnostic_without_decision_csv(tmp_path):
     assert row["reason_code"] == "SKIP_WIDE_SPREAD"
 
 
+def test_skip_diagnostic_does_not_scan_archives_before_rotation(tmp_path, monkeypatch):
+    settings = settings_for(tmp_path)
+    broker = PaperBroker(settings)
+    result = EdgeResult("SKIP", 0.51, None, 0.0, 0.0, 0.0, "SKIP_WIDE_SPREAD: spread=0.30")
+    prune_calls = 0
+
+    def count_prune_calls(path, max_bytes):
+        nonlocal prune_calls
+        prune_calls += 1
+
+    monkeypatch.setattr(paper, "_prune_diagnostic_archives_by_bytes", count_prune_calls)
+
+    broker.log_decision(trade_market("m3-fast"), result, "blocked by spread")
+
+    assert prune_calls == 0
+    assert Path(settings.skip_diagnostics_jsonl_path).stat().st_size < settings.skip_diagnostics_max_bytes
+
+
 def test_skip_diagnostic_rotates_and_prunes_archives(tmp_path):
     settings = Settings(
         state_path=str(tmp_path / "paper_state.json"),

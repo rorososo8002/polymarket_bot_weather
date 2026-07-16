@@ -67,12 +67,15 @@ receipt: source URLs, station mappings, source-file hashes, sample counts,
 monitoring windows, and the profile artifact SHA-256.
 
 `.station_residual_cache.zip` is an ignored local rebuild archive. Extract it
-at the repository root only when auditing or regenerating the artifacts. Its
-CSV files contain NCEI Global Hourly observations for 2020-2024 plus boundary
-days. `mapping.csv` maps ICAO stations to NCEI IDs.
-`regenerate_artifacts.py` parses the observations through
-`residual_profile_builder.py`, builds 30-minute high/low residual histograms,
-filters pre-monitoring bins, and rewrites the two checked-in artifacts.
+at the repository root only when auditing or regenerating the artifacts. The
+preferred profile window is 2021-2025: NCEI Global Hourly ISD supplies
+2021-2024 and its official GHCNh successor supplies complete 2025 rows for
+stations with an exact ICAO mapping. Stations without that exact successor
+mapping retain complete 2020-2024 inputs instead of using a nearby station.
+Boundary rows preserve station-local New Year's days. `mapping.csv` maps ICAO
+stations to legacy NCEI IDs and the GHCNh station list records successor IDs.
+The regeneration script builds 30-minute high/low residual histograms, filters
+pre-monitoring bins, and rewrites the two checked-in artifacts.
 `verify_rebuild.py` performs the slower exact rebuild comparison.
 
 After a rebuild, repack useful inputs into the single ZIP and delete the

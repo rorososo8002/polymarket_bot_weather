@@ -76,6 +76,7 @@ def settings(tmp_path, **overrides) -> Settings:
         "portfolio_decisions_jsonl_path": str(tmp_path / "portfolio.jsonl"),
         "raw_snapshots_path": str(tmp_path / "raw.jsonl"),
         "bankroll_usd": 100.0,
+        "no_only_new_entries": False,
         **overrides,
     }
     return Settings(
@@ -1593,6 +1594,70 @@ def test_runner_applies_selected_event_portfolio_and_writes_one_event_log(tmp_pa
     assert [leg.market.market_id for leg in decision.selected] == ["seoul-26", "seoul-27"]
     rows = (tmp_path / "portfolio.jsonl").read_text(encoding="utf-8").splitlines()
     assert len(rows) == 1
+
+
+def test_no_only_portfolio_records_why_yes_candidate_was_rejected(tmp_path):
+    broker = PaperBroker(settings(tmp_path, no_only_new_entries=True))
+
+    decision = _apply_event_portfolio(
+        broker,
+        [candidate("seoul-26", "26°C", side="YES", size_usd=20.0)],
+        usable_snapshot(),
+    )
+
+    assert decision.selected == []
+    diagnostics = (tmp_path / "paper_skip_diagnostics.jsonl").read_text(encoding="utf-8")
+    assert "SKIP_NO_ONLY_NEW_ENTRY" in diagnostics
+
+
+def test_runner_discards_station_cache_before_opening_selected_portfolio(monkeypatch, tmp_path):
+    broker = PaperBroker(settings(tmp_path, bankroll_usd=200.0))
+    provider = type("Provider", (), {"prepared": False})()
+
+    def discard():
+        provider.prepared = True
+
+    provider.discard_cached_observations_before_entry = discard
+    opened_after_refresh = []
+
+    def fake_open(*_args, **_kwargs):
+        opened_after_refresh.append(provider.prepared)
+
+    monkeypatch.setattr("weather_bot.live_paper_runner._open_position_if_needed", fake_open)
+    _apply_event_portfolio(
+        broker,
+        [candidate("seoul-26", "26C", side="YES", size_usd=20.0)],
+        usable_snapshot(200.0),
+        observation_provider=provider,
+    )
+
+    assert opened_after_refresh == [True]
+
+
+def test_runner_logs_rejection_when_an_executable_candidate_reaches_portfolio(tmp_path):
+    broker = PaperBroker(settings(tmp_path, bankroll_usd=200.0))
+    executable = candidate(
+        "paris-34",
+        "34C",
+        side="NO",
+        size_usd=20.0,
+        p_true=0.0,
+        p_exec=0.82,
+        expected_net_profit_usd=3.0,
+    )
+
+    decision = _apply_event_portfolio(
+        broker,
+        [executable],
+        EntryBankrollSnapshot(False, 200.0, 0.0, 0.0, "pricing temporarily unavailable"),
+    )
+
+    assert decision.selected == []
+    rows = (tmp_path / "portfolio.jsonl").read_text(encoding="utf-8").splitlines()
+    assert len(rows) == 1
+    payload = json.loads(rows[0])
+    assert payload["selected_count"] == 0
+    assert payload["rejected_reason_counts"] == {"pricing temporarily unavailable": 1}
 
 
 def test_runner_applies_selected_add_to_existing_position(tmp_path):

@@ -1259,6 +1259,36 @@ def _websocket_health(settings: Settings, runner_status: dict[str, Any]) -> dict
     }
 
 
+def _realtime_evaluator_health(runner_status: dict[str, Any]) -> dict[str, Any]:
+    raw = (
+        runner_status.get("realtime_evaluator")
+        if isinstance(runner_status.get("realtime_evaluator"), dict)
+        else {}
+    )
+    strategy = (
+        runner_status.get("strategy")
+        if isinstance(runner_status.get("strategy"), dict)
+        else {}
+    )
+    no_only = strategy.get("no_only_new_entries")
+    return {
+        "strategy_mode": str(strategy.get("mode") or ""),
+        "no_only_new_entries": bool(no_only) if no_only is not None else None,
+        "queue_depth": int(_float(raw.get("queue_depth"))),
+        "urgent_queue_depth": int(_float(raw.get("urgent_queue_depth"))),
+        "urgent_processed_event_count": int(_float(raw.get("urgent_processed_event_count"))),
+        "last_urgent_enqueued_at": str(raw.get("last_urgent_enqueued_at") or ""),
+        "last_urgent_evaluated_at": str(raw.get("last_urgent_evaluated_at") or ""),
+        "last_urgent_evaluation_lag_seconds": _round_optional(
+            raw.get("last_urgent_evaluation_lag_seconds"),
+            3,
+        ),
+        "dropped_update_count": int(_float(raw.get("dropped_update_count"))),
+        "dropped_urgent_update_count": int(_float(raw.get("dropped_urgent_update_count"))),
+        "error_count": int(_float(raw.get("error_count"))),
+    }
+
+
 def _realized_results(
     trades: list[dict[str, str]],
     decisions: list[dict[str, str]],
@@ -1717,6 +1747,7 @@ def build_dashboard_payload(settings: Settings | None = None, auth_required: boo
     health = {
         "station": station_health,
         "websocket": websocket_health,
+        "realtime_evaluator": _realtime_evaluator_health(runner_status),
     }
     bot_health = health
     positions = [

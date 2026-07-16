@@ -230,6 +230,11 @@ def test_dashboard_template_displays_station_clock_formation_rollover_and_clob_s
     assert "전략 시간표" in HTML
     assert "과거 통계" in HTML
     assert "자료 상태" in HTML
+
+
+def test_dashboard_station_signal_uses_observed_extremes_for_actual_record():
+    assert "row.observed_high_c" in HTML
+    assert "row.observed_low_c" in HTML
     assert "주문장" in HTML
     assert "전략 판단" in HTML
 
@@ -1904,6 +1909,18 @@ def test_dashboard_payload_surfaces_station_and_websocket_health(tmp_path):
                     "stale": True,
                     "last_error": "RuntimeError: websocket stopped",
                 },
+                "strategy": {
+                    "mode": "hybrid_observation_edge",
+                    "no_only_new_entries": True,
+                },
+                "realtime_evaluator": {
+                    "urgent_queue_depth": 0,
+                    "urgent_processed_event_count": 17,
+                    "last_urgent_enqueued_at": "2026-06-01T00:00:40+00:00",
+                    "last_urgent_evaluated_at": "2026-06-01T00:00:41+00:00",
+                    "last_urgent_evaluation_lag_seconds": 0.42,
+                    "dropped_update_count": 2,
+                },
                 "discovery": {
                     "stream_tokens": 506,
                     "stream_markets": 253,
@@ -1924,6 +1941,10 @@ def test_dashboard_payload_surfaces_station_and_websocket_health(tmp_path):
     assert payload["health"]["websocket"]["reconnect_count"] == 3
     assert payload["health"]["websocket"]["stream_tokens"] == 506
     assert payload["health"]["websocket"]["stream_markets"] == 253
+    assert payload["health"]["realtime_evaluator"]["strategy_mode"] == "hybrid_observation_edge"
+    assert payload["health"]["realtime_evaluator"]["no_only_new_entries"] is True
+    assert payload["health"]["realtime_evaluator"]["urgent_processed_event_count"] == 17
+    assert payload["health"]["realtime_evaluator"]["last_urgent_evaluation_lag_seconds"] == pytest.approx(0.42)
     assert payload["bot"]["status"] == "FAILED"
 
 
@@ -2040,6 +2061,9 @@ def test_dashboard_html_explains_health_warnings():
     assert "실시간 주문장 상태" in HTML
     assert "재연결" in HTML
     assert "마지막 주문장" in HTML
+    assert "NO 신규 진입 전용" in HTML
+    assert "긴급 관측 처리" in HTML
+    assert "r-urgent-processed" in HTML
 
 
 def test_dashboard_html_uses_station_age_from_api_payload():

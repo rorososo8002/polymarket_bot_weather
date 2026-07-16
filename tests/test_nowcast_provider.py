@@ -5,6 +5,8 @@ import threading
 from datetime import date, datetime, timezone
 from pathlib import Path
 
+import pytest
+
 from weather_bot import nowcast as nowcast_module
 from weather_bot.nowcast import AviationWeatherMetarNowcastProvider, DEFAULT_NOWCAST_SOURCES
 from weather_bot.stations import STATION_MAP, station_audit_rows
@@ -447,6 +449,110 @@ def test_aviationweather_provider_returns_high_and_low_from_one_cached_fetch():
     assert len(calls) == 1
 
 
+def test_entry_refresh_discards_cached_bulk_response_and_fetches_new_observation(tmp_path):
+    base = [
+        {"icaoId": "RKSI", "obsTime": "2026-06-01T15:00:00.000Z", "temp": 20.0},
+        {"icaoId": "RKSI", "obsTime": "2026-06-02T06:50:00.000Z", "temp": 28.0},
+    ]
+    provider = metar_sequence_provider(
+        [base, [*base, {"icaoId": "RKSI", "obsTime": "2026-06-02T07:20:00.000Z", "temp": 29.0}]],
+        state_path=tmp_path / "metar.json",
+    )
+    first = provider.observed_temperature_extremes_so_far(
+        STATION_MAP["seoul"],
+        target_date=date(2026, 6, 2),
+        now=datetime(2026, 6, 2, 8, 0, tzinfo=timezone.utc),
+    )
+
+    provider.discard_cached_observations_before_entry(
+        now=datetime(2026, 6, 2, 8, 1, 1, tzinfo=timezone.utc)
+    )
+    refreshed = provider.observed_temperature_extremes_so_far(
+        STATION_MAP["seoul"],
+        target_date=date(2026, 6, 2),
+        now=datetime(2026, 6, 2, 8, 1, 1, tzinfo=timezone.utc),
+    )
+
+    assert first.observed_high_c == pytest.approx(28.0)
+    assert refreshed.observed_high_c == pytest.approx(29.0)
+
+
+def test_entry_refresh_network_error_returns_unavailable_observation(tmp_path):
+    payload = [
+        {"icaoId": "RKSI", "obsTime": "2026-06-01T15:00:00.000Z", "temp": 20.0},
+        {"icaoId": "RKSI", "obsTime": "2026-06-02T06:50:00.000Z", "temp": 28.0},
+    ]
+    responses = iter((FakeResponse(payload), TimeoutError("network down")))
+
+    def fake_get(*_args, **_kwargs):
+        response = next(responses)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+    provider = AviationWeatherMetarNowcastProvider(
+        http_get=fake_get,
+        cache_ttl_seconds=900,
+        metar_daily_extremes_state_path=tmp_path / "metar.json",
+    )
+    provider.observed_temperature_extremes_so_far(
+        STATION_MAP["seoul"],
+        target_date=date(2026, 6, 2),
+        now=datetime(2026, 6, 2, 8, 0, tzinfo=timezone.utc),
+    )
+
+    provider.discard_cached_observations_before_entry(
+        now=datetime(2026, 6, 2, 8, 1, 1, tzinfo=timezone.utc)
+    )
+    failed = provider.observed_temperature_extremes_so_far(
+        STATION_MAP["seoul"],
+        target_date=date(2026, 6, 2),
+        now=datetime(2026, 6, 2, 8, 1, 1, tzinfo=timezone.utc),
+    )
+
+    assert failed.usable is False
+    assert failed.unavailable_reason == "nowcast-fetch-error:TimeoutError"
+
+
+def test_entry_refresh_respects_one_minute_real_request_floor(tmp_path):
+    base = [
+        {"icaoId": "RKSI", "obsTime": "2026-06-01T15:00:00.000Z", "temp": 20.0},
+        {"icaoId": "RKSI", "obsTime": "2026-06-02T06:50:00.000Z", "temp": 28.0},
+    ]
+    provider = metar_sequence_provider(
+        [
+            base,
+            [*base, {"icaoId": "RKSI", "obsTime": "2026-06-02T07:20:00.000Z", "temp": 29.0}],
+            [*base, {"icaoId": "RKSI", "obsTime": "2026-06-02T07:50:00.000Z", "temp": 30.0}],
+        ],
+        state_path=tmp_path / "metar.json",
+    )
+    provider.observed_temperature_extremes_so_far(
+        STATION_MAP["seoul"],
+        target_date=date(2026, 6, 2),
+        now=datetime(2026, 6, 2, 8, 0, tzinfo=timezone.utc),
+    )
+    provider.discard_cached_observations_before_entry(
+        now=datetime(2026, 6, 2, 8, 1, 1, tzinfo=timezone.utc)
+    )
+    provider.observed_temperature_extremes_so_far(
+        STATION_MAP["seoul"],
+        target_date=date(2026, 6, 2),
+        now=datetime(2026, 6, 2, 8, 1, 1, tzinfo=timezone.utc),
+    )
+
+    provider.discard_cached_observations_before_entry(
+        now=datetime(2026, 6, 2, 8, 1, 11, tzinfo=timezone.utc)
+    )
+    newest = provider.observed_temperature_extremes_so_far(
+        STATION_MAP["seoul"],
+        target_date=date(2026, 6, 2),
+        now=datetime(2026, 6, 2, 8, 1, 11, tzinfo=timezone.utc),
+    )
+
+    assert newest.observed_high_c == pytest.approx(29.0)
+
+
 def test_aviationweather_provider_prefetches_multiple_metar_stations_once_per_refresh():
     payload = [
         {
@@ -746,6 +852,25 @@ def test_aviationweather_provider_uses_fresh_yesterday_extremes_after_local_midn
     assert observation.unavailable_reason == ""
     assert calls[0]["params"]["hours"] == 4
     assert "hoursBeforeNow" not in calls[0]["params"]
+
+
+def test_aviationweather_provider_learns_station_cadence_and_marks_publication_gap():
+    payload = [
+        {"icaoId": "RJTT", "obsTime": "2026-06-05T14:50:00Z", "temp": 21.0},
+        {"icaoId": "RJTT", "obsTime": "2026-06-05T15:20:00Z", "temp": 22.0},
+        {"icaoId": "RJTT", "obsTime": "2026-06-05T15:50:00Z", "temp": 23.0},
+    ]
+    provider, _calls = provider_for(payload)
+
+    observation = provider.observed_temperature_extremes_so_far(
+        STATION_MAP["tokyo"],
+        target_date=date(2026, 6, 6),
+        now=datetime(2026, 6, 5, 16, 23, tzinfo=timezone.utc),
+    )
+
+    assert observation.learned_observation_interval_seconds == 1800
+    assert observation.next_observation_due_at.isoformat() == "2026-06-05T16:20:00+00:00"
+    assert observation.observation_due_status == "overdue"
 
 
 def test_aviationweather_provider_blocks_a_response_at_the_400_row_limit():

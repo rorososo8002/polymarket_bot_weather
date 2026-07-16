@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -85,6 +85,9 @@ class ExactTemperatureProvider:
         high_bucket_confirmations: int | None = None,
         high_drop_observed_at: datetime | None = None,
         low_rise_observed_at: datetime | None = None,
+        observed_at: datetime | None = None,
+        learned_observation_interval_seconds: int | None = None,
+        observation_due_status: str = "",
     ) -> None:
         self.observed_high_c = observed_high_c
         self.observed_low_c = observed_low_c
@@ -99,11 +102,14 @@ class ExactTemperatureProvider:
         self.high_bucket_confirmations = high_bucket_confirmations
         self.high_drop_observed_at = high_drop_observed_at
         self.low_rise_observed_at = low_rise_observed_at
+        self.observed_at = observed_at
+        self.learned_observation_interval_seconds = learned_observation_interval_seconds
+        self.observation_due_status = observation_due_status
         self.calls = 0
 
     def observed_temperature_extremes_so_far(self, station, *, target_date, now=None):
         self.calls += 1
-        observed_at = datetime(2026, 6, 19, 12, 0, tzinfo=timezone.utc)
+        observed_at = self.observed_at or datetime(2026, 6, 19, 12, 0, tzinfo=timezone.utc)
         kwargs = {}
         if self.high_bucket_confirmations is not None:
             kwargs["high_bucket_confirmations"] = self.high_bucket_confirmations
@@ -129,6 +135,13 @@ class ExactTemperatureProvider:
             latest_temp_c=self.latest_temp_c,
             latest_dewpoint_c=self.latest_dewpoint_c,
             latest_weather=self.latest_weather,
+            learned_observation_interval_seconds=self.learned_observation_interval_seconds,
+            next_observation_due_at=(
+                observed_at + timedelta(seconds=self.learned_observation_interval_seconds)
+                if self.learned_observation_interval_seconds is not None
+                else None
+            ),
+            observation_due_status=self.observation_due_status,
             **kwargs,
         )
 
@@ -199,6 +212,129 @@ def test_lower_tail_high_above_threshold_gets_strong_no() -> None:
     assert signal.source == "official-station-lock-strong_no"
     assert "official_nowcast_lock=strong_no" in signal.note
     assert "observed_high_c=28.0 > lower_tail_upper_c=27.0" in signal.note
+
+
+def test_overdue_learned_metar_report_blocks_only_non_lock_entry() -> None:
+    now = datetime(2026, 6, 19, 13, 23, tzinfo=timezone.utc)
+    store = FakeResidualProfileStore(_residual_estimate(raw=0.97, yes=0.96, no=0.02))
+    signal = estimate_station_signal(
+        "Will the highest temperature in Seoul be 31C today?",
+        settings=Settings(),
+        observation_provider=ExactTemperatureProvider(
+            observed_high_c=31.0,
+            source="aviationweather-metar",
+            observed_at=now - timedelta(minutes=33),
+            learned_observation_interval_seconds=1800,
+            observation_due_status="overdue",
+            high_bucket_confirmations=2,
+            high_drop_observed_at=now - timedelta(minutes=3),
+        ),
+        now=now,
+        residual_profile_store=store,
+    )
+
+    assert signal.p_true == pytest.approx(0.5)
+    assert signal.confidence == 0.0
+    assert signal.source == "official-station-observation-report-pending"
+    assert signal.nowcast["next_observation_due_at"] == "2026-06-19T13:20:00+00:00"
+    assert store.calls == []
+
+
+def test_overdue_learned_metar_report_does_not_block_irreversible_no() -> None:
+    now = datetime(2026, 6, 19, 13, 23, tzinfo=timezone.utc)
+    signal = estimate_station_signal(
+        "Will the highest temperature in Seoul be 31C today?",
+        settings=Settings(),
+        observation_provider=ExactTemperatureProvider(
+            observed_high_c=32.0,
+            source="aviationweather-metar",
+            observed_at=now - timedelta(minutes=33),
+            learned_observation_interval_seconds=1800,
+            observation_due_status="overdue",
+        ),
+        now=now,
+    )
+
+    assert signal.p_true == pytest.approx(0.0)
+    assert signal.source == "official-station-lock-strong_no"
+
+
+def test_ankara_29c_no_boundary_waits_for_1320_report_then_uses_29c() -> None:
+    now = datetime(2026, 7, 14, 13, 23, tzinfo=timezone.utc)
+    store = FakeResidualProfileStore(
+        _residual_estimate(
+            raw=0.0921,
+            yes=0.138,
+            no=0.862,
+            profile_key="LTAC|month:07|0983|high|C",
+        )
+    )
+    stale = estimate_station_signal(
+        "Will the highest temperature in Ankara be 29C on July 14?",
+        settings=Settings(),
+        observation_provider=ExactTemperatureProvider(
+            station_id="LTAC",
+            observed_high_c=28.0,
+            source="aviationweather-metar",
+            observed_at=datetime(2026, 7, 14, 12, 50, tzinfo=timezone.utc),
+            learned_observation_interval_seconds=1800,
+            observation_due_status="overdue",
+        ),
+        now=now,
+        residual_profile_store=store,
+    )
+    updated = estimate_station_signal(
+        "Will the highest temperature in Ankara be 29C on July 14?",
+        settings=Settings(),
+        observation_provider=ExactTemperatureProvider(
+            station_id="LTAC",
+            observed_high_c=29.0,
+            source="aviationweather-metar",
+            observed_at=datetime(2026, 7, 14, 13, 20, tzinfo=timezone.utc),
+            learned_observation_interval_seconds=1800,
+            observation_due_status="current",
+            high_bucket_confirmations=1,
+        ),
+        now=now + timedelta(minutes=2),
+        residual_profile_store=store,
+    )
+
+    assert stale.source == "official-station-observation-report-pending"
+    assert stale.p_true == pytest.approx(0.5)
+    assert updated.nowcast["observed_high_c"] == pytest.approx(29.0)
+    assert updated.p_true != pytest.approx(0.0921)
+    assert updated.source != "official-station-lock-strong_no"
+
+
+def test_kuala_lumpur_upper_tail_uses_late_day_residual_probability() -> None:
+    now = datetime(2026, 7, 16, 9, 0, tzinfo=timezone.utc)
+    store = FakeResidualProfileStore(
+        _residual_estimate(
+            raw=0.01,
+            yes=0.02,
+            no=0.97,
+            profile_key="WMKK|month:07|1020|high|C",
+        ),
+        movement_probability=0.04,
+    )
+    signal = estimate_station_signal(
+        "Will the highest temperature in Kuala Lumpur be 36C or higher on July 16?",
+        settings=Settings(),
+        observation_provider=ExactTemperatureProvider(
+            observed_high_c=34.0,
+            observed_at=now - timedelta(minutes=30),
+        ),
+        now=now,
+        residual_profile_store=store,
+    )
+
+    assert signal.parsed.temperature_bucket == "upper_tail"
+    assert signal.p_true == pytest.approx(0.01)
+    assert signal.conservative_yes_probability == pytest.approx(0.02)
+    assert signal.conservative_no_probability == pytest.approx(0.97)
+    assert signal.signal_family == "intraday_observation_edge"
+    assert store.calls[0]["bucket_type"] == "upper_tail"
+    assert store.calls[0]["bucket_lower"] == pytest.approx(36.0)
 
 
 def test_whole_celsius_low_exact_bucket_22_9_breaks_23() -> None:

@@ -12,6 +12,7 @@ from weather_bot.residual_profile_builder import (
     HistoricalTemperatureObservation,
     ProfileBuildError,
     build_residual_profiles,
+    iter_ghcnh_hourly_observations,
     iter_global_hourly_observations,
     load_station_history_catalog,
     main,
@@ -141,6 +142,91 @@ def test_iter_global_hourly_observations_streams_file_without_read_text(
     observations = list(iter_global_hourly_observations(HOURLY_PATH, catalog, station_ids={"RKSI"}))
 
     assert len(observations) == 10
+
+
+def test_ghcnh_parser_accepts_exact_station_and_passed_temperature_rows(tmp_path: Path) -> None:
+    path = tmp_path / "GHCNh_KSI0000RKSI_2025.psv"
+    path.write_text(
+        "\n".join(
+            [
+                "STATION|DATE|temperature|temperature_Quality_Code",
+                "KSI0000RKSI|2025-01-01T00:00:00|2.0|1",
+                "KSI0000RKSI|2025-01-01T00:30:00|2.5|5",
+                "KSI0000RKSI|2025-01-01T01:00:00|99.0|1",
+                "KSI0000RKSI|2025-01-01T01:30:00|3.0|X",
+                "KSI0000RKPK|2025-01-01T02:00:00|4.0|1",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    observations = list(
+        iter_ghcnh_hourly_observations(
+            path,
+            station_id="RKSI",
+            ghcnh_station_id="KSI0000RKSI",
+        )
+    )
+
+    assert [observation.temperature_c for observation in observations] == [2.0, 2.5]
+    assert {observation.station_id for observation in observations} == {"RKSI"}
+    assert all(observation.observed_at.tzinfo == timezone.utc for observation in observations)
+
+
+def test_cli_builds_profiles_from_explicit_ghcnh_input(tmp_path: Path) -> None:
+    ghcnh_path = tmp_path / "GHCNh_KSI0000RKSI_2025.psv"
+    ghcnh_path.write_text(
+        "\n".join(
+            [
+                "STATION|DATE|temperature|temperature_Quality_Code",
+                "KSI0000RKSI|2025-06-01T00:00:00|20.0|1",
+                "KSI0000RKSI|2025-06-01T12:00:00|28.0|1",
+                "KSI0000RKSI|2025-06-02T00:00:00|21.0|1",
+                "KSI0000RKSI|2025-06-02T12:00:00|29.0|1",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    output_path = tmp_path / "profiles.json"
+
+    exit_code = main(
+        [
+            "--years",
+            "2025",
+            "--catalog",
+            str(CATALOG_PATH),
+            "--output",
+            str(output_path),
+            "--ghcnh",
+            f"RKSI:2025:KSI0000RKSI:{ghcnh_path}",
+            "--min-sample-days",
+            "1",
+        ]
+    )
+
+    assert exit_code == 0
+    assert json.loads(output_path.read_text(encoding="utf-8"))["profiles"]
+
+
+def test_publish_fails_when_explicit_ghcnh_input_has_no_valid_rows(tmp_path: Path) -> None:
+    ghcnh_path = tmp_path / "empty.psv"
+    ghcnh_path.write_text(
+        "STATION|DATE|temperature|temperature_Quality_Code\n"
+        "KSI0000OTHER|2025-06-01T00:00:00|20.0|1\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ProfileBuildError, match="no valid GHCNh observations"):
+        publish_residual_profiles(
+            output_path=tmp_path / "profiles.json",
+            stations=_stations(),
+            years=(2025,),
+            catalog_path=CATALOG_PATH,
+            ghcnh_paths={
+                ("RKSI", 2025): ("KSI0000RKSI", ghcnh_path),
+            },
+            min_sample_days=1,
+        )
 
 
 def test_build_profiles_uses_station_local_days_residuals_and_occurrence_metadata() -> None:

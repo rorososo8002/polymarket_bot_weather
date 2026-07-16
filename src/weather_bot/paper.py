@@ -621,14 +621,16 @@ def _archive_raw_snapshot(path: Path) -> None:
             tmp_path.unlink()
 
 
-def _rotate_raw_snapshot_if_needed(path: Path, max_bytes: int) -> None:
+def _rotate_raw_snapshot_if_needed(path: Path, max_bytes: int) -> bool:
     if max_bytes <= 0:
-        return
+        return False
     try:
         if path.exists() and path.stat().st_size > max_bytes:
             _archive_raw_snapshot(path)
+            return True
     except OSError:
-        return
+        return False
+    return False
 
 
 def _prune_raw_snapshot_archives(path: Path, retention_days: int) -> None:
@@ -1819,8 +1821,6 @@ class PaperBroker:
             return
         path = self.skip_diagnostics_jsonl_path
         path.parent.mkdir(parents=True, exist_ok=True)
-        _rotate_raw_snapshot_if_needed(path, self.settings.skip_diagnostics_max_bytes)
-        _prune_diagnostic_archives_by_bytes(path, self.settings.skip_diagnostics_archive_max_bytes)
 
         market_replay = _market_replay_metadata(market)
         signal_replay = _signal_replay_metadata(signal)
@@ -1884,8 +1884,8 @@ class PaperBroker:
         }
         with path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
-        _rotate_raw_snapshot_if_needed(path, self.settings.skip_diagnostics_max_bytes)
-        _prune_diagnostic_archives_by_bytes(path, self.settings.skip_diagnostics_archive_max_bytes)
+        if _rotate_raw_snapshot_if_needed(path, self.settings.skip_diagnostics_max_bytes):
+            _prune_diagnostic_archives_by_bytes(path, self.settings.skip_diagnostics_archive_max_bytes)
 
     def log_trade(
         self,
