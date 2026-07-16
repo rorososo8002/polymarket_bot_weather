@@ -343,6 +343,7 @@ class OrderBookMarketStream:
         rest_snapshot_fetcher: Callable[[str], OrderBook] | None = None,
         rest_snapshot_enabled: bool = True,
         rest_snapshot_interval_seconds: int = 60,
+        background_rest_snapshot_enabled: bool = True,
     ) -> None:
         self.url = url
         self.cache = OrderBookStreamCache()
@@ -353,6 +354,7 @@ class OrderBookMarketStream:
         self.rest_snapshot_fetcher = rest_snapshot_fetcher
         self.rest_snapshot_enabled = bool(rest_snapshot_enabled)
         self.rest_snapshot_interval_seconds = max(1, int(rest_snapshot_interval_seconds))
+        self.background_rest_snapshot_enabled = bool(background_rest_snapshot_enabled)
         self._asset_ids: list[str] = []
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -380,7 +382,10 @@ class OrderBookMarketStream:
             if not self.rest_snapshot_enabled or self.rest_snapshot_fetcher is None:
                 raise
             try:
-                self.apply_rest_snapshot(self.rest_snapshot_fetcher(str(token_id)))
+                self.apply_rest_snapshot(
+                    self.rest_snapshot_fetcher(str(token_id)),
+                    notify=False,
+                )
                 return self.cache.get_order_book(token_id)
             except KeyError:
                 raise missing_snapshot
@@ -393,7 +398,10 @@ class OrderBookMarketStream:
             return self.get_order_book(token_id)
         try:
             token = str(token_id)
-            self.apply_rest_snapshot(self.fetch_order_book_snapshot(token))
+            self.apply_rest_snapshot(
+                self.fetch_order_book_snapshot(token),
+                notify=False,
+            )
             return self.cache.get_order_book(token)
         except Exception as exc:
             self._record_rest_snapshot_error(exc)
@@ -425,6 +433,7 @@ class OrderBookMarketStream:
         self._thread.start()
         if (
             self.rest_snapshot_enabled
+            and self.background_rest_snapshot_enabled
             and self.rest_snapshot_fetcher is not None
             and (self._rest_snapshot_thread is None or not self._rest_snapshot_thread.is_alive())
         ):
@@ -464,7 +473,7 @@ class OrderBookMarketStream:
             self.on_update(executable_updated)
         return updated
 
-    def apply_rest_snapshot(self, book: OrderBook) -> set[str]:
+    def apply_rest_snapshot(self, book: OrderBook, *, notify: bool = True) -> set[str]:
         updated = self.cache.replace_order_book(book)
         token_id = str(book.token_id or "")
         if token_id and _has_executable_depth(book):
@@ -478,7 +487,7 @@ class OrderBookMarketStream:
                 self._last_rest_snapshot_token_id = token_id
                 self._rest_snapshot_count += 1
                 self._last_rest_snapshot_error = ""
-            if updated and self.on_update is not None:
+            if notify and updated and self.on_update is not None:
                 self.on_update(updated)
         return updated
 

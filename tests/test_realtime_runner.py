@@ -94,7 +94,7 @@ def test_stream_backed_client_prefetches_final_books_concurrently_and_reuses_the
                 asks=[OrderLevel(0.85, 100.0)],
             )
 
-        def apply_rest_snapshot(self, book: OrderBook) -> None:
+        def apply_rest_snapshot(self, book: OrderBook, *, notify: bool = True) -> None:
             token_id = str(book.token_id)
             self.cache.books[token_id] = book
 
@@ -152,7 +152,7 @@ def test_stream_backed_client_does_not_wait_for_one_slow_final_prefetch(monkeypa
                 asks=[OrderLevel(0.95 if token_id == "slow-token" else 0.85, 100.0)],
             )
 
-        def apply_rest_snapshot(self, book: OrderBook) -> None:
+        def apply_rest_snapshot(self, book: OrderBook, *, notify: bool = True) -> None:
             token_id = str(book.token_id)
             self.cache.books[token_id] = book
 

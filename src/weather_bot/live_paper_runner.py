@@ -561,7 +561,7 @@ class StreamBackedPolymarketClient(PolymarketClient):
                 if self._final_prefetch_generation.get(token_id) != generation:
                     return False
                 try:
-                    self.stream.apply_rest_snapshot(book)
+                    self.stream.apply_rest_snapshot(book, notify=False)
                 except Exception:
                     return False
                 self._tradability_cache[condition_id] = (time.monotonic(), tradability)
@@ -4005,6 +4005,7 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
                     rest_snapshot_fetcher=rest_snapshot_fetcher,
                     rest_snapshot_enabled=settings.orderbook_rest_snapshot_enabled and callable(rest_snapshot_fetcher),
                     rest_snapshot_interval_seconds=settings.orderbook_rest_snapshot_interval_seconds,
+                    background_rest_snapshot_enabled=False,
                 )
 
             failed_phase = "websocket_start"

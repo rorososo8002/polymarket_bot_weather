@@ -165,6 +165,60 @@ def test_rest_snapshot_can_seed_executable_depth_as_verification_cache(monkeypat
     assert calls == [{"yes"}, {"yes"}]
 
 
+def test_silent_rest_snapshot_refresh_does_not_requeue_strategy(monkeypatch):
+    now = datetime(2026, 6, 1, 0, 0, tzinfo=timezone.utc)
+    calls: list[set[str]] = []
+    monkeypatch.setattr("weather_bot.realtime_orderbook._utc_now", lambda: now)
+    stream = OrderBookMarketStream(on_update=lambda token_ids: calls.append(set(token_ids)))
+
+    updated = stream.apply_rest_snapshot(
+        OrderBook(
+            "candidate-no",
+            bids=[OrderLevel(0.79, 10)],
+            asks=[OrderLevel(0.80, 20)],
+        ),
+        notify=False,
+    )
+
+    assert updated == {"candidate-no"}
+    assert calls == []
+    assert stream.get_order_book("candidate-no").best_ask == 0.80
+
+
+def test_stream_can_disable_background_rest_sweeper(monkeypatch):
+    created_thread_names: list[str] = []
+
+    class FakeThread:
+        def __init__(self, *, target, name, daemon):
+            self.target = target
+            self.name = name
+            self.daemon = daemon
+            self.started = False
+            created_thread_names.append(name)
+
+        def start(self):
+            self.started = True
+
+        def is_alive(self):
+            return self.started
+
+        def join(self, timeout=None):
+            return None
+
+    monkeypatch.setattr("weather_bot.realtime_orderbook._import_websocket_client", lambda: object())
+    monkeypatch.setattr("weather_bot.realtime_orderbook.threading.Thread", FakeThread)
+    stream = OrderBookMarketStream(
+        rest_snapshot_fetcher=lambda token_id: OrderBook(token_id, [], []),
+        rest_snapshot_enabled=True,
+        background_rest_snapshot_enabled=False,
+    )
+
+    stream.start(["candidate-no"])
+
+    assert created_thread_names == ["polymarket-orderbook-ws"]
+    assert stream._rest_snapshot_thread is None
+
+
 def test_missing_stream_snapshot_fetches_rest_snapshot_on_demand(monkeypatch):
     now = datetime(2026, 6, 1, 0, 0, tzinfo=timezone.utc)
     fetched: list[str] = []
@@ -189,7 +243,7 @@ def test_missing_stream_snapshot_fetches_rest_snapshot_on_demand(monkeypatch):
     book = stream.get_order_book("candidate-token")
 
     assert fetched == ["candidate-token"]
-    assert updates == [{"candidate-token"}]
+    assert updates == []
     assert book.best_bid == 0.84
     assert book.best_ask == 0.86
     health = stream.health_snapshot(now=now)
