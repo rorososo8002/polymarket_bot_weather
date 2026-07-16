@@ -400,7 +400,7 @@ def test_station_refresh_enqueues_high_and_low_exact_no_probes_and_expires_cache
     assert accepted == 2
     assert worker.status_snapshot()["queue_depth"] == 2
     assert worker._pending_tokens_by_event == {
-        "seoul-high-event": {"high-29-no"},
+        "seoul-high-event": {"high-29-no", "high-30-no"},
         "seoul-low-event": {"low-22-no"},
     }
     assert high_29.market_id not in signal_refreshed_at
@@ -646,6 +646,87 @@ def test_station_state_key_detects_due_and_unavailable_status_changes():
 
     assert current != overdue
     assert current != unavailable
+
+
+def test_quiet_market_wakes_when_local_q75_gate_is_crossed():
+    market = RawMarket(
+        "seoul-high-29",
+        "Will the highest temperature in Seoul be 29C on July 8?",
+        "seoul-high-29",
+        True,
+        False,
+        "yes-token",
+        "no-token",
+        event_id="seoul-event",
+    )
+    signal = WeatherSignal(
+        0.5,
+        0.0,
+        "official-station-formation-q75",
+        "waiting for formation q75",
+        parse_weather_question(market.question),
+        nowcast={
+            "station_timezone": "Asia/Seoul",
+            "target_date_local": "2026-07-08",
+            "data_block_reason": "formation-q75-not-reached",
+            "first_final_high_local_minute_q75": 14 * 60 + 30,
+        },
+        signal_family="intraday_observation_edge",
+    )
+
+    urgent, normal, expired = runner_module._scheduled_realtime_probe_tokens(
+        [market],
+        {market.market_id: signal},
+        {},
+        now=datetime(2026, 7, 8, 5, 31, tzinfo=timezone.utc),
+    )
+
+    assert urgent == {"no-token"}
+    assert normal == set()
+    assert expired == {market.market_id}
+
+
+def test_quiet_residual_market_wakes_on_new_local_half_hour_bucket():
+    market = RawMarket(
+        "seoul-high-29",
+        "Will the highest temperature in Seoul be 29C on July 8?",
+        "seoul-high-29",
+        True,
+        False,
+        "yes-token",
+        "no-token",
+        event_id="seoul-event",
+    )
+    signal = WeatherSignal(
+        0.05,
+        0.9,
+        "official-station-residual-high-no",
+        "residual signal",
+        parse_weather_question(market.question),
+        nowcast={
+            "station_timezone": "Asia/Seoul",
+            "target_date_local": "2026-07-08",
+            "data_block_reason": "",
+        },
+        signal_family="intraday_observation_edge",
+    )
+    timer_state: dict[str, str] = {}
+
+    first = runner_module._scheduled_realtime_probe_tokens(
+        [market],
+        {market.market_id: signal},
+        timer_state,
+        now=datetime(2026, 7, 8, 5, 29, tzinfo=timezone.utc),
+    )
+    second = runner_module._scheduled_realtime_probe_tokens(
+        [market],
+        {market.market_id: signal},
+        timer_state,
+        now=datetime(2026, 7, 8, 5, 30, tzinfo=timezone.utc),
+    )
+
+    assert first == (set(), set(), set())
+    assert second == (set(), {"no-token"}, {market.market_id})
 
 
 def test_station_refresh_default_probe_batch_fits_one_evaluation_batch():
@@ -955,6 +1036,7 @@ def test_realtime_evaluation_coalescer_keeps_normal_burst_in_one_batch():
         event_key_by_token=event_key_by_token,
         evaluator=lambda tokens: calls.append(set(tokens)),
         max_batch_events=10,
+        max_normal_batch_events=10,
         coalesce_seconds=0.0,
     )
 
@@ -969,7 +1051,7 @@ def test_realtime_evaluation_coalescer_keeps_normal_burst_in_one_batch():
     assert status["processed_event_count"] == 10
 
 
-def test_realtime_evaluation_coalescer_default_drains_current_city_set_in_one_batch():
+def test_realtime_evaluation_coalescer_default_keeps_normal_batches_preemptible():
     calls: list[set[str]] = []
     event_key_by_token = {f"token-{index}": f"event-{index}" for index in range(10)}
     worker = RealtimeEvaluationCoalescer(
@@ -984,7 +1066,7 @@ def test_realtime_evaluation_coalescer_default_drains_current_city_set_in_one_ba
     assert len(calls) == 1
     assert len(calls[0]) == min(
         len(event_key_by_token),
-        runner_module.REALTIME_EVALUATION_BATCH_MAX_EVENTS,
+        runner_module.REALTIME_NORMAL_EVALUATION_BATCH_MAX_EVENTS,
     )
     assert worker.status_snapshot()["queue_depth"] == 10 - len(calls[0])
 

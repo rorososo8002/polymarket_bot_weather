@@ -114,6 +114,14 @@ notes only when they prevent a repeated mistake.
   affected same-day event must be queued; the normal four-event probe cap must
   never discard the fifth or later changed city. Urgent station events run
   ahead of ordinary order-book wakeups.
+- Ordinary WebSocket price changes reevaluate only the changed market and held
+  positions, in preemptible batches of at most four events. An official station
+  change instead queues every supported NO token for each affected event and
+  may use the full urgent batch. This prevents ordinary startup book noise from
+  blocking a later station change.
+- Quiet books still receive scheduled reevaluation. Crossing formation
+  monitoring start, city-month q75, or station-local 16:00 is urgent; moving
+  into a new residual 30-minute bin is a normal preemptible wakeup.
 
 ## 6. Sizing
 

@@ -80,12 +80,26 @@ The realtime coalescer now:
 
 - marks station changes as urgent;
 - processes urgent events ahead of ordinary book noise;
+- keeps ordinary book work in preemptible four-event batches and does not mix
+  ordinary work into a waiting urgent batch;
 - promotes an already queued ordinary event when its station changes;
 - evicts one ordinary event for an urgent event when the bounded queue is full;
 - preserves urgency through one bounded retry after an evaluator exception;
 - waits for coalescing only on the first idle-to-active batch and drains an
   existing backlog without another delay;
 - accepts up to 64 events in the default batch, covering the current city set.
+
+Ordinary WebSocket updates evaluate only the markets whose books actually
+changed, plus held positions that need exit evidence. They no longer trigger a
+full sibling-market catch-up merely because another bucket has no cached signal.
+Station changes use a separate path that queues every supported NO token in the
+affected event, so the full city ladder is still reevaluated when the official
+temperature changes.
+
+Quiet markets also have explicit timer wakeups. Formation monitoring start,
+city-month q75, and station-local 16:00 crossings are urgent. A residual
+30-minute-bin transition is queued as ordinary preemptible work. Therefore a
+time-only eligibility change does not depend on another book or METAR update.
 
 The station-state key includes observation time, current and extreme
 temperatures, high-departure and low-rebound confirmation, publication-due
@@ -143,6 +157,8 @@ Keep regression tests for all of these cases:
 ## Prevention Checklist
 
 - Do not reuse bounded sampling helpers for non-repeatable change events.
+- Keep ordinary price batches short enough that a later urgent event can
+  preempt them; reserve the full batch for urgent station work.
 - Make delivery guarantees explicit for every background event source.
 - Track urgent processed, waiting, lag, and dropped counts in runner status.
 - Keep queue limits and retry limits finite.

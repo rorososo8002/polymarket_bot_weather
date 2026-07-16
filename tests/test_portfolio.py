@@ -1960,7 +1960,7 @@ def test_run_cycle_blocks_overlapping_profitable_no_legs_for_same_event(monkeypa
     assert [leg["side"] for leg in json.loads(rows[0])["selected_legs"]] == ["NO"]
 
 
-def test_realtime_update_reselects_the_whole_city_date_event(monkeypatch, tmp_path):
+def test_realtime_book_update_evaluates_only_the_changed_market(monkeypatch, tmp_path):
     cfg = settings(
         tmp_path,
         bankroll_usd=200.0,
@@ -2007,5 +2007,5 @@ def test_realtime_update_reselects_the_whole_city_date_event(monkeypatch, tmp_pa
     )
 
     rows = (tmp_path / "portfolio.jsonl").read_text(encoding="utf-8").splitlines()
-    assert [pos.market_id for pos in broker.state.positions] == ["seoul-26", "seoul-27"]
+    assert [pos.market_id for pos in broker.state.positions] == ["seoul-26"]
     assert len(rows) == 1

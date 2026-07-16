@@ -63,6 +63,7 @@ YES_SIZE_CAP_DEFAULT = 0.05
 ENTRY_DEPTH_AUDIT_TARGET_USD = 100.0
 REALTIME_EVALUATION_QUEUE_MAX_EVENTS = 256
 REALTIME_EVALUATION_BATCH_MAX_EVENTS = 64
+REALTIME_NORMAL_EVALUATION_BATCH_MAX_EVENTS = 4
 REALTIME_EVALUATION_COALESCE_SECONDS = 0.25
 REALTIME_FINAL_CHECK_MAX_WORKERS = 8
 REALTIME_FINAL_PREFETCH_DEADLINE_SECONDS = 1.5
@@ -563,6 +564,7 @@ class RealtimeEvaluationCoalescer:
         evaluator: Callable[[set[str]], None],
         max_pending_events: int = REALTIME_EVALUATION_QUEUE_MAX_EVENTS,
         max_batch_events: int = REALTIME_EVALUATION_BATCH_MAX_EVENTS,
+        max_normal_batch_events: int = REALTIME_NORMAL_EVALUATION_BATCH_MAX_EVENTS,
         coalesce_seconds: float = REALTIME_EVALUATION_COALESCE_SECONDS,
         event_priority: Callable[[str], tuple] | None = None,
         status_update: Callable[[dict[str, object]], None] | None = None,
@@ -573,6 +575,7 @@ class RealtimeEvaluationCoalescer:
         self.evaluator = evaluator
         self.max_pending_events = max(1, int(max_pending_events))
         self.max_batch_events = max(1, int(max_batch_events))
+        self.max_normal_batch_events = max(1, min(int(max_normal_batch_events), self.max_batch_events))
         self.coalesce_seconds = max(0.0, float(coalesce_seconds))
         self.event_priority = event_priority
         self.status_update = status_update
@@ -706,6 +709,7 @@ class RealtimeEvaluationCoalescer:
                 ),
                 "max_pending_events": self.max_pending_events,
                 "max_batch_events": self.max_batch_events,
+                "max_normal_batch_events": self.max_normal_batch_events,
                 "coalesce_seconds": self.coalesce_seconds,
                 "inflight_event_count": self._inflight_event_count,
                 "enqueued_update_count": self._enqueued_update_count,
@@ -759,7 +763,13 @@ class RealtimeEvaluationCoalescer:
             return (0 if event_key in self._urgent_event_keys else 1, *base)
 
         event_keys = sorted(event_keys, key=priority)
-        event_keys = event_keys[: self.max_batch_events]
+        urgent_event_keys = [
+            event_key for event_key in event_keys if event_key in self._urgent_event_keys
+        ]
+        if urgent_event_keys:
+            event_keys = urgent_event_keys[: self.max_batch_events]
+        else:
+            event_keys = event_keys[: self.max_normal_batch_events]
         pending = {
             event_key: self._pending_tokens_by_event.pop(event_key)
             for event_key in event_keys
@@ -934,8 +944,8 @@ def _station_refresh_high_exact_no_probe_candidates(
     markets: list[RawMarket],
     *,
     station_ids: set[str] | None = None,
-) -> list[tuple[str, str, set[str]]]:
-    candidates: list[tuple[str, str, set[str]]] = []
+) -> list[tuple[str, set[str], set[str]]]:
+    candidates: list[tuple[str, set[str], set[str]]] = []
     event_index: dict[str, int] = {}
     restrict_to_station_ids = station_ids is not None
     allowed_station_ids = {str(station_id).upper() for station_id in station_ids or set()}
@@ -950,12 +960,15 @@ def _station_refresh_high_exact_no_probe_candidates(
             continue
         event_key = _market_event_key(market)
         if event_key in event_index:
-            candidates[event_index[event_key]][2].add(market.market_id)
+            index = event_index[event_key]
+            if market.no_token_id:
+                candidates[index][1].add(str(market.no_token_id))
+            candidates[index][2].add(market.market_id)
             continue
         if not market.no_token_id:
             continue
         event_index[event_key] = len(candidates)
-        candidates.append((event_key, market.no_token_id, {market.market_id}))
+        candidates.append((event_key, {str(market.no_token_id)}, {market.market_id}))
     return candidates
 
 
@@ -977,10 +990,14 @@ def _station_refresh_high_exact_no_probe_tokens(
     start = _station_refresh_probe_cursor % len(candidates)
     selected = [candidates[(start + offset) % len(candidates)] for offset in range(limit)]
     _station_refresh_probe_cursor = (start + limit) % len(candidates)
-    token_ids = {token_id for _event_key, token_id, _market_ids in selected}
+    token_ids = {
+        token_id
+        for _event_key, event_token_ids, _market_ids in selected
+        for token_id in event_token_ids
+    }
     market_ids_to_expire = {
         market_id
-        for _event_key, _token_id, market_ids in selected
+        for _event_key, _event_token_ids, market_ids in selected
         for market_id in market_ids
     }
     return token_ids, market_ids_to_expire
@@ -3267,12 +3284,6 @@ def _evaluate_realtime_update(
             if (
                 market.market_id in updated_market_ids
                 or market.market_id in held_market_ids
-                or market.market_id not in signals_by_market
-                or (market.market_id, REALTIME_LAST_EVALUATION_SIDE) not in latest_edges
-                or (
-                    signal_refreshed_at_by_market is not None
-                    and market.market_id not in signal_refreshed_at_by_market
-                )
             )
         ]
         for market in markets_to_evaluate:
@@ -3516,6 +3527,71 @@ def _refresh_official_station_observations(
     return changed_station_ids
 
 
+def _scheduled_realtime_probe_tokens(
+    markets: list[RawMarket],
+    signals_by_market: dict[str, WeatherSignal],
+    timer_bucket_by_market: dict[str, str],
+    *,
+    now: datetime,
+) -> tuple[set[str], set[str], set[str]]:
+    """Wake quiet markets when a local-time gate or residual 30-minute bin changes."""
+    urgent_tokens: set[str] = set()
+    normal_tokens: set[str] = set()
+    market_ids_to_expire: set[str] = set()
+    current = _utc_datetime(now)
+    for market in markets:
+        if not market.no_token_id:
+            continue
+        signal = signals_by_market.get(market.market_id)
+        if signal is None:
+            continue
+        try:
+            parsed = signal.parsed or parse_weather_question(market.question)
+        except Exception:  # noqa: BLE001
+            continue
+        if not _is_realtime_no_candidate(parsed):
+            continue
+        payload = signal.nowcast if isinstance(signal.nowcast, dict) else {}
+        timezone_name = str(payload.get("station_timezone") or "")
+        if not timezone_name:
+            station = TRADING_READY_STATION_MAP.get(str(parsed.city or "").lower())
+            timezone_name = station.timezone if station is not None else ""
+        try:
+            local = current.astimezone(ZoneInfo(timezone_name))
+        except (ValueError, ZoneInfoNotFoundError):
+            continue
+        target_date = str(payload.get("target_date_local") or "")
+        if target_date and target_date != local.date().isoformat():
+            continue
+
+        local_minute = local.hour * 60 + local.minute
+        direction = "low" if parsed.temperature_metric == "min" else "high"
+        reason = str(payload.get("data_block_reason") or "")
+        threshold: float | None = None
+        if reason == "formation-monitoring-not-started":
+            threshold = _finite_float(payload.get("monitoring_start_local_minute"))
+        elif reason == "formation-q75-not-reached":
+            threshold = _finite_float(payload.get(f"first_final_{direction}_local_minute_q75"))
+        elif reason == "high-exact-before-16-local":
+            threshold = 16 * 60
+        if threshold is not None and local_minute >= threshold:
+            urgent_tokens.add(str(market.no_token_id))
+            market_ids_to_expire.add(market.market_id)
+
+        timer_bucket = f"{local.date().isoformat()}:{local_minute // 30}"
+        previous_bucket = timer_bucket_by_market.get(market.market_id)
+        timer_bucket_by_market[market.market_id] = timer_bucket
+        if (
+            previous_bucket is not None
+            and previous_bucket != timer_bucket
+            and signal.signal_family == "intraday_observation_edge"
+            and str(market.no_token_id) not in urgent_tokens
+        ):
+            normal_tokens.add(str(market.no_token_id))
+            market_ids_to_expire.add(market.market_id)
+    return urgent_tokens, normal_tokens, market_ids_to_expire
+
+
 def _realtime_error_backoff_seconds(settings: Settings) -> float:
     return min(max(float(settings.runner_health_status_interval_seconds), 5.0), 60.0)
 
@@ -3722,6 +3798,7 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
             write_stream_status()
             status_updated_at = datetime.now(timezone.utc)
             station_state_by_id: dict[str, tuple[Any, ...]] = {}
+            timer_bucket_by_market: dict[str, str] = {}
             station_refreshed_at = status_updated_at - timedelta(
                 seconds=settings.station_nowcast_cache_ttl_seconds
             )
@@ -3754,11 +3831,30 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
                             station_state_by_id=station_state_by_id,
                         )
                         with update_lock:
+                            urgent_timer_tokens, normal_timer_tokens, timer_market_ids = (
+                                _scheduled_realtime_probe_tokens(
+                                    stream_markets,
+                                    signals_by_market,
+                                    timer_bucket_by_market,
+                                    now=now,
+                                )
+                            )
+                            for market_id in timer_market_ids:
+                                signal_refreshed_at_by_market.pop(market_id, None)
                             _enqueue_station_refresh_high_exact_no_probes(
                                 evaluator_worker,
                                 stream_markets,
                                 signal_refreshed_at_by_market,
                                 station_ids=changed_station_ids,
+                            )
+                            _enqueue_realtime_update(
+                                evaluator_worker,
+                                urgent_timer_tokens,
+                                urgent=True,
+                            )
+                            _enqueue_realtime_update(
+                                evaluator_worker,
+                                normal_timer_tokens,
                             )
                         station_refreshed_at = now
                     if (now - status_updated_at).total_seconds() >= settings.runner_health_status_interval_seconds:
