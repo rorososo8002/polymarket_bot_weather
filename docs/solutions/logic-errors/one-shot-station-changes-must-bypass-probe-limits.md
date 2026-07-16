@@ -137,6 +137,13 @@ running four-event ordinary batch could not be interrupted. Limiting ordinary
 batches to one event reduces that non-preemptible window; the 64-event batch is
 reserved for urgent fanout.
 
+A second production sample still took 13.912 seconds for two urgent cities.
+The evaluator preserved 22 per-market skip reasons, but opened and closed the
+diagnostic JSONL file for every row. Realtime evaluation now buffers only those
+non-accounting skip lines for the current evaluator batch and appends them in
+one file write. Trade receipts and `paper_state.json` accounting remain
+immediate and serialized.
+
 Cash, exposure, positions, `paper_state.json`, and CSV ledger writes remain
 serialized. Before each event portfolio is applied, the runner recalculates
 the current entry bankroll and exposure room.
@@ -176,7 +183,9 @@ Keep regression tests for all of these cases:
 - one slow prefetch does not delay a ready token or trigger a serial retry;
 - a timed-out old response cannot overwrite a newer book;
 - the default ordinary batch contains exactly one event;
-- focused realtime tests and the full 789-test local suite pass;
+- many skip diagnostics are appended once per realtime evaluator batch without
+  dropping any row;
+- focused realtime tests and the full 790-test local suite pass;
 
 ## Prevention Checklist
 
@@ -189,6 +198,8 @@ Keep regression tests for all of these cases:
 - Keep queue limits and retry limits finite.
 - Never publish a background response after its generation was invalidated.
 - Do not put a long serialized fallback behind a bounded concurrent deadline.
+- Batch append-only diagnostic rows on the hot path; never defer account state
+  or executed-trade ledger writes.
 - Do not interpret initial state registration as a state transition.
 - Parallelize independent reads, not account or ledger mutations.
 - Measure last-city completion lag, not aggregate throughput or first-batch

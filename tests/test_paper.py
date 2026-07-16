@@ -153,6 +153,23 @@ def test_open_trade_records_strategy_mode_and_signal_family(tmp_path):
     assert row["settlement_precision_confidence"] == "verified"
 
 
+def test_skip_diagnostics_batch_appends_once(tmp_path, monkeypatch):
+    broker = PaperBroker(_settings(tmp_path))
+    writes: list[list[str]] = []
+    monkeypatch.setattr(
+        broker,
+        "_append_skip_diagnostic_lines",
+        lambda lines: writes.append(list(lines)),
+    )
+    skipped = EdgeResult("SKIP", 0.5, None, -999.0, 0.0, 0.0, "SKIP_TEST: no entry")
+
+    with broker.batch_skip_diagnostics():
+        broker.log_decision(_market(), skipped, "first", signal=_signal())
+        broker.log_decision(_market(), skipped, "second", signal=_signal())
+
+    assert [len(lines) for lines in writes] == [2]
+
+
 def test_open_trade_records_price_anomaly_tag(tmp_path):
     row = _open_row(tmp_path, price_anomaly=True)
 

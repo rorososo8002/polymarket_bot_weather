@@ -3729,7 +3729,7 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
             )
 
             def evaluate_queued_update(updated_token_ids: set[str]) -> None:
-                with update_lock:
+                with update_lock, broker.batch_skip_diagnostics():
                     stream_client = stream_holder.get("client")
                     if stream_client is not None:
                         _evaluate_realtime_update(

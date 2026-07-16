@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+from contextlib import contextmanager
 import gzip
 import json
 import os
@@ -800,6 +801,7 @@ class PaperBroker:
         self.portfolio_decisions_jsonl_path = Path(settings.portfolio_decisions_jsonl_path)
         self.raw_snapshots_path = Path(settings.raw_snapshots_path)
         self._raw_snapshot_storage_suspended = False
+        self._skip_diagnostic_lines: list[str] | None = None
         self._accounting_halted_reason = ""
         self._fail_if_unresolved_accounting_journal()
         self._fail_if_missing_state_has_executed_trades()
@@ -1706,15 +1708,7 @@ class PaperBroker:
             try:
                 self._log_skip_diagnostic(ts, market, result, note, market_type, signal=signal)
             except Exception as exc:  # noqa: BLE001
-                update_runner_status_fields(
-                    self.settings,
-                    skip_diagnostics={
-                        "status": "error",
-                        "reason": f"{exc.__class__.__name__}: {' '.join(str(exc).split())[:160]}",
-                        "path": str(self.skip_diagnostics_jsonl_path),
-                        "updated_at": utc_now_iso(),
-                    },
-                )
+                self._record_skip_diagnostic_error(exc)
         # Suppress SKIP rows by default — they are 95%+ of all writes and carry
         # no analytical value.  Set DECISIONS_LOG_SKIP_ENABLED=true only for
         # short debugging sessions.
@@ -1807,6 +1801,42 @@ class PaperBroker:
             })
         return ts
 
+    def _record_skip_diagnostic_error(self, exc: Exception) -> None:
+        update_runner_status_fields(
+            self.settings,
+            skip_diagnostics={
+                "status": "error",
+                "reason": f"{exc.__class__.__name__}: {' '.join(str(exc).split())[:160]}",
+                "path": str(self.skip_diagnostics_jsonl_path),
+                "updated_at": utc_now_iso(),
+            },
+        )
+
+    @contextmanager
+    def batch_skip_diagnostics(self):
+        if self._skip_diagnostic_lines is not None:
+            yield
+            return
+        self._skip_diagnostic_lines = []
+        try:
+            yield
+        finally:
+            lines = self._skip_diagnostic_lines
+            self._skip_diagnostic_lines = None
+            if lines:
+                try:
+                    self._append_skip_diagnostic_lines(lines)
+                except Exception as exc:  # noqa: BLE001
+                    self._record_skip_diagnostic_error(exc)
+
+    def _append_skip_diagnostic_lines(self, lines: list[str]) -> None:
+        path = self.skip_diagnostics_jsonl_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.writelines(lines)
+        if _rotate_raw_snapshot_if_needed(path, self.settings.skip_diagnostics_max_bytes):
+            _prune_diagnostic_archives_by_bytes(path, self.settings.skip_diagnostics_archive_max_bytes)
+
     def _log_skip_diagnostic(
         self,
         ts: str,
@@ -1819,8 +1849,6 @@ class PaperBroker:
     ) -> None:
         if not self.settings.skip_diagnostics_enabled:
             return
-        path = self.skip_diagnostics_jsonl_path
-        path.parent.mkdir(parents=True, exist_ok=True)
 
         market_replay = _market_replay_metadata(market)
         signal_replay = _signal_replay_metadata(signal)
@@ -1882,10 +1910,11 @@ class PaperBroker:
             "config_version": _config_version(self.settings),
             **signal_replay["station_audit"],
         }
-        with path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
-        if _rotate_raw_snapshot_if_needed(path, self.settings.skip_diagnostics_max_bytes):
-            _prune_diagnostic_archives_by_bytes(path, self.settings.skip_diagnostics_archive_max_bytes)
+        line = json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n"
+        if self._skip_diagnostic_lines is not None:
+            self._skip_diagnostic_lines.append(line)
+        else:
+            self._append_skip_diagnostic_lines([line])
 
     def log_trade(
         self,
