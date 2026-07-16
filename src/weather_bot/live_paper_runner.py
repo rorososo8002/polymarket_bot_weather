@@ -628,6 +628,8 @@ class RealtimeEvaluationCoalescer:
         self._last_evaluation_duration_seconds: float | None = None
         self._last_urgent_enqueued_at: str | None = None
         self._last_urgent_evaluated_at: str | None = None
+        self._last_urgent_queue_wait_seconds: float | None = None
+        self._last_urgent_evaluation_duration_seconds: float | None = None
         self._last_urgent_evaluation_lag_seconds: float | None = None
 
     def start(self) -> None:
@@ -749,6 +751,8 @@ class RealtimeEvaluationCoalescer:
                 "last_evaluation_duration_seconds": self._last_evaluation_duration_seconds,
                 "last_urgent_enqueued_at": self._last_urgent_enqueued_at,
                 "last_urgent_evaluated_at": self._last_urgent_evaluated_at,
+                "last_urgent_queue_wait_seconds": self._last_urgent_queue_wait_seconds,
+                "last_urgent_evaluation_duration_seconds": self._last_urgent_evaluation_duration_seconds,
                 "last_urgent_evaluation_lag_seconds": self._last_urgent_evaluation_lag_seconds,
             }
 
@@ -814,6 +818,12 @@ class RealtimeEvaluationCoalescer:
         updated_token_ids = {token for tokens in pending.values() for token in tokens}
         urgent_event_keys = set(self._inflight_urgent_event_keys)
         started_at = time.monotonic()
+        with self._condition:
+            urgent_enqueued_at = [
+                self._urgent_enqueued_monotonic_by_event[event_key]
+                for event_key in urgent_event_keys.intersection(pending)
+                if event_key in self._urgent_enqueued_monotonic_by_event
+            ]
         try:
             self.evaluator(updated_token_ids)
         except Exception as exc:  # noqa: BLE001
@@ -824,16 +834,20 @@ class RealtimeEvaluationCoalescer:
                 urgent_completed = urgent_event_keys.intersection(pending)
                 if urgent_completed:
                     completed_at = time.monotonic()
-                    enqueued_at = [
-                        self._urgent_enqueued_monotonic_by_event[event_key]
-                        for event_key in urgent_completed
-                        if event_key in self._urgent_enqueued_monotonic_by_event
-                    ]
                     self._urgent_processed_event_count += len(urgent_completed)
                     self._last_urgent_evaluated_at = utc_now_iso()
+                    self._last_urgent_queue_wait_seconds = (
+                        round(max(started_at - enqueued for enqueued in urgent_enqueued_at), 3)
+                        if urgent_enqueued_at
+                        else None
+                    )
+                    self._last_urgent_evaluation_duration_seconds = round(
+                        completed_at - started_at,
+                        3,
+                    )
                     self._last_urgent_evaluation_lag_seconds = (
-                        round(max(completed_at - started for started in enqueued_at), 3)
-                        if enqueued_at
+                        round(max(completed_at - enqueued for enqueued in urgent_enqueued_at), 3)
+                        if urgent_enqueued_at
                         else None
                     )
                 for event_key in pending:
@@ -3296,6 +3310,25 @@ def _evaluate_realtime_update(
     for market in market_by_id.values():
         event_groups.setdefault(_market_event_key(market), []).append(market)
     held_market_ids = {position.market_id for position in broker.state.positions}
+    markets_to_prefetch = [
+        market
+        for event_key in sorted(touched_events)
+        for market in event_groups[event_key]
+        if (
+            market.market_id in updated_market_ids_by_event.get(event_key, set())
+            or market.market_id in held_market_ids
+        )
+    ]
+    signal_prefetch_errors = _prefetch_realtime_signals(
+        markets_to_prefetch,
+        settings,
+        signals_by_market,
+        signal_refreshed_at_by_market,
+        probability_estimator=probability_estimator,
+        observation_provider=observation_provider,
+        residual_profile_store=residual_profile_store,
+        now=current,
+    )
     pending_event_candidates: list[list[PortfolioCandidate]] = []
     for event_key in sorted(touched_events):
         entry_bankroll = available_entry_bankroll(broker, client)
@@ -3329,6 +3362,8 @@ def _evaluate_realtime_update(
                     decision_ts = broker.log_decision(market, result, signal.note, market_type, signal=signal)
                     candidates.extend(_event_portfolio_candidates(market, signal, result, per_side, market_type, decision_ts))
                     continue
+                if market.market_id in signal_prefetch_errors:
+                    raise signal_prefetch_errors[market.market_id]
                 if market.market_id not in signals_by_market or _realtime_signal_is_stale(
                     market,
                     settings,
@@ -3480,20 +3515,104 @@ def _refresh_realtime_signal_if_needed(
     ):
         return
 
+    signal = _compute_realtime_signal(
+        market,
+        settings,
+        probability_estimator=probability_estimator,
+        observation_provider=observation_provider,
+        residual_profile_store=residual_profile_store,
+        now=current,
+    )
+    signals_by_market[market.market_id] = signal
+    signal_refreshed_at_by_market[market.market_id] = current
+
+
+def _compute_realtime_signal(
+    market: RawMarket,
+    settings: Settings,
+    *,
+    probability_estimator: Any = estimate_station_probability,
+    observation_provider: Any | None = None,
+    residual_profile_store: ResidualProfileStore | None = None,
+    now: datetime,
+) -> WeatherSignal:
     gated = pre_station_tradeability_gate(market, settings, "temperature")
     if gated is not None:
         signal, _result = gated
-    else:
-        signal = _call_probability_estimator(
-            probability_estimator,
-            market.question,
-            settings=settings,
+        return signal
+    return _call_probability_estimator(
+        probability_estimator,
+        market.question,
+        settings=settings,
+        observation_provider=observation_provider,
+        residual_profile_store=residual_profile_store,
+        now=now,
+    )
+
+
+def _prefetch_realtime_signals(
+    markets: list[RawMarket],
+    settings: Settings,
+    signals_by_market: dict[str, WeatherSignal],
+    signal_refreshed_at_by_market: dict[str, datetime] | None,
+    *,
+    probability_estimator: Any = estimate_station_probability,
+    observation_provider: Any | None = None,
+    residual_profile_store: ResidualProfileStore | None = None,
+    now: datetime,
+    max_workers: int = REALTIME_FINAL_CHECK_MAX_WORKERS,
+) -> dict[str, Exception]:
+    if signal_refreshed_at_by_market is None:
+        return {}
+    current = _utc_datetime(now)
+    unique_markets = list({market.market_id: market for market in markets}.values())
+    stale_markets = [
+        market
+        for market in unique_markets
+        if market.market_id not in signals_by_market
+        or _realtime_signal_is_stale(
+            market,
+            settings,
+            signal_refreshed_at_by_market,
+            now=current,
+        )
+    ]
+    if not stale_markets:
+        return {}
+
+    def compute(market: RawMarket) -> WeatherSignal:
+        return _compute_realtime_signal(
+            market,
+            settings,
+            probability_estimator=probability_estimator,
             observation_provider=observation_provider,
             residual_profile_store=residual_profile_store,
             now=current,
         )
-    signals_by_market[market.market_id] = signal
-    signal_refreshed_at_by_market[market.market_id] = current
+
+    worker_count = min(max(1, int(max_workers)), len(stale_markets))
+    if worker_count == 1:
+        completed = []
+        errors: dict[str, Exception] = {}
+        for market in stale_markets:
+            try:
+                completed.append((market, compute(market)))
+            except Exception as exc:  # noqa: BLE001
+                errors[market.market_id] = exc
+    else:
+        completed = []
+        errors = {}
+        with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="station-signal") as executor:
+            future_by_market = {executor.submit(compute, market): market for market in stale_markets}
+            for future, market in future_by_market.items():
+                try:
+                    completed.append((market, future.result()))
+                except Exception as exc:  # noqa: BLE001
+                    errors[market.market_id] = exc
+    for market, signal in completed:
+        signals_by_market[market.market_id] = signal
+        signal_refreshed_at_by_market[market.market_id] = current
+    return errors
 
 
 def _stream_status_phase(
@@ -3848,10 +3967,15 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
                         now - station_refreshed_at
                     ).total_seconds() >= settings.station_nowcast_cache_ttl_seconds:
                         failed_phase = "station_observation_refresh"
+                        station_refresh_started_at = time.monotonic()
                         changed_station_ids = _refresh_official_station_observations(
                             observation_provider,
                             now=now,
                             station_state_by_id=station_state_by_id,
+                        )
+                        station_refresh_duration_seconds = round(
+                            time.monotonic() - station_refresh_started_at,
+                            3,
                         )
                         with update_lock:
                             urgent_timer_tokens, normal_timer_tokens, timer_market_ids = (
@@ -3879,6 +4003,15 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
                                 evaluator_worker,
                                 normal_timer_tokens,
                             )
+                        update_runner_status_fields(
+                            settings,
+                            official_station_refresh={
+                                "duration_seconds": station_refresh_duration_seconds,
+                                "changed_station_count": len(changed_station_ids),
+                                "changed_station_ids": sorted(changed_station_ids),
+                                "completed_at": utc_now_iso(),
+                            },
+                        )
                         station_refreshed_at = now
                     if (now - status_updated_at).total_seconds() >= settings.runner_health_status_interval_seconds:
                         failed_phase = "runner_status_update"

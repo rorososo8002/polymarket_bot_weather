@@ -190,6 +190,100 @@ def test_stream_backed_client_does_not_wait_for_one_slow_final_prefetch(monkeypa
     assert "slow-token" not in client._final_book_prefetched_at
 
 
+def test_realtime_signal_prefetch_computes_independent_markets_concurrently(monkeypatch):
+    markets = [
+        RawMarket(
+            f"market-{index}",
+            "Will the highest temperature in Seoul be 29C on July 17?",
+            f"market-{index}",
+            True,
+            False,
+            f"yes-{index}",
+            f"no-{index}",
+            event_id=f"event-{index}",
+        )
+        for index in range(4)
+    ]
+    barrier = threading.Barrier(len(markets))
+    worker_names: set[str] = set()
+
+    def estimator(question: str, **_kwargs) -> WeatherSignal:
+        worker_names.add(threading.current_thread().name)
+        barrier.wait(timeout=1.0)
+        return WeatherSignal(
+            0.1,
+            1.0,
+            "concurrent-test",
+            "cached observation",
+            parse_weather_question(question),
+        )
+
+    monkeypatch.setattr(runner_module, "pre_station_tradeability_gate", lambda *_args: None)
+    signals: dict[str, WeatherSignal] = {}
+    refreshed: dict[str, datetime] = {}
+
+    errors = runner_module._prefetch_realtime_signals(
+        markets,
+        Settings(),
+        signals,
+        refreshed,
+        probability_estimator=estimator,
+        now=datetime(2026, 7, 17, tzinfo=timezone.utc),
+        max_workers=4,
+    )
+
+    assert errors == {}
+    assert set(signals) == {market.market_id for market in markets}
+    assert set(refreshed) == set(signals)
+    assert len(worker_names) == len(markets)
+
+
+def test_realtime_signal_prefetch_keeps_other_markets_when_one_calculation_fails(monkeypatch):
+    markets = [
+        RawMarket(
+            f"market-{temperature}",
+            f"Will the highest temperature in Seoul be {temperature}C on July 17?",
+            f"market-{temperature}",
+            True,
+            False,
+            f"yes-{temperature}",
+            f"no-{temperature}",
+            event_id=f"event-{temperature}",
+        )
+        for temperature in (29, 30)
+    ]
+
+    def estimator(question: str, **_kwargs) -> WeatherSignal:
+        if "30C" in question:
+            raise RuntimeError("one market failed")
+        return WeatherSignal(
+            0.1,
+            1.0,
+            "failure-isolation-test",
+            "cached observation",
+            parse_weather_question(question),
+        )
+
+    monkeypatch.setattr(runner_module, "pre_station_tradeability_gate", lambda *_args: None)
+    signals: dict[str, WeatherSignal] = {}
+    refreshed: dict[str, datetime] = {}
+
+    errors = runner_module._prefetch_realtime_signals(
+        markets,
+        Settings(),
+        signals,
+        refreshed,
+        probability_estimator=estimator,
+        now=datetime(2026, 7, 17, tzinfo=timezone.utc),
+        max_workers=1,
+    )
+
+    assert set(signals) == {"market-29"}
+    assert set(refreshed) == {"market-29"}
+    assert set(errors) == {"market-30"}
+    assert str(errors["market-30"]) == "one market failed"
+
+
 def test_fetch_books_keeps_available_side_when_other_side_snapshot_missing():
     class PartialClient:
         def get_order_book(self, token_id: str) -> OrderBook:
@@ -1105,12 +1199,17 @@ def test_realtime_evaluation_coalescer_prioritizes_urgent_events_before_old_queu
 
 def test_realtime_evaluation_coalescer_station_change_jumps_ahead_of_normal_queue():
     calls: list[set[str]] = []
+
+    def evaluator(tokens: set[str]) -> None:
+        time.sleep(0.05)
+        calls.append(set(tokens))
+
     worker = RealtimeEvaluationCoalescer(
         event_key_by_token={
             "normal-token": "normal-event",
             "station-token": "station-event",
         },
-        evaluator=lambda tokens: calls.append(set(tokens)),
+        evaluator=evaluator,
         max_batch_events=1,
         coalesce_seconds=0.0,
         event_priority=lambda event_key: (0 if event_key == "normal-event" else 9, event_key),
@@ -1128,6 +1227,8 @@ def test_realtime_evaluation_coalescer_station_change_jumps_ahead_of_normal_queu
     assert status["urgent_processed_event_count"] == 1
     assert status["last_urgent_enqueued_at"]
     assert status["last_urgent_evaluated_at"]
+    assert status["last_urgent_queue_wait_seconds"] is not None
+    assert status["last_urgent_evaluation_duration_seconds"] >= 0.04
     assert status["last_urgent_evaluation_lag_seconds"] is not None
 
 
