@@ -122,6 +122,9 @@ notes only when they prevent a repeated mistake.
 - Quiet books still receive scheduled reevaluation. Crossing formation
   monitoring start, city-month q75, or station-local 16:00 is urgent; moving
   into a new residual 30-minute bin is a normal preemptible wakeup.
+- The first station refresh after process start establishes the comparison
+  baseline. It is not a change event; only a later state difference may fan out
+  urgent station work.
 
 ## 6. Sizing
 

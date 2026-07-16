@@ -101,6 +101,11 @@ city-month q75, and station-local 16:00 crossings are urgent. A residual
 30-minute-bin transition is queued as ordinary preemptible work. Therefore a
 time-only eligibility change does not depend on another book or METAR update.
 
+On process start, the first official-station refresh only establishes the
+comparison baseline. Treating a missing previous key as a change creates a
+false all-city urgent burst, which defeats normal-batch preemption immediately
+after every deployment.
+
 The station-state key includes observation time, current and extreme
 temperatures, high-departure and low-rebound confirmation, publication-due
 status, and unavailability reason. A time-driven safety-state transition can
@@ -163,5 +168,6 @@ Keep regression tests for all of these cases:
 - Track urgent processed, waiting, lag, and dropped counts in runner status.
 - Keep queue limits and retry limits finite.
 - Never publish a background response after its generation was invalidated.
+- Do not interpret initial state registration as a state transition.
 - Parallelize independent reads, not account or ledger mutations.
 - Measure last-city completion lag, not only first-batch dispatch time.

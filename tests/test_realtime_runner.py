@@ -508,7 +508,7 @@ def test_station_refresh_enqueues_only_changed_city_high_exact_no(monkeypatch):
                 unavailable_reason="",
             )
 
-    runner_module._refresh_official_station_observations(
+    initial_changed_station_ids = runner_module._refresh_official_station_observations(
         FakeProvider(),
         now=now,
         station_state_by_id=state_by_station,
@@ -560,6 +560,7 @@ def test_station_refresh_enqueues_only_changed_city_high_exact_no(monkeypatch):
         station_ids=changed_station_ids,
     )
 
+    assert initial_changed_station_ids == set()
     assert changed_station_ids == {seoul.station_id}
     assert accepted == 1
     assert worker._pending_tokens_by_event == {"seoul-high-event": {"seoul-no"}}

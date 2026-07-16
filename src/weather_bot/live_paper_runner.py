@@ -3521,7 +3521,7 @@ def _refresh_official_station_observations(
             continue
         station_id = str(getattr(observation, "station_id", "") or station.station_id).upper()
         state_key = _station_observation_state_key(observation)
-        if station_state_by_id.get(station_id) != state_key:
+        if station_id in station_state_by_id and station_state_by_id[station_id] != state_key:
             changed_station_ids.add(station_id)
         station_state_by_id[station_id] = state_key
     return changed_station_ids
