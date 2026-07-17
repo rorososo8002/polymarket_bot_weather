@@ -1019,6 +1019,8 @@ def estimate_station_signal(
         f"{station.station_name} [{station.station_id}] target_date={target.isoformat()}; "
         f"evidence=official-station; {observed_label}={observed_value_c}; "
         f"observed_at={payload.get('observed_at')}; freshness_seconds={observation.freshness_seconds}; "
+        f"bot_received_at={payload.get('bot_received_at')}; "
+        f"bot_detection_latency_seconds={payload.get('bot_detection_latency_seconds')}; "
         f"nowcast_source={observation.source}; {precision_note}"
     )
     if observation.midnight_reset_status:
@@ -1062,7 +1064,10 @@ def estimate_station_signal(
             strategy_mode=settings.strategy_mode,
             settlement_precision_confidence=precision_profile.confidence,
         )
-    if observation.source == "aviationweather-metar" and not observation.daily_extremes_complete:
+    if (
+        observation.source in {"aviationweather-metar", "kma-aviation-metar"}
+        and not observation.daily_extremes_complete
+    ):
         reason = observation.data_block_reason or "metar-daily-extremes-incomplete"
         return replace(
             _neutral_signal(
@@ -1129,7 +1134,7 @@ def estimate_station_signal(
         )
 
     if (
-        observation.source == "aviationweather-metar"
+        observation.source in {"aviationweather-metar", "kma-aviation-metar"}
         and observation.observation_due_status == "overdue"
         and observation.next_observation_due_at is not None
     ):

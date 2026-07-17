@@ -1,7 +1,7 @@
 ---
 title: Prefetch AWC METAR stations in bulk
 date: 2026-06-04
-last_updated: 2026-06-25
+last_updated: 2026-07-18
 category: best-practices
 module: station_nowcast
 problem_type: best_practice
@@ -12,7 +12,8 @@ applies_when:
   - "Investigating station nowcast HTTP request volume"
   - "Adding trading-ready METAR stations"
   - "Testing observed high/low derivation from METAR data"
-tags: [awc, metar, nowcast, prefetch, request-limit, paper-trading]
+  - "Adding a faster direct provider in front of AWC recovery history"
+tags: [awc, kma, metar, nowcast, prefetch, request-limit, paper-trading]
 ---
 
 # Prefetch AWC METAR stations in bulk
@@ -54,6 +55,24 @@ if isinstance(payload, list) and len(payload) >= 400:
 Do not silently attach an unsigned row to the requested station. A row missing
 both station identifiers is not evidence for any city.
 
+### A faster direct feed must not bypass continuity
+
+A low-latency provider such as the KMA domestic METAR API may be preferred for
+the newest Korean report, but it usually does not replace AWC's recovery
+history. When the persistent ledger is incomplete or any consecutive gap from
+the saved observation through the returned direct rows exceeds the continuity
+limit, apply the AWC recovery rows first and the direct report second.
+
+Never combine fields from different timestamps. If a direct payload's newest
+report is older than `metar_daily_extremes_state.json`'s saved latest report,
+reject that payload and fall back. Otherwise an older raw temperature can be
+displayed beside a newer ledger timestamp and create false trading evidence.
+
+Backoff scope must match failure scope. Transport or service failures may open
+a shared short circuit breaker, but a malformed or wrong-station response for
+one ICAO station must suppress only that station. A bad RKSI row must not stop
+a healthy RKPK request.
+
 ## Why This Matters
 
 Using the removed parameter produced only a short default response. Replacing
@@ -85,6 +104,9 @@ Required regression checks:
 - latest-only data cannot become a complete daily extreme;
 - a continuous local-midnight handoff survives restart;
 - a continuity gap invalidates the affected day.
+- an internal gap between two direct-provider rows triggers AWC recovery;
+- an older direct report cannot inherit a newer saved timestamp;
+- one station's malformed direct response does not suppress another station.
 
 ## Related
 

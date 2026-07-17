@@ -156,7 +156,8 @@ def _estimate_seoul_high(observed_high_c: float, **kwargs):
     )
 
 
-def test_incomplete_metar_daily_extremes_block_signal_before_probability_calculation() -> None:
+@pytest.mark.parametrize("source", ["aviationweather-metar", "kma-aviation-metar"])
+def test_incomplete_metar_daily_extremes_block_signal_before_probability_calculation(source) -> None:
     store = FakeResidualProfileStore(
         _residual_estimate(raw=0.99, yes=0.97, no=0.01)
     )
@@ -165,7 +166,7 @@ def test_incomplete_metar_daily_extremes_block_signal_before_probability_calcula
         settings=Settings(),
         observation_provider=ExactTemperatureProvider(
             observed_high_c=32.0,
-            source="aviationweather-metar",
+            source=source,
             daily_extremes_complete=False,
             data_block_reason="metar-daily-extremes-baseline-missing",
         ),
@@ -214,7 +215,8 @@ def test_lower_tail_high_above_threshold_gets_strong_no() -> None:
     assert "observed_high_c=28.0 > lower_tail_upper_c=27.0" in signal.note
 
 
-def test_overdue_learned_metar_report_blocks_only_non_lock_entry() -> None:
+@pytest.mark.parametrize("source", ["aviationweather-metar", "kma-aviation-metar"])
+def test_overdue_learned_metar_report_blocks_only_non_lock_entry(source) -> None:
     now = datetime(2026, 6, 19, 13, 23, tzinfo=timezone.utc)
     store = FakeResidualProfileStore(_residual_estimate(raw=0.97, yes=0.96, no=0.02))
     signal = estimate_station_signal(
@@ -222,7 +224,7 @@ def test_overdue_learned_metar_report_blocks_only_non_lock_entry() -> None:
         settings=Settings(),
         observation_provider=ExactTemperatureProvider(
             observed_high_c=31.0,
-            source="aviationweather-metar",
+            source=source,
             observed_at=now - timedelta(minutes=33),
             learned_observation_interval_seconds=1800,
             observation_due_status="overdue",

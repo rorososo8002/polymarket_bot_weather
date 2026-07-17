@@ -2376,26 +2376,56 @@ def test_realtime_update_defers_no_ask_market_until_book_becomes_executable(tmp_
     )
     broker = runner_module.PaperBroker(settings)
     wake_when_book_returns: set[str] = set()
+    prefilter_skip_state: dict[str, str] = {}
 
-    breakdown = runner_module._evaluate_realtime_update(
-        {"no-token"},
-        BidOnlyClient(),
-        broker,
-        settings,
-        {"yes-token": market, "no-token": market},
-        {},
-        {market.market_id: "temperature"},
-        {},
-        signal_refreshed_at_by_market={},
-        probability_estimator=lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("signal calculation must wait for an executable NO ask")
-        ),
-        wake_when_book_returns=wake_when_book_returns,
-    )
+    for _ in range(2):
+        breakdown = runner_module._evaluate_realtime_update(
+            {"no-token"},
+            BidOnlyClient(),
+            broker,
+            settings,
+            {"yes-token": market, "no-token": market},
+            {},
+            {market.market_id: "temperature"},
+            {},
+            signal_refreshed_at_by_market={},
+            probability_estimator=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AssertionError("signal calculation must wait for an executable NO ask")
+            ),
+            wake_when_book_returns=wake_when_book_returns,
+            prefilter_skip_state_by_market=prefilter_skip_state,
+        )
 
     assert wake_when_book_returns == {"no-token"}
     assert breakdown["market_count"] == 0
     assert breakdown["book_unavailable_market_count"] == 1
+    diagnostic_rows = [
+        json.loads(line)
+        for line in (tmp_path / "paper_skip_diagnostics.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert len(diagnostic_rows) == 1
+    assert diagnostic_rows[-1]["market_id"] == market.market_id
+    assert diagnostic_rows[-1]["reason_code"] == "SKIP_NO_EXECUTABLE_DEPTH"
+    assert "realtime candidate book unavailable" in diagnostic_rows[-1]["reason"]
+
+
+def test_station_refresh_poll_is_due_every_five_seconds_independent_of_provider_cache():
+    settings = Settings(
+        station_refresh_poll_seconds=5,
+        station_nowcast_cache_ttl_seconds=60,
+    )
+    refreshed_at = datetime(2026, 7, 18, 0, 0, tzinfo=timezone.utc)
+
+    assert runner_module._station_refresh_is_due(
+        refreshed_at,
+        settings,
+        now=refreshed_at + timedelta(seconds=4, milliseconds=999),
+    ) is False
+    assert runner_module._station_refresh_is_due(
+        refreshed_at,
+        settings,
+        now=refreshed_at + timedelta(seconds=5),
+    ) is True
 
 
 def test_realtime_update_skips_known_yes_leaning_signal_in_no_only_mode(tmp_path):
@@ -2433,29 +2463,59 @@ def test_realtime_update_skips_known_yes_leaning_signal_in_no_only_mode(tmp_path
         raw_snapshots_path=str(tmp_path / "raw.jsonl"),
         portfolio_decisions_jsonl_path=str(tmp_path / "portfolio.jsonl"),
         no_only_new_entries=True,
+        min_net_edge=0.99,
     )
     broker = runner_module.PaperBroker(settings)
-    signal = WeatherSignal(
+    signals_by_market = {market.market_id: WeatherSignal(
+        0.90,
+        1.0,
+        "official-station-lock-test",
+        "official_nowcast_lock=test",
+        parse_weather_question(question),
+    )}
+    prefilter_skip_state: dict[str, str] = {}
+
+    def evaluate() -> dict[str, object]:
+        return runner_module._evaluate_realtime_update(
+            {"no-token"},
+            CachedAskClient(),
+            broker,
+            settings,
+            {"yes-token": market, "no-token": market},
+            signals_by_market,
+            {market.market_id: "temperature"},
+            {},
+            prefilter_skip_state_by_market=prefilter_skip_state,
+        )
+
+    breakdown = evaluate()
+
+    assert breakdown["market_count"] == 0
+    assert breakdown["signal_ineligible_market_count"] == 1
+    signals_by_market[market.market_id] = WeatherSignal(
+        0.05,
+        1.0,
+        "official-station-lock-test",
+        "official_nowcast_lock=test",
+        parse_weather_question(question),
+    )
+    evaluate()
+    signals_by_market[market.market_id] = WeatherSignal(
         0.90,
         1.0,
         "official-station-lock-test",
         "official_nowcast_lock=test",
         parse_weather_question(question),
     )
-
-    breakdown = runner_module._evaluate_realtime_update(
-        {"no-token"},
-        CachedAskClient(),
-        broker,
-        settings,
-        {"yes-token": market, "no-token": market},
-        {market.market_id: signal},
-        {market.market_id: "temperature"},
-        {},
-    )
-
-    assert breakdown["market_count"] == 0
-    assert breakdown["signal_ineligible_market_count"] == 1
+    evaluate()
+    diagnostic_rows = [
+        json.loads(line)
+        for line in (tmp_path / "paper_skip_diagnostics.jsonl").read_text(encoding="utf-8").splitlines()
+        if json.loads(line)["reason_code"] == "SKIP_SIGNAL_INELIGIBLE"
+    ]
+    assert len(diagnostic_rows) == 2
+    assert diagnostic_rows[-1]["market_id"] == market.market_id
+    assert diagnostic_rows[-1]["reason_code"] == "SKIP_SIGNAL_INELIGIBLE"
 
 
 def test_realtime_price_update_evaluates_only_the_changed_market_in_event(tmp_path):

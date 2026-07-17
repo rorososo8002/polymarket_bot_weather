@@ -3376,6 +3376,36 @@ def _record_station_signal_pending(
     )
 
 
+def _record_realtime_prefilter_skip(
+    broker: PaperBroker,
+    market: RawMarket,
+    market_type: str,
+    reason: str,
+    *,
+    signal: WeatherSignal | None = None,
+    prefilter_skip_state_by_market: dict[str, str] | None = None,
+) -> None:
+    reason_code = reason.split(":", 1)[0]
+    if prefilter_skip_state_by_market is not None:
+        if prefilter_skip_state_by_market.get(market.market_id) == reason_code:
+            return
+        prefilter_skip_state_by_market[market.market_id] = reason_code
+    if signal is None:
+        try:
+            parsed = parse_weather_question(market.question)
+        except Exception:  # noqa: BLE001
+            parsed = None
+        signal = WeatherSignal(
+            p_true=0.5,
+            confidence=0.0,
+            source="realtime-prefilter",
+            note=reason,
+            parsed=parsed,
+        )
+    result = EdgeResult("SKIP", signal.p_true, None, -999.0, 0.0, 0.0, reason)
+    broker.log_decision(market, result, signal.note, market_type, signal=signal)
+
+
 def _evaluate_realtime_update(
     updated_token_ids: set[str],
     client: StreamBackedPolymarketClient,
@@ -3392,6 +3422,7 @@ def _evaluate_realtime_update(
     residual_profile_store: ResidualProfileStore | None = None,
     now: datetime | None = None,
     wake_when_book_returns: set[str] | None = None,
+    prefilter_skip_state_by_market: dict[str, str] | None = None,
 ) -> dict[str, object]:
     evaluation_started_at = time.monotonic()
     current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
@@ -3496,6 +3527,16 @@ def _evaluate_realtime_update(
         else:
             book_unavailable_market_ids.add(market.market_id)
 
+    for market in markets_to_prefetch:
+        if market.market_id in book_unavailable_market_ids:
+            _record_realtime_prefilter_skip(
+                broker,
+                market,
+                market_types.get(market.market_id, "temperature"),
+                "SKIP_NO_EXECUTABLE_DEPTH: realtime candidate book unavailable; new NO entry deferred",
+                prefilter_skip_state_by_market=prefilter_skip_state_by_market,
+            )
+
     touched_candidate_tokens = {
         str(token_id)
         for market in markets_to_prefetch
@@ -3530,6 +3571,20 @@ def _evaluate_realtime_update(
         and market.market_id in signals_by_market
         and not _realtime_signal_allows_new_entry(signals_by_market[market.market_id], settings)
     }
+    for market in markets_ready_for_evaluation:
+        if market.market_id in signal_ineligible_market_ids:
+            _record_realtime_prefilter_skip(
+                broker,
+                market,
+                market_types.get(market.market_id, "temperature"),
+                "SKIP_SIGNAL_INELIGIBLE: realtime signal is not eligible for a new NO entry",
+                signal=signals_by_market[market.market_id],
+                prefilter_skip_state_by_market=prefilter_skip_state_by_market,
+            )
+    if prefilter_skip_state_by_market is not None:
+        for market in markets_ready_for_evaluation:
+            if market.market_id not in signal_ineligible_market_ids:
+                prefilter_skip_state_by_market.pop(market.market_id, None)
     evaluation_market_ids = ready_market_ids - signal_ineligible_market_ids
     markets_selected_for_evaluation = [
         market for market in markets_ready_for_evaluation if market.market_id in evaluation_market_ids
@@ -3902,6 +3957,18 @@ def _refresh_official_station_observations(
     return changed_station_ids
 
 
+def _station_refresh_is_due(
+    refreshed_at: datetime,
+    settings: Settings,
+    *,
+    now: datetime,
+) -> bool:
+    return (now - refreshed_at).total_seconds() >= max(
+        1,
+        int(settings.station_refresh_poll_seconds),
+    )
+
+
 def _scheduled_realtime_probe_tokens(
     markets: list[RawMarket],
     signals_by_market: dict[str, WeatherSignal],
@@ -4083,6 +4150,7 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
                 settings,
             )
             wake_when_book_returns: set[str] = set()
+            prefilter_skip_state_by_market: dict[str, str] = {}
             event_priorities = _realtime_event_priorities(
                 list(market_by_id.values()),
                 open_market_ids=open_market_ids,
@@ -4107,6 +4175,7 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
                             observation_provider=observation_provider,
                             residual_profile_store=residual_profile_store,
                             wake_when_book_returns=wake_when_book_returns,
+                            prefilter_skip_state_by_market=prefilter_skip_state_by_market,
                         )
                         price_watch_token_ids = _realtime_price_watch_token_ids(
                             stream_markets,
@@ -4195,7 +4264,7 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
             station_state_by_id: dict[str, tuple[Any, ...]] = {}
             timer_bucket_by_market: dict[str, str] = {}
             station_refreshed_at = status_updated_at - timedelta(
-                seconds=settings.station_nowcast_cache_ttl_seconds
+                seconds=max(1, int(settings.station_refresh_poll_seconds))
             )
             try:
                 failed_phase = "websocket_monitoring"
@@ -4216,9 +4285,7 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
                             stream_holder["client"] = StreamBackedPolymarketClient(settings.gamma_base, settings.clob_base, stream)
                             stream.start(market_by_token.keys())
                         status_updated_at = now
-                    if (
-                        now - station_refreshed_at
-                    ).total_seconds() >= settings.station_nowcast_cache_ttl_seconds:
+                    if _station_refresh_is_due(station_refreshed_at, settings, now=now):
                         failed_phase = "station_observation_refresh"
                         station_refresh_started_at = time.monotonic()
                         changed_station_ids = _refresh_official_station_observations(
@@ -4262,6 +4329,13 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
                             "changed_station_ids": sorted(changed_station_ids),
                             "completed_at": utc_now_iso(),
                         }
+                        request_log_health = getattr(
+                            observation_provider,
+                            "request_log_health",
+                            None,
+                        )
+                        if callable(request_log_health):
+                            latest_official_station_refresh["request_log"] = request_log_health()
                         update_runner_status_fields(
                             settings,
                             official_station_refresh=latest_official_station_refresh,

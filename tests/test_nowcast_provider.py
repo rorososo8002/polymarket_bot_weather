@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import threading
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -46,6 +46,43 @@ def read_jsonl(path: Path) -> list[dict[str, object]]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
 
 
+def seed_complete_metar_day(
+    provider: AviationWeatherMetarNowcastProvider,
+    *,
+    station_id: str,
+    local_date: str,
+    last_observed_at: str,
+    high_c: float,
+    low_c: float,
+) -> None:
+    provider._metar_daily_extremes_state = {
+        "schema_version": 1,
+        "stations": {
+            station_id: {
+                "last_local_date": local_date,
+                "last_observed_at": last_observed_at,
+                "days": {
+                    local_date: {
+                        "high_c": high_c,
+                        "high_bucket_c": int(high_c),
+                        "high_bucket_confirmations": 1,
+                        "low_c": low_c,
+                        "high_observed_at": last_observed_at,
+                        "high_last_observed_at": last_observed_at,
+                        "high_drop_observed_at": "",
+                        "low_observed_at": last_observed_at,
+                        "low_last_observed_at": last_observed_at,
+                        "low_rise_observed_at": "",
+                        "latest_observed_at": last_observed_at,
+                        "complete": True,
+                        "blocked_reason": "",
+                    }
+                },
+            }
+        },
+    }
+
+
 def test_aviationweather_provider_default_cache_ttl_matches_provider_floor():
     provider = AviationWeatherMetarNowcastProvider(http_get=lambda *_args, **_kwargs: FakeResponse({}))
 
@@ -87,6 +124,7 @@ def provider_for(
     freshness_seconds: int = 5400,
     cache_ttl_seconds: int = 0,
     request_log_path: Path | None = None,
+    clock=None,
 ):
     calls = []
 
@@ -99,6 +137,7 @@ def provider_for(
         freshness_seconds=freshness_seconds,
         cache_ttl_seconds=cache_ttl_seconds,
         request_log_path=request_log_path,
+        **({"clock": clock} if clock is not None else {}),
     )
     return provider, calls
 
@@ -667,6 +706,7 @@ def test_aviationweather_request_log_records_external_fetch_not_cache_hit(tmp_pa
         load_fixture("aviationweather_rksi_fresh.json"),
         cache_ttl_seconds=900,
         request_log_path=request_log_path,
+        clock=lambda: datetime(2026, 6, 2, 8, 30, tzinfo=timezone.utc),
     )
 
     provider.observed_high_so_far(
@@ -683,19 +723,26 @@ def test_aviationweather_request_log_records_external_fetch_not_cache_hit(tmp_pa
     rows = read_jsonl(request_log_path)
 
     assert len(calls) == 1
-    assert len(rows) == 1
-    assert rows[0]["city"] == "bulk-metar"
-    assert rows[0]["station_id"] == "METAR_BULK"
-    assert rows[0]["station_name"] == "Aviation Weather Center METAR bulk prefetch"
-    assert rows[0]["request_mode"] == "awc_metar_bulk_cache"
-    assert rows[0]["trigger_city"] == "seoul"
-    assert rows[0]["trigger_station_id"] == STATION_MAP["seoul"].station_id
-    assert STATION_MAP["seoul"].station_id in rows[0]["requested_station_ids"]
-    assert rows[0]["source"] == "aviationweather-metar"
-    assert rows[0]["status"] == "success"
-    assert rows[0]["status_code"] == 200
-    assert rows[0]["cache_miss_reason"] == "empty-cache"
-    assert rows[0]["requested_at"] == "2026-06-02T08:30:00+00:00"
+    request_rows = [row for row in rows if row.get("request_mode") == "awc_metar_bulk_cache"]
+    delivery_rows = [row for row in rows if row.get("request_mode") == "observation_delivery"]
+
+    assert len(request_rows) == 1
+    assert len(delivery_rows) == 1
+    assert request_rows[0]["city"] == "bulk-metar"
+    assert request_rows[0]["station_id"] == "METAR_BULK"
+    assert request_rows[0]["station_name"] == "Aviation Weather Center METAR bulk prefetch"
+    assert request_rows[0]["trigger_city"] == "seoul"
+    assert request_rows[0]["trigger_station_id"] == STATION_MAP["seoul"].station_id
+    assert STATION_MAP["seoul"].station_id in request_rows[0]["requested_station_ids"]
+    assert request_rows[0]["source"] == "aviationweather-metar"
+    assert request_rows[0]["status"] == "success"
+    assert request_rows[0]["status_code"] == 200
+    assert request_rows[0]["cache_miss_reason"] == "empty-cache"
+    assert request_rows[0]["requested_at"] == "2026-06-02T08:30:00+00:00"
+    assert delivery_rows[0]["station_id"] == "RKSI"
+    assert delivery_rows[0]["observation_observed_at"] == "2026-06-02T08:00:00+00:00"
+    assert delivery_rows[0]["latest_temp_c"] == 26.7
+    assert delivery_rows[0]["bot_detection_latency_seconds"] == 1800
 
 
 def test_aviationweather_bulk_request_floor_is_one_minute_even_when_station_cache_is_short(tmp_path):
@@ -722,11 +769,410 @@ def test_aviationweather_bulk_request_floor_is_one_minute_even_when_station_cach
         now=datetime(2026, 6, 2, 8, 31, 1, tzinfo=timezone.utc),
     )
 
-    rows = read_jsonl(request_log_path)
+    rows = [
+        row
+        for row in read_jsonl(request_log_path)
+        if row.get("request_mode") == "awc_metar_bulk_cache"
+    ]
     assert len(calls) == 2
     assert len(rows) == 2
     assert rows[0]["requested_at"] == "2026-06-02T08:30:00+00:00"
     assert rows[1]["requested_at"] == "2026-06-02T08:31:01+00:00"
+
+
+def test_kma_metar_is_primary_for_configured_korean_station(tmp_path):
+    calls: list[str] = []
+
+    def fake_get(url, *, params, timeout, headers):
+        calls.append(url)
+        assert params["icao"] == "RKSI"
+        assert params["ServiceKey"] == "test-key"
+        return FakeResponse(
+            {
+                "response": {
+                    "header": {"resultCode": "00", "resultMsg": "NORMAL_SERVICE"},
+                    "body": {
+                        "items": {
+                            "item": [
+                                {
+                                    "icaoCode": "RKSI",
+                                    "metarMsg": "METAR RKSI 170430Z 03008KT CAVOK 31/24 Q1001 NOSIG=",
+                                }
+                            ]
+                        }
+                    },
+                }
+            }
+        )
+
+    provider = AviationWeatherMetarNowcastProvider(
+        http_get=fake_get,
+        cache_ttl_seconds=60,
+        request_log_path=tmp_path / "requests.jsonl",
+        kma_metar_service_key="test-key",
+        kma_metar_poll_seconds=30,
+        kma_metar_station_ids={"RKSI", "RKPK"},
+        clock=lambda: datetime(2026, 7, 17, 4, 30, 20, tzinfo=timezone.utc),
+    )
+    seed_complete_metar_day(
+        provider,
+        station_id="RKSI",
+        local_date="2026-07-17",
+        last_observed_at="2026-07-17T04:00:00+00:00",
+        high_c=30.0,
+        low_c=24.0,
+    )
+
+    observation = provider.observed_high_so_far(
+        STATION_MAP["seoul"],
+        target_date=date(2026, 7, 17),
+        now=datetime(2026, 7, 17, 4, 30, 20, tzinfo=timezone.utc),
+    )
+
+    assert calls == [nowcast_module.KMA_METAR_SOURCE_URL]
+    assert observation.source == "kma-aviation-metar"
+    assert observation.latest_temp_c == 31.0
+    assert observation.observed_at.isoformat() == "2026-07-17T04:30:00+00:00"
+    assert observation.bot_detection_latency_seconds == 20
+    assert observation.source_latency_status == "provider-timestamp-unavailable"
+    rows = read_jsonl(tmp_path / "requests.jsonl")
+    assert [row["request_mode"] for row in rows] == ["kma_metar_fast", "observation_delivery"]
+
+
+def test_kma_metar_failure_falls_back_to_awc(tmp_path):
+    awc_payload = load_fixture("aviationweather_rksi_fresh.json")
+    calls: list[str] = []
+
+    def fake_get(url, *, params, timeout, headers):
+        calls.append(url)
+        if url == nowcast_module.KMA_METAR_SOURCE_URL:
+            return FakeResponse({}, status_code=503)
+        return FakeResponse(awc_payload)
+
+    provider = AviationWeatherMetarNowcastProvider(
+        http_get=fake_get,
+        cache_ttl_seconds=60,
+        request_log_path=tmp_path / "requests.jsonl",
+        kma_metar_service_key="test-key",
+        kma_metar_station_ids={"RKSI"},
+    )
+
+    observation = provider.observed_high_so_far(
+        STATION_MAP["seoul"],
+        target_date=date(2026, 6, 2),
+        now=datetime(2026, 6, 2, 8, 30, tzinfo=timezone.utc),
+    )
+
+    assert calls == [nowcast_module.KMA_METAR_SOURCE_URL, nowcast_module.AVIATIONWEATHER_METAR_SOURCE_URL]
+    assert observation.source == "aviationweather-metar"
+    assert observation.latest_temp_c == 26.7
+
+
+@pytest.mark.parametrize(
+    "kma_payload",
+    [
+        {
+            "response": {
+                "header": {"resultCode": "00", "resultMsg": "NORMAL_SERVICE"},
+                "body": {
+                    "items": {
+                        "item": [{
+                            "icaoCode": "RKSI",
+                            "metarMsg": "METAR RKPK 020830Z 03008KT CAVOK 31/24 Q1001 NOSIG=",
+                        }]
+                    }
+                },
+            }
+        },
+        {
+            "response": {
+                "body": {
+                    "items": {
+                        "item": [{
+                            "icaoCode": "RKSI",
+                            "metarMsg": "METAR RKSI 020830Z 03008KT CAVOK 31/24 Q1001 NOSIG=",
+                        }]
+                    }
+                }
+            }
+        },
+    ],
+)
+def test_invalid_kma_identity_or_status_falls_back_to_awc(tmp_path, kma_payload):
+    awc_payload = load_fixture("aviationweather_rksi_fresh.json")
+
+    def fake_get(url, *, params, timeout, headers):
+        if url == nowcast_module.KMA_METAR_SOURCE_URL:
+            return FakeResponse(kma_payload)
+        return FakeResponse(awc_payload)
+
+    provider = AviationWeatherMetarNowcastProvider(
+        http_get=fake_get,
+        cache_ttl_seconds=60,
+        kma_metar_service_key="test-key",
+        kma_metar_station_ids={"RKSI"},
+    )
+    seed_complete_metar_day(
+        provider,
+        station_id="RKSI",
+        local_date="2026-06-02",
+        last_observed_at="2026-06-02T05:00:00+00:00",
+        high_c=24.0,
+        low_c=18.0,
+    )
+
+    observation = provider.observed_high_so_far(
+        STATION_MAP["seoul"],
+        target_date=date(2026, 6, 2),
+        now=datetime(2026, 6, 2, 8, 30, tzinfo=timezone.utc),
+    )
+
+    assert observation.source == "aviationweather-metar"
+    assert observation.latest_temp_c == 26.7
+
+
+def test_awc_recovery_is_applied_before_newer_kma_report(tmp_path):
+    kma_payload = {
+        "response": {
+            "header": {"resultCode": "00", "resultMsg": "NORMAL_SERVICE"},
+            "body": {
+                "items": {
+                    "item": [{
+                        "icaoCode": "RKSI",
+                        "metarMsg": "METAR RKSI 170430Z 03008KT CAVOK 31/24 Q1001 NOSIG=",
+                    }]
+                }
+            },
+        }
+    }
+    awc_payload = [
+        {
+            "icaoId": "RKSI",
+            "obsTime": f"2026-07-17T0{hour}:00:00.000Z",
+            "temp": temp,
+            "rawOb": f"METAR RKSI 170{hour}00Z 03008KT CAVOK {int(temp):02d}/24 Q1001",
+        }
+        for hour, temp in ((1, 25.0), (2, 27.0), (3, 29.0), (4, 30.0))
+    ]
+    calls: list[str] = []
+
+    def fake_get(url, *, params, timeout, headers):
+        calls.append(url)
+        return FakeResponse(kma_payload if url == nowcast_module.KMA_METAR_SOURCE_URL else awc_payload)
+
+    now = datetime(2026, 7, 17, 4, 30, 20, tzinfo=timezone.utc)
+    provider = AviationWeatherMetarNowcastProvider(
+        http_get=fake_get,
+        cache_ttl_seconds=60,
+        kma_metar_service_key="test-key",
+        kma_metar_station_ids={"RKSI"},
+        clock=lambda: now,
+    )
+    seed_complete_metar_day(
+        provider,
+        station_id="RKSI",
+        local_date="2026-07-17",
+        last_observed_at="2026-07-17T00:00:00+00:00",
+        high_c=24.0,
+        low_c=24.0,
+    )
+
+    observation = provider.observed_high_so_far(
+        STATION_MAP["seoul"],
+        target_date=date(2026, 7, 17),
+        now=now,
+    )
+
+    assert calls == [nowcast_module.KMA_METAR_SOURCE_URL, nowcast_module.AVIATIONWEATHER_METAR_SOURCE_URL]
+    assert observation.source == "kma-aviation-metar"
+    assert observation.daily_extremes_complete is True
+    assert observation.latest_temp_c == 31.0
+    assert observation.observed_high_c == 31.0
+
+
+def test_kma_internal_history_gap_requests_awc_recovery(tmp_path):
+    provider = AviationWeatherMetarNowcastProvider()
+    seed_complete_metar_day(
+        provider,
+        station_id="RKSI",
+        local_date="2026-07-17",
+        last_observed_at="2026-07-17T00:00:00+00:00",
+        high_c=24.0,
+        low_c=24.0,
+    )
+    rows = [
+        {"icaoId": "RKSI", "obsTime": "2026-07-17T00:30:00Z", "temp": 25.0},
+        {"icaoId": "RKSI", "obsTime": "2026-07-17T04:30:00Z", "temp": 31.0},
+    ]
+
+    assert provider._kma_recovery_required(
+        STATION_MAP["seoul"], date(2026, 7, 17), rows
+    ) is True
+
+
+def test_older_kma_report_cannot_mix_with_newer_persisted_observation(tmp_path):
+    kma_payload = {
+        "response": {
+            "header": {"resultCode": "00", "resultMsg": "NORMAL_SERVICE"},
+            "body": {
+                "items": {
+                    "item": [{
+                        "icaoCode": "RKSI",
+                        "metarMsg": "METAR RKSI 170400Z 03008KT CAVOK 27/24 Q1001 NOSIG=",
+                    }]
+                }
+            },
+        }
+    }
+    awc_payload = [{
+        "icaoId": "RKSI",
+        "obsTime": "2026-07-17T04:30:00.000Z",
+        "temp": 30.0,
+        "rawOb": "METAR RKSI 170430Z 03008KT CAVOK 30/24 Q1001",
+    }]
+    calls: list[str] = []
+
+    def fake_get(url, *, params, timeout, headers):
+        calls.append(url)
+        return FakeResponse(kma_payload if url == nowcast_module.KMA_METAR_SOURCE_URL else awc_payload)
+
+    now = datetime(2026, 7, 17, 4, 31, tzinfo=timezone.utc)
+    provider = AviationWeatherMetarNowcastProvider(
+        http_get=fake_get,
+        cache_ttl_seconds=60,
+        kma_metar_service_key="test-key",
+        kma_metar_station_ids={"RKSI"},
+        clock=lambda: now,
+    )
+    seed_complete_metar_day(
+        provider,
+        station_id="RKSI",
+        local_date="2026-07-17",
+        last_observed_at="2026-07-17T04:30:00+00:00",
+        high_c=31.0,
+        low_c=24.0,
+    )
+
+    observation = provider.observed_high_so_far(
+        STATION_MAP["seoul"], target_date=date(2026, 7, 17), now=now
+    )
+
+    assert calls == [nowcast_module.KMA_METAR_SOURCE_URL, nowcast_module.AVIATIONWEATHER_METAR_SOURCE_URL]
+    assert observation.source == "aviationweather-metar"
+    assert observation.observed_at.isoformat() == "2026-07-17T04:30:00+00:00"
+    assert observation.latest_temp_c == 30.0
+    assert observation.observed_high_c == 31.0
+
+
+def test_malformed_kma_for_one_station_does_not_suppress_another(tmp_path):
+    awc_payload = [{
+        "icaoId": "RKSI",
+        "obsTime": "2026-07-17T04:30:00.000Z",
+        "temp": 30.0,
+        "rawOb": "METAR RKSI 170430Z 03008KT CAVOK 30/24 Q1001",
+    }]
+    requested_kma_stations: list[str] = []
+
+    def fake_get(url, *, params, timeout, headers):
+        if url != nowcast_module.KMA_METAR_SOURCE_URL:
+            return FakeResponse(awc_payload)
+        station_id = params["icao"]
+        requested_kma_stations.append(station_id)
+        raw_station_id = "RKPK" if station_id == "RKSI" else station_id
+        return FakeResponse({
+            "response": {
+                "header": {"resultCode": "00", "resultMsg": "NORMAL_SERVICE"},
+                "body": {
+                    "items": {
+                        "item": [{
+                            "icaoCode": station_id,
+                            "metarMsg": (
+                                f"METAR {raw_station_id} 170430Z 03008KT "
+                                "CAVOK 31/24 Q1001 NOSIG="
+                            ),
+                        }]
+                    }
+                },
+            }
+        })
+
+    now = datetime(2026, 7, 17, 4, 30, 20, tzinfo=timezone.utc)
+    provider = AviationWeatherMetarNowcastProvider(
+        http_get=fake_get,
+        cache_ttl_seconds=0,
+        kma_metar_service_key="test-key",
+        kma_metar_station_ids={"RKSI", "RKPK"},
+        clock=lambda: now,
+    )
+    for station_id in ("RKSI", "RKPK"):
+        seed_complete_metar_day(
+            provider,
+            station_id=station_id,
+            local_date="2026-07-17",
+            last_observed_at="2026-07-17T04:00:00+00:00",
+            high_c=30.0,
+            low_c=24.0,
+        )
+
+    provider.observed_high_so_far(
+        STATION_MAP["seoul"], target_date=date(2026, 7, 17), now=now
+    )
+    busan = provider.observed_high_so_far(
+        STATION_MAP["busan"], target_date=date(2026, 7, 17), now=now
+    )
+
+    assert requested_kma_stations == ["RKSI", "RKPK"]
+    assert busan.source == "kma-aviation-metar"
+    assert busan.latest_temp_c == 31.0
+
+
+def test_kma_timeout_is_short_and_suppresses_same_cycle_retry(tmp_path):
+    calls: list[tuple[str, float]] = []
+    clock_now = [datetime(2026, 6, 2, 8, 30, tzinfo=timezone.utc)]
+
+    def fake_get(url, *, params, timeout, headers):
+        calls.append((url, timeout))
+        if url == nowcast_module.KMA_METAR_SOURCE_URL:
+            raise TimeoutError("KMA unavailable")
+        return FakeResponse(load_fixture("aviationweather_rksi_fresh.json"))
+
+    provider = AviationWeatherMetarNowcastProvider(
+        http_get=fake_get,
+        cache_ttl_seconds=0,
+        kma_metar_service_key="test-key",
+        kma_metar_timeout_seconds=3.0,
+        kma_metar_station_ids={"RKSI", "RKPK"},
+        clock=lambda: clock_now[0],
+    )
+    now = clock_now[0]
+
+    provider.observed_high_so_far(STATION_MAP["seoul"], target_date=date(2026, 6, 2), now=now)
+    provider.observed_high_so_far(STATION_MAP["busan"], target_date=date(2026, 6, 2), now=now)
+
+    kma_calls = [call for call in calls if call[0] == nowcast_module.KMA_METAR_SOURCE_URL]
+    assert kma_calls == [(nowcast_module.KMA_METAR_SOURCE_URL, 3.0)]
+
+    clock_now[0] += timedelta(seconds=31)
+    provider.observed_high_so_far(
+        STATION_MAP["seoul"], target_date=date(2026, 6, 2), now=clock_now[0]
+    )
+
+    kma_calls = [call for call in calls if call[0] == nowcast_module.KMA_METAR_SOURCE_URL]
+    assert kma_calls == [
+        (nowcast_module.KMA_METAR_SOURCE_URL, 3.0),
+        (nowcast_module.KMA_METAR_SOURCE_URL, 3.0),
+    ]
+
+
+def test_request_log_health_reports_write_failure(tmp_path):
+    provider = AviationWeatherMetarNowcastProvider(request_log_path=tmp_path)
+
+    provider._append_request_log({"request_mode": "test"})
+
+    health = provider.request_log_health()
+    assert health["status"] == "error"
+    assert health["error"] in {"PermissionError", "IsADirectoryError"}
+    assert health["last_success_at"] == ""
 
 
 def test_aviationweather_provider_supports_verified_icao_station_beyond_seoul():

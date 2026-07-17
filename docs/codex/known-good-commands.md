@@ -27,7 +27,7 @@ Paper-only startup check:
 
 ```powershell
 $env:PYTHONPATH='src'
-& 'C:\Users\wpdla\Python312\python.exe' -m weather_bot --dry-start
+& 'C:\Users\wpdla\Python312\python.exe' -m weather_bot.live_paper_runner --dry-start
 ```
 
 ## Oracle Connection

@@ -180,18 +180,46 @@ def test_open_trade_records_price_anomaly_tag(tmp_path):
 def test_open_trade_records_station_observation_version(tmp_path):
     broker = PaperBroker(_settings(tmp_path))
     observed_at = "2026-06-23T06:00:00+00:00"
-    signal = replace(_signal(), nowcast={"observed_at": observed_at})
+    signal = replace(
+        _signal(),
+        nowcast={
+            "observed_at": observed_at,
+            "request_started_at": "2026-06-23T06:04:00+00:00",
+            "source_received_at": "2026-06-23T06:03:30+00:00",
+            "bot_received_at": "2026-06-23T06:04:02+00:00",
+            "source_latency_seconds": 210,
+            "source_latency_status": "measured",
+            "bot_detection_latency_seconds": 242,
+        },
+    )
 
     broker.open_position(_market(), "yes", _result(), signal=signal)
 
     with (tmp_path / "trades.csv").open(newline="", encoding="utf-8") as handle:
         row = next(csv.DictReader(handle))
     assert row["station_observed_at"] == observed_at
+    assert row["request_started_at"] == "2026-06-23T06:04:00+00:00"
+    assert row["source_received_at"] == "2026-06-23T06:03:30+00:00"
+    assert row["bot_received_at"] == "2026-06-23T06:04:02+00:00"
+    assert row["source_latency_seconds"] == "210"
+    assert row["source_latency_status"] == "measured"
+    assert row["bot_detection_latency_seconds"] == "242"
 
 
 def test_decision_records_strategy_metadata(tmp_path):
     broker = PaperBroker(_settings(tmp_path))
-    signal = _signal()
+    signal = replace(
+        _signal(),
+        nowcast={
+            "observed_at": "2026-06-23T06:00:00+00:00",
+            "request_started_at": "2026-06-23T06:04:00+00:00",
+            "source_received_at": "",
+            "bot_received_at": "2026-06-23T06:04:02+00:00",
+            "source_latency_seconds": None,
+            "source_latency_status": "provider-timestamp-unavailable",
+            "bot_detection_latency_seconds": 242,
+        },
+    )
     result = _result(price_anomaly=True)
 
     broker.log_decision(_market(), result, signal.note, signal=signal)
@@ -202,6 +230,12 @@ def test_decision_records_strategy_metadata(tmp_path):
     assert row["signal_family"] == "abnormal_official_station_mispricing"
     assert row["price_anomaly"] == "true"
     assert row["settlement_precision_confidence"] == "verified"
+    assert row["request_started_at"] == "2026-06-23T06:04:00+00:00"
+    assert row["source_received_at"] == ""
+    assert row["bot_received_at"] == "2026-06-23T06:04:02+00:00"
+    assert row["source_latency_seconds"] == ""
+    assert row["source_latency_status"] == "provider-timestamp-unavailable"
+    assert row["bot_detection_latency_seconds"] == "242"
 
 
 def test_decision_records_structured_probability_and_sizing_audit_fields(tmp_path):

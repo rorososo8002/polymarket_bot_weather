@@ -76,6 +76,12 @@ PAPER_MODEL_VERSION = "weather-paper-v1"
 
 STATION_AUDIT_KEYS = (
     "station_observed_at",
+    "request_started_at",
+    "source_received_at",
+    "bot_received_at",
+    "source_latency_seconds",
+    "source_latency_status",
+    "bot_detection_latency_seconds",
     "station_timezone",
     "target_date_local",
     "station_local_date",
@@ -127,6 +133,12 @@ TRADE_CSV_FIELDNAMES = [
     "condition_type",
     "station_id",
     "station_observed_at",
+    "request_started_at",
+    "source_received_at",
+    "bot_received_at",
+    "source_latency_seconds",
+    "source_latency_status",
+    "bot_detection_latency_seconds",
     "signal_source",
     "signal_confidence",
     "strategy_mode",
@@ -1942,6 +1954,7 @@ class PaperBroker:
             "signal_source": _format_optional_text(entry_metadata.get("signal_source")),
             "signal_confidence": _format_optional_csv_float(entry_metadata.get("signal_confidence")),
         }
+        station_audit = entry_metadata.get("station_audit") or {}
         reason_code = _format_optional_text(entry_metadata.get("reason_code")) or _reason_code(
             reason,
             side if action in {"OPEN", "ADD"} and side in {"YES", "NO"} else action,
@@ -1962,7 +1975,19 @@ class PaperBroker:
             "station_id": _format_optional_text(entry_metadata.get("station_id")) or market_replay["station_id"],
             "station_observed_at": _format_optional_text(
                 entry_metadata.get("station_observed_at")
-                or (entry_metadata.get("station_audit") or {}).get("station_observed_at")
+                or station_audit.get("station_observed_at")
+            ),
+            "request_started_at": _format_optional_text(station_audit.get("request_started_at")),
+            "source_received_at": _format_optional_text(station_audit.get("source_received_at")),
+            "bot_received_at": _format_optional_text(station_audit.get("bot_received_at")),
+            "source_latency_seconds": _format_optional_text(
+                station_audit.get("source_latency_seconds")
+            ),
+            "source_latency_status": _format_optional_text(
+                station_audit.get("source_latency_status")
+            ),
+            "bot_detection_latency_seconds": _format_optional_text(
+                station_audit.get("bot_detection_latency_seconds")
             ),
             "signal_source": signal_replay["signal_source"],
             "signal_confidence": signal_replay["signal_confidence"],
@@ -2043,6 +2068,14 @@ class PaperBroker:
                 "condition_type": replay_metadata["condition_type"],
                 "station_id": replay_metadata["station_id"],
                 "station_observed_at": replay_metadata["station_observed_at"],
+                "request_started_at": replay_metadata["request_started_at"],
+                "source_received_at": replay_metadata["source_received_at"],
+                "bot_received_at": replay_metadata["bot_received_at"],
+                "source_latency_seconds": replay_metadata["source_latency_seconds"],
+                "source_latency_status": replay_metadata["source_latency_status"],
+                "bot_detection_latency_seconds": replay_metadata[
+                    "bot_detection_latency_seconds"
+                ],
                 "signal_source": replay_metadata["signal_source"],
                 "signal_confidence": replay_metadata["signal_confidence"],
                 "strategy_mode": replay_metadata["strategy_mode"],

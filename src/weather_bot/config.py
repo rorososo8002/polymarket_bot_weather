@@ -16,6 +16,9 @@ _POSITIVE_NUMBER_SETTINGS = (
     "runner_health_status_interval_seconds",
     "stream_cycle_interval_seconds",
     "station_nowcast_cache_ttl_seconds",
+    "station_refresh_poll_seconds",
+    "kma_metar_poll_seconds",
+    "kma_metar_timeout_seconds",
     "station_nowcast_freshness_seconds",
     "bankroll_usd",
     "min_order_usd",
@@ -154,6 +157,11 @@ class Settings:
     raw_snapshots_max_disk_usage_pct: float = 0.90
     station_nowcast_enabled: bool = True
     station_nowcast_cache_ttl_seconds: int = 60  # 1 min: matches AWC METAR documented API cadence
+    station_refresh_poll_seconds: int = 5
+    kma_metar_service_key: str = ""
+    kma_metar_poll_seconds: int = 30
+    kma_metar_timeout_seconds: float = 3.0
+    kma_metar_station_ids: str = "RKSI,RKPK"
     station_nowcast_freshness_seconds: int = 5400
     station_nowcast_request_log_path: str = ""
     hko_rollover_state_path: str = ""
@@ -530,6 +538,26 @@ def load_settings() -> Settings:
         station_nowcast_cache_ttl_seconds=_int_env(
             "STATION_NOWCAST_CACHE_TTL_SECONDS",
             Settings.station_nowcast_cache_ttl_seconds,
+        ),
+        station_refresh_poll_seconds=_int_env(
+            "STATION_REFRESH_POLL_SECONDS",
+            Settings.station_refresh_poll_seconds,
+        ),
+        kma_metar_service_key=os.getenv(
+            "KMA_METAR_SERVICE_KEY",
+            Settings.kma_metar_service_key,
+        ),
+        kma_metar_poll_seconds=_int_env(
+            "KMA_METAR_POLL_SECONDS",
+            Settings.kma_metar_poll_seconds,
+        ),
+        kma_metar_timeout_seconds=_float_env(
+            "KMA_METAR_TIMEOUT_SECONDS",
+            Settings.kma_metar_timeout_seconds,
+        ),
+        kma_metar_station_ids=os.getenv(
+            "KMA_METAR_STATION_IDS",
+            Settings.kma_metar_station_ids,
         ),
         station_nowcast_freshness_seconds=_int_env(
             "STATION_NOWCAST_FRESHNESS_SECONDS",

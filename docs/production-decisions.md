@@ -17,6 +17,18 @@ notes only when they prevent a repeated mistake.
 ## 2. Official Observations
 
 - Entries use the mapped official settlement station, not generic forecasts.
+- Korean domestic METAR:
+  - Seoul RKSI and Busan RKPK use the KMA direct METAR API first when
+    `KMA_METAR_SERVICE_KEY` is configured. Check for newly published reports
+    every 30 seconds while the runner checks its local cache every 5 seconds.
+  - Give the direct KMA request at most 3 seconds. On timeout or malformed
+    response, suppress another KMA attempt for one poll interval and use AWC so
+    one slow domestic request cannot hold every following city.
+  - If persisted history has a gap, apply AWC recovery rows chronologically
+    before the newer KMA row. Wrapper ICAO, raw METAR ICAO, and success code
+    must agree; conflicts fail closed.
+  - Keep AWC as recovery and network-failure fallback. A missing, malformed, or
+    wrong-station KMA report never becomes trade evidence by itself.
 - AWC METAR:
   - Background monitoring polls the bulk API at most once per minute; one response covers supported ICAO
     stations.
@@ -38,7 +50,8 @@ notes only when they prevent a repeated mistake.
     lock NO remains allowed. Do not invent a global 30/60-minute schedule.
   - Keep two station-local dates and first timestamps for daily high/low.
     Restart gap, missing baseline, date regression, or incomplete day blocks.
-  - Seoul RKSI and Busan RKPK use this AWC path.
+  - Seoul RKSI and Busan RKPK use this path when the KMA key is absent or its
+    direct request fails.
 - HKO:
   - Poll official since-midnight max/min at most once per 10 minutes.
   - Block after midnight until reset is proven. Same prior-day pair is not reset.

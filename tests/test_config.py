@@ -181,6 +181,11 @@ def test_default_realtime_orderbook_rest_snapshot_is_bounded_verification():
 def test_default_station_nowcast_is_pilot_cached_and_freshness_bounded():
     assert Settings.station_nowcast_enabled is True
     assert Settings.station_nowcast_cache_ttl_seconds == 60  # 1 min: matches AWC METAR documented API cadence
+    assert Settings.station_refresh_poll_seconds == 5
+    assert Settings.kma_metar_service_key == ""
+    assert Settings.kma_metar_poll_seconds == 30
+    assert Settings.kma_metar_timeout_seconds == 3.0
+    assert Settings.kma_metar_station_ids == "RKSI,RKPK"
     assert Settings.station_nowcast_freshness_seconds == 5400
     assert Settings.station_nowcast_request_log_path == ""
     assert Settings.hko_rollover_state_path == ""
@@ -437,6 +442,11 @@ def test_load_settings_reads_station_nowcast_controls(monkeypatch):
     monkeypatch.setenv("STATION_NOWCAST_CACHE_TTL_SECONDS", "300")
     monkeypatch.setenv("STATION_NOWCAST_FRESHNESS_SECONDS", "1800")
     monkeypatch.setenv("STATION_NOWCAST_REQUEST_LOG_PATH", "data/custom_station_nowcast_request_log.jsonl")
+    monkeypatch.setenv("STATION_REFRESH_POLL_SECONDS", "7")
+    monkeypatch.setenv("KMA_METAR_SERVICE_KEY", "secret-value")
+    monkeypatch.setenv("KMA_METAR_POLL_SECONDS", "25")
+    monkeypatch.setenv("KMA_METAR_TIMEOUT_SECONDS", "2.5")
+    monkeypatch.setenv("KMA_METAR_STATION_IDS", "RKSI")
     monkeypatch.setenv("HKO_ROLLOVER_STATE_PATH", "data/custom_hko_rollover_state.json")
 
     settings = load_settings()
@@ -445,6 +455,11 @@ def test_load_settings_reads_station_nowcast_controls(monkeypatch):
     assert settings.station_nowcast_cache_ttl_seconds == 300
     assert settings.station_nowcast_freshness_seconds == 1800
     assert settings.station_nowcast_request_log_path == "data/custom_station_nowcast_request_log.jsonl"
+    assert settings.station_refresh_poll_seconds == 7
+    assert settings.kma_metar_service_key == "secret-value"
+    assert settings.kma_metar_poll_seconds == 25
+    assert settings.kma_metar_timeout_seconds == 2.5
+    assert settings.kma_metar_station_ids == "RKSI"
     assert settings.hko_rollover_state_path == "data/custom_hko_rollover_state.json"
 
 
