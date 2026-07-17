@@ -53,6 +53,10 @@ notes only when they prevent a repeated mistake.
   - Seoul RKSI and Busan RKPK use this path when the KMA key is absent or its
     direct request fails.
 - HKO:
+  - Refresh the shared 46-station METAR feed first and release its changed-city
+    signals to the evaluator before starting the separate HKO request. METAR and
+    HKO use independent observation locks, so a slow Hong Kong response cannot
+    delay either the changed-city decision or a concurrent METAR cache read.
   - Poll official since-midnight max/min at most once per 10 minutes.
   - Block after midnight until reset is proven. Same prior-day pair is not reset.
   - After reset, same-day high decrease or low increase blocks HKO.

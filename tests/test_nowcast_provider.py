@@ -706,7 +706,7 @@ def test_aviationweather_request_log_records_external_fetch_not_cache_hit(tmp_pa
         load_fixture("aviationweather_rksi_fresh.json"),
         cache_ttl_seconds=900,
         request_log_path=request_log_path,
-        clock=lambda: datetime(2026, 6, 2, 8, 30, tzinfo=timezone.utc),
+        clock=lambda: datetime(2026, 6, 2, 8, 30, 5, tzinfo=timezone.utc),
     )
 
     provider.observed_high_so_far(
@@ -738,19 +738,22 @@ def test_aviationweather_request_log_records_external_fetch_not_cache_hit(tmp_pa
     assert request_rows[0]["status"] == "success"
     assert request_rows[0]["status_code"] == 200
     assert request_rows[0]["cache_miss_reason"] == "empty-cache"
-    assert request_rows[0]["requested_at"] == "2026-06-02T08:30:00+00:00"
+    assert request_rows[0]["requested_at"] == "2026-06-02T08:30:05+00:00"
     assert delivery_rows[0]["station_id"] == "RKSI"
     assert delivery_rows[0]["observation_observed_at"] == "2026-06-02T08:00:00+00:00"
+    assert delivery_rows[0]["request_started_at"] == "2026-06-02T08:30:05+00:00"
     assert delivery_rows[0]["latest_temp_c"] == 26.7
-    assert delivery_rows[0]["bot_detection_latency_seconds"] == 1800
+    assert delivery_rows[0]["bot_detection_latency_seconds"] == 1805
 
 
 def test_aviationweather_bulk_request_floor_is_one_minute_even_when_station_cache_is_short(tmp_path):
     request_log_path = tmp_path / "station_nowcast_request_log.jsonl"
+    clock_now = [datetime(2026, 6, 2, 8, 30, tzinfo=timezone.utc)]
     provider, calls = provider_for(
         load_fixture("aviationweather_rksi_fresh.json"),
         cache_ttl_seconds=60,
         request_log_path=request_log_path,
+        clock=lambda: clock_now[0],
     )
 
     provider.observed_high_so_far(
@@ -763,6 +766,7 @@ def test_aviationweather_bulk_request_floor_is_one_minute_even_when_station_cach
         target_date=date(2026, 6, 2),
         now=datetime(2026, 6, 2, 8, 30, 30, tzinfo=timezone.utc),
     )
+    clock_now[0] = datetime(2026, 6, 2, 8, 31, 1, tzinfo=timezone.utc)
     provider.observed_high_so_far(
         STATION_MAP["seoul"],
         target_date=date(2026, 6, 2),
@@ -812,7 +816,7 @@ def test_kma_metar_is_primary_for_configured_korean_station(tmp_path):
         kma_metar_service_key="test-key",
         kma_metar_poll_seconds=30,
         kma_metar_station_ids={"RKSI", "RKPK"},
-        clock=lambda: datetime(2026, 7, 17, 4, 30, 20, tzinfo=timezone.utc),
+        clock=lambda: datetime(2026, 7, 17, 4, 30, 21, tzinfo=timezone.utc),
     )
     seed_complete_metar_day(
         provider,
@@ -833,10 +837,12 @@ def test_kma_metar_is_primary_for_configured_korean_station(tmp_path):
     assert observation.source == "kma-aviation-metar"
     assert observation.latest_temp_c == 31.0
     assert observation.observed_at.isoformat() == "2026-07-17T04:30:00+00:00"
-    assert observation.bot_detection_latency_seconds == 20
+    assert observation.request_started_at.isoformat() == "2026-07-17T04:30:21+00:00"
+    assert observation.bot_detection_latency_seconds == 21
     assert observation.source_latency_status == "provider-timestamp-unavailable"
     rows = read_jsonl(tmp_path / "requests.jsonl")
     assert [row["request_mode"] for row in rows] == ["kma_metar_fast", "observation_delivery"]
+    assert rows[-1]["request_started_at"] == "2026-07-17T04:30:21+00:00"
 
 
 def test_kma_metar_failure_falls_back_to_awc(tmp_path):
@@ -1648,6 +1654,7 @@ def test_hko_request_log_records_external_fetch_not_cache_hit(tmp_path):
         cache_ttl_seconds=900,
         request_log_path=request_log_path,
     )
+    provider.clock = lambda: datetime(2026, 6, 2, 3, 45, 2, tzinfo=timezone.utc)
 
     provider.observed_high_so_far(
         STATION_MAP["hong kong"],
@@ -1663,23 +1670,36 @@ def test_hko_request_log_records_external_fetch_not_cache_hit(tmp_path):
     rows = read_jsonl(request_log_path)
 
     assert len(calls) == 1
-    assert len(rows) == 1
-    assert rows[0]["city"] == "hong kong"
-    assert rows[0]["station_id"] == STATION_MAP["hong kong"].station_id
-    assert rows[0]["source"] == "hko-maxmin-since-midnight"
-    assert rows[0]["status"] == "success"
-    assert rows[0]["status_code"] == 200
-    assert rows[0]["cache_miss_reason"] == "empty-cache"
-    assert rows[0]["requested_at"] == "2026-06-02T03:45:00+00:00"
+    request_rows = [row for row in rows if row.get("request_mode") != "observation_delivery"]
+    delivery_rows = [row for row in rows if row.get("request_mode") == "observation_delivery"]
+    assert len(request_rows) == 1
+    assert len(delivery_rows) == 1
+    assert request_rows[0]["city"] == "hong kong"
+    assert request_rows[0]["station_id"] == STATION_MAP["hong kong"].station_id
+    assert request_rows[0]["source"] == "hko-maxmin-since-midnight"
+    assert request_rows[0]["status"] == "success"
+    assert request_rows[0]["status_code"] == 200
+    assert request_rows[0]["cache_miss_reason"] == "empty-cache"
+    assert request_rows[0]["requested_at"] == "2026-06-02T03:45:02+00:00"
+    assert delivery_rows[0]["station_id"] == "HKO"
+    assert delivery_rows[0]["observation_observed_at"] == "2026-06-02T03:30:00+00:00"
+    assert delivery_rows[0]["request_started_at"] == "2026-06-02T03:45:02+00:00"
+    assert delivery_rows[0]["bot_detection_latency_seconds"] == 902
+    assert [row["request_mode"] for row in rows] == [
+        "station_fetch",
+        "observation_delivery",
+    ]
 
 
 def test_hko_request_floor_is_ten_minutes_even_when_station_cache_is_short(tmp_path):
     request_log_path = tmp_path / "station_nowcast_request_log.jsonl"
+    clock_now = [datetime(2026, 6, 2, 3, 45, tzinfo=timezone.utc)]
     provider, calls = hko_provider_for(
         load_text_fixture("hko_maxmin_fresh.csv"),
         cache_ttl_seconds=60,
         request_log_path=request_log_path,
     )
+    provider.clock = lambda: clock_now[0]
 
     provider.observed_high_so_far(
         STATION_MAP["hong kong"],
@@ -1691,17 +1711,83 @@ def test_hko_request_floor_is_ten_minutes_even_when_station_cache_is_short(tmp_p
         target_date=date(2026, 6, 2),
         now=datetime(2026, 6, 2, 3, 50, tzinfo=timezone.utc),
     )
+    clock_now[0] = datetime(2026, 6, 2, 3, 56, tzinfo=timezone.utc)
     provider.observed_high_so_far(
         STATION_MAP["hong kong"],
         target_date=date(2026, 6, 2),
         now=datetime(2026, 6, 2, 3, 56, tzinfo=timezone.utc),
     )
 
-    rows = read_jsonl(request_log_path)
+    rows = [
+        row
+        for row in read_jsonl(request_log_path)
+        if row.get("request_mode") != "observation_delivery"
+    ]
     assert len(calls) == 2
     assert len(rows) == 2
     assert rows[0]["requested_at"] == "2026-06-02T03:45:00+00:00"
     assert rows[1]["requested_at"] == "2026-06-02T03:56:00+00:00"
+
+
+def test_slow_hko_request_does_not_block_metar_refresh():
+    hko_started = threading.Event()
+    release_hko = threading.Event()
+    metar_finished = threading.Event()
+    errors: list[BaseException] = []
+    awc_payload = load_fixture("aviationweather_rksi_fresh.json")
+    hko_payload = load_text_fixture("hko_maxmin_fresh.csv")
+
+    def fake_get(url, *, params, timeout, headers):
+        del params, timeout, headers
+        if "weather.gov.hk" in url:
+            hko_started.set()
+            assert release_hko.wait(2)
+            return FakeResponse(hko_payload)
+        return FakeResponse(awc_payload)
+
+    provider = AviationWeatherMetarNowcastProvider(
+        http_get=fake_get,
+        cache_ttl_seconds=0,
+    )
+
+    def refresh_hko() -> None:
+        try:
+            provider.observed_high_so_far(
+                STATION_MAP["hong kong"],
+                target_date=date(2026, 6, 2),
+                now=datetime(2026, 6, 2, 3, 45, tzinfo=timezone.utc),
+            )
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    def refresh_metar() -> None:
+        try:
+            provider.discard_cached_observations_before_entry(
+                station_ids={"RKSI"},
+                now=datetime(2026, 6, 2, 8, 30, tzinfo=timezone.utc),
+            )
+            provider.observed_high_so_far(
+                STATION_MAP["seoul"],
+                target_date=date(2026, 6, 2),
+                now=datetime(2026, 6, 2, 8, 30, tzinfo=timezone.utc),
+            )
+            metar_finished.set()
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    hko_thread = threading.Thread(target=refresh_hko)
+    metar_thread = threading.Thread(target=refresh_metar)
+    hko_thread.start()
+    assert hko_started.wait(1)
+    metar_thread.start()
+
+    assert metar_finished.wait(0.5)
+    release_hko.set()
+    metar_thread.join(1)
+    hko_thread.join(1)
+    assert not metar_thread.is_alive()
+    assert not hko_thread.is_alive()
+    assert errors == []
 
 
 def test_hko_provider_marks_malformed_csv_unusable():

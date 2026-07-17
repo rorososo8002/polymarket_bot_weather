@@ -10,7 +10,7 @@ from datetime import date, datetime, timedelta, timezone
 import math
 import threading
 import time
-from typing import Any
+from typing import Any, Callable
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .config import Settings, load_settings
@@ -3268,16 +3268,31 @@ def _apply_event_portfolio(
         has_selected=bool(decision.selected) or executable_candidate_reached_portfolio,
     )
     refresh_error = ""
-    if observation_provider is not None and any(
-        _is_official_station_entry_signal(candidate.signal)
+    official_station_candidates = [
+        candidate
         for candidate in decision.selected
-    ):
+        if _is_official_station_entry_signal(candidate.signal)
+    ]
+    if observation_provider is not None and official_station_candidates:
         discard = getattr(observation_provider, "discard_cached_observations_before_entry", None)
         if not callable(discard):
             refresh_error = "SKIP_FINAL_STATION_REFRESH: observation provider cannot force a fresh official request"
         else:
             try:
-                discard()
+                selected_station_ids = {
+                    station_id
+                    for candidate in official_station_candidates
+                    if (
+                        station_id := _market_station_id(
+                            candidate.market,
+                            candidate.signal.parsed
+                            or parse_weather_question(candidate.market.question),
+                        )
+                    )
+                }
+                if not selected_station_ids:
+                    raise ValueError("selected official station could not be mapped")
+                discard(station_ids=selected_station_ids)
             except Exception as exc:  # noqa: BLE001
                 refresh_error = (
                     "SKIP_FINAL_STATION_REFRESH: fresh official observation request could not start: "
@@ -3937,23 +3952,40 @@ def _refresh_official_station_observations(
     *,
     now: datetime,
     station_state_by_id: dict[str, tuple[Any, ...]] | None = None,
+    on_shared_metar_refreshed: Callable[[set[str]], None] | None = None,
 ) -> set[str]:
     current = _utc_datetime(now)
-    changed_station_ids: set[str] = set()
-    for station in TRADING_READY_STATION_MAP.values():
-        target_date = current.astimezone(ZoneInfo(station.timezone)).date()
-        observation = observation_provider.observed_temperature_extremes_so_far(
-            station,
-            target_date=target_date,
-            now=current,
-        )
-        if station_state_by_id is None:
-            continue
-        station_id = str(getattr(observation, "station_id", "") or station.station_id).upper()
-        state_key = _station_observation_state_key(observation)
-        if station_id in station_state_by_id and station_state_by_id[station_id] != state_key:
-            changed_station_ids.add(station_id)
-        station_state_by_id[station_id] = state_key
+    stations = list(TRADING_READY_STATION_MAP.values())
+
+    def refresh(group: list[Any]) -> set[str]:
+        changed_station_ids: set[str] = set()
+        for station in group:
+            target_date = current.astimezone(ZoneInfo(station.timezone)).date()
+            observation = observation_provider.observed_temperature_extremes_so_far(
+                station,
+                target_date=target_date,
+                now=current,
+            )
+            if station_state_by_id is None:
+                continue
+            station_id = str(
+                getattr(observation, "station_id", "") or station.station_id
+            ).upper()
+            state_key = _station_observation_state_key(observation)
+            if (
+                station_id in station_state_by_id
+                and station_state_by_id[station_id] != state_key
+            ):
+                changed_station_ids.add(station_id)
+            station_state_by_id[station_id] = state_key
+        return changed_station_ids
+
+    metar_stations = [station for station in stations if station.nowcast_source_type == "metar"]
+    other_stations = [station for station in stations if station.nowcast_source_type != "metar"]
+    changed_station_ids = refresh(metar_stations)
+    if on_shared_metar_refreshed is not None:
+        on_shared_metar_refreshed(set(changed_station_ids))
+    changed_station_ids.update(refresh(other_stations))
     return changed_station_ids
 
 
@@ -4032,6 +4064,36 @@ def _scheduled_realtime_probe_tokens(
             normal_tokens.add(str(market.no_token_id))
             market_ids_to_expire.add(market.market_id)
     return urgent_tokens, normal_tokens, market_ids_to_expire
+
+
+def _enqueue_official_station_refresh_updates(
+    evaluator_worker: RealtimeEvaluationCoalescer | None,
+    markets: list[RawMarket],
+    signals_by_market: dict[str, WeatherSignal],
+    timer_bucket_by_market: dict[str, str],
+    signal_refreshed_at_by_market: dict[str, datetime],
+    *,
+    station_ids: set[str],
+    now: datetime,
+) -> None:
+    urgent_timer_tokens, normal_timer_tokens, timer_market_ids = (
+        _scheduled_realtime_probe_tokens(
+            markets,
+            signals_by_market,
+            timer_bucket_by_market,
+            now=now,
+        )
+    )
+    for market_id in timer_market_ids:
+        signal_refreshed_at_by_market.pop(market_id, None)
+    _enqueue_station_refresh_high_exact_no_probes(
+        evaluator_worker,
+        markets,
+        signal_refreshed_at_by_market,
+        station_ids=station_ids,
+    )
+    _enqueue_realtime_update(evaluator_worker, urgent_timer_tokens, urgent=True)
+    _enqueue_realtime_update(evaluator_worker, normal_timer_tokens)
 
 
 def _realtime_error_backoff_seconds(settings: Settings) -> float:
@@ -4288,43 +4350,59 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
                     if _station_refresh_is_due(station_refreshed_at, settings, now=now):
                         failed_phase = "station_observation_refresh"
                         station_refresh_started_at = time.monotonic()
+                        metar_changed_station_ids: set[str] = set()
+                        shared_metar_duration_seconds = 0.0
+
+                        def release_shared_metar_changes(
+                            changed_ids: set[str],
+                        ) -> None:
+                            nonlocal metar_changed_station_ids, shared_metar_duration_seconds
+                            metar_changed_station_ids = set(changed_ids)
+                            shared_metar_duration_seconds = round(
+                                time.monotonic() - station_refresh_started_at,
+                                3,
+                            )
+                            with update_lock:
+                                _enqueue_official_station_refresh_updates(
+                                    evaluator_worker,
+                                    stream_markets,
+                                    signals_by_market,
+                                    timer_bucket_by_market,
+                                    signal_refreshed_at_by_market,
+                                    station_ids=metar_changed_station_ids,
+                                    now=now,
+                                )
+
                         changed_station_ids = _refresh_official_station_observations(
                             observation_provider,
                             now=now,
                             station_state_by_id=station_state_by_id,
+                            on_shared_metar_refreshed=release_shared_metar_changes,
                         )
                         station_refresh_duration_seconds = round(
                             time.monotonic() - station_refresh_started_at,
                             3,
                         )
                         with update_lock:
-                            urgent_timer_tokens, normal_timer_tokens, timer_market_ids = (
-                                _scheduled_realtime_probe_tokens(
-                                    stream_markets,
-                                    signals_by_market,
-                                    timer_bucket_by_market,
-                                    now=now,
-                                )
-                            )
-                            for market_id in timer_market_ids:
-                                signal_refreshed_at_by_market.pop(market_id, None)
                             _enqueue_station_refresh_high_exact_no_probes(
                                 evaluator_worker,
                                 stream_markets,
                                 signal_refreshed_at_by_market,
-                                station_ids=changed_station_ids,
-                            )
-                            _enqueue_realtime_update(
-                                evaluator_worker,
-                                urgent_timer_tokens,
-                                urgent=True,
-                            )
-                            _enqueue_realtime_update(
-                                evaluator_worker,
-                                normal_timer_tokens,
+                                station_ids=(
+                                    changed_station_ids - metar_changed_station_ids
+                                ),
                             )
                         latest_official_station_refresh = {
                             "duration_seconds": station_refresh_duration_seconds,
+                            "shared_metar_duration_seconds": shared_metar_duration_seconds,
+                            "remaining_source_duration_seconds": round(
+                                max(
+                                    0.0,
+                                    station_refresh_duration_seconds
+                                    - shared_metar_duration_seconds,
+                                ),
+                                3,
+                            ),
                             "changed_station_count": len(changed_station_ids),
                             "changed_station_ids": sorted(changed_station_ids),
                             "completed_at": utc_now_iso(),

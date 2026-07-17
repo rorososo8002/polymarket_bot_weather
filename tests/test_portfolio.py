@@ -1645,7 +1645,10 @@ def test_runner_discards_station_cache_before_opening_selected_portfolio(monkeyp
     broker = PaperBroker(settings(tmp_path, bankroll_usd=200.0))
     provider = type("Provider", (), {"prepared": False})()
 
-    def discard():
+    refreshed_station_ids = []
+
+    def discard(*, station_ids):
+        refreshed_station_ids.append(station_ids)
         provider.prepared = True
 
     provider.discard_cached_observations_before_entry = discard
@@ -1663,6 +1666,7 @@ def test_runner_discards_station_cache_before_opening_selected_portfolio(monkeyp
     )
 
     assert opened_after_refresh == [True]
+    assert refreshed_station_ids == [{"RKSI"}]
 
 
 def test_runner_logs_rejection_when_an_executable_candidate_reaches_portfolio(tmp_path):

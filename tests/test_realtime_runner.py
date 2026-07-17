@@ -4396,6 +4396,99 @@ def test_official_station_health_refresh_polls_every_ready_station_for_its_local
     assert all(observed_now == now for _station_id, _target_date, observed_now in calls)
 
 
+def test_station_refresh_releases_shared_metar_before_slow_single_station_source(monkeypatch):
+    seoul = runner_module.TRADING_READY_STATION_MAP["seoul"]
+    london = runner_module.TRADING_READY_STATION_MAP["london"]
+    hong_kong = runner_module.TRADING_READY_STATION_MAP["hong kong"]
+    monkeypatch.setattr(
+        runner_module,
+        "TRADING_READY_STATION_MAP",
+        {"hong kong": hong_kong, "seoul": seoul, "london": london},
+    )
+    calls: list[str] = []
+    released: list[set[str]] = []
+    expected_metar_changes = {seoul.station_id, london.station_id}
+    state_by_station = {
+        seoul.station_id: ("old",),
+        london.station_id: ("old",),
+        hong_kong.station_id: ("old",),
+    }
+    markets = [
+        RawMarket(
+            "seoul-29",
+            "Will the highest temperature in Seoul be 29C on July 18?",
+            "seoul-29",
+            True,
+            False,
+            "seoul-yes",
+            "seoul-no",
+            event_id="seoul-event",
+        ),
+        RawMarket(
+            "london-24",
+            "Will the highest temperature in London be 24C on July 18?",
+            "london-24",
+            True,
+            False,
+            "london-yes",
+            "london-no",
+            event_id="london-event",
+        ),
+    ]
+    worker = RealtimeEvaluationCoalescer(
+        event_key_by_token={
+            "seoul-no": "seoul-event",
+            "london-no": "london-event",
+        },
+        evaluator=lambda _tokens: None,
+    )
+
+    def release_metar_changes(changed_ids: set[str]) -> None:
+        released.append(changed_ids)
+        runner_module._enqueue_official_station_refresh_updates(
+            worker,
+            markets,
+            {},
+            {},
+            {},
+            station_ids=changed_ids,
+            now=datetime(2026, 7, 18, 0, 0, tzinfo=timezone.utc),
+        )
+
+    class FakeProvider:
+        def observed_temperature_extremes_so_far(self, station, *, target_date, now):
+            del target_date, now
+            if station.station_id == hong_kong.station_id:
+                assert released == [expected_metar_changes]
+                assert worker.status_snapshot()["urgent_queue_depth"] == 2
+            calls.append(station.station_id)
+            return StationNowcastObservation(
+                station_id=station.station_id,
+                station_name=station.station_name,
+                observed_high_c=30.0,
+                observed_low_c=20.0,
+                observed_at=datetime(2026, 7, 18, 0, 0, tzinfo=timezone.utc),
+                high_observed_at=datetime(2026, 7, 18, 0, 0, tzinfo=timezone.utc),
+                source="fixture",
+                source_url="https://example.test/source",
+                settlement_source_url="https://example.test/settlement",
+                freshness_seconds=0,
+                unavailable_reason="",
+            )
+
+    changed_station_ids = runner_module._refresh_official_station_observations(
+        FakeProvider(),
+        now=datetime(2026, 7, 18, 0, 0, tzinfo=timezone.utc),
+        station_state_by_id=state_by_station,
+        on_shared_metar_refreshed=release_metar_changes,
+    )
+
+    assert calls == [seoul.station_id, london.station_id, hong_kong.station_id]
+    assert released == [expected_metar_changes]
+    assert changed_station_ids == expected_metar_changes | {hong_kong.station_id}
+    assert worker.status_snapshot()["urgent_queue_depth"] == 2
+
+
 def test_runner_groups_binary_submarkets_by_weather_event_and_reports_coverage():
     markets = [
         RawMarket(

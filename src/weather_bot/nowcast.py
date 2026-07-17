@@ -8,7 +8,7 @@ import json
 import os
 import threading
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -160,6 +160,7 @@ class _MetarBulkCacheEntry:
     payload: Any | None
     unavailable_reason: str = ""
     hours_before_now: int = 0
+    requested_at: datetime | None = None
     received_at: datetime | None = None
 
 
@@ -483,7 +484,10 @@ class AviationWeatherMetarNowcastProvider:
         self._cache: dict[tuple[str, str], tuple[datetime, StationNowcastObservation]] = {}
         self._awc_metar_bulk_cache: _MetarBulkCacheEntry | None = None
         self._logged_observation_delivery: dict[tuple[str, str], datetime] = {}
+        self._cache_lock = threading.RLock()
         self._observation_lock = threading.RLock()
+        self._hko_observation_lock = threading.RLock()
+        self._request_log_lock = threading.RLock()
         self._hko_rollover_state = self._load_hko_rollover_state()
         self._metar_daily_extremes_state = self._load_metar_daily_extremes_state()
 
@@ -853,36 +857,90 @@ class AviationWeatherMetarNowcastProvider:
         target_date: date,
         now: datetime | None = None,
     ) -> StationNowcastObservation:
-        with self._observation_lock:
+        observation_lock = (
+            self._hko_observation_lock
+            if station.nowcast_source_type == "hko_maxmin_since_midnight"
+            else self._observation_lock
+        )
+        with observation_lock:
             return self._observed_temperature_extremes_so_far_unlocked(
                 station,
                 target_date=target_date,
                 now=now,
             )
 
-    def discard_cached_observations_before_entry(self, *, now: datetime | None = None) -> None:
+    def discard_cached_observations_before_entry(
+        self,
+        *,
+        now: datetime | None = None,
+        station_ids: set[str] | None = None,
+    ) -> None:
         current = _as_utc(now or _utc_now())
-        with self._observation_lock:
-            retained: dict[tuple[str, str], tuple[datetime, StationNowcastObservation]] = {}
-            for cache_key, cached in self._cache.items():
-                source = self.sources.get(cache_key[0])
-                floor_seconds = (
-                    self._source_min_real_request_interval_seconds(source)
-                    if source is not None
-                    else 0
-                )
-                cached_at, _observation = cached
-                if floor_seconds > 0 and (current - cached_at).total_seconds() <= floor_seconds:
-                    retained[cache_key] = cached
-            self._cache = retained
+        selected_station_ids = (
+            {str(station_id).upper() for station_id in station_ids}
+            if station_ids is not None
+            else None
+        )
+        selected_sources = [
+            source
+            for source in self.sources.values()
+            if selected_station_ids is None
+            or source.station_id.upper() in selected_station_ids
+        ]
+        include_hko = selected_station_ids is None or any(
+            source.source == "hko-maxmin-since-midnight"
+            for source in selected_sources
+        )
+        include_metar = selected_station_ids is None or any(
+            source.source != "hko-maxmin-since-midnight"
+            for source in selected_sources
+        )
 
-            bulk_cached = self._awc_metar_bulk_cache
-            if (
-                bulk_cached is not None
-                and (current - bulk_cached.cached_at).total_seconds()
-                > AWC_METAR_MIN_REAL_REQUEST_INTERVAL_SECONDS
-            ):
-                self._awc_metar_bulk_cache = None
+        def discard_selected() -> None:
+            with self._cache_lock:
+                retained: dict[
+                    tuple[str, str],
+                    tuple[datetime, StationNowcastObservation],
+                ] = {}
+                for cache_key, cached in self._cache.items():
+                    if (
+                        selected_station_ids is not None
+                        and cache_key[0].upper() not in selected_station_ids
+                    ):
+                        retained[cache_key] = cached
+                        continue
+                    source = self.sources.get(cache_key[0])
+                    floor_seconds = (
+                        self._source_min_real_request_interval_seconds(source)
+                        if source is not None
+                        else 0
+                    )
+                    cached_at, _observation = cached
+                    if (
+                        floor_seconds > 0
+                        and (current - cached_at).total_seconds() <= floor_seconds
+                    ):
+                        retained[cache_key] = cached
+                self._cache = retained
+
+            if include_metar:
+                bulk_cached = self._awc_metar_bulk_cache
+                if (
+                    bulk_cached is not None
+                    and (current - bulk_cached.cached_at).total_seconds()
+                    > AWC_METAR_MIN_REAL_REQUEST_INTERVAL_SECONDS
+                ):
+                    self._awc_metar_bulk_cache = None
+
+        if include_metar and include_hko:
+            with self._observation_lock, self._hko_observation_lock:
+                discard_selected()
+        elif include_metar:
+            with self._observation_lock:
+                discard_selected()
+        elif include_hko:
+            with self._hko_observation_lock:
+                discard_selected()
 
     def _observed_temperature_extremes_so_far_unlocked(
         self,
@@ -906,7 +964,8 @@ class AviationWeatherMetarNowcastProvider:
             return self._unavailable(station, target_date_blocker, source)
 
         cache_key = (station.station_id, target_date.isoformat())
-        cached = self._cache.get(cache_key)
+        with self._cache_lock:
+            cached = self._cache.get(cache_key)
         cache_miss_reason = "empty-cache"
         provider_floor_seconds = self._source_min_real_request_interval_seconds(source)
         effective_cache_ttl_seconds = max(self.cache_ttl_seconds, provider_floor_seconds)
@@ -940,7 +999,8 @@ class AviationWeatherMetarNowcastProvider:
         else:
             observation = self._unavailable(station, "unsupported-nowcast-source", source)
 
-        self._cache[cache_key] = (current, observation)
+        with self._cache_lock:
+            self._cache[cache_key] = (current, observation)
         return observation
 
     def _fetch_aviationweather(
@@ -977,7 +1037,7 @@ class AviationWeatherMetarNowcastProvider:
                         target_date,
                         now,
                         source,
-                        request_started_at=bulk_entry.cached_at,
+                        request_started_at=bulk_entry.requested_at or bulk_entry.cached_at,
                         bot_received_at=bulk_entry.received_at,
                     )
 
@@ -1012,7 +1072,7 @@ class AviationWeatherMetarNowcastProvider:
             target_date,
             now,
             source,
-            request_started_at=bulk_entry.cached_at,
+            request_started_at=bulk_entry.requested_at or bulk_entry.cached_at,
             bot_received_at=bulk_entry.received_at,
         )
 
@@ -1082,6 +1142,7 @@ class AviationWeatherMetarNowcastProvider:
         )
         response: Any | None = None
         response_received_at: datetime | None = None
+        requested_at = _as_utc(self.clock())
         try:
             response = self.http_get(
                 source.source_url,
@@ -1106,7 +1167,7 @@ class AviationWeatherMetarNowcastProvider:
                 )
                 self._append_request_log(
                     self._request_log_row(
-                        requested_at=now,
+                        requested_at=requested_at,
                         response_received_at=response_received_at,
                         request_mode="kma_metar_fast",
                         station=station,
@@ -1121,7 +1182,7 @@ class AviationWeatherMetarNowcastProvider:
                 return _KmaMetarFetch(
                     source,
                     [],
-                    now,
+                    requested_at,
                     response_received_at,
                     "malformed-observation-payload",
                 )
@@ -1129,7 +1190,7 @@ class AviationWeatherMetarNowcastProvider:
             self._kma_station_unavailable_until.pop(station.station_id.upper(), None)
             self._append_request_log(
                 self._request_log_row(
-                    requested_at=now,
+                    requested_at=requested_at,
                     response_received_at=response_received_at,
                     request_mode="kma_metar_fast",
                     station=station,
@@ -1140,7 +1201,7 @@ class AviationWeatherMetarNowcastProvider:
                     status_code=getattr(response, "status_code", None),
                 )
             )
-            return _KmaMetarFetch(source, rows, now, response_received_at)
+            return _KmaMetarFetch(source, rows, requested_at, response_received_at)
         except Exception as exc:  # noqa: BLE001
             response_received_at = response_received_at or _as_utc(self.clock())
             self._kma_unavailable_until = response_received_at + timedelta(
@@ -1148,7 +1209,7 @@ class AviationWeatherMetarNowcastProvider:
             )
             self._append_request_log(
                 self._request_log_row(
-                    requested_at=now,
+                    requested_at=requested_at,
                     response_received_at=response_received_at,
                     request_mode="kma_metar_fast",
                     station=station,
@@ -1163,7 +1224,7 @@ class AviationWeatherMetarNowcastProvider:
             return _KmaMetarFetch(
                 source,
                 [],
-                now,
+                requested_at,
                 response_received_at,
                 f"nowcast-fetch-error:{type(exc).__name__}",
             )
@@ -1185,6 +1246,7 @@ class AviationWeatherMetarNowcastProvider:
 
         response: Any | None = None
         response_received_at: datetime | None = None
+        requested_at = _as_utc(self.clock())
         try:
             response = self.http_get(
                 source.source_url,
@@ -1203,12 +1265,13 @@ class AviationWeatherMetarNowcastProvider:
                     payload=None,
                     unavailable_reason="no-observations-returned",
                     hours_before_now=hours_before_now,
+                    requested_at=requested_at,
                     received_at=response_received_at,
                 )
                 self._awc_metar_bulk_cache = entry
                 self._append_request_log(
                     self._request_log_bulk_row(
-                        requested_at=now,
+                        requested_at=requested_at,
                         trigger_station=station,
                         target_date=target_date,
                         source=source,
@@ -1228,12 +1291,13 @@ class AviationWeatherMetarNowcastProvider:
                     payload=None,
                     unavailable_reason="metar-response-row-limit",
                     hours_before_now=hours_before_now,
+                    requested_at=requested_at,
                     received_at=response_received_at,
                 )
                 self._awc_metar_bulk_cache = entry
                 self._append_request_log(
                     self._request_log_bulk_row(
-                        requested_at=now,
+                        requested_at=requested_at,
                         trigger_station=station,
                         target_date=target_date,
                         source=source,
@@ -1250,12 +1314,13 @@ class AviationWeatherMetarNowcastProvider:
                 cached_at=now,
                 payload=payload,
                 hours_before_now=hours_before_now,
+                requested_at=requested_at,
                 received_at=response_received_at,
             )
             self._awc_metar_bulk_cache = entry
             self._append_request_log(
                 self._request_log_bulk_row(
-                    requested_at=now,
+                    requested_at=requested_at,
                     trigger_station=station,
                     target_date=target_date,
                     source=source,
@@ -1274,12 +1339,13 @@ class AviationWeatherMetarNowcastProvider:
                 payload=None,
                 unavailable_reason=f"nowcast-fetch-error:{type(exc).__name__}",
                 hours_before_now=hours_before_now,
+                requested_at=requested_at,
                 received_at=response_received_at,
             )
             self._awc_metar_bulk_cache = entry
             self._append_request_log(
                 self._request_log_bulk_row(
-                    requested_at=now,
+                    requested_at=requested_at,
                     trigger_station=station,
                     target_date=target_date,
                     source=source,
@@ -1335,6 +1401,8 @@ class AviationWeatherMetarNowcastProvider:
         cache_miss_reason: str,
     ) -> StationNowcastObservation:
         response: Any | None = None
+        response_received_at: datetime | None = None
+        requested_at = _as_utc(self.clock())
         try:
             response = self.http_get(
                 source.source_url,
@@ -1342,10 +1410,12 @@ class AviationWeatherMetarNowcastProvider:
                 timeout=self.timeout,
                 headers={"User-Agent": "polymarket-weather-bot/nowcast"},
             )
+            response_received_at = _as_utc(self.clock())
             if getattr(response, "status_code", 200) == 204:
                 self._append_request_log(
                     self._request_log_row(
-                        requested_at=now,
+                        requested_at=requested_at,
+                        response_received_at=response_received_at,
                         station=station,
                         target_date=target_date,
                         source=source,
@@ -1357,9 +1427,23 @@ class AviationWeatherMetarNowcastProvider:
                 return self._unavailable(station, "no-observations-returned", source)
             response.raise_for_status()
             observation = self._parse_hko_payload(response.text, station, target_date, now, source)
+            if observation.observed_at is not None:
+                observation = replace(
+                    observation,
+                    request_started_at=requested_at,
+                    bot_received_at=response_received_at,
+                    source_received_at=None,
+                    source_latency_seconds=None,
+                    source_latency_status="provider-timestamp-unavailable",
+                    bot_detection_latency_seconds=max(
+                        0,
+                        int((response_received_at - observation.observed_at).total_seconds()),
+                    ),
+                )
             self._append_request_log(
                 self._request_log_row(
-                    requested_at=now,
+                    requested_at=requested_at,
+                    response_received_at=response_received_at,
                     station=station,
                     target_date=target_date,
                     source=source,
@@ -1369,11 +1453,14 @@ class AviationWeatherMetarNowcastProvider:
                     unavailable_reason=observation.unavailable_reason,
                 )
             )
+            self._log_observation_delivery(station, observation)
             return observation
         except Exception as exc:  # noqa: BLE001
+            response_received_at = response_received_at or _as_utc(self.clock())
             self._append_request_log(
                 self._request_log_row(
-                    requested_at=now,
+                    requested_at=requested_at,
+                    response_received_at=response_received_at,
                     station=station,
                     target_date=target_date,
                     source=source,
@@ -1388,23 +1475,25 @@ class AviationWeatherMetarNowcastProvider:
     def _append_request_log(self, row: dict[str, Any]) -> None:
         if self.request_log_path is None:
             return
-        try:
-            self.request_log_path.parent.mkdir(parents=True, exist_ok=True)
-            with self.request_log_path.open("a", encoding="utf-8") as handle:
-                handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True))
-                handle.write("\n")
-            self._request_log_error = ""
-            self._request_log_last_success_at = _as_utc(self.clock())
-        except Exception as exc:  # noqa: BLE001
-            self._request_log_error = type(exc).__name__
+        with self._request_log_lock:
+            try:
+                self.request_log_path.parent.mkdir(parents=True, exist_ok=True)
+                with self.request_log_path.open("a", encoding="utf-8") as handle:
+                    handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True))
+                    handle.write("\n")
+                self._request_log_error = ""
+                self._request_log_last_success_at = _as_utc(self.clock())
+            except Exception as exc:  # noqa: BLE001
+                self._request_log_error = type(exc).__name__
 
     def request_log_health(self) -> dict[str, Any]:
-        return {
-            "status": "error" if self._request_log_error else "ok",
-            "error": self._request_log_error,
-            "path": str(self.request_log_path or ""),
-            "last_success_at": _iso_or_empty(self._request_log_last_success_at),
-        }
+        with self._request_log_lock:
+            return {
+                "status": "error" if self._request_log_error else "ok",
+                "error": self._request_log_error,
+                "path": str(self.request_log_path or ""),
+                "last_success_at": _iso_or_empty(self._request_log_last_success_at),
+            }
 
     def _request_log_row(
         self,
@@ -1656,11 +1745,11 @@ class AviationWeatherMetarNowcastProvider:
         if observed_at is None:
             return
         key = (station.station_id.upper(), observation.source)
-        if self._logged_observation_delivery.get(key) == observed_at:
-            return
-        self._logged_observation_delivery[key] = observed_at
-        self._append_request_log(
-            {
+        with self._request_log_lock:
+            if self._logged_observation_delivery.get(key) == observed_at:
+                return
+            self._logged_observation_delivery[key] = observed_at
+            self._append_request_log({
                 "request_mode": "observation_delivery",
                 "city": station.city,
                 "station_id": station.station_id,
@@ -1669,6 +1758,7 @@ class AviationWeatherMetarNowcastProvider:
                 "source": observation.source,
                 "source_url": observation.source_url,
                 "observation_observed_at": _iso_or_empty(observed_at),
+                "request_started_at": _iso_or_empty(observation.request_started_at),
                 "source_received_at": _iso_or_empty(observation.source_received_at),
                 "bot_received_at": _iso_or_empty(observation.bot_received_at),
                 "source_latency_seconds": observation.source_latency_seconds,
@@ -1679,8 +1769,7 @@ class AviationWeatherMetarNowcastProvider:
                 "observed_low_c": observation.observed_low_c,
                 "raw_observation": observation.latest_raw_observation,
                 "logged_at": _iso_or_empty(_as_utc(self.clock())),
-            }
-        )
+            })
 
     def _parse_hko_payload(
         self,
