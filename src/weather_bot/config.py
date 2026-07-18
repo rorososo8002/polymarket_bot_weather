@@ -208,7 +208,7 @@ class Settings:
     max_event_date_exposure_fraction: float = 0.10
     large_bankroll_event_date_exposure_fraction: float = 0.05
     event_date_exposure_transition_usd: float = 1000.0
-    max_event_portfolio_legs: int = 1
+    max_event_portfolio_legs: int = 2
     daily_realized_loss_limit_fraction: float = 0.0
     daily_unrealized_loss_limit_fraction: float = 0.0
     max_consecutive_losses: int = 0
@@ -279,6 +279,11 @@ class Settings:
     def __post_init__(self) -> None:
         _validate_positive_numbers(self, _POSITIVE_NUMBER_SETTINGS)
         _validate_positive_integers(self, _POSITIVE_INTEGER_SETTINGS)
+        if self.max_event_portfolio_legs > 2:
+            raise ValueError(
+                "MAX_EVENT_PORTFOLIO_LEGS must be at most 2; "
+                f"got {self.max_event_portfolio_legs!r}"
+            )
         _validate_minimum_integers(self, _MINIMUM_INTEGER_SETTINGS)
         _validate_tcp_ports(self, _TCP_PORT_SETTINGS)
         _validate_hours(self, _HOUR_SETTINGS)

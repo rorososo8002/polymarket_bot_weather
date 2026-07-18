@@ -43,6 +43,7 @@ def test_local_env_example_exposes_settlement_runner_defaults():
     assert "SIZE_MODE=kelly" in text
     assert "FRACTIONAL_KELLY=0.25" in text
     assert "MAX_TOTAL_EXPOSURE_FRACTION=0.90" in text
+    assert "MAX_EVENT_PORTFOLIO_LEGS=2" in text
     assert "DAILY_REALIZED_LOSS_LIMIT_FRACTION=0.50" in text
     assert "DAILY_UNREALIZED_LOSS_LIMIT_FRACTION=0.50" in text
     assert "LARGE_LOSS_THRESHOLD_FRACTION=0.50" in text
@@ -129,7 +130,7 @@ def test_vps_env_example_keeps_runtime_state_under_data_dir():
     assert "OFFICIAL_NOWCAST_LOCK_YES_BASE_BUFFER_C=0.50" in text
     assert "OFFICIAL_NOWCAST_LOCK_YES_STRONG_BUFFER_C=0.75" in text
     assert "EVENT_DATE_EXPOSURE_TRANSITION_USD=1000" in text
-    assert "MAX_EVENT_PORTFOLIO_LEGS=1" in text
+    assert "MAX_EVENT_PORTFOLIO_LEGS=2" in text
     assert "DAILY_REALIZED_LOSS_LIMIT_FRACTION=0.50" in text
     assert "DAILY_UNREALIZED_LOSS_LIMIT_FRACTION=0.50" in text
     assert "LARGE_LOSS_THRESHOLD_FRACTION=0.50" in text

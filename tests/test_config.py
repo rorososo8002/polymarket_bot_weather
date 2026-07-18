@@ -229,7 +229,7 @@ def test_default_city_date_portfolio_caps_shrink_after_one_thousand_dollars():
     assert Settings.max_event_date_exposure_fraction == 0.10
     assert Settings.large_bankroll_event_date_exposure_fraction == 0.05
     assert Settings.event_date_exposure_transition_usd == 1000.0
-    assert Settings.max_event_portfolio_legs == 1
+    assert Settings.max_event_portfolio_legs == 2
     assert Settings.daily_realized_loss_limit_fraction == 0.0
     assert Settings.daily_unrealized_loss_limit_fraction == 0.0
     assert Settings.large_loss_threshold_fraction == 0.50
@@ -526,7 +526,7 @@ def test_load_settings_reads_city_date_portfolio_controls(monkeypatch):
     monkeypatch.setenv("MAX_EVENT_DATE_EXPOSURE_FRACTION", "0.12")
     monkeypatch.setenv("LARGE_BANKROLL_EVENT_DATE_EXPOSURE_FRACTION", "0.04")
     monkeypatch.setenv("EVENT_DATE_EXPOSURE_TRANSITION_USD", "1200")
-    monkeypatch.setenv("MAX_EVENT_PORTFOLIO_LEGS", "3")
+    monkeypatch.setenv("MAX_EVENT_PORTFOLIO_LEGS", "1")
 
     settings = load_settings()
 
@@ -536,7 +536,14 @@ def test_load_settings_reads_city_date_portfolio_controls(monkeypatch):
     assert settings.max_event_date_exposure_fraction == 0.12
     assert settings.large_bankroll_event_date_exposure_fraction == 0.04
     assert settings.event_date_exposure_transition_usd == 1200.0
-    assert settings.max_event_portfolio_legs == 3
+    assert settings.max_event_portfolio_legs == 1
+
+
+def test_load_settings_rejects_more_than_two_city_date_portfolio_legs(monkeypatch):
+    monkeypatch.setenv("MAX_EVENT_PORTFOLIO_LEGS", "3")
+
+    with pytest.raises(ValueError, match="MAX_EVENT_PORTFOLIO_LEGS.*at most 2"):
+        load_settings()
 
 
 def test_load_settings_reads_raw_snapshot_storage_mode(monkeypatch):

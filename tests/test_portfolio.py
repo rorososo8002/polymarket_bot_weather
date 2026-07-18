@@ -652,7 +652,7 @@ def test_event_portfolio_selects_one_profitable_leg(tmp_path):
     assert decision.expected_net_profit_usd == 1.25
 
 
-def test_default_single_leg_skips_quadratic_pair_allocation_search(monkeypatch, tmp_path):
+def test_default_two_leg_bounds_pair_allocation_search(monkeypatch, tmp_path):
     broker = PaperBroker(settings(tmp_path, bankroll_usd=1000.0))
     candidates = [
         candidate(
@@ -678,8 +678,9 @@ def test_default_single_leg_skips_quadratic_pair_allocation_search(monkeypatch, 
 
     decision = select_event_portfolio(broker, candidates, usable_snapshot(1000.0))
 
-    assert len(decision.selected) <= 1
-    assert build_calls <= len(candidates) * portfolio_module._MAX_ALLOCATION_SIZE_CANDIDATES
+    assert len(decision.selected) == 2
+    pair_count = len(candidates) * (len(candidates) - 1) // 2
+    assert build_calls <= len(candidates) * portfolio_module._MAX_ALLOCATION_SIZE_CANDIDATES + pair_count
 
 
 def test_event_portfolio_caps_high_probability_residual_at_twenty_percent(tmp_path):
@@ -857,7 +858,7 @@ def test_open_position_preserves_polymarket_event_slug_for_dashboard_links(tmp_p
     assert position.metadata["event_slug"] == "highest-temperature-in-beijing-on-june-4-2026"
 
 
-def test_event_portfolio_blocks_two_no_legs_with_overlapping_payoff_outcomes(tmp_path):
+def test_event_portfolio_allows_two_exact_no_legs_that_cannot_both_lose(tmp_path):
     broker = PaperBroker(settings(tmp_path, bankroll_usd=200.0))
 
     decision = select_event_portfolio(
@@ -869,8 +870,7 @@ def test_event_portfolio_blocks_two_no_legs_with_overlapping_payoff_outcomes(tmp
         usable_snapshot(200.0),
     )
 
-    assert len(decision.selected) == 1
-    assert any("payoff outcomes overlap" in item.reason for item in decision.rejected)
+    assert len(decision.selected) == 2
 
 
 def test_event_portfolio_blocks_yes_no_combination_with_overlapping_payoff_outcomes(tmp_path):
@@ -886,7 +886,7 @@ def test_event_portfolio_blocks_yes_no_combination_with_overlapping_payoff_outco
     )
 
     assert len(decision.selected) == 1
-    assert any("payoff outcomes overlap" in item.reason for item in decision.rejected)
+    assert any("event legs are not complementary" in item.reason for item in decision.rejected)
 
 
 def test_event_portfolio_blocks_reentry_on_same_station_observation(tmp_path):
@@ -1176,6 +1176,25 @@ def test_event_portfolio_splits_shared_budget_instead_of_multiplying_it(tmp_path
     assert decision.selected_exposure_usd == decision.event_cap_usd == 20.0
 
 
+def test_event_portfolio_asymmetric_pair_stays_inside_partial_shared_budget(tmp_path):
+    bankroll = 334.9379571219586
+    broker = PaperBroker(settings(tmp_path, bankroll_usd=bankroll, max_event_portfolio_legs=2))
+
+    decision = select_event_portfolio(
+        broker,
+        [
+            candidate("seoul-26", "26°C", side="NO", size_usd=20.20276102957687, p_true=0.01, p_exec=0.80),
+            candidate("seoul-27", "27°C", side="NO", size_usd=29.817403483677637, p_true=0.01, p_exec=0.80),
+        ],
+        usable_snapshot(bankroll),
+    )
+
+    sizes = [leg.result.size_usd for leg in decision.selected]
+    assert sizes == pytest.approx([14.586049, 18.907745])
+    assert sum(sizes) <= decision.event_cap_usd + 1e-9
+    assert decision.event_cap_usd - sum(sizes) < 0.000002
+
+
 def test_event_portfolio_small_account_uses_one_ten_dollar_leg_instead_of_five_plus_five(tmp_path):
     broker = PaperBroker(settings(tmp_path))
 
@@ -1398,9 +1417,9 @@ def test_event_portfolio_log_payload_is_compact_summary(tmp_path):
     assert "question" not in row["selected_legs"][0]
     assert "scenario_pnl_usd" not in row
     assert row["worst_scenario_pnl_usd"] == pytest.approx(min(decision.scenario_pnl_usd.values()))
-    assert row["rejected_reason_counts"] == {"not selected by event portfolio optimizer": 1}
+    assert row["rejected_reason_counts"] == {"event leg cap reached": 1}
     assert row["rejected_legs_sample"] == [
-        {"market_id": "seoul-28", "side": "YES", "reason": "not selected by event portfolio optimizer"}
+        {"market_id": "seoul-28", "side": "YES", "reason": "event leg cap reached"}
     ]
 
 
@@ -1517,7 +1536,7 @@ def test_broker_blocks_direct_same_market_opposite_position(tmp_path):
     assert broker.event_date_position_count("seoul", "may 25") == 1
 
 
-def test_broker_blocks_direct_repeated_no_city_date_positions_with_overlapping_payoffs(tmp_path):
+def test_broker_allows_two_distinct_exact_no_city_date_positions(tmp_path):
     broker = PaperBroker(settings(tmp_path, bankroll_usd=200.0))
     first = candidate("seoul-26", "26°C", side="NO")
     second = candidate("seoul-27", "27°C", side="NO")
@@ -1540,8 +1559,30 @@ def test_broker_blocks_direct_repeated_no_city_date_positions_with_overlapping_p
     )
 
     assert first_pos is not None
-    assert second_pos is None
-    assert broker.event_date_position_count("seoul", "may 25") == 1
+    assert second_pos is not None
+    assert broker.event_date_position_count("seoul", "may 25") == 2
+
+
+def test_broker_blocks_third_distinct_exact_no_city_date_position(tmp_path):
+    broker = PaperBroker(settings(tmp_path, bankroll_usd=300.0, max_event_portfolio_legs=2))
+    positions = []
+    for market_id, bucket in [("seoul-26", "26°C"), ("seoul-27", "27°C"), ("seoul-28", "28°C")]:
+        item = candidate(market_id, bucket, side="NO", size_usd=10.0)
+        positions.append(
+            broker.open_position(
+                item.market,
+                item.market.no_token_id or "",
+                item.result,
+                city="seoul",
+                date_hint="may 25",
+                entry_bankroll_usd=300.0,
+            )
+        )
+
+    assert positions[0] is not None
+    assert positions[1] is not None
+    assert positions[2] is None
+    assert broker.event_date_position_count("seoul", "may 25") == 2
 
 
 def test_broker_rejects_orders_below_ten_dollars(tmp_path):
@@ -1913,7 +1954,7 @@ def test_run_cycle_proceeds_with_zero_when_held_position_cannot_be_priced(monkey
 
 
 
-def test_run_cycle_blocks_overlapping_profitable_no_legs_for_same_event(monkeypatch, tmp_path):
+def test_run_cycle_allows_two_distinct_exact_no_legs_that_cannot_both_lose(monkeypatch, tmp_path):
     cfg = settings(
         tmp_path,
         bankroll_usd=200.0,
@@ -1959,9 +2000,84 @@ def test_run_cycle_blocks_overlapping_profitable_no_legs_for_same_event(monkeypa
     state = json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))
     rows = (tmp_path / "portfolio.jsonl").read_text(encoding="utf-8").splitlines()
     assert [(pos["market_id"], pos["side"], pos["cost_usd"]) for pos in state["positions"]] == [
-        ("seoul-26", "NO", 20.0),
+        ("seoul-26", "NO", 10.0),
+        ("seoul-27", "NO", 10.0),
     ]
-    assert [leg["side"] for leg in json.loads(rows[0])["selected_legs"]] == ["NO"]
+    assert [leg["side"] for leg in json.loads(rows[0])["selected_legs"]] == ["NO", "NO"]
+
+
+@pytest.mark.parametrize(
+    ("left_bucket", "right_bucket"),
+    [
+        ("20°C or lower", "30°C or higher"),
+        ("20-21°C", "30-31°C"),
+    ],
+)
+def test_event_portfolio_still_blocks_two_non_exact_no_legs(tmp_path, left_bucket, right_bucket):
+    broker = PaperBroker(settings(tmp_path, bankroll_usd=200.0, max_event_portfolio_legs=2))
+
+    decision = select_event_portfolio(
+        broker,
+        [
+            candidate("seoul-non-exact-left", left_bucket, side="NO", p_true=0.10, p_exec=0.70),
+            candidate("seoul-non-exact-right", right_bucket, side="NO", p_true=0.10, p_exec=0.70),
+        ],
+        usable_snapshot(200.0),
+    )
+
+    assert len(decision.selected) == 1
+    assert any(item.reason == "event legs are not complementary" for item in decision.rejected)
+
+
+def test_event_portfolio_blocks_exact_no_pair_for_different_high_low_metrics(tmp_path):
+    broker = PaperBroker(settings(tmp_path, bankroll_usd=200.0, max_event_portfolio_legs=2))
+    high = candidate("seoul-high-30", "30°C", side="NO", p_true=0.10, p_exec=0.70)
+    low_question = "Will the lowest temperature in Seoul be 29°C on May 25?"
+    low = candidate("seoul-low-29", "29°C", side="NO", p_true=0.10, p_exec=0.70)
+    low = replace(
+        low,
+        market=replace(low.market, question=low_question),
+        signal=station_lock_signal(0.10, 0.90, low_question),
+    )
+
+    decision = select_event_portfolio(broker, [high, low], usable_snapshot(200.0))
+
+    assert len(decision.selected) == 1
+    assert any(item.reason == "event legs are not complementary" for item in decision.rejected)
+
+
+def test_event_portfolio_logs_third_compatible_exact_no_as_city_date_cap(tmp_path):
+    broker = PaperBroker(settings(tmp_path, bankroll_usd=300.0, max_event_portfolio_legs=2))
+
+    decision = select_event_portfolio(
+        broker,
+        [
+            candidate("seoul-26", "26°C", side="NO", p_true=0.05, p_exec=0.80),
+            candidate("seoul-27", "27°C", side="NO", p_true=0.05, p_exec=0.80),
+            candidate("seoul-28", "28°C", side="NO", p_true=0.05, p_exec=0.80),
+        ],
+        usable_snapshot(300.0),
+    )
+
+    assert len(decision.selected) == 2
+    assert [item.reason for item in decision.rejected] == ["event leg cap reached"]
+
+
+def test_event_portfolio_fails_closed_when_event_id_mixes_cities(tmp_path):
+    broker = PaperBroker(settings(tmp_path, bankroll_usd=300.0, max_event_portfolio_legs=2))
+    seoul = candidate("seoul-26", "26°C", side="NO", p_true=0.05, p_exec=0.80)
+    shanghai_question = "Will the highest temperature in Shanghai be 27°C on May 25?"
+    shanghai = candidate("shanghai-27", "27°C", side="NO", p_true=0.05, p_exec=0.80)
+    shanghai = replace(
+        shanghai,
+        market=replace(shanghai.market, question=shanghai_question),
+        signal=station_lock_signal(0.05, 0.90, shanghai_question),
+    )
+
+    decision = select_event_portfolio(broker, [seoul, shanghai], usable_snapshot(300.0))
+
+    assert decision.selected == []
+    assert {item.reason for item in decision.rejected} == {"event candidates mix city or local date"}
 
 
 def test_realtime_book_update_evaluates_only_the_changed_market(monkeypatch, tmp_path):

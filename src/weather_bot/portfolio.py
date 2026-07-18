@@ -484,6 +484,31 @@ def _payoff_outcomes_overlap(
     )
 
 
+def _event_legs_are_compatible(
+    left_question: str,
+    left_side: str,
+    right_question: str,
+    right_side: str,
+) -> bool:
+    if left_side == right_side == "NO":
+        left = parse_weather_question(left_question)
+        right = parse_weather_question(right_question)
+        if (
+            left.temperature_bucket != "exact"
+            or right.temperature_bucket != "exact"
+            or left.temperature_metric != right.temperature_metric
+        ):
+            return False
+        left_interval = _temperature_interval_bounds(left_question)
+        right_interval = _temperature_interval_bounds(right_question)
+        return (
+            left_interval is not None
+            and right_interval is not None
+            and _bucket_intervals_do_not_overlap(left_interval, right_interval)
+        )
+    return not _payoff_outcomes_overlap(left_question, left_side, right_question, right_side)
+
+
 def _interval_width(interval: TemperatureBucketInterval) -> float:
     if isinf(interval.lower_f) or isinf(interval.upper_f):
         return inf
@@ -525,7 +550,7 @@ def _is_complementary(candidate: PortfolioCandidate, selected: list[PortfolioCan
     for leg in selected:
         if leg.market_type != "temperature":
             return False
-        if _payoff_outcomes_overlap(
+        if not _event_legs_are_compatible(
             candidate.market.question,
             candidate.result.side,
             leg.market.question,
@@ -542,7 +567,7 @@ def is_complementary_with_positions(question: str, side: str, held: list[PaperPo
     if candidate_interval is None:
         return False
     for pos in held:
-        if _payoff_outcomes_overlap(question, side, pos.question, pos.side):
+        if not _event_legs_are_compatible(question, side, pos.question, pos.side):
             return False
     return True
 
@@ -820,7 +845,17 @@ def select_event_portfolio(
     existing_event_exposure = broker.event_date_exposure(city, date_hint) if city and date_hint else 0.0
     held = _event_positions(broker, city, date_hint)
     rejected: list[RejectedPortfolioLeg] = []
-    probability_assessment = _scenario_probabilities(candidates)
+    first_identity = (city.strip().casefold(), date_hint.strip().casefold())
+    candidate_identities = (
+        tuple(value.strip().casefold() for value in _candidate_city_and_date(candidate))
+        for candidate in candidates[1:]
+    )
+    mixed_event = any(identity != first_identity for identity in candidate_identities)
+    probability_assessment = (
+        _ScenarioProbabilityAssessment({}, "event candidates mix city or local date")
+        if mixed_event
+        else _scenario_probabilities(candidates)
+    )
     probabilities = probability_assessment.probabilities
     if probability_assessment.fail_closed_reason is not None:
         for candidate in candidates:
@@ -957,32 +992,37 @@ def select_event_portfolio(
                 continue
             if not _is_complementary(right, [left], held):
                 continue
-            left_sizes = _allocation_sizes(
-                min(ordinary_single_limit, left.result.size_usd),
-                settings.min_order_usd,
-                preferred_usd=left.result.size_usd,
+            left_limit = min(ordinary_single_limit, left.result.size_usd)
+            right_limit = min(ordinary_single_limit, right.result.size_usd)
+            minimum = settings.min_order_usd
+            total_limit = min(ordinary_available_budget, left_limit + right_limit)
+            if (
+                left_limit + 1e-9 < minimum
+                or right_limit + 1e-9 < minimum
+                or total_limit + 1e-9 < 2 * minimum
+            ):
+                continue
+            headroom = left_limit + right_limit - 2 * minimum
+            scale = min(1.0, (total_limit - 2 * minimum) / headroom) if headroom > 0 else 0.0
+            allocation_scale = 10**_ALLOCATION_SIZE_ROUND_DIGITS
+            left_size = floor(
+                (minimum + (left_limit - minimum) * scale) * allocation_scale
+            ) / allocation_scale
+            right_size = floor(
+                (minimum + (right_limit - minimum) * scale) * allocation_scale
+            ) / allocation_scale
+            plan = _build_plan(
+                (
+                    _resize_candidate(left, left_size),
+                    _resize_candidate(right, right_size),
+                ),
+                held,
+                entry_bankroll.entry_bankroll,
+                probabilities,
+                settings,
             )
-            right_sizes = _allocation_sizes(
-                min(ordinary_single_limit, right.result.size_usd),
-                settings.min_order_usd,
-                preferred_usd=right.result.size_usd,
-            )
-            for left_size in left_sizes:
-                for right_size in right_sizes:
-                    if left_size + right_size > ordinary_available_budget + 1e-9:
-                        continue
-                    plan = _build_plan(
-                        (
-                            _resize_candidate(left, left_size),
-                            _resize_candidate(right, right_size),
-                        ),
-                        held,
-                        entry_bankroll.entry_bankroll,
-                        probabilities,
-                        settings,
-                    )
-                    if plan is not None:
-                        plans.append(plan)
+            if plan is not None:
+                plans.append(plan)
 
     best_plan = max(
         plans,
@@ -1011,8 +1051,8 @@ def select_event_portfolio(
     for candidate in eligible:
         key = (candidate.market.market_id, candidate.result.side)
         if key not in selected_keys:
-            overlap = any(
-                _payoff_outcomes_overlap(
+            incompatible = any(
+                not _event_legs_are_compatible(
                     candidate.market.question,
                     candidate.result.side,
                     leg.market.question,
@@ -1020,7 +1060,19 @@ def select_event_portfolio(
                 )
                 for leg in selected
             )
-            reason = "payoff outcomes overlap" if overlap else "not selected by event portfolio optimizer"
+            selected_new_legs = sum(
+                leg.add_to_existing_position_id is None
+                for leg in selected
+            )
+            if incompatible:
+                reason = "event legs are not complementary"
+            elif (
+                candidate.add_to_existing_position_id is None
+                and len(held) + selected_new_legs >= settings.max_event_portfolio_legs
+            ):
+                reason = "event leg cap reached"
+            else:
+                reason = "not selected by event portfolio optimizer"
             rejected.append(RejectedPortfolioLeg(candidate.market.market_id, candidate.result.side, reason))
     selected_exposure = sum(leg.result.size_usd for leg in selected)
     return EventPortfolioDecision(
