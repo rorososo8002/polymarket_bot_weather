@@ -1,7 +1,7 @@
 ---
 title: One-shot station changes must bypass bounded probe limits
 date: 2026-07-17
-last_updated: 2026-07-17
+last_updated: 2026-07-20
 category: logic-errors
 module: "weather_bot.live_paper_runner, weather_bot.polymarket_client"
 problem_type: logic_error
@@ -27,6 +27,11 @@ the four-event rotating probe that was designed for quiet-period background
 checks. When more than four city events were affected, the remaining events
 could be omitted permanently because the same station state might not change
 again.
+
+The same delivery rule applies at startup. The first observation is a comparison
+baseline, not a change, but it still has to release one exact-NO scan. Otherwise
+an irreversible bucket that existed before the process or stream cycle started
+stays hidden until the station publishes another report.
 
 This made a healthy process look deceptively normal: the WebSocket stayed
 connected and some cities traded, while other cities never reached the
@@ -140,10 +145,13 @@ and portfolio evaluation, known signals are filtered again: production new
 entries require an official station signal, confidence at least 0.50, and a NO
 preference under the NO-only policy.
 
-On process start, the first official-station refresh only establishes the
-comparison baseline. Treating a missing previous key as a change creates a
-false all-city urgent burst, which defeats normal-batch preemption immediately
-after every deployment.
+On process start, the first official-station refresh establishes the comparison
+baseline without incrementing the changed-station set. A separate released set
+queues one startup exact-NO scan. The production parallel path releases only the
+station that just completed; the sequential fallback releases the completed
+group once. The runner passes that callback's current station IDs to the queue,
+not the accumulated set, so completions stay `A`, then `B`, then `C` rather than
+growing into `A`, `A+B`, `A+B+C` duplicate work.
 
 The station-state key includes observation time, current and extreme
 temperatures, high-departure and low-rebound confirmation, publication-due
@@ -225,6 +233,12 @@ Keep regression tests for all of these cases:
 - a failed urgent evaluation is retried once with urgency preserved;
 - an existing backlog drains without repeated coalescing delay;
 - high-departure and low-rebound changes alter the station-state key;
+- an initial parallel refresh releases each completed station once without
+  counting it as a changed station;
+- an initial sequential or single-station refresh also releases one startup
+  scan;
+- successive callbacks enqueue only their current station IDs, never the
+  accumulated set;
 - final book reads overlap instead of running serially;
 - candidate books use one official batch request rather than one request per
   token, with duplicate removal and 500-token chunking;
@@ -237,7 +251,7 @@ Keep regression tests for all of these cases:
 - the default ordinary batch contains exactly one event;
 - many skip diagnostics are appended once per realtime evaluator batch without
   dropping any row;
-- focused realtime tests and the full 801-test local and server suites pass;
+- focused realtime tests and the full local and server suites pass;
 
 ## Prevention Checklist
 
@@ -259,7 +273,10 @@ Keep regression tests for all of these cases:
   that filter to held-position exits.
 - Batch append-only diagnostic rows on the hot path; never defer account state
   or executed-trade ledger writes.
-- Do not interpret initial state registration as a state transition.
+- Do not count initial state registration as a state transition, but do release
+  one startup scan so pre-existing irreversible evidence is evaluated.
+- Pass callback deltas to the queue; keep accumulated station IDs only for
+  reporting and final de-duplication.
 - Parallelize independent reads, not account or ledger mutations.
 - Measure last-city completion lag, not aggregate throughput or first-batch
   dispatch time. A statement such as "60 events in 40 seconds" does not prove

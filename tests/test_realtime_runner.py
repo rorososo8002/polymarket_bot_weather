@@ -4994,6 +4994,249 @@ def test_direct_station_refresh_releases_fast_city_without_waiting_for_slow_city
     assert {london.station_id} in callbacks
 
 
+def test_initial_parallel_station_refresh_releases_each_station_for_startup_probe(monkeypatch):
+    seoul = runner_module.TRADING_READY_STATION_MAP["seoul"]
+    london = runner_module.TRADING_READY_STATION_MAP["london"]
+    monkeypatch.setattr(
+        runner_module,
+        "TRADING_READY_STATION_MAP",
+        {"seoul": seoul, "london": london},
+    )
+    markets = [
+        RawMarket(
+            "seoul-high-29",
+            "Will the highest temperature in Seoul be 29C on July 20?",
+            "seoul-high-29",
+            True,
+            False,
+            "high-yes",
+            "high-no",
+            event_id="seoul-high-event",
+        ),
+        RawMarket(
+            "seoul-low-22",
+            "Will the lowest temperature in Seoul be 22C on July 20?",
+            "seoul-low-22",
+            True,
+            False,
+            "low-yes",
+            "low-no",
+            event_id="seoul-low-event",
+        ),
+    ]
+    worker = RealtimeEvaluationCoalescer(
+        event_key_by_token={
+            "high-no": "seoul-high-event",
+            "low-no": "seoul-low-event",
+        },
+        evaluator=lambda _tokens: None,
+    )
+    callbacks: list[set[str]] = []
+
+    class ParallelProvider:
+        supports_parallel_station_refresh = True
+
+        def observed_temperature_extremes_so_far(self, station, *, target_date, now):
+            del target_date
+            return StationNowcastObservation(
+                station_id=station.station_id,
+                station_name=station.station_name,
+                observed_high_c=30.0,
+                observed_low_c=21.0,
+                observed_at=now,
+                high_observed_at=now,
+                low_observed_at=now,
+                source="wunderground-history-direct",
+                source_url="https://example.test/history",
+                settlement_source_url="https://example.test/settlement",
+                freshness_seconds=0,
+                unavailable_reason="",
+            )
+
+    def release_startup_probe(station_ids: set[str]) -> None:
+        callbacks.append(station_ids)
+        runner_module._enqueue_official_station_refresh_updates(
+            worker,
+            markets,
+            {},
+            {},
+            {},
+            station_ids=station_ids,
+            now=datetime(2026, 7, 20, 0, 0, tzinfo=timezone.utc),
+        )
+
+    changed = runner_module._refresh_official_station_observations(
+        ParallelProvider(),
+        now=datetime(2026, 7, 20, 0, 0, tzinfo=timezone.utc),
+        station_state_by_id={},
+        on_shared_metar_refreshed=release_startup_probe,
+    )
+
+    assert changed == set()
+    assert len(callbacks) == 2
+    assert set().union(*callbacks) == {seoul.station_id, london.station_id}
+    assert worker._pending_tokens_by_event == {
+        "seoul-high-event": {"high-no"},
+        "seoul-low-event": {"low-no"},
+    }
+
+
+def test_initial_sequential_station_refresh_releases_startup_probe(monkeypatch):
+    seoul = runner_module.TRADING_READY_STATION_MAP["seoul"]
+    monkeypatch.setattr(
+        runner_module,
+        "TRADING_READY_STATION_MAP",
+        {"seoul": seoul},
+    )
+    callbacks: list[set[str]] = []
+
+    class SequentialProvider:
+        supports_parallel_station_refresh = False
+
+        def observed_temperature_extremes_so_far(self, station, *, target_date, now):
+            del target_date
+            return StationNowcastObservation(
+                station_id=station.station_id,
+                station_name=station.station_name,
+                observed_high_c=30.0,
+                observed_low_c=21.0,
+                observed_at=now,
+                high_observed_at=now,
+                low_observed_at=now,
+                source="wunderground-history-direct",
+                source_url="https://example.test/history",
+                settlement_source_url="https://example.test/settlement",
+                freshness_seconds=0,
+                unavailable_reason="",
+            )
+
+    changed = runner_module._refresh_official_station_observations(
+        SequentialProvider(),
+        now=datetime(2026, 7, 20, 0, 0, tzinfo=timezone.utc),
+        station_state_by_id={},
+        on_shared_metar_refreshed=lambda station_ids: callbacks.append(station_ids),
+    )
+
+    assert changed == set()
+    assert callbacks == [{seoul.station_id}]
+
+
+def test_runner_releases_only_newly_completed_station_ids(tmp_path, monkeypatch):
+    market = RawMarket(
+        "seoul-high-29",
+        "Will the highest temperature in Seoul be 29C today?",
+        "seoul-high-29",
+        True,
+        False,
+        "yes",
+        "no",
+        event_id="seoul-high-event",
+    )
+    released: list[set[str]] = []
+
+    class FakeClient:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def discover_weather_markets(self, *, max_pages, page_size):
+            del max_pages, page_size
+            return [market]
+
+        def get_market(self, market_id):
+            assert market_id == market.market_id
+            return market
+
+    class RecordingEvaluator:
+        def __init__(self, **_kwargs):
+            pass
+
+        def start(self):
+            return None
+
+        def stop(self, *, drain=True, timeout=5.0):
+            del drain, timeout
+
+        def status_snapshot(self):
+            return {"thread_alive": True, "queue_depth": 0}
+
+    class RecordingStream:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def start(self, token_ids):
+            assert set(token_ids) == {"yes", "no"}
+
+        def stop(self):
+            return None
+
+        def health_snapshot(self):
+            return {"thread_alive": True, "stale": False, "status_reason": "fresh fixture"}
+
+    class ProviderFactory:
+        @staticmethod
+        def from_settings(_settings):
+            return object()
+
+    def refresh_with_two_completions(
+        _provider,
+        *,
+        now,
+        station_state_by_id,
+        on_shared_metar_refreshed,
+    ):
+        del now, station_state_by_id
+        on_shared_metar_refreshed({"FIRST"})
+        on_shared_metar_refreshed({"SECOND"})
+        return {"FIRST", "SECOND"}
+
+    def record_release(
+        _worker,
+        _markets,
+        _signals,
+        _timer_buckets,
+        _signal_refreshed,
+        *,
+        station_ids,
+        now,
+    ):
+        del now
+        released.append(set(station_ids))
+
+    monkeypatch.setattr(runner_module, "PolymarketClient", FakeClient)
+    monkeypatch.setattr(runner_module, "OrderBookMarketStream", RecordingStream)
+    monkeypatch.setattr(runner_module, "RealtimeEvaluationCoalescer", RecordingEvaluator)
+    monkeypatch.setattr(runner_module, "AviationWeatherMetarNowcastProvider", ProviderFactory)
+    monkeypatch.setattr(runner_module, "pre_station_tradeability_gate", lambda *_args: None)
+    monkeypatch.setattr(runner_module, "_select_realtime_stream_markets", lambda markets, *_args, **_kwargs: markets)
+    monkeypatch.setattr(runner_module, "_load_residual_profile_store", lambda _settings: None)
+    monkeypatch.setattr(runner_module, "_refresh_official_station_observations", refresh_with_two_completions)
+    monkeypatch.setattr(runner_module, "_enqueue_official_station_refresh_updates", record_release)
+    monkeypatch.setattr(
+        runner_module,
+        "_enqueue_station_refresh_high_exact_no_probes",
+        lambda *_args, **_kwargs: 0,
+    )
+
+    def stop_after_first_loop(_seconds):
+        raise RuntimeError("stop after station release")
+
+    monkeypatch.setattr(runner_module.time, "sleep", stop_after_first_loop)
+    settings = Settings(
+        state_path=str(tmp_path / "state.json"),
+        trades_csv_path=str(tmp_path / "trades.csv"),
+        decisions_csv_path=str(tmp_path / "decisions.csv"),
+        raw_snapshots_path=str(tmp_path / "raw.jsonl"),
+        portfolio_decisions_jsonl_path=str(tmp_path / "portfolio.jsonl"),
+        strategy_mode="hybrid_observation_edge",
+        stream_cycle_interval_seconds=60,
+    )
+
+    with pytest.raises(RuntimeError, match="stop after station release"):
+        runner_module.run_realtime_forever(settings)
+
+    assert released == [{"FIRST"}, {"SECOND"}]
+
+
 def test_lock_only_runtime_rejects_missing_wunderground_key(tmp_path):
     settings = replace(
         _entry_gate_settings(tmp_path),

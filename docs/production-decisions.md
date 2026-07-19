@@ -156,8 +156,10 @@ notes only when they prevent a repeated mistake.
   monitoring start, city-month q75, or station-local 16:00 is urgent; moving
   into a new residual 30-minute bin is a normal preemptible wakeup.
 - The first station refresh after process start establishes the comparison
-  baseline. It is not a change event; only a later state difference may fan out
-  urgent station work.
+  baseline and is not counted as a change event. Each completed direct station
+  still queues one startup exact-NO scan immediately, so an irreversible bucket
+  that already existed before restart is not hidden until the next report.
+  Only a later state difference is counted as a changed-station event.
 
 ## 6. Sizing
 

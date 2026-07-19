@@ -4137,6 +4137,7 @@ def _refresh_official_station_observations(
             return station, observation
 
         changed_station_ids: set[str] = set()
+        released_station_ids: set[str] = set()
 
         def record(station: Any, observation: Any) -> None:
             if station_state_by_id is None:
@@ -4145,16 +4146,19 @@ def _refresh_official_station_observations(
                 getattr(observation, "station_id", "") or station.station_id
             ).upper()
             state_key = _station_observation_state_key(observation)
+            initial = station_id not in station_state_by_id
             changed = (
-                station_id in station_state_by_id
+                not initial
                 and station_state_by_id[station_id] != state_key
             )
             station_state_by_id[station_id] = state_key
+            if initial or changed:
+                released_station_ids.add(station_id)
+                if on_changed is not None and parallel:
+                    on_changed({station_id})
             if not changed:
                 return
             changed_station_ids.add(station_id)
-            if on_changed is not None and parallel:
-                on_changed({station_id})
 
         parallel = (
             getattr(observation_provider, "supports_parallel_station_refresh", False)
@@ -4181,8 +4185,8 @@ def _refresh_official_station_observations(
             refreshed = [fetch(station) for station in group]
             for station, observation in refreshed:
                 record(station, observation)
-            if on_changed is not None and changed_station_ids:
-                on_changed(set(changed_station_ids))
+            if on_changed is not None and released_station_ids:
+                on_changed(set(released_station_ids))
         return changed_station_ids
 
     metar_stations = [station for station in stations if station.nowcast_source_type == "metar"]
@@ -4581,7 +4585,7 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
                                     signals_by_market,
                                     timer_bucket_by_market,
                                     signal_refreshed_at_by_market,
-                                    station_ids=metar_changed_station_ids,
+                                    station_ids=changed_ids,
                                     now=now,
                                 )
 
