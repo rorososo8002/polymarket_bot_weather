@@ -8,6 +8,7 @@ import json
 import os
 import threading
 import uuid
+from contextlib import ExitStack
 from dataclasses import dataclass, replace
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
@@ -21,6 +22,7 @@ from .stations import STATION_MAP, StationMeta
 AVIATIONWEATHER_METAR_SOURCE_URL = "https://aviationweather.gov/api/data/metar"
 KMA_METAR_SOURCE_URL = "https://apis.data.go.kr/1360000/AmmService/getMetar"
 HKO_MAXMIN_SOURCE_URL = "https://data.weather.gov.hk/weatherAPI/hko_data/regional-weather/latest_since_midnight_maxmin.csv"
+WUNDERGROUND_HISTORY_GEOCODE_BASE_URL = "https://api.weather.com/v1/geocode"
 SEOUL_SETTLEMENT_SOURCE_URL = "https://www.wunderground.com/history/daily/kr/incheon/RKSI"
 AWC_METAR_UPDATE_CADENCE = (
     "Aviation Weather Center METAR API requests are floored at one real request per minute; "
@@ -29,6 +31,14 @@ AWC_METAR_UPDATE_CADENCE = (
 HKO_MAXMIN_UPDATE_CADENCE = (
     "Hong Kong Observatory regional maximum/minimum air temperature since midnight updates every 10 minutes."
 )
+WUNDERGROUND_HISTORY_UPDATE_CADENCE = (
+    "Weather Underground daily history is fetched directly for each settlement-station geocode."
+)
+WUNDERGROUND_DUE_POLL_INTERVAL_SECONDS = 5
+WUNDERGROUND_DUE_POLL_WINDOW_SECONDS = 10 * 60
+WUNDERGROUND_ERROR_BACKOFF_SECONDS = 60
+WUNDERGROUND_MIN_TEMPERATURE_C = -100.0
+WUNDERGROUND_MAX_TEMPERATURE_C = 70.0
 AWC_METAR_MIN_REAL_REQUEST_INTERVAL_SECONDS = 60
 HKO_MAXMIN_MIN_REAL_REQUEST_INTERVAL_SECONDS = 10 * 60
 AWC_METAR_MAX_CONTINUITY_GAP_SECONDS = 90 * 60
@@ -425,7 +435,7 @@ def _learned_observation_interval_seconds(observed_times: list[datetime]) -> int
         for previous, current in zip(ordered, ordered[1:])
         if 0 < (current - previous).total_seconds() <= AWC_METAR_MAX_CONTINUITY_GAP_SECONDS
     )
-    if len(gaps) < 2:
+    if not gaps:
         return None
     middle = len(gaps) // 2
     if len(gaps) % 2:
@@ -451,6 +461,7 @@ class AviationWeatherMetarNowcastProvider:
         kma_metar_poll_seconds: int = 30,
         kma_metar_timeout_seconds: float = 3.0,
         kma_metar_station_ids: set[str] | None = None,
+        wunderground_api_key: str = "",
         clock: Callable[[], datetime] = _utc_now,
     ) -> None:
         self.http_get = http_get
@@ -465,6 +476,8 @@ class AviationWeatherMetarNowcastProvider:
             for station_id in (kma_metar_station_ids or {"RKSI", "RKPK"})
             if str(station_id).strip()
         }
+        self.wunderground_api_key = str(wunderground_api_key or "").strip()
+        self.supports_parallel_station_refresh = bool(self.wunderground_api_key)
         configured_cache_ttl = max(0, int(cache_ttl_seconds))
         self.cache_ttl_seconds = (
             min(configured_cache_ttl, self.kma_metar_poll_seconds)
@@ -487,6 +500,8 @@ class AviationWeatherMetarNowcastProvider:
         self._cache_lock = threading.RLock()
         self._observation_lock = threading.RLock()
         self._hko_observation_lock = threading.RLock()
+        self._wunderground_station_locks: dict[str, threading.RLock] = {}
+        self._wunderground_station_locks_guard = threading.RLock()
         self._request_log_lock = threading.RLock()
         self._hko_rollover_state = self._load_hko_rollover_state()
         self._metar_daily_extremes_state = self._load_metar_daily_extremes_state()
@@ -518,6 +533,7 @@ class AviationWeatherMetarNowcastProvider:
                 for station_id in str(getattr(settings, "kma_metar_station_ids", "RKSI,RKPK")).split(",")
                 if station_id.strip()
             },
+            wunderground_api_key=getattr(settings, "wunderground_api_key", ""),
         )
 
     def _load_metar_daily_extremes_state(self) -> dict[str, Any]:
@@ -857,17 +873,26 @@ class AviationWeatherMetarNowcastProvider:
         target_date: date,
         now: datetime | None = None,
     ) -> StationNowcastObservation:
-        observation_lock = (
-            self._hko_observation_lock
-            if station.nowcast_source_type == "hko_maxmin_since_midnight"
-            else self._observation_lock
-        )
+        observation_lock = self._observation_lock_for(station)
         with observation_lock:
             return self._observed_temperature_extremes_so_far_unlocked(
                 station,
                 target_date=target_date,
                 now=now,
             )
+
+    def _observation_lock_for(self, station: StationMeta) -> threading.RLock:
+        if self.wunderground_api_key and station.nowcast_source_type == "metar":
+            station_id = station.station_id.upper()
+            with self._wunderground_station_locks_guard:
+                lock = self._wunderground_station_locks.get(station_id)
+                if lock is None:
+                    lock = threading.RLock()
+                    self._wunderground_station_locks[station_id] = lock
+                return lock
+        if station.nowcast_source_type == "hko_maxmin_since_midnight":
+            return self._hko_observation_lock
+        return self._observation_lock
 
     def discard_cached_observations_before_entry(
         self,
@@ -932,15 +957,23 @@ class AviationWeatherMetarNowcastProvider:
                 ):
                     self._awc_metar_bulk_cache = None
 
-        if include_metar and include_hko:
-            with self._observation_lock, self._hko_observation_lock:
-                discard_selected()
-        elif include_metar:
-            with self._observation_lock:
-                discard_selected()
-        elif include_hko:
-            with self._hko_observation_lock:
-                discard_selected()
+        selected_wunderground_locks = []
+        if self.wunderground_api_key:
+            selected_wunderground_locks = [
+                self._observation_lock_for(source_station)
+                for source in selected_sources
+                if source.source == "aviationweather-metar"
+                for source_station in STATION_MAP.values()
+                if source_station.station_id.upper() == source.station_id.upper()
+            ]
+        with ExitStack() as lock_stack:
+            for lock in selected_wunderground_locks:
+                lock_stack.enter_context(lock)
+            if include_metar:
+                lock_stack.enter_context(self._observation_lock)
+            if include_hko:
+                lock_stack.enter_context(self._hko_observation_lock)
+            discard_selected()
 
     def _observed_temperature_extremes_so_far_unlocked(
         self,
@@ -971,7 +1004,26 @@ class AviationWeatherMetarNowcastProvider:
         effective_cache_ttl_seconds = max(self.cache_ttl_seconds, provider_floor_seconds)
         if cached is not None and self.cache_ttl_seconds > 0:
             cached_at, observation = cached
-            if (current - cached_at).total_seconds() <= effective_cache_ttl_seconds:
+            if observation.source == "wunderground-history-direct":
+                if not observation.usable:
+                    effective_cache_ttl_seconds = max(
+                        effective_cache_ttl_seconds,
+                        WUNDERGROUND_ERROR_BACKOFF_SECONDS,
+                    )
+                elif observation.next_observation_due_at is not None:
+                    seconds_since_due = (
+                        current - _as_utc(observation.next_observation_due_at)
+                    ).total_seconds()
+                    if (
+                        -WUNDERGROUND_DUE_POLL_INTERVAL_SECONDS
+                        <= seconds_since_due
+                        < WUNDERGROUND_DUE_POLL_WINDOW_SECONDS
+                    ):
+                        effective_cache_ttl_seconds = min(
+                            effective_cache_ttl_seconds,
+                            WUNDERGROUND_DUE_POLL_INTERVAL_SECONDS,
+                        )
+            if (current - cached_at).total_seconds() < effective_cache_ttl_seconds:
                 return observation
             cache_miss_reason = "expired-cache"
         elif cached is not None:
@@ -980,7 +1032,15 @@ class AviationWeatherMetarNowcastProvider:
                 return observation
             cache_miss_reason = "cache-disabled"
 
-        if source.source == "aviationweather-metar":
+        if source.source == "aviationweather-metar" and self.wunderground_api_key:
+            observation = self._fetch_wunderground_history(
+                station,
+                target_date,
+                current,
+                source,
+                cache_miss_reason=cache_miss_reason,
+            )
+        elif source.source == "aviationweather-metar":
             observation = self._fetch_aviationweather(
                 station,
                 target_date,
@@ -1001,6 +1061,305 @@ class AviationWeatherMetarNowcastProvider:
 
         with self._cache_lock:
             self._cache[cache_key] = (current, observation)
+        return observation
+
+    def _wunderground_source(
+        self,
+        station: StationMeta,
+        fallback_source: StationNowcastSource,
+    ) -> StationNowcastSource:
+        source_url = (
+            f"{WUNDERGROUND_HISTORY_GEOCODE_BASE_URL}/{station.latitude}/"
+            f"{station.longitude}/observations/historical.json"
+        )
+        return StationNowcastSource(
+            station_id=station.station_id,
+            source="wunderground-history-direct",
+            source_url=source_url,
+            settlement_source_url=fallback_source.settlement_source_url,
+            update_cadence=WUNDERGROUND_HISTORY_UPDATE_CADENCE,
+            note="Direct daily-history response for the mapped settlement-station geocode.",
+        )
+
+    def _fetch_wunderground_history(
+        self,
+        station: StationMeta,
+        target_date: date,
+        now: datetime,
+        fallback_source: StationNowcastSource,
+        *,
+        cache_miss_reason: str,
+    ) -> StationNowcastObservation:
+        source = self._wunderground_source(station, fallback_source)
+        if station.temperature_unit == "celsius":
+            units = "m"
+        elif station.temperature_unit == "fahrenheit":
+            units = "e"
+        else:
+            return self._unavailable(station, "unsupported-temperature-unit", source)
+
+        response: Any | None = None
+        response_received_at: datetime | None = None
+        requested_at = _as_utc(self.clock())
+        try:
+            response = self.http_get(
+                source.source_url,
+                params={
+                    "apiKey": self.wunderground_api_key,
+                    "startDate": target_date.strftime("%Y%m%d"),
+                    "endDate": target_date.strftime("%Y%m%d"),
+                    "units": units,
+                },
+                timeout=self.timeout,
+                headers={"User-Agent": "polymarket-weather-bot/nowcast"},
+            )
+            response_received_at = _as_utc(self.clock())
+            response.raise_for_status()
+            request_duration_seconds = max(
+                0.0,
+                (response_received_at - requested_at).total_seconds(),
+            )
+            observation = self._parse_wunderground_history_payload(
+                response.json(),
+                station,
+                target_date,
+                now + timedelta(seconds=request_duration_seconds),
+                source,
+                units=units,
+                request_started_at=requested_at,
+                bot_received_at=response_received_at,
+            )
+            self._append_request_log(
+                self._request_log_row(
+                    requested_at=requested_at,
+                    response_received_at=response_received_at,
+                    request_mode="wunderground_history_direct",
+                    station=station,
+                    target_date=target_date,
+                    source=source,
+                    cache_miss_reason=cache_miss_reason,
+                    status="success" if observation.usable else "invalid_response",
+                    status_code=getattr(response, "status_code", None),
+                    unavailable_reason=observation.unavailable_reason,
+                )
+            )
+            if observation.usable:
+                self._log_observation_delivery(station, observation)
+            return observation
+        except Exception as exc:  # noqa: BLE001
+            response_received_at = response_received_at or _as_utc(self.clock())
+            self._append_request_log(
+                self._request_log_row(
+                    requested_at=requested_at,
+                    response_received_at=response_received_at,
+                    request_mode="wunderground_history_direct",
+                    station=station,
+                    target_date=target_date,
+                    source=source,
+                    cache_miss_reason=cache_miss_reason,
+                    status="error",
+                    status_code=getattr(response, "status_code", None),
+                    error=type(exc).__name__,
+                )
+            )
+            return self._unavailable(
+                station,
+                f"nowcast-fetch-error:{type(exc).__name__}",
+                source,
+            )
+
+    def _parse_wunderground_history_payload(
+        self,
+        payload: Any,
+        station: StationMeta,
+        target_date: date,
+        now: datetime,
+        source: StationNowcastSource,
+        *,
+        units: str,
+        request_started_at: datetime,
+        bot_received_at: datetime,
+    ) -> StationNowcastObservation:
+        if not isinstance(payload, dict) or not isinstance(payload.get("observations"), list):
+            return self._unavailable(station, "malformed-observation-payload", source)
+        metadata = payload.get("metadata")
+        if not isinstance(metadata, dict) or not str(metadata.get("units") or "").strip():
+            return self._unavailable(station, "wunderground-units-missing", source)
+        response_units = str(metadata["units"]).strip().lower()
+        if response_units != units:
+            return self._unavailable(station, "wunderground-units-mismatch", source)
+
+        rows = payload["observations"]
+        zone = _zone(station.timezone)
+        by_observed_at: dict[datetime, tuple[float, float, dict[str, Any]]] = {}
+        for record in rows:
+            if not isinstance(record, dict):
+                return self._unavailable(
+                    station,
+                    "malformed-observation-payload",
+                    source,
+                    raw_count=len(rows),
+                )
+            record_station_id = str(record.get("obs_id") or "").strip()
+            if record_station_id.upper() != station.station_id.upper():
+                return self._unavailable(
+                    station,
+                    "wunderground-observation-station-mismatch",
+                    source,
+                    raw_count=len(rows),
+                )
+            observed_at = _parse_observation_time(record.get("valid_time_gmt"))
+            raw_temperature = record.get("temp")
+            try:
+                native_temp = float(raw_temperature) if not isinstance(raw_temperature, bool) else math.nan
+            except (TypeError, ValueError):
+                native_temp = math.nan
+            if observed_at is None or not math.isfinite(native_temp):
+                return self._unavailable(
+                    station,
+                    "malformed-observation-payload",
+                    source,
+                    raw_count=len(rows),
+                )
+            if observed_at.astimezone(zone).date() != target_date:
+                continue
+            temp_c = native_temp if units == "m" else (native_temp - 32.0) * 5.0 / 9.0
+            if not WUNDERGROUND_MIN_TEMPERATURE_C <= temp_c <= WUNDERGROUND_MAX_TEMPERATURE_C:
+                return self._unavailable(
+                    station,
+                    "wunderground-temperature-out-of-range",
+                    source,
+                    raw_count=len(rows),
+                )
+            # Later rows replace earlier rows at the same timestamp, so provider corrections win.
+            by_observed_at[observed_at] = (temp_c, native_temp, record)
+
+        ordered = sorted(
+            (observed_at, *values)
+            for observed_at, values in by_observed_at.items()
+        )
+        if not ordered:
+            return self._unavailable(
+                station,
+                "malformed-observation-payload",
+                source,
+                raw_count=len(rows),
+            )
+        if any(observed_at > now for observed_at, *_values in ordered):
+            return self._unavailable(
+                station,
+                "future-observation",
+                source,
+                raw_count=len(ordered),
+            )
+
+        high_c = max(temp_c for _observed_at, temp_c, _native, _record in ordered)
+        low_c = min(temp_c for _observed_at, temp_c, _native, _record in ordered)
+        high_rows = [row for row in ordered if abs(row[1] - high_c) <= 1e-9]
+        low_rows = [row for row in ordered if abs(row[1] - low_c) <= 1e-9]
+        high_at = high_rows[0][0]
+        high_last_at = high_rows[-1][0]
+        low_at = low_rows[0][0]
+        low_last_at = low_rows[-1][0]
+        high_drop_at = next(
+            (
+                observed_at
+                for observed_at, temp_c, _native, _record in ordered
+                if observed_at > high_last_at and temp_c < high_c - 1e-9
+            ),
+            None,
+        )
+        low_rise_at = next(
+            (
+                observed_at
+                for observed_at, temp_c, _native, _record in ordered
+                if observed_at > low_last_at and temp_c > low_c + 1e-9
+            ),
+            None,
+        )
+        latest_at, latest_temp_c, latest_native_temp, latest_record = ordered[-1]
+        freshness_seconds = max(0, int((now - latest_at).total_seconds()))
+        reason = "stale-observation" if freshness_seconds > self.freshness_seconds else ""
+        learned_interval_seconds = _learned_observation_interval_seconds(
+            [observed_at for observed_at, *_values in ordered]
+        )
+        next_observation_due_at = (
+            latest_at + timedelta(seconds=learned_interval_seconds)
+            if learned_interval_seconds is not None
+            else None
+        )
+        dewpoint_value = latest_record.get("dewPt")
+        try:
+            latest_dewpoint_native = float(dewpoint_value)
+        except (TypeError, ValueError):
+            latest_dewpoint_native = math.nan
+        latest_dewpoint_c = None
+        if math.isfinite(latest_dewpoint_native):
+            latest_dewpoint_c = (
+                latest_dewpoint_native
+                if units == "m"
+                else (latest_dewpoint_native - 32.0) * 5.0 / 9.0
+            )
+        high_native = max(native for _at, _temp_c, native, _record in ordered)
+        high_bucket_confirmations = sum(
+            1
+            for _at, _temp_c, native, _record in ordered
+            if math.floor(native) == math.floor(high_native)
+        )
+        local_latest = latest_at.astimezone(zone)
+        observation = StationNowcastObservation(
+            station_id=station.station_id,
+            station_name=station.station_name,
+            observed_high_c=high_c,
+            observed_at=latest_at,
+            high_observed_at=high_at,
+            source=source.source,
+            source_url=source.source_url,
+            settlement_source_url=source.settlement_source_url,
+            freshness_seconds=freshness_seconds,
+            unavailable_reason=reason,
+            raw_observation_count=len(ordered),
+            update_cadence=source.update_cadence,
+            observed_low_c=low_c,
+            low_observed_at=low_at,
+            low_last_observed_at=low_last_at,
+            low_rise_observed_at=low_rise_at,
+            high_bucket_confirmations=high_bucket_confirmations,
+            high_last_observed_at=high_last_at,
+            high_drop_observed_at=high_drop_at,
+            station_local_date=local_latest.date().isoformat(),
+            station_local_time=local_latest.strftime("%H:%M"),
+            daily_extremes_complete=True,
+            daily_extremes_status="complete",
+            latest_temp_c=latest_temp_c,
+            latest_dewpoint_c=(
+                round(latest_dewpoint_c, 3)
+                if latest_dewpoint_c is not None
+                else None
+            ),
+            latest_weather=str(latest_record.get("wx_phrase") or ""),
+            latest_raw_observation=json.dumps(
+                latest_record,
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            learned_observation_interval_seconds=learned_interval_seconds,
+            next_observation_due_at=next_observation_due_at,
+            observation_due_status=(
+                "unknown"
+                if next_observation_due_at is None
+                else "overdue"
+                if now >= next_observation_due_at
+                else "current"
+            ),
+            request_started_at=request_started_at,
+            bot_received_at=bot_received_at,
+            source_latency_status="provider-timestamp-unavailable",
+            bot_detection_latency_seconds=max(
+                0,
+                int((bot_received_at - latest_at).total_seconds()),
+            ),
+        )
         return observation
 
     def _fetch_aviationweather(
@@ -1370,6 +1729,8 @@ class AviationWeatherMetarNowcastProvider:
         return None
 
     def _source_min_real_request_interval_seconds(self, source: StationNowcastSource) -> int:
+        if self.wunderground_api_key and source.source == "aviationweather-metar":
+            return 0
         if self.kma_metar_service_key and source.station_id.upper() in self.kma_metar_station_ids:
             return self.kma_metar_poll_seconds
         if source.source == "aviationweather-metar":

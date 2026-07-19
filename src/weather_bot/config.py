@@ -162,6 +162,7 @@ class Settings:
     kma_metar_poll_seconds: int = 30
     kma_metar_timeout_seconds: float = 3.0
     kma_metar_station_ids: str = "RKSI,RKPK"
+    wunderground_api_key: str = ""
     station_nowcast_freshness_seconds: int = 5400
     station_nowcast_request_log_path: str = ""
     hko_rollover_state_path: str = ""
@@ -564,6 +565,10 @@ def load_settings() -> Settings:
             "KMA_METAR_STATION_IDS",
             Settings.kma_metar_station_ids,
         ),
+        wunderground_api_key=os.getenv(
+            "WUNDERGROUND_API_KEY",
+            Settings.wunderground_api_key,
+        ),
         station_nowcast_freshness_seconds=_int_env(
             "STATION_NOWCAST_FRESHNESS_SECONDS",
             Settings.station_nowcast_freshness_seconds,
@@ -636,7 +641,10 @@ def load_settings() -> Settings:
             "SETTLEMENT_RUNNER_MIN_EV_MARGIN_USD",
             Settings.settlement_runner_min_ev_margin_usd,
         ),
-        strategy_mode=os.getenv("STRATEGY_MODE", Settings.strategy_mode),
+        # The long-running production entrypoint must fail safe when an env file
+        # omits this line. Explicit offline experiments can still construct
+        # Settings(strategy_mode="hybrid_observation_edge").
+        strategy_mode=os.getenv("STRATEGY_MODE", "lock_only"),
         no_only_new_entries=_bool_env(
             "NO_ONLY_NEW_ENTRIES",
             Settings.no_only_new_entries,

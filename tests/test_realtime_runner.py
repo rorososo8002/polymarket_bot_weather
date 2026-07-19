@@ -3109,6 +3109,7 @@ def _entry_gate_settings(tmp_path) -> Settings:
         resolution_error_margin=0.0,
         entry_min_expected_net_return_pct=0.01,
         no_only_new_entries=False,
+        strategy_mode="hybrid_observation_edge",
     )
 
 
@@ -3185,6 +3186,384 @@ class _AbnormalPriceClient(_FinalGateClient):
     def get_order_book(self, token_id: str) -> OrderBook:
         self.book_calls.append(token_id)
         return self.books[token_id]
+
+
+def _wunderground_exact_market(question: str, *, market_id: str = "strict-lock") -> RawMarket:
+    return _entry_gate_market(
+        market_id=market_id,
+        question=question,
+        yes_token_id=f"{market_id}-yes",
+        no_token_id=f"{market_id}-no",
+        rule_provenance=MarketRuleProvenance(
+            market_id=market_id,
+            question=question,
+            resolution_source=(
+                "https://www.wunderground.com/history/daily/kr/incheon/RKSI"
+            ),
+        ),
+    )
+
+
+def _direct_exact_no_signal(
+    question: str,
+    *,
+    p_true: float = 0.0,
+    nowcast_source: str = "wunderground-history-direct",
+    precision: str = "verified",
+    signal_source: str = "official-station-lock-strong_no",
+    signal_family: str = "lock_only",
+) -> WeatherSignal:
+    return WeatherSignal(
+        p_true,
+        1.0,
+        signal_source,
+        "strategy_mode=lock_only; signal_family=lock_only; official_nowcast_lock=strong_no",
+        parse_weather_question(question),
+        nowcast={
+            "station_id": "RKSI",
+            "source": nowcast_source,
+            "data_block_reason": "",
+        },
+        entry_size_fraction_override=0.50,
+        entry_size_reason="verified exact bucket is irreversibly false",
+        strategy_mode="lock_only",
+        signal_family=signal_family,
+        settlement_precision_confidence=precision,
+    )
+
+
+def _strict_lock_settings(tmp_path) -> Settings:
+    return replace(
+        _entry_gate_settings(tmp_path),
+        strategy_mode="lock_only",
+        no_only_new_entries=True,
+        max_entry_spread_abs=0.20,
+        max_entry_spread_pct=1.0,
+        decisions_log_skip_enabled=True,
+    )
+
+
+def test_recent_direct_observation_can_reuse_same_fresh_response_for_final_check():
+    now = datetime(2026, 7, 20, 0, 0, tzinfo=timezone.utc)
+    signal = _direct_exact_no_signal(
+        "Will the highest temperature in Seoul be 28째C today?"
+    )
+    signal = replace(
+        signal,
+        nowcast={
+            **signal.nowcast,
+            "bot_received_at": (now - timedelta(seconds=5)).isoformat(),
+        },
+    )
+
+    assert runner_module._has_recent_direct_observation(signal, now=now) is True
+    assert (
+        runner_module._has_recent_direct_observation(
+            signal,
+            now=now + timedelta(milliseconds=1),
+        )
+        is False
+    )
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "Will the highest temperature in Seoul be 28°C today?",
+        "Will the lowest temperature in Seoul be 21°C today?",
+    ],
+)
+def test_lock_only_direct_exact_no_is_symmetric_and_can_size_to_full_bankroll(
+    tmp_path,
+    question,
+):
+    market = _wunderground_exact_market(question)
+    signal = _direct_exact_no_signal(question)
+    no_book = OrderBook(
+        market.no_token_id or "",
+        bids=[OrderLevel(0.89, 2000.0)],
+        asks=[OrderLevel(0.90, 2000.0)],
+    )
+    client = _AbnormalPriceClient(
+        OrderBook(market.yes_token_id or "", bids=[], asks=[]),
+        no_book,
+    )
+    client.books = {
+        market.yes_token_id or "": client.books["yes"],
+        market.no_token_id or "": no_book,
+    }
+
+    result, per_side = runner_module.evaluate_market(
+        market,
+        signal,
+        client,
+        _strict_lock_settings(tmp_path),
+        200.0,
+        "temperature",
+        allowed_sides={"NO"},
+    )
+
+    assert result.side == "NO"
+    assert per_side["NO"].p_exec == pytest.approx(0.90)
+    assert per_side["NO"].size_usd == pytest.approx(200.0)
+    assert per_side["NO"].event_cap_override_fraction == pytest.approx(1.0)
+
+
+def test_lock_only_direct_low_exact_no_opens_through_portfolio_and_final_check(tmp_path):
+    question = "Will the lowest temperature in Seoul be 21°C today?"
+    market = _wunderground_exact_market(question, market_id="strict-low-e2e")
+    signal = _direct_exact_no_signal(question)
+    no_book = OrderBook(
+        market.no_token_id or "",
+        bids=[OrderLevel(0.84, 2000.0)],
+        asks=[OrderLevel(0.85, 2000.0)],
+    )
+    client = _AbnormalPriceClient(
+        OrderBook(market.yes_token_id or "", bids=[], asks=[]),
+        no_book,
+    )
+    client.books = {
+        market.yes_token_id or "": client.books["yes"],
+        market.no_token_id or "": no_book,
+    }
+    settings = _strict_lock_settings(tmp_path)
+    broker = runner_module.PaperBroker(settings)
+    result, per_side = runner_module.evaluate_market(
+        market,
+        signal,
+        client,
+        settings,
+        200.0,
+        "temperature",
+        allowed_sides={"NO"},
+    )
+
+    decision = runner_module._apply_event_portfolio(
+        broker,
+        runner_module._event_portfolio_candidates(
+            market,
+            signal,
+            result,
+            per_side,
+            "temperature",
+        ),
+        runner_module.EntryBankrollSnapshot(True, 200.0, 200.0, 200.0, "fixture"),
+        client=client,
+    )
+
+    assert [(leg.market.market_id, leg.result.side) for leg in decision.selected] == [
+        (market.market_id, "NO")
+    ]
+    assert [(position.market_id, position.side) for position in broker.state.positions] == [
+        (market.market_id, "NO")
+    ]
+    assert broker.state.positions[0].cost_usd == pytest.approx(200.0)
+    assert broker.state.positions[0].metadata["probability_tier"] == "lock_exact_no"
+    assert broker.state.cash_usd == pytest.approx(settings.bankroll_usd - 200.0)
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "Will the highest temperature in Seoul be 28°C today?",
+        "Will the lowest temperature in Seoul be 21°C today?",
+    ],
+)
+def test_lock_only_direct_exact_no_blocks_execution_vwap_above_ninety_cents(
+    tmp_path,
+    question,
+):
+    market = _wunderground_exact_market(question)
+    signal = _direct_exact_no_signal(question)
+    no_book = OrderBook(
+        market.no_token_id or "",
+        bids=[OrderLevel(0.89, 2000.0)],
+        asks=[OrderLevel(0.9001, 2000.0)],
+    )
+    client = _AbnormalPriceClient(
+        OrderBook(market.yes_token_id or "", bids=[], asks=[]),
+        no_book,
+    )
+    client.books = {
+        market.yes_token_id or "": client.books["yes"],
+        market.no_token_id or "": no_book,
+    }
+
+    result, per_side = runner_module.evaluate_market(
+        market,
+        signal,
+        client,
+        _strict_lock_settings(tmp_path),
+        200.0,
+        "temperature",
+        allowed_sides={"NO"},
+    )
+
+    assert result.side == "SKIP"
+    assert per_side["NO"].side == "SKIP"
+    assert "SKIP_ENTRY_PRICE_TOO_HIGH" in per_side["NO"].reason
+    assert "max_entry_price=0.9000" in per_side["NO"].reason
+
+
+@pytest.mark.parametrize(
+    ("question", "side", "signal_overrides", "market_has_wunderground", "blocked_detail"),
+    [
+        (
+            "Will the highest temperature in Seoul be 27°C or below today?",
+            "NO",
+            {},
+            True,
+            "exact_temperature_bucket_required",
+        ),
+        (
+            "Will the highest temperature in Seoul be 29°C or higher today?",
+            "NO",
+            {},
+            True,
+            "exact_temperature_bucket_required",
+        ),
+        (
+            "Will the highest temperature in Seoul be 28°C today?",
+            "NO",
+            {"p_true": 0.10},
+            True,
+            "irreversible_no_probability_required",
+        ),
+        (
+            "Will the highest temperature in Seoul be 28°C today?",
+            "NO",
+            {"p_true": -1e-13},
+            True,
+            "irreversible_no_probability_required",
+        ),
+        (
+            "Will the highest temperature in Seoul be 28°C today?",
+            "NO",
+            {"signal_family": "intraday_observation_edge"},
+            True,
+            "lock_only_signal_family_required",
+        ),
+        (
+            "Will the highest temperature in Seoul be 28°C today?",
+            "YES",
+            {},
+            True,
+            "no_side_required",
+        ),
+        (
+            "Will the highest temperature in Seoul be 28°C today?",
+            "NO",
+            {"nowcast_source": "aviationweather-metar"},
+            True,
+            "wunderground_direct_nowcast_required",
+        ),
+        (
+            "Will the lowest temperature in Seoul be 21°C today?",
+            "NO",
+            {"precision": "needs_audit"},
+            True,
+            "verified_precision_required",
+        ),
+        (
+            "Will the lowest temperature in Seoul be 21°C today?",
+            "NO",
+            {},
+            False,
+            "wunderground_settlement_source_required",
+        ),
+    ],
+)
+def test_lock_only_new_entry_gate_rejects_every_non_strict_candidate(
+    question,
+    side,
+    signal_overrides,
+    market_has_wunderground,
+    blocked_detail,
+):
+    market = _wunderground_exact_market(question)
+    if not market_has_wunderground:
+        market = replace(market, rule_provenance=None, raw=None)
+    signal = _direct_exact_no_signal(question, **signal_overrides)
+    result = runner_module.EdgeResult(
+        side,
+        signal.p_true,
+        0.50,
+        0.40,
+        10.0,
+        20.0,
+        "candidate",
+    )
+    candidate = runner_module.PortfolioCandidate(
+        market,
+        signal,
+        result,
+        "temperature",
+    )
+
+    reason = runner_module._lock_only_exact_no_entry_skip_reason(
+        market,
+        signal,
+        side,
+    )
+    filtered = runner_module._new_entry_candidates_for_strategy(
+        [candidate],
+        Settings(strategy_mode="lock_only", no_only_new_entries=False),
+    )
+
+    assert reason is not None
+    assert "SKIP_LOCK_ONLY_EXACT_NO_REQUIRED" in reason
+    assert blocked_detail in reason
+    assert filtered == []
+
+
+def test_lock_only_gate_fails_closed_when_signal_belongs_to_another_exact_bucket():
+    market_question = "Will the highest temperature in Seoul be 29°C today?"
+    signal_question = "Will the highest temperature in Seoul be 28°C today?"
+    market = _wunderground_exact_market(market_question)
+    signal = _direct_exact_no_signal(signal_question)
+
+    reason = runner_module._lock_only_exact_no_entry_skip_reason(
+        market,
+        signal,
+        "NO",
+    )
+
+    assert reason is not None
+    assert "blocked_reason=signal_market_bucket_mismatch" in reason
+
+
+def test_lock_only_strategy_rejection_is_written_to_decision_ledger(tmp_path):
+    question = "Will the highest temperature in Seoul be 27°C or below today?"
+    market = _wunderground_exact_market(question, market_id="tail-blocked")
+    signal = _direct_exact_no_signal(question)
+    candidate = runner_module.PortfolioCandidate(
+        market,
+        signal,
+        runner_module.EdgeResult(
+            "NO",
+            0.0,
+            0.50,
+            0.50,
+            10.0,
+            20.0,
+            "candidate",
+        ),
+        "temperature",
+    )
+    settings = _strict_lock_settings(tmp_path)
+    broker = runner_module.PaperBroker(settings)
+
+    decision = runner_module._apply_event_portfolio(
+        broker,
+        [candidate],
+        runner_module.EntryBankrollSnapshot(True, 1000.0, 1000.0, 1000.0, "fixture"),
+    )
+
+    assert decision.selected == []
+    rows = list(csv.DictReader(Path(settings.decisions_csv_path).open(encoding="utf-8")))
+    assert rows[-1]["side"] == "SKIP"
+    assert rows[-1]["reason_code"] == "SKIP_LOCK_ONLY_EXACT_NO_REQUIRED"
+    assert "blocked_reason=exact_temperature_bucket_required" in rows[-1]["reason"]
 
 
 def _intraday_signal(p_true: float) -> WeatherSignal:
@@ -3805,6 +4184,112 @@ def test_final_pre_trade_refreshes_lock_only_no_book_with_rest_helper(tmp_path):
     assert "final_book_source=rest_helper" in result.reason
 
 
+def test_final_pre_trade_direct_exact_no_shrinks_to_safe_fresh_book_budget(tmp_path):
+    question = "Will the lowest temperature in Seoul be 21°C today?"
+    market = _wunderground_exact_market(question, market_id="seoul-low-21c")
+    signal = _direct_exact_no_signal(question)
+    selected = runner_module.EdgeResult(
+        "NO",
+        0.0,
+        0.89,
+        0.11,
+        200.0,
+        224.0,
+        "selected direct exact no",
+        signal_family="lock_only",
+        probability_tier="lock_high_exact_no",
+        event_cap_override_fraction=1.0,
+        requested_size_usd=200.0,
+        executable_size_usd=200.0,
+    )
+
+    class ShallowerFreshBookClient(_FinalGateClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.refresh_calls: list[str] = []
+
+        def refresh_order_book(self, token_id: str) -> OrderBook:
+            self.refresh_calls.append(token_id)
+            return OrderBook(
+                token_id,
+                bids=[OrderLevel(0.87, 1000.0)],
+                asks=[
+                    OrderLevel(0.88, 50.0),
+                    OrderLevel(0.95, 1000.0),
+                ],
+            )
+
+    client = ShallowerFreshBookClient()
+    result = runner_module._final_pre_trade_entry_result(
+        market,
+        signal,
+        selected,
+        market.no_token_id or "",
+        client,
+        _strict_lock_settings(tmp_path),
+        "temperature",
+    )
+
+    assert client.refresh_calls == [market.no_token_id]
+    assert result.side == "NO"
+    assert 62.0 < result.size_usd < 64.0
+    assert result.size_usd < selected.size_usd
+    assert result.executable_size_usd == pytest.approx(result.size_usd)
+    assert result.requested_size_usd == pytest.approx(200.0)
+    assert result.p_exec == pytest.approx(0.90, abs=1e-9)
+    assert "final_size_reduced=" in result.reason
+
+
+def test_final_pre_trade_exact_no_resizes_to_configured_return_floor(tmp_path):
+    question = "Will the lowest temperature in Seoul be 21째C today?"
+    market = _wunderground_exact_market(question, market_id="seoul-low-return-floor")
+    signal = _direct_exact_no_signal(question)
+    selected = runner_module.EdgeResult(
+        "NO",
+        0.0,
+        0.90,
+        0.10,
+        200.0,
+        222.0,
+        "selected direct exact no",
+        signal_family="lock_only",
+        probability_tier="lock_exact_no",
+        event_cap_override_fraction=1.0,
+        requested_size_usd=200.0,
+        executable_size_usd=200.0,
+    )
+
+    class LayeredBookClient(_FinalGateClient):
+        def refresh_order_book(self, token_id: str) -> OrderBook:
+            return OrderBook(
+                token_id,
+                bids=[OrderLevel(0.87, 1000.0)],
+                asks=[
+                    OrderLevel(0.88, 50.0),
+                    OrderLevel(0.90, 1000.0),
+                ],
+            )
+
+    settings = replace(
+        _strict_lock_settings(tmp_path),
+        entry_min_expected_net_return_pct=0.12,
+    )
+    result = runner_module._final_pre_trade_entry_result(
+        market,
+        signal,
+        selected,
+        market.no_token_id or "",
+        LayeredBookClient(),
+        settings,
+        "temperature",
+    )
+
+    assert result.side == "NO"
+    assert 124.0 < result.size_usd < 126.0
+    assert result.p_exec == pytest.approx(1.0 / 1.12, abs=1e-9)
+    assert "final_size_reduced=" in result.reason
+
+
 def test_final_pre_trade_refreshes_non_lock_selected_book_with_rest_helper(tmp_path):
     question = "Will the highest temperature in Seoul be 31C on July 8?"
     settings = _entry_gate_settings(tmp_path)
@@ -4394,6 +4879,130 @@ def test_official_station_health_refresh_polls_every_ready_station_for_its_local
     assert by_station["RKSI"].isoformat() == "2026-06-25"
     assert by_station["KLGA"].isoformat() == "2026-06-24"
     assert all(observed_now == now for _station_id, _target_date, observed_now in calls)
+
+
+def test_official_station_health_refresh_polls_direct_sources_in_parallel(monkeypatch):
+    seoul = runner_module.TRADING_READY_STATION_MAP["seoul"]
+    london = runner_module.TRADING_READY_STATION_MAP["london"]
+    monkeypatch.setattr(
+        runner_module,
+        "TRADING_READY_STATION_MAP",
+        {"seoul": seoul, "london": london},
+    )
+    barrier = threading.Barrier(2)
+    active_lock = threading.Lock()
+    active = 0
+    max_active = 0
+
+    class ParallelProvider:
+        supports_parallel_station_refresh = True
+
+        def observed_temperature_extremes_so_far(self, station, *, target_date, now):
+            nonlocal active, max_active
+            del target_date
+            with active_lock:
+                active += 1
+                max_active = max(max_active, active)
+            try:
+                barrier.wait(timeout=2)
+                return StationNowcastObservation(
+                    station_id=station.station_id,
+                    station_name=station.station_name,
+                    observed_high_c=25.0,
+                    observed_low_c=15.0,
+                    observed_at=now,
+                    high_observed_at=now,
+                    source="wunderground-history-direct",
+                    source_url="https://example.test/history",
+                    settlement_source_url="https://example.test/settlement",
+                    freshness_seconds=0,
+                    unavailable_reason="",
+                )
+            finally:
+                with active_lock:
+                    active -= 1
+
+    runner_module._refresh_official_station_observations(
+        ParallelProvider(),
+        now=datetime(2026, 7, 20, 0, 0, tzinfo=timezone.utc),
+    )
+
+    assert max_active == 2
+
+
+def test_direct_station_refresh_releases_fast_city_without_waiting_for_slow_city(monkeypatch):
+    seoul = runner_module.TRADING_READY_STATION_MAP["seoul"]
+    london = runner_module.TRADING_READY_STATION_MAP["london"]
+    monkeypatch.setattr(
+        runner_module,
+        "TRADING_READY_STATION_MAP",
+        {"seoul": seoul, "london": london},
+    )
+    slow_release = threading.Event()
+    fast_released = threading.Event()
+    callbacks: list[set[str]] = []
+    state_by_station = {
+        seoul.station_id: ("old",),
+        london.station_id: ("old",),
+    }
+
+    class ParallelProvider:
+        supports_parallel_station_refresh = True
+
+        def observed_temperature_extremes_so_far(self, station, *, target_date, now):
+            del target_date
+            if station.station_id == london.station_id:
+                assert slow_release.wait(timeout=2)
+            return StationNowcastObservation(
+                station_id=station.station_id,
+                station_name=station.station_name,
+                observed_high_c=25.0,
+                observed_low_c=15.0,
+                observed_at=now,
+                high_observed_at=now,
+                source="wunderground-history-direct",
+                source_url="https://example.test/history",
+                settlement_source_url="https://example.test/settlement",
+                freshness_seconds=0,
+                unavailable_reason="",
+            )
+
+    def on_changed(station_ids: set[str]) -> None:
+        callbacks.append(set(station_ids))
+        if seoul.station_id in station_ids:
+            fast_released.set()
+
+    worker = threading.Thread(
+        target=runner_module._refresh_official_station_observations,
+        kwargs={
+            "observation_provider": ParallelProvider(),
+            "now": datetime(2026, 7, 20, 0, 0, tzinfo=timezone.utc),
+            "station_state_by_id": state_by_station,
+            "on_shared_metar_refreshed": on_changed,
+        },
+    )
+    worker.start()
+    try:
+        assert fast_released.wait(timeout=1)
+        assert callbacks[0] == {seoul.station_id}
+    finally:
+        slow_release.set()
+        worker.join(timeout=2)
+
+    assert worker.is_alive() is False
+    assert {seoul.station_id} in callbacks
+    assert {london.station_id} in callbacks
+
+
+def test_lock_only_runtime_rejects_missing_wunderground_key(tmp_path):
+    settings = replace(
+        _entry_gate_settings(tmp_path),
+        strategy_mode="lock_only",
+        wunderground_api_key="",
+    )
+
+    with pytest.raises(RuntimeError, match="WUNDERGROUND_API_KEY"):
+        runner_module.run_realtime_forever(settings)
 
 
 def test_station_refresh_releases_shared_metar_before_slow_single_station_source(monkeypatch):

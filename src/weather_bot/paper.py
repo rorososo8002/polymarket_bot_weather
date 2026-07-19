@@ -26,9 +26,15 @@ from .edge import (
     polymarket_taker_fee_usdc,
 )
 from .exit_policy import ExitAssessment, assess_exit, build_entry_plan, conservative_settlement_value, side_true_probability
+from .market_rules import market_uses_wunderground_settlement_source
 from .polymarket_client import PolymarketClient, parse_api_bool
 from .portfolio import (
+    LOCK_ONLY_EXACT_NO_MAX_ENTRY_PRICE,
+    LOCK_ONLY_EXACT_NO_MIN_NET_RETURN_PCT,
     adaptive_event_cap_fraction,
+    direct_exact_no_entry_block_reason,
+    direct_exact_no_metric,
+    direct_exact_no_position_metric,
     is_complementary_with_positions,
     structured_event_cap_override_fraction,
     websocket_pricing_block_reason,
@@ -383,6 +389,9 @@ def _market_replay_metadata(market: RawMarket, *, city: str = "", date_hint: str
         "market_shape": condition_type or "",
         "station_id": station_id or "",
         "event_slug": market.event_slug or (provenance.event_slug if provenance is not None else "") or "",
+        "wunderground_settlement_source": _format_csv_bool(
+            market_uses_wunderground_settlement_source(market)
+        ),
     }
 
 
@@ -402,6 +411,7 @@ def _signal_replay_metadata(signal: Any | None) -> dict[str, Any]:
             "calibration_profile_key": "",
             "calibration_status": "",
             "event_cap_override_fraction": "",
+            "nowcast_source": "",
             "station_audit": {},
         }
     nowcast = getattr(signal, "nowcast", None)
@@ -433,6 +443,7 @@ def _signal_replay_metadata(signal: Any | None) -> dict[str, Any]:
         "event_cap_override_fraction": _format_optional_csv_float(
             getattr(signal, "event_cap_override_fraction", None)
         ),
+        "nowcast_source": _format_optional_text(nowcast.get("source")),
         "station_audit": {
             key: (nowcast.get("observed_at") if key == "station_observed_at" else nowcast.get(key))
             for key in STATION_AUDIT_KEYS
@@ -1305,6 +1316,49 @@ class PaperBroker:
     ) -> PaperPosition | None:
         if result.side not in {"YES", "NO"} or result.p_exec is None or result.size_usd <= 0:
             return None
+        if self.settings.strategy_mode == "lock_only":
+            block_reason = direct_exact_no_entry_block_reason(
+                market,
+                signal,
+                result.side,
+                result,
+            )
+            if block_reason is None and result.p_exec > LOCK_ONLY_EXACT_NO_MAX_ENTRY_PRICE + 1e-12:
+                block_reason = "exact_no_entry_price_above_0.90"
+            if block_reason is None:
+                settlement_shares = fee_adjusted_entry_shares(
+                    result.size_usd,
+                    result.p_exec,
+                    self.settings.weather_taker_fee_rate,
+                )
+                settlement_return_pct = (
+                    (settlement_shares - result.size_usd) / result.size_usd
+                    if result.size_usd > 0
+                    else -1.0
+                )
+                required_return_pct = max(
+                    self.settings.entry_min_expected_net_return_pct,
+                    LOCK_ONLY_EXACT_NO_MIN_NET_RETURN_PCT,
+                )
+                if settlement_return_pct < required_return_pct - 1e-12:
+                    block_reason = "exact_no_settlement_return_below_required_floor"
+            if block_reason is not None:
+                reason = (
+                    "SKIP_LOCK_ONLY_EXACT_NO: final paper-ledger gate rejected entry; "
+                    f"blocked_reason={block_reason}"
+                )
+                self.log_trade(
+                    "SKIP_LOCK_ONLY_EXACT_NO",
+                    market,
+                    result.side,
+                    token_id,
+                    0,
+                    result.p_exec,
+                    0,
+                    reason,
+                    market_type,
+                )
+                return None
         nowcast = getattr(signal, "nowcast", None)
         nowcast = nowcast if isinstance(nowcast, dict) else {}
         reentry_reason = same_observation_reentry_block_reason(
@@ -1334,7 +1388,12 @@ class PaperBroker:
             return None
         bankroll_before = self.current_bankroll_before_entry()
         risk_bankroll = min(bankroll_before, entry_bankroll_usd) if entry_bankroll_usd is not None else bankroll_before
-        event_cap_override = structured_event_cap_override_fraction(signal, result, self.settings)
+        event_cap_override = structured_event_cap_override_fraction(
+            signal,
+            result,
+            self.settings,
+            market,
+        )
         market_exposure = sum(position.cost_usd for position in market_positions)
         single_fraction = event_cap_override or self.settings.max_single_market_fraction
         single_market_limit = risk_bankroll * single_fraction
@@ -1369,7 +1428,21 @@ class PaperBroker:
         if city and date_hint:
             event_positions = self.event_date_positions(city, date_hint)
             event_leg_count = len(event_positions)
-            if event_cap_override is not None and event_positions and add_position is None:
+            candidate_direct_metric = direct_exact_no_metric(market, signal, result)
+            direct_pair_compatible = (
+                event_cap_override == 1.0
+                and candidate_direct_metric is not None
+                and all(
+                    direct_exact_no_position_metric(position) == candidate_direct_metric
+                    for position in event_positions
+                )
+            )
+            if (
+                event_cap_override is not None
+                and event_positions
+                and add_position is None
+                and not direct_pair_compatible
+            ):
                 reason = (
                     f"SKIP_EVENT_DATE_CONCENTRATION: {city}/{date_hint} "
                     "concentrated event override requires one exclusive position"

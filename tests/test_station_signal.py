@@ -215,6 +215,22 @@ def test_lower_tail_high_above_threshold_gets_strong_no() -> None:
     assert "observed_high_c=28.0 > lower_tail_upper_c=27.0" in signal.note
 
 
+def test_lock_only_mode_does_not_call_lower_tail_a_certain_exact_no() -> None:
+    signal = estimate_station_signal(
+        "Will the highest temperature in Seoul be 27C or below today?",
+        settings=Settings(strategy_mode="lock_only"),
+        observation_provider=ExactTemperatureProvider(
+            observed_high_c=28.0,
+            source="wunderground-history-direct",
+        ),
+        now=datetime(2026, 6, 19, 7, 0, tzinfo=timezone.utc),
+    )
+
+    assert signal.p_true == pytest.approx(0.5)
+    assert signal.source == "official-station-neutral"
+    assert signal.entry_size_fraction_override is None
+
+
 @pytest.mark.parametrize("source", ["aviationweather-metar", "kma-aviation-metar"])
 def test_overdue_learned_metar_report_blocks_only_non_lock_entry(source) -> None:
     now = datetime(2026, 6, 19, 13, 23, tzinfo=timezone.utc)
@@ -351,6 +367,53 @@ def test_whole_celsius_low_exact_bucket_22_9_breaks_23() -> None:
     assert signal.entry_size_fraction_override == pytest.approx(0.50)
     assert "official_nowcast_lock=strong_no" in signal.note
     assert "observed_low_c=22.9 < displayed_bucket_lower_c=23.0" in signal.note
+
+
+def test_whole_fahrenheit_high_exact_bucket_reaches_next_integer() -> None:
+    signal = estimate_station_signal(
+        "Will the highest temperature in NYC be 73F today?",
+        settings=Settings(strategy_mode="lock_only"),
+        observation_provider=ExactTemperatureProvider(
+            observed_high_c=(74.0 - 32.0) * 5.0 / 9.0,
+            source="wunderground-history-direct",
+        ),
+        now=datetime(2026, 6, 19, 20, 30, tzinfo=timezone.utc),
+    )
+
+    assert signal.p_true == pytest.approx(0.0)
+    assert signal.source == "official-station-lock-strong_no"
+    assert "observed_high_f=74.0" in signal.note
+
+
+def test_whole_fahrenheit_low_exact_bucket_falls_below_integer() -> None:
+    signal = estimate_station_signal(
+        "Will the lowest temperature in Austin be 70F today?",
+        settings=Settings(strategy_mode="lock_only"),
+        observation_provider=ExactTemperatureProvider(
+            observed_low_c=(69.0 - 32.0) * 5.0 / 9.0,
+            source="wunderground-history-direct",
+        ),
+        now=datetime(2026, 6, 19, 14, 30, tzinfo=timezone.utc),
+    )
+
+    assert signal.p_true == pytest.approx(0.0)
+    assert signal.source == "official-station-lock-strong_no"
+    assert "observed_low_f=69.0" in signal.note
+
+
+def test_whole_fahrenheit_low_exact_bucket_does_not_lock_at_same_integer() -> None:
+    signal = estimate_station_signal(
+        "Will the lowest temperature in Austin be 70F today?",
+        settings=Settings(strategy_mode="lock_only"),
+        observation_provider=ExactTemperatureProvider(
+            observed_low_c=(70.0 - 32.0) * 5.0 / 9.0,
+            source="wunderground-history-direct",
+        ),
+        now=datetime(2026, 6, 19, 14, 30, tzinfo=timezone.utc),
+    )
+
+    assert signal.source != "official-station-lock-strong_no"
+    assert signal.p_true != pytest.approx(0.0)
 
 
 def test_near_close_inside_bucket_does_not_use_fixed_yes_lock_without_residual_profile() -> None:

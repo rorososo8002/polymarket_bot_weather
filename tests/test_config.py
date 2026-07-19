@@ -33,6 +33,12 @@ def test_default_station_strategy_is_hybrid_observation_edge():
     assert Settings.intraday_us_exact_low_yes_enabled is True
     assert Settings.intraday_enable_above_bucket_no is False
     assert Settings.no_only_new_entries is True
+
+
+def test_loaded_runtime_strategy_defaults_to_lock_only(monkeypatch):
+    monkeypatch.delenv("STRATEGY_MODE", raising=False)
+
+    assert load_settings().strategy_mode == "lock_only"
     assert Settings.official_nowcast_entry_only is False
     assert Settings.official_nowcast_lock_base_entry_fraction == 0.20
     assert Settings.official_nowcast_lock_strong_entry_fraction == 0.50
@@ -186,6 +192,7 @@ def test_default_station_nowcast_is_pilot_cached_and_freshness_bounded():
     assert Settings.kma_metar_poll_seconds == 30
     assert Settings.kma_metar_timeout_seconds == 3.0
     assert Settings.kma_metar_station_ids == "RKSI,RKPK"
+    assert Settings.wunderground_api_key == ""
     assert Settings.station_nowcast_freshness_seconds == 5400
     assert Settings.station_nowcast_request_log_path == ""
     assert Settings.hko_rollover_state_path == ""
@@ -447,6 +454,7 @@ def test_load_settings_reads_station_nowcast_controls(monkeypatch):
     monkeypatch.setenv("KMA_METAR_POLL_SECONDS", "25")
     monkeypatch.setenv("KMA_METAR_TIMEOUT_SECONDS", "2.5")
     monkeypatch.setenv("KMA_METAR_STATION_IDS", "RKSI")
+    monkeypatch.setenv("WUNDERGROUND_API_KEY", "wu-secret-value")
     monkeypatch.setenv("HKO_ROLLOVER_STATE_PATH", "data/custom_hko_rollover_state.json")
 
     settings = load_settings()
@@ -460,6 +468,7 @@ def test_load_settings_reads_station_nowcast_controls(monkeypatch):
     assert settings.kma_metar_poll_seconds == 25
     assert settings.kma_metar_timeout_seconds == 2.5
     assert settings.kma_metar_station_ids == "RKSI"
+    assert settings.wunderground_api_key == "wu-secret-value"
     assert settings.hko_rollover_state_path == "data/custom_hko_rollover_state.json"
 
 

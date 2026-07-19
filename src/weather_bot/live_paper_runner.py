@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Callable, Mapping
-from concurrent.futures import ThreadPoolExecutor, wait
+from concurrent.futures import ThreadPoolExecutor, as_completed, wait
 from dataclasses import replace
 import inspect
 import json
@@ -27,16 +27,22 @@ from .edge import (
 )
 from .event_dates import event_date_window_from_hint
 from .exit_policy import conservative_settlement_value, model_fair_price, target_exit_price
-from .market_rules import market_rule_mismatch_reason
+from .market_rules import (
+    market_rule_mismatch_reason,
+)
 from .models import EdgeResult, MarketDecision, MarketTradability, OrderBook, PaperPosition, RawMarket, WeatherSignal
 from .nowcast import AviationWeatherMetarNowcastProvider
 from .paper import PaperBroker, maybe_close_positions, maybe_settle_resolved_positions
 from .polymarket_client import PolymarketClient
 from .portfolio import (
+    LOCK_ONLY_EXACT_NO_MAX_ENTRY_PRICE,
+    LOCK_ONLY_EXACT_NO_MIN_NET_RETURN_PCT,
+    LOCK_ONLY_EXACT_NO_TIER,
     EntryBankrollSnapshot,
     EventPortfolioDecision,
     PortfolioCandidate,
     available_entry_bankroll,
+    direct_exact_no_entry_block_reason,
     select_event_portfolio,
     websocket_pricing_block_reason,
 )
@@ -54,9 +60,6 @@ estimate_station_probability = estimate_station_signal
 ENTRY_BANKROLL_FAIL_CLOSED_REASON = "기존 포지션을 안전하게 평가할 수 없어 신규 진입 차단"
 
 MAX_ENTRY_EXECUTION_PRICE = 0.90
-LOCK_ONLY_HIGH_EXACT_NO_MAX_ENTRY_PRICE = 0.92
-LOCK_ONLY_HIGH_EXACT_NO_MIN_NET_RETURN_PCT = 0.08
-LOCK_ONLY_HIGH_EXACT_NO_TIER = "lock_high_exact_no"
 YES_SIZE_CAP_95 = 0.20
 YES_SIZE_CAP_93 = 0.10
 YES_SIZE_CAP_DEFAULT = 0.05
@@ -68,6 +71,7 @@ REALTIME_EVALUATION_COALESCE_SECONDS = 0.25
 REALTIME_FINAL_CHECK_MAX_WORKERS = 8
 REALTIME_FINAL_PREFETCH_DEADLINE_SECONDS = 1.5
 REALTIME_FINAL_BOOK_PREFETCH_MAX_AGE_SECONDS = 5.0
+FINAL_DIRECT_OBSERVATION_MAX_AGE_SECONDS = 5.0
 REALTIME_LAST_EVALUATION_SIDE = "_LAST_EVALUATION"
 REALTIME_STATION_REFRESH_PROBE_MAX_EVENTS = 4
 NO_ONLY_NEW_ENTRY_REASON = (
@@ -84,6 +88,28 @@ def _utc_datetime(value: datetime) -> datetime:
 
 def _iso_datetime(value: datetime | None) -> str:
     return value.astimezone(timezone.utc).replace(microsecond=0).isoformat() if value is not None else ""
+
+
+def _has_recent_direct_observation(
+    signal: WeatherSignal,
+    *,
+    now: datetime,
+) -> bool:
+    payload = signal.nowcast if isinstance(signal.nowcast, dict) else {}
+    if str(payload.get("source") or "") != "wunderground-history-direct":
+        return False
+    received_value = payload.get("bot_received_at")
+    try:
+        received_at = (
+            received_value
+            if isinstance(received_value, datetime)
+            else datetime.fromisoformat(str(received_value).replace("Z", "+00:00"))
+        )
+        received_at = _utc_datetime(received_at)
+    except (TypeError, ValueError):
+        return False
+    age_seconds = (_utc_datetime(now) - received_at).total_seconds()
+    return 0.0 <= age_seconds <= FINAL_DIRECT_OBSERVATION_MAX_AGE_SECONDS
 
 
 def _finite_float(value: Any) -> float | None:
@@ -122,33 +148,65 @@ def _base_signal_family(signal: WeatherSignal) -> str:
     return ""
 
 
-def _is_lock_only_high_exact_no(side: str, signal: WeatherSignal) -> bool:
+def _is_lock_only_exact_no(side: str, signal: WeatherSignal) -> bool:
     parsed = signal.parsed
     nowcast = signal.nowcast if isinstance(signal.nowcast, dict) else {}
     station_id = str(nowcast.get("station_id") or "").upper()
+    p_true = _finite_float(signal.p_true)
     return (
         side == "NO"
         and parsed is not None
         and parsed.variable == "temperature"
-        and parsed.temperature_metric == "max"
-        and parsed.temperature_bucket in {"exact", "lower_tail"}
+        and parsed.temperature_metric in {"max", "min"}
+        and parsed.temperature_bucket == "exact"
+        and signal.signal_family == "lock_only"
         and signal.source == "official-station-lock-strong_no"
-        and signal.p_true <= 1e-12
+        and p_true is not None
+        and 0.0 <= p_true <= 1e-12
         and signal.settlement_precision_confidence == "verified"
+        and str(nowcast.get("source") or "") == "wunderground-history-direct"
         and station_id != "HKO"
         and not str(nowcast.get("data_block_reason") or "")
     )
 
 
+def _lock_only_exact_no_entry_skip_reason(
+    market: RawMarket,
+    signal: WeatherSignal,
+    side: str | None,
+) -> str | None:
+    parsed = signal.parsed
+    nowcast = signal.nowcast if isinstance(signal.nowcast, dict) else {}
+    bucket = parsed.temperature_bucket if parsed is not None else None
+    metric = parsed.temperature_metric if parsed is not None else None
+    nowcast_source = str(nowcast.get("source") or "")
+    precision = str(signal.settlement_precision_confidence or "")
+    p_true = _finite_float(signal.p_true)
+    p_true_label = "UNKNOWN" if p_true is None else f"{p_true:.6f}"
+
+    blocked_reason = direct_exact_no_entry_block_reason(market, signal, side or "") or ""
+    if not blocked_reason:
+        return None
+    return (
+        "SKIP_LOCK_ONLY_EXACT_NO_REQUIRED: strategy_mode=lock_only permits new entry only "
+        "for a verified Wunderground-settled exact temperature bucket whose direct "
+        "observation makes YES impossible; "
+        f"blocked_reason={blocked_reason}; side={side or 'UNKNOWN'}; metric={metric or 'UNKNOWN'}; "
+        f"bucket={bucket or 'UNKNOWN'}; p_true={p_true_label}; "
+        f"signal_source={signal.source or 'UNKNOWN'}; "
+        f"nowcast_source={nowcast_source or 'UNKNOWN'}; precision={precision or 'UNKNOWN'}"
+    )
+
+
 def _entry_price_cap(side: str, signal: WeatherSignal) -> float:
-    if _is_lock_only_high_exact_no(side, signal):
-        return LOCK_ONLY_HIGH_EXACT_NO_MAX_ENTRY_PRICE
+    if _is_lock_only_exact_no(side, signal):
+        return LOCK_ONLY_EXACT_NO_MAX_ENTRY_PRICE
     return MAX_ENTRY_EXECUTION_PRICE
 
 
 def _entry_min_return_pct(side: str, signal: WeatherSignal, settings: Settings) -> float:
-    if _is_lock_only_high_exact_no(side, signal):
-        return max(settings.entry_min_expected_net_return_pct, LOCK_ONLY_HIGH_EXACT_NO_MIN_NET_RETURN_PCT)
+    if _is_lock_only_exact_no(side, signal):
+        return max(settings.entry_min_expected_net_return_pct, LOCK_ONLY_EXACT_NO_MIN_NET_RETURN_PCT)
     return settings.entry_min_expected_net_return_pct
 
 
@@ -1154,16 +1212,25 @@ def _realtime_price_watch_token_ids(
         if not market.no_token_id:
             continue
         signal = signals_by_market.get(market.market_id)
-        if signal is None or not _realtime_signal_allows_new_entry(signal, settings):
+        if signal is None or not _realtime_signal_allows_new_entry(signal, settings, market):
             continue
         watched.add(str(market.no_token_id))
     return watched
 
 
-def _realtime_signal_allows_new_entry(signal: WeatherSignal, settings: Settings) -> bool:
+def _realtime_signal_allows_new_entry(
+    signal: WeatherSignal,
+    settings: Settings,
+    market: RawMarket | None = None,
+) -> bool:
     min_confidence, _min_edge, _entry_fraction = _market_params(settings, "temperature")
     if signal.confidence < min_confidence:
         return False
+    if settings.strategy_mode == "lock_only":
+        side = _preferred_entry_side(signal)
+        if market is None:
+            return _is_lock_only_exact_no(side or "", signal)
+        return _lock_only_exact_no_entry_skip_reason(market, signal, side) is None
     if settings.official_nowcast_entry_only and not _is_official_station_entry_signal(signal):
         return False
     if settings.no_only_new_entries and _preferred_entry_side(signal) != "NO":
@@ -1574,14 +1641,14 @@ def _settlement_return_pct_for_budget(
     return p_exec, estimate.expected_net_return_pct
 
 
-def _lock_only_high_exact_no_budget(
+def _lock_only_exact_no_budget(
     side: str,
     book: OrderBook,
     signal: WeatherSignal,
     settings: Settings,
     bankroll_before_entry: float,
 ) -> float | None:
-    if not _is_lock_only_high_exact_no(side, signal):
+    if not _is_lock_only_exact_no(side, signal):
         return None
     limit = min(
         bankroll_before_entry,
@@ -1595,9 +1662,13 @@ def _lock_only_high_exact_no_budget(
         if result is None:
             return False
         p_exec, return_pct = result
+        required_return_pct = max(
+            settings.entry_min_expected_net_return_pct,
+            LOCK_ONLY_EXACT_NO_MIN_NET_RETURN_PCT,
+        )
         return (
-            p_exec <= LOCK_ONLY_HIGH_EXACT_NO_MAX_ENTRY_PRICE + 1e-12
-            and return_pct >= LOCK_ONLY_HIGH_EXACT_NO_MIN_NET_RETURN_PCT - 1e-12
+            p_exec <= LOCK_ONLY_EXACT_NO_MAX_ENTRY_PRICE + 1e-12
+            and return_pct >= required_return_pct - 1e-12
         )
 
     if not clears(settings.min_order_usd):
@@ -1750,7 +1821,18 @@ def _side_result(
     if price_cap_result is not None:
         return price_cap_result
 
-    lock_only_high_exact_no = _is_lock_only_high_exact_no(side, signal)
+    lock_only_exact_no = _is_lock_only_exact_no(side, signal)
+    lock_budget = (
+        _lock_only_exact_no_budget(
+            side,
+            book,
+            signal,
+            settings,
+            bankroll_before_entry,
+        )
+        if lock_only_exact_no
+        else None
+    )
     entry_fee_per_share = 0.0
     edge = -999.0
     size_usd = 0.0
@@ -1783,14 +1865,7 @@ def _side_result(
             size_fraction_override,
         )
         effective_entry_fraction = size_fraction_override
-        lock_budget = _lock_only_high_exact_no_budget(
-            side,
-            book,
-            signal,
-            settings,
-            bankroll_before_entry,
-        )
-        if lock_only_high_exact_no:
+        if lock_only_exact_no:
             if lock_budget is None:
                 return EdgeResult(
                     "SKIP",
@@ -1801,9 +1876,9 @@ def _side_result(
                     0.0,
                     (
                         "SKIP_LOCK_ONLY_FULL_BANKROLL_NO_DEPTH: "
-                        f"{side} exact high lock has no executable ask budget clearing "
-                        f"max_entry_price={LOCK_ONLY_HIGH_EXACT_NO_MAX_ENTRY_PRICE:.4f} "
-                        f"and min_settlement_net_return={LOCK_ONLY_HIGH_EXACT_NO_MIN_NET_RETURN_PCT:.2%} "
+                        f"{side} exact temperature lock has no executable ask budget clearing "
+                        f"max_entry_price={LOCK_ONLY_EXACT_NO_MAX_ENTRY_PRICE:.4f} "
+                        f"and min_settlement_net_return={LOCK_ONLY_EXACT_NO_MIN_NET_RETURN_PCT:.2%} "
                         f"[{market_type}]"
                     ),
                 )
@@ -1892,7 +1967,7 @@ def _side_result(
         )
         return EdgeResult("SKIP", signal.p_true, p_exec, edge, 0.0, 0.0, reason)
 
-    if not lock_only_high_exact_no:
+    if not lock_only_exact_no:
         price_impact_reason = _price_impact_guard_reason(
             side,
             book,
@@ -1936,7 +2011,7 @@ def _side_result(
         key=lambda estimate: estimate.expected_net_return_pct,
     )
     min_return_pct = _entry_min_return_pct(side, signal, settings)
-    return_ok = return_estimate.expected_net_return_pct >= min_return_pct
+    return_ok = return_estimate.expected_net_return_pct >= min_return_pct - 1e-12
     is_trade = edge > min_edge and size_usd >= settings.min_order_usd and return_ok
     rejection = ""
     if not return_ok:
@@ -1952,11 +2027,11 @@ def _side_result(
             f", official_nowcast_lock=true, entry_size_reason={signal.entry_size_reason}, "
             f"entry_size_fraction_override={(signal.entry_size_fraction_override or 0.0):.2f}"
         )
-        if lock_only_high_exact_no:
+        if lock_only_exact_no:
             official_lock_note += (
-                ", lock_only_high_exact_no_full_bankroll=true, "
-                f"max_entry_price={LOCK_ONLY_HIGH_EXACT_NO_MAX_ENTRY_PRICE:.4f}, "
-                f"min_settlement_net_return={LOCK_ONLY_HIGH_EXACT_NO_MIN_NET_RETURN_PCT:.2%}"
+                ", lock_only_exact_no_full_bankroll=true, "
+                f"max_entry_price={LOCK_ONLY_EXACT_NO_MAX_ENTRY_PRICE:.4f}, "
+                f"min_settlement_net_return={LOCK_ONLY_EXACT_NO_MIN_NET_RETURN_PCT:.2%}"
             )
     elif _is_intraday_observation_edge(signal):
         official_lock_note = (
@@ -2002,8 +2077,8 @@ def _side_result(
         calibration_profile_key=signal.calibration_profile_key,
         calibration_status=signal.calibration_status,
         probability_tier=(
-            LOCK_ONLY_HIGH_EXACT_NO_TIER
-            if lock_only_high_exact_no
+            LOCK_ONLY_EXACT_NO_TIER
+            if lock_only_exact_no
             else
             observation_tier.probability_tier
             if observation_tier is not None
@@ -2011,7 +2086,7 @@ def _side_result(
         ),
         event_cap_override_fraction=(
             1.0
-            if lock_only_high_exact_no
+            if lock_only_exact_no
             else
             observation_tier.event_cap_override_fraction
             if observation_tier is not None
@@ -2049,6 +2124,14 @@ def _final_pre_trade_entry_result(
             result,
             f"SKIP_RULE_MISMATCH: final pre-trade check failed: {rule_mismatch}",
         )
+    if settings.strategy_mode == "lock_only":
+        strategy_reason = _lock_only_exact_no_entry_skip_reason(
+            market,
+            signal,
+            result.side,
+        )
+        if strategy_reason is not None:
+            return _skip_entry_result(result, strategy_reason)
     refreshed_book, refresh_error, final_book_source = _refresh_selected_order_book_before_entry(
         client,
         token_id,
@@ -2074,9 +2157,35 @@ def _final_pre_trade_entry_result(
             f"{liquidity_reason}; final_pre_trade=true",
         )
 
+    lock_only_exact_no = _is_lock_only_exact_no(result.side, signal)
+    final_size_usd = result.size_usd
+    final_size_note = ""
+    if lock_only_exact_no:
+        safe_budget = _lock_only_exact_no_budget(
+            result.side,
+            book,
+            signal,
+            settings,
+            result.size_usd,
+        )
+        if safe_budget is None:
+            return _skip_entry_result(
+                result,
+                "SKIP_FINAL_LOCK_ONLY_BUDGET: final pre-trade book has no executable "
+                f"exact-NO amount of at least ${settings.min_order_usd:.2f} clearing "
+                f"max_entry_price={LOCK_ONLY_EXACT_NO_MAX_ENTRY_PRICE:.4f} and "
+                f"min_settlement_net_return={LOCK_ONLY_EXACT_NO_MIN_NET_RETURN_PCT:.2%} "
+                f"[{market_type}]",
+            )
+        final_size_usd = min(result.size_usd, safe_budget)
+        if final_size_usd + 1e-9 < result.size_usd:
+            final_size_note = (
+                f", final_size_reduced=${final_size_usd:.2f}/${result.size_usd:.2f}"
+            )
+
     checked_p_exec, checked_shares, checked_slip = executable_buy_price(
         book,
-        result.size_usd,
+        final_size_usd,
         fee_rate=settings.weather_taker_fee_rate,
     )
     if checked_p_exec is None or checked_shares <= 0:
@@ -2084,7 +2193,7 @@ def _final_pre_trade_entry_result(
             result,
             f"SKIP_NO_EXECUTABLE_DEPTH: final pre-trade check failed: "
             f"{result.side} insufficient ask depth "
-            f"for ${result.size_usd:.2f} [{market_type}]",
+            f"for ${final_size_usd:.2f} [{market_type}]",
         )
     price_cap_result = _entry_price_cap_skip_result(
         result.side,
@@ -2101,8 +2210,7 @@ def _final_pre_trade_entry_result(
             net_edge=price_cap_result.net_edge,
         )
 
-    lock_only_high_exact_no = _is_lock_only_high_exact_no(result.side, signal)
-    if not lock_only_high_exact_no:
+    if not lock_only_exact_no:
         price_impact_reason = _price_impact_guard_reason(
             result.side,
             book,
@@ -2144,7 +2252,7 @@ def _final_pre_trade_entry_result(
         key=lambda estimate: estimate.expected_net_return_pct,
     )
     min_return_pct = _entry_min_return_pct(result.side, signal, settings)
-    return_ok = return_estimate.expected_net_return_pct >= min_return_pct
+    return_ok = return_estimate.expected_net_return_pct >= min_return_pct - 1e-12
     if edge <= min_edge or not return_ok:
         return _skip_entry_result(
             result,
@@ -2180,11 +2288,11 @@ def _final_pre_trade_entry_result(
         f"spread_audit={spread:.4f}, slip_audit={checked_slip:.4f}, "
         f"final_book_source={final_book_source}, "
         f"price_anomaly={str(price_anomaly).lower()}, strategy_mode={settings.strategy_mode}, "
-        f"signal_family={signal_family}"
+        f"signal_family={signal_family}{final_size_note}"
     )
     entry_ask_depth_top5_json = _entry_ask_depth_top5_json(
         book,
-        entry_size_usd=result.size_usd,
+        entry_size_usd=final_size_usd,
         entry_vwap=checked_p_exec,
         entry_shares=checked_shares,
         fee_rate=settings.weather_taker_fee_rate,
@@ -2194,12 +2302,14 @@ def _final_pre_trade_entry_result(
         result,
         p_exec=checked_p_exec,
         net_edge=edge,
+        size_usd=final_size_usd,
         size_shares=checked_shares,
         reason=reason,
         expected_net_profit_usd=return_estimate.expected_net_profit_usdc,
         price_anomaly=price_anomaly,
         strategy_mode=settings.strategy_mode if _is_official_station_entry_signal(signal) else "",
         signal_family=signal_family,
+        executable_size_usd=final_size_usd,
         entry_ask_depth_top5_json=entry_ask_depth_top5_json,
     )
 
@@ -2500,9 +2610,21 @@ def _new_entry_candidates_for_strategy(
     candidates: list[PortfolioCandidate],
     settings: Settings,
 ) -> list[PortfolioCandidate]:
-    if not settings.no_only_new_entries:
-        return candidates
-    return [candidate for candidate in candidates if candidate.result.side != "YES"]
+    eligible: list[PortfolioCandidate] = []
+    for candidate in candidates:
+        if candidate.result.side not in {"YES", "NO"}:
+            eligible.append(candidate)
+            continue
+        if settings.strategy_mode == "lock_only" and _lock_only_exact_no_entry_skip_reason(
+            candidate.market,
+            candidate.signal,
+            candidate.result.side,
+        ):
+            continue
+        if settings.no_only_new_entries and candidate.result.side == "YES":
+            continue
+        eligible.append(candidate)
+    return eligible
 
 
 def _refresh_held_exit_edges_from_signal(
@@ -3083,6 +3205,22 @@ def _open_position_if_needed(
     if result.side not in {"YES", "NO"}:
         return result
     token_id = market.yes_token_id if result.side == "YES" else market.no_token_id
+    if broker.settings.strategy_mode == "lock_only":
+        strategy_reason = _lock_only_exact_no_entry_skip_reason(
+            market,
+            signal,
+            result.side,
+        )
+        if strategy_reason is not None:
+            blocked = _skip_entry_result(result, strategy_reason)
+            return _record_pre_trade_skip(
+                broker,
+                market,
+                result,
+                blocked,
+                token_id or "",
+                market_type,
+            )
     if result.side == "YES" and broker.settings.no_only_new_entries:
         blocked = _skip_entry_result(
             result,
@@ -3243,18 +3381,28 @@ def _apply_event_portfolio(
     observation_provider: Any | None = None,
     residual_profile_store: ResidualProfileStore | None = None,
 ) -> EventPortfolioDecision:
-    if broker.settings.no_only_new_entries:
-        for candidate in candidates:
-            if candidate.result.side != "YES":
-                continue
-            blocked = _skip_entry_result(candidate.result, NO_ONLY_NEW_ENTRY_REASON)
-            broker.log_decision(
+    for candidate in candidates:
+        if candidate.result.side not in {"YES", "NO"}:
+            continue
+        strategy_reason = None
+        if broker.settings.strategy_mode == "lock_only":
+            strategy_reason = _lock_only_exact_no_entry_skip_reason(
                 candidate.market,
-                blocked,
-                blocked.reason,
-                candidate.market_type,
-                signal=candidate.signal,
+                candidate.signal,
+                candidate.result.side,
             )
+        if strategy_reason is None and broker.settings.no_only_new_entries and candidate.result.side == "YES":
+            strategy_reason = NO_ONLY_NEW_ENTRY_REASON
+        if strategy_reason is None:
+            continue
+        blocked = _skip_entry_result(candidate.result, strategy_reason)
+        broker.log_decision(
+            candidate.market,
+            blocked,
+            blocked.reason,
+            candidate.market_type,
+            signal=candidate.signal,
+        )
     candidates = _new_entry_candidates_for_strategy(candidates, broker.settings)
     decision = select_event_portfolio(broker, candidates, entry_bankroll)
     executable_candidate_reached_portfolio = any(
@@ -3273,7 +3421,13 @@ def _apply_event_portfolio(
         for candidate in decision.selected
         if _is_official_station_entry_signal(candidate.signal)
     ]
-    if observation_provider is not None and official_station_candidates:
+    refresh_started_at = datetime.now(timezone.utc)
+    candidates_requiring_forced_refresh = [
+        candidate
+        for candidate in official_station_candidates
+        if not _has_recent_direct_observation(candidate.signal, now=refresh_started_at)
+    ]
+    if observation_provider is not None and candidates_requiring_forced_refresh:
         discard = getattr(observation_provider, "discard_cached_observations_before_entry", None)
         if not callable(discard):
             refresh_error = "SKIP_FINAL_STATION_REFRESH: observation provider cannot force a fresh official request"
@@ -3281,7 +3435,7 @@ def _apply_event_portfolio(
             try:
                 selected_station_ids = {
                     station_id
-                    for candidate in official_station_candidates
+                    for candidate in candidates_requiring_forced_refresh
                     if (
                         station_id := _market_station_id(
                             candidate.market,
@@ -3577,22 +3731,34 @@ def _evaluate_realtime_update(
         now=current,
     )
     signal_prefetch_duration_seconds = time.monotonic() - signal_prefetch_started_at
-    signal_ineligible_market_ids = {
-        market.market_id
-        for market in markets_ready_for_evaluation
-        if callable(candidate_book)
-        and market.market_id not in held_market_ids
-        and market.market_id not in signal_prefetch_errors
-        and market.market_id in signals_by_market
-        and not _realtime_signal_allows_new_entry(signals_by_market[market.market_id], settings)
-    }
+    signal_ineligible_reasons: dict[str, str] = {}
+    for market in markets_ready_for_evaluation:
+        if (
+            not callable(candidate_book)
+            or market.market_id in held_market_ids
+            or market.market_id in signal_prefetch_errors
+            or market.market_id not in signals_by_market
+        ):
+            continue
+        signal = signals_by_market[market.market_id]
+        if _realtime_signal_allows_new_entry(signal, settings, market):
+            continue
+        reason = "SKIP_SIGNAL_INELIGIBLE: realtime signal is not eligible for a new NO entry"
+        if settings.strategy_mode == "lock_only":
+            reason = _lock_only_exact_no_entry_skip_reason(
+                market,
+                signal,
+                _preferred_entry_side(signal),
+            ) or reason
+        signal_ineligible_reasons[market.market_id] = reason
+    signal_ineligible_market_ids = set(signal_ineligible_reasons)
     for market in markets_ready_for_evaluation:
         if market.market_id in signal_ineligible_market_ids:
             _record_realtime_prefilter_skip(
                 broker,
                 market,
                 market_types.get(market.market_id, "temperature"),
-                "SKIP_SIGNAL_INELIGIBLE: realtime signal is not eligible for a new NO entry",
+                signal_ineligible_reasons[market.market_id],
                 signal=signals_by_market[market.market_id],
                 prefilter_skip_state_by_market=prefilter_skip_state_by_market,
             )
@@ -3957,34 +4123,71 @@ def _refresh_official_station_observations(
     current = _utc_datetime(now)
     stations = list(TRADING_READY_STATION_MAP.values())
 
-    def refresh(group: list[Any]) -> set[str]:
-        changed_station_ids: set[str] = set()
-        for station in group:
+    def refresh(
+        group: list[Any],
+        on_changed: Callable[[set[str]], None] | None = None,
+    ) -> set[str]:
+        def fetch(station: Any) -> tuple[Any, Any]:
             target_date = current.astimezone(ZoneInfo(station.timezone)).date()
             observation = observation_provider.observed_temperature_extremes_so_far(
                 station,
                 target_date=target_date,
                 now=current,
             )
+            return station, observation
+
+        changed_station_ids: set[str] = set()
+
+        def record(station: Any, observation: Any) -> None:
             if station_state_by_id is None:
-                continue
+                return
             station_id = str(
                 getattr(observation, "station_id", "") or station.station_id
             ).upper()
             state_key = _station_observation_state_key(observation)
-            if (
+            changed = (
                 station_id in station_state_by_id
                 and station_state_by_id[station_id] != state_key
-            ):
-                changed_station_ids.add(station_id)
+            )
             station_state_by_id[station_id] = state_key
+            if not changed:
+                return
+            changed_station_ids.add(station_id)
+            if on_changed is not None and parallel:
+                on_changed({station_id})
+
+        parallel = (
+            getattr(observation_provider, "supports_parallel_station_refresh", False)
+            and len(group) > 1
+        )
+        if parallel:
+            with ThreadPoolExecutor(
+                max_workers=len(group),
+                thread_name_prefix="station-refresh",
+            ) as executor:
+                futures = {executor.submit(fetch, station): station for station in group}
+                for future in as_completed(futures):
+                    station = futures[future]
+                    try:
+                        refreshed_station, observation = future.result()
+                    except Exception as exc:  # noqa: BLE001
+                        print(
+                            "STATION REFRESH ERROR: "
+                            f"station_id={station.station_id}; error_type={type(exc).__name__}"
+                        )
+                        continue
+                    record(refreshed_station, observation)
+        else:
+            refreshed = [fetch(station) for station in group]
+            for station, observation in refreshed:
+                record(station, observation)
+            if on_changed is not None and changed_station_ids:
+                on_changed(set(changed_station_ids))
         return changed_station_ids
 
     metar_stations = [station for station in stations if station.nowcast_source_type == "metar"]
     other_stations = [station for station in stations if station.nowcast_source_type != "metar"]
-    changed_station_ids = refresh(metar_stations)
-    if on_shared_metar_refreshed is not None:
-        on_shared_metar_refreshed(set(changed_station_ids))
+    changed_station_ids = refresh(metar_stations, on_shared_metar_refreshed)
     changed_station_ids.update(refresh(other_stations))
     return changed_station_ids
 
@@ -4100,8 +4303,17 @@ def _realtime_error_backoff_seconds(settings: Settings) -> float:
     return min(max(float(settings.runner_health_status_interval_seconds), 5.0), 60.0)
 
 
+def _validate_runtime_strategy_dependencies(settings: Settings) -> None:
+    if settings.strategy_mode == "lock_only" and not settings.wunderground_api_key.strip():
+        raise RuntimeError(
+            "WUNDERGROUND_API_KEY is required when STRATEGY_MODE=lock_only; "
+            "the secret value is never written to logs"
+        )
+
+
 def run_realtime_forever(settings: Settings | None = None) -> None:
     settings = settings or load_settings()
+    _validate_runtime_strategy_dependencies(settings)
     while True:
         refresh_started_at = datetime.now(timezone.utc)
         cycle_started_at = utc_now_iso()
@@ -4357,7 +4569,7 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
                             changed_ids: set[str],
                         ) -> None:
                             nonlocal metar_changed_station_ids, shared_metar_duration_seconds
-                            metar_changed_station_ids = set(changed_ids)
+                            metar_changed_station_ids.update(changed_ids)
                             shared_metar_duration_seconds = round(
                                 time.monotonic() - station_refresh_started_at,
                                 3,
@@ -4503,6 +4715,7 @@ def main(argv: list[str] | None = None) -> None:
     if args.dry_start:
         if not settings.orderbook_stream_enabled:
             raise RuntimeError("ORDERBOOK_STREAM_ENABLED=false disables the required real-time order-book stream.")
+        _validate_runtime_strategy_dependencies(settings)
         residual_store = _load_residual_profile_store(settings)
         profile_status = "loaded" if residual_store is not None else "disabled"
         print(

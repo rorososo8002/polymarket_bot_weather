@@ -1,22 +1,24 @@
 ---
-title: Exact Celsius locks must use station-display boundaries
+title: Exact temperature locks must preserve display boundaries and source precision
 date: 2026-06-16
-last_updated: 2026-06-21
+last_updated: 2026-07-20
 category: logic-errors
-module: weather_bot.station_signal, weather_bot.live_paper_runner
+module: weather_bot.nowcast, weather_bot.station_signal, weather_bot.live_paper_runner
 problem_type: logic_error
 component: service_object
 symptoms:
   - "A new official-station lock signal was generated but the runner still treated it as a non-lock signal."
   - "Exact whole-C markets risked using stale model-era assumptions instead of station-display boundaries."
   - "An intraday observation signal with a size override was incorrectly treated as a settlement lock."
+  - "A 70F observation could round-trip through rounded Celsius as 69.9998F and falsely lock the lowest-70F YES outcome."
+  - "A 74F observation could round-trip as 73.9994F and miss the confirmed break of a highest-73F exact bucket."
 root_cause: logic_error
 resolution_type: code_fix
-severity: high
-tags: [paper-trading, exact-bucket, celsius, station-locks, intraday-observation, signal-source]
+severity: critical
+tags: [paper-trading, exact-bucket, celsius, fahrenheit, station-locks, unit-conversion, floating-point, signal-source]
 ---
 
-# Exact Celsius locks must use station-display boundaries
+# Exact temperature locks must preserve display boundaries and source precision
 
 ## Problem
 
@@ -31,6 +33,13 @@ an `entry_size_fraction_override` controls paper position size, but does not
 prove that settlement is locked. Using that field as a lock marker would remove
 model and resolution error margins from a 90% intraday signal.
 
+Wunderground added a separate boundary hazard for Fahrenheit markets. Its
+native integer observations were converted to Celsius for the common nowcast
+model. Rounding that intermediate Celsius value to three decimals before
+converting it back to Fahrenheit moved exact integer boundaries: `70F` became
+about `69.9998F`, while `74F` became about `73.9994F`. The first artifact could
+create false certainty; the second could hide a real irreversible break.
+
 ## Symptoms
 
 - `station_signal.py` produced source values such as
@@ -39,6 +48,10 @@ model and resolution error margins from a 90% intraday signal.
   because `_is_official_nowcast_lock()` only recognized older lock names.
 - Generic portfolio and realtime tests skipped before order-book evaluation
   even when their fixtures represented trusted station-lock signals.
+- A displayed `70F` daily low could satisfy a strict `< 70F` comparison only
+  because the intermediate Celsius value had been rounded.
+- A displayed `74F` daily high could fail the `>= 74F` comparison for the same
+  reason.
 
 ## What Didn't Work
 
@@ -57,6 +70,12 @@ model and resolution error margins from a 90% intraday signal.
   `0.90` / `0.96` / near-close YES paths at the caller was not enough. Dead
   helper code can be accidentally reconnected later, so removed strategy
   formulas should be deleted from the signal module, not just bypassed.
+- Rounding a measurement before a trading comparison did not make the data
+  cleaner. It changed which side of an exact settlement boundary the value
+  appeared to occupy.
+- A generic unit-conversion test was insufficient. The defect appears at the
+  exact integer boundary, so equality, one-unit-below, and next-integer cases
+  need explicit regression tests.
 
 ## Solution
 
@@ -96,6 +115,28 @@ assert estimate_station_signal(... observed_high_c=23.9).source == "official-sta
 assert estimate_station_signal(... observed_high_c=24.0).source == "official-station-lock-strong_no"
 ```
 
+For Wunderground Fahrenheit observations, keep the full converted precision in
+the decision object. Round only presentation fields such as human-readable
+logs. The lock comparison may absorb floating-point noise, but it must not
+absorb a real temperature step:
+
+```python
+observed_high_c = high_c
+observed_low_c = low_c
+
+if observed_low_f < bucket_f - 1e-9:
+    lock_low_exact_no()
+if observed_high_f >= (bucket_f + 1) - 1e-9:
+    lock_high_exact_no()
+```
+
+Regression tests pin the round trip and the two different exact-NO rules:
+
+```python
+assert observation.observed_low_c * 9.0 / 5.0 + 32.0 == approx(70.0, abs=1e-9)
+assert observation.observed_high_c * 9.0 / 5.0 + 32.0 == approx(74.0, abs=1e-9)
+```
+
 Realtime and portfolio tests that intentionally exercise downstream sizing or
 liquidity math should mark their fixture signals as station locks, so they test
 the intended downstream behavior instead of the entry-only gate.
@@ -110,6 +151,11 @@ as an ordinary low-trust signal. Keeping the lock predicate narrower than the
 entry predicate also prevents probabilistic intraday signals from being
 upgraded into certainty merely because they use a smaller position size.
 
+Preserving the full conversion result keeps a source integer on its original
+boundary. The `1e-9` tolerance then handles only machine arithmetic dust. It is
+many orders of magnitude smaller than a real `1F` market step, so it cannot turn
+an unchanged 70F low into proof that the low fell below 70F.
+
 ## Prevention
 
 - When introducing a new `WeatherSignal.source` namespace, update the predicate
@@ -122,8 +168,20 @@ upgraded into certainty merely because they use a smaller position size.
   gate.
 - For exact whole-C markets, test `N.9C` and `N+1.0C` separately. They are not
   interchangeable.
+- Never round station measurements on the path to a settlement decision.
+  Rounding belongs in dashboard and log formatting only.
+- For exact whole-F markets, test the native integer after `F -> C -> F`, then
+  test the bucket boundary, immediately lower value, and next integer.
+- Use one documented epsilon for floating-point equality and prove in tests
+  that it is far smaller than the settlement source's display step.
 - Keep docs focused on official station observations; do not describe removed
   model-entry paths as active strategy.
 - When replacing a strategy formula, grep the implementation for the old
   constants and source names after tests pass. Removed formulas should not
   remain as callable helper branches.
+
+## Related Issues
+
+- [Temperature range buckets must preserve both endpoints](./temperature-range-buckets-must-preserve-endpoints.md)
+- [Low exact entries require rise confirmation](./low-exact-entries-require-rise-confirmation.md)
+- [Block Shenzhen when Wunderground resolves to a different source](../integration-issues/wunderground-zgsz-source-mismatch.md)

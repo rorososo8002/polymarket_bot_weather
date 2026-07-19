@@ -19,6 +19,10 @@ from weather_bot.live_paper_runner import (
     refresh_open_position_edges,
     run_cycle,
 )
+from weather_bot.market_rules import (
+    market_rule_mismatch_reason,
+    market_uses_wunderground_settlement_source,
+)
 from weather_bot.models import (
     EdgeResult,
     MarketRuleProvenance,
@@ -715,6 +719,84 @@ def test_pre_station_gate_allows_grouped_event_rules_with_unit_toggle_text():
 
     assert market.question == "Will the highest temperature in Seoul be 28\u00b0C on June 16?"
     assert pre_station_tradeability_gate(market, Settings(), "temperature") is None
+
+
+@pytest.mark.parametrize(
+    "source_fields",
+    [
+        {
+            "resolution_source": (
+                "https://www.wunderground.com/history/daily/kr/incheon/RKSI"
+            )
+        },
+        {
+            "description": (
+                "The resolution source for this market is Wunderground."
+            )
+        },
+    ],
+)
+def test_wunderground_settlement_source_detection_accepts_url_and_explicit_rule_text(
+    source_fields,
+):
+    question = "Will the highest temperature in Seoul be 28°C on June 16?"
+    provenance = MarketRuleProvenance(
+        market_id="seoul-28c",
+        question=question,
+        **source_fields,
+    )
+    market = RawMarket(
+        market_id="seoul-28c",
+        question=question,
+        slug="seoul-28c",
+        active=True,
+        closed=False,
+        yes_token_id="yes",
+        no_token_id="no",
+        rule_provenance=provenance,
+    )
+
+    assert market_uses_wunderground_settlement_source(market) is True
+
+
+def test_wunderground_settlement_source_detection_fails_closed_without_rule_evidence():
+    assert market_uses_wunderground_settlement_source(temp_market()) is False
+
+
+def test_wunderground_settlement_source_detection_rejects_lookalike_domain():
+    question = "Will the highest temperature in Seoul be 28째C on June 16?"
+    market = RawMarket(
+        market_id="seoul-28c-lookalike",
+        question=question,
+        slug="seoul-28c-lookalike",
+        active=True,
+        closed=False,
+        yes_token_id="yes",
+        no_token_id="no",
+        rule_provenance=MarketRuleProvenance(
+            market_id="seoul-28c-lookalike",
+            question=question,
+            resolution_source="https://wunderground.attacker.example/history/daily/kr/incheon/RKSI",
+        ),
+    )
+
+    assert market_uses_wunderground_settlement_source(market) is False
+
+
+def test_market_rules_reject_wunderground_station_url_for_another_city():
+    client = FakePolymarketClient()
+    market = client._parse_market(
+        {
+            "id": "seoul-wrong-station",
+            "question": "Will the highest temperature in Seoul be 28째C on June 16?",
+            "description": "The resolution source is Wunderground.",
+            "resolutionSource": "https://www.wunderground.com/history/daily/kr/busan/RKPK",
+            **binary_token_fields("yes", "no"),
+        }
+    )
+
+    assert "station mismatch" in (market_rule_mismatch_reason(market) or "")
+    assert market_uses_wunderground_settlement_source(market) is False
 
 
 def test_pre_station_gate_blocks_known_shenzhen_wunderground_history_conflict():

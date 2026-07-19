@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from typing import Any
+from urllib.parse import urlparse
 
 from .event_dates import event_date_window_from_hint
 from .models import MarketRuleProvenance, ParsedWeatherQuestion, RawMarket
@@ -53,6 +54,7 @@ KNOWN_SOURCE_CONFLICTS = {
     ),
 }
 WRH_TIMESERIES_SOURCE_NEEDLE = "weather.gov/wrh/timeseries"
+HTTP_URL_RE = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
 WRH_TIMESERIES_UNVERIFIED_REASON = (
     "NOAA WRH timeseries settlement source requires direct WRH Temp-column verification; "
     "AWC/METAR station evidence alone cannot be used as settlement evidence"
@@ -80,6 +82,10 @@ def build_market_rule_provenance(
     if rule_unit is None and rule_parsed is not None and rule_parsed.threshold_unit != "UNKNOWN":
         rule_unit = rule_parsed.threshold_unit
     rule_station_id = _station_id_from_text(rule_text)
+    source_station_ids = _wunderground_history_station_ids(
+        _combined_text(resolution_source, rule_text)
+    )
+    source_station_id = next(iter(source_station_ids), None) if len(source_station_ids) == 1 else None
     title_station = TRADING_READY_STATION_MAP.get((title_parsed.city or "").lower())
     title_station_id = title_station.station_id if title_station is not None else None
     date_hint = title_parsed.date_hint or (rule_parsed.date_hint if rule_parsed is not None else None)
@@ -91,6 +97,35 @@ def build_market_rule_provenance(
     condition_type = _condition_type(title_parsed)
     unit = title_parsed.threshold_unit if title_parsed.threshold_unit in {"F", "C"} else (rule_unit or "UNKNOWN")
     threshold_value = title_parsed.threshold_original if condition_type in {"upper_threshold", "lower_threshold"} else None
+    mismatch_reason = _mismatch_reason(
+        title=title_parsed,
+        title_text=question,
+        rule=rule_parsed,
+        rule_text=rule_text,
+        rule_unit=rule_unit,
+        rule_station_id=rule_station_id,
+        title_station_id=title_station_id,
+    )
+    if not mismatch_reason and len(source_station_ids) > 1:
+        mismatch_reason = (
+            "station mismatch: Wunderground source URLs reference multiple stations="
+            + ",".join(sorted(source_station_ids))
+        )
+    if (
+        not mismatch_reason
+        and source_station_id
+        and title_station_id
+        and source_station_id != title_station_id
+    ):
+        mismatch_reason = f"station mismatch: title={title_station_id} source={source_station_id}"
+    if (
+        not mismatch_reason
+        and source_station_id
+        and rule_station_id
+        and source_station_id != rule_station_id
+    ):
+        mismatch_reason = f"station mismatch: rule={rule_station_id} source={source_station_id}"
+
     return MarketRuleProvenance(
         market_id=market_id,
         question=question,
@@ -104,26 +139,18 @@ def build_market_rule_provenance(
         event_timezone=date_window.event_timezone if date_window is not None else (title_station.timezone if title_station is not None else None),
         event_start_utc=date_window.event_start_utc.isoformat() if date_window is not None else None,
         event_end_utc=date_window.event_end_utc.isoformat() if date_window is not None else None,
-        station_id=rule_station_id or title_station_id,
+        station_id=rule_station_id or source_station_id or title_station_id,
         unit=unit,  # type: ignore[arg-type]
         condition_type=condition_type,
         exact_value=title_parsed.threshold_original if condition_type == "exact" else None,
         range_low=title_parsed.temperature_range_lower_original if condition_type == "range" else None,
         range_high=title_parsed.temperature_range_upper_original if condition_type == "range" else None,
         threshold_value=threshold_value,
-        mismatch_reason=_mismatch_reason(
-            title=title_parsed,
-            title_text=question,
-            rule=rule_parsed,
-            rule_text=rule_text,
-            rule_unit=rule_unit,
-            rule_station_id=rule_station_id,
-            title_station_id=title_station_id,
-        ),
+        mismatch_reason=mismatch_reason,
     )
 
 
-def market_rule_mismatch_reason(market: RawMarket) -> str | None:
+def _market_rule_provenance(market: RawMarket) -> MarketRuleProvenance | None:
     provenance = market.rule_provenance
     if provenance is None and market.raw:
         provenance = build_market_rule_provenance(
@@ -133,11 +160,83 @@ def market_rule_mismatch_reason(market: RawMarket) -> str | None:
             event_slug=market.event_slug,
             raw=market.raw,
         )
+    return provenance
+
+
+def market_rule_mismatch_reason(market: RawMarket) -> str | None:
+    provenance = _market_rule_provenance(market)
     if provenance is None:
         return None
     if known_conflict := _known_source_conflict_reason(provenance):
         return known_conflict
     return provenance.mismatch_reason or None
+
+
+def market_uses_wunderground_settlement_source(market: RawMarket) -> bool:
+    """Return true only when the stored market rules identify Wunderground."""
+    provenance = _market_rule_provenance(market)
+    if provenance is None or provenance.mismatch_reason:
+        return False
+
+    rule_text = _combined_text(
+        provenance.description,
+        provenance.resolution_rules_text,
+    )
+    source_text = _combined_text(str(provenance.resolution_source or ""), rule_text)
+    official_urls = _wunderground_history_urls(source_text)
+    expected_station = TRADING_READY_STATION_MAP.get(
+        (parse_weather_question(provenance.question).city or "").lower()
+    )
+    source_station_ids = _wunderground_history_station_ids(source_text)
+    if (
+        expected_station is not None
+        and source_station_ids
+        and source_station_ids != {expected_station.station_id.upper()}
+    ):
+        return False
+    if official_urls:
+        return True
+
+    if HTTP_URL_RE.search(source_text):
+        return False
+    resolution_source = str(provenance.resolution_source or "").strip().casefold()
+    if resolution_source in {"wunderground", "weather underground"}:
+        return True
+    return bool(
+        re.search(
+            r"\b(?:resolution|settlement)\s+source\b[^.]{0,120}\bwunderground\b",
+            rule_text,
+            re.IGNORECASE,
+        )
+    )
+
+
+def _wunderground_history_urls(text: str) -> list[str]:
+    urls: list[str] = []
+    for match in HTTP_URL_RE.finditer(text or ""):
+        candidate = match.group(0).rstrip(".,;:!?)]}")
+        parsed = urlparse(candidate)
+        host = (parsed.hostname or "").casefold()
+        if not (host == "wunderground.com" or host.endswith(".wunderground.com")):
+            continue
+        path_parts = [part for part in parsed.path.split("/") if part]
+        if (
+            "history" not in {part.casefold() for part in path_parts}
+            or not path_parts
+            or re.fullmatch(r"[A-Za-z0-9]{3,8}", path_parts[-1]) is None
+        ):
+            continue
+        urls.append(candidate)
+    return urls
+
+
+def _wunderground_history_station_ids(text: str) -> set[str]:
+    station_ids: set[str] = set()
+    for candidate in _wunderground_history_urls(text):
+        path_parts = [part for part in urlparse(candidate).path.split("/") if part]
+        if path_parts and re.fullmatch(r"[A-Za-z0-9]{3,8}", path_parts[-1]):
+            station_ids.add(path_parts[-1].upper())
+    return station_ids
 
 
 def _known_source_conflict_reason(provenance: MarketRuleProvenance) -> str:

@@ -13,6 +13,7 @@ from weather_bot.edge import polymarket_taker_fee_per_share
 from weather_bot.live_paper_runner import _apply_event_portfolio, _evaluate_realtime_update, evaluate_market, run_cycle
 from weather_bot.models import (
     EdgeResult,
+    MarketRuleProvenance,
     MarketTradability,
     OrderBook,
     OrderLevel,
@@ -153,6 +154,61 @@ def candidate(
     )
 
 
+def direct_exact_no_candidate(
+    market_id: str,
+    bucket: str,
+    *,
+    size_usd: float = 600.0,
+    p_exec: float = 0.85,
+    metric: str = "max",
+) -> PortfolioCandidate:
+    item = candidate(
+        market_id,
+        bucket,
+        side="NO",
+        size_usd=size_usd,
+        p_true=0.0,
+        p_exec=p_exec,
+        expected_net_profit_usd=size_usd * ((1.0 / p_exec) - 1.0),
+        selected_side_probability=1.0,
+        probability_tier="lock_high_exact_no",
+        event_cap_override_fraction=1.0,
+    )
+    raw_market = item.market
+    if metric == "min":
+        raw_market = replace(
+            raw_market,
+            question=raw_market.question.replace("highest temperature", "lowest temperature"),
+        )
+    raw_market = replace(
+        raw_market,
+        rule_provenance=MarketRuleProvenance(
+            market_id=raw_market.market_id,
+            question=raw_market.question,
+            resolution_source="https://www.wunderground.com/history/daily/kr/incheon/RKSI",
+        ),
+    )
+    return replace(
+        item,
+        market=raw_market,
+        signal=replace(
+            item.signal,
+            source="official-station-lock-strong_no",
+            parsed=parse_weather_question(raw_market.question),
+            nowcast={
+                "source": "wunderground-history-direct",
+                "target_date_local": "2026-05-25",
+            },
+            settlement_precision_confidence="verified",
+            signal_family="lock_only",
+        ),
+        result=replace(
+            item.result,
+            signal_family="lock_only",
+        ),
+    )
+
+
 def usable_snapshot(entry_bankroll: float = 100.0) -> EntryBankrollSnapshot:
     return EntryBankrollSnapshot(
         usable=True,
@@ -199,6 +255,14 @@ def test_lock_only_high_exact_no_can_use_remaining_cash_when_settlement_return_c
     )
     broker = PaperBroker(cfg)
     raw_market = market("seoul-29", "29°C")
+    raw_market = replace(
+        raw_market,
+        rule_provenance=MarketRuleProvenance(
+            market_id=raw_market.market_id,
+            question=raw_market.question,
+            resolution_source="https://www.wunderground.com/history/daily/kr/incheon/RKSI",
+        ),
+    )
     signal = WeatherSignal(
         0.0,
         1.0,
@@ -206,10 +270,12 @@ def test_lock_only_high_exact_no_can_use_remaining_cash_when_settlement_return_c
         "official_nowcast_lock=strong_no; observed_high_c=30.0 >= next_displayed_integer_c=30.0",
         parse_weather_question(raw_market.question),
         nowcast={
+            "source": "wunderground-history-direct",
             "station_id": "RKSI",
             "target_date_local": "2026-05-25",
             "observed_high_c": 30.0,
         },
+        signal_family="lock_only",
         settlement_precision_confidence="verified",
     )
     client = FakeClient(
@@ -244,7 +310,7 @@ def test_lock_only_high_exact_no_can_use_remaining_cash_when_settlement_return_c
     assert broker.state.positions[0].cost_usd > 900.0
 
 
-def test_lock_only_high_lower_tail_no_can_use_remaining_cash_despite_price_impact(tmp_path):
+def test_lock_only_high_lower_tail_no_cannot_use_concentrated_exact_no_sizing(tmp_path):
     cfg = settings(
         tmp_path,
         bankroll_usd=1000.0,
@@ -296,10 +362,9 @@ def test_lock_only_high_lower_tail_no_can_use_remaining_cash_despite_price_impac
         "temperature",
     )
 
-    assert result.side == "NO"
-    assert result.size_usd > 900.0
-    assert result.probability_tier == "lock_high_exact_no"
-    assert "SKIP_EXCESSIVE_PRICE_IMPACT" not in result.reason
+    assert result.side == "SKIP"
+    assert result.size_usd == 0.0
+    assert result.event_cap_override_fraction is None
 
 
 def test_adaptive_city_date_cap_drops_from_ten_to_five_percent_at_one_thousand(tmp_path):
@@ -871,6 +936,191 @@ def test_event_portfolio_allows_two_exact_no_legs_that_cannot_both_lose(tmp_path
     )
 
     assert len(decision.selected) == 2
+
+
+@pytest.mark.parametrize("metric", ["max", "min"])
+def test_event_portfolio_shares_full_budget_between_two_direct_exact_no_legs(tmp_path, metric):
+    broker = PaperBroker(
+        settings(
+            tmp_path,
+            bankroll_usd=1000.0,
+            max_event_portfolio_legs=2,
+            max_single_market_fraction=0.50,
+            max_city_exposure_fraction=0.50,
+            max_total_exposure_fraction=0.50,
+        )
+    )
+
+    decision = select_event_portfolio(
+        broker,
+        [
+            direct_exact_no_candidate("seoul-26", "26°C", metric=metric),
+            direct_exact_no_candidate("seoul-27", "27°C", metric=metric),
+        ],
+        usable_snapshot(1000.0),
+    )
+
+    assert [(leg.market.market_id, leg.result.side) for leg in decision.selected] == [
+        ("seoul-26", "NO"),
+        ("seoul-27", "NO"),
+    ]
+    assert [leg.result.size_usd for leg in decision.selected] == pytest.approx([500.0, 500.0])
+    assert decision.event_cap_fraction == pytest.approx(1.0)
+    assert decision.event_cap_usd == pytest.approx(1000.0)
+    assert decision.selected_exposure_usd == pytest.approx(1000.0)
+
+
+def test_event_portfolio_does_not_mix_ordinary_leg_into_direct_concentrated_pair(tmp_path):
+    broker = PaperBroker(settings(tmp_path, bankroll_usd=1000.0, max_event_portfolio_legs=2))
+    ordinary = candidate(
+        "seoul-27",
+        "27°C",
+        side="NO",
+        size_usd=600.0,
+        p_true=0.0,
+        p_exec=0.85,
+        expected_net_profit_usd=100.0,
+    )
+
+    decision = select_event_portfolio(
+        broker,
+        [direct_exact_no_candidate("seoul-26", "26°C"), ordinary],
+        usable_snapshot(1000.0),
+    )
+
+    assert [(leg.market.market_id, leg.result.side) for leg in decision.selected] == [
+        ("seoul-26", "NO")
+    ]
+
+
+def test_event_portfolio_keeps_direct_exact_no_pair_on_one_temperature_metric(tmp_path):
+    broker = PaperBroker(settings(tmp_path, bankroll_usd=1000.0, max_event_portfolio_legs=2))
+
+    decision = select_event_portfolio(
+        broker,
+        [
+            direct_exact_no_candidate("seoul-high-26", "26°C", metric="max"),
+            direct_exact_no_candidate("seoul-low-27", "27°C", metric="min"),
+        ],
+        usable_snapshot(1000.0),
+    )
+
+    assert len(decision.selected) == 1
+    assert any(item.reason == "event legs are not complementary" for item in decision.rejected)
+
+
+def test_event_portfolio_blocks_third_direct_exact_no_leg(tmp_path):
+    broker = PaperBroker(settings(tmp_path, bankroll_usd=1000.0, max_event_portfolio_legs=2))
+
+    decision = select_event_portfolio(
+        broker,
+        [
+            direct_exact_no_candidate("seoul-26", "26°C"),
+            direct_exact_no_candidate("seoul-27", "27°C"),
+            direct_exact_no_candidate("seoul-28", "28°C"),
+        ],
+        usable_snapshot(1000.0),
+    )
+
+    assert len(decision.selected) == 2
+    assert decision.selected_exposure_usd <= 1000.0
+    assert [item.reason for item in decision.rejected] == ["event leg cap reached"]
+
+
+def test_apply_event_portfolio_opens_two_direct_exact_no_legs_with_shared_budget(tmp_path):
+    cfg = settings(
+        tmp_path,
+        bankroll_usd=1000.0,
+        max_event_portfolio_legs=2,
+        min_net_edge=0.01,
+        entry_min_expected_net_return_pct=0.01,
+        weather_taker_fee_rate=0.0,
+        model_error_margin=0.0,
+        resolution_error_margin=0.0,
+        max_entry_spread_abs=0.05,
+        max_entry_spread_pct=1.0,
+        max_single_market_fraction=0.50,
+        max_city_exposure_fraction=0.50,
+        max_event_date_exposure_fraction=0.50,
+        large_bankroll_event_date_exposure_fraction=0.50,
+        max_total_exposure_fraction=0.50,
+    )
+    broker = PaperBroker(cfg)
+    candidates = [
+        direct_exact_no_candidate("seoul-26", "26°C"),
+        direct_exact_no_candidate("seoul-27", "27°C"),
+    ]
+    client = FakeClient(
+        {
+            candidate.market.no_token_id: OrderBook(
+                candidate.market.no_token_id or "",
+                bids=[OrderLevel(0.84, 1000.0)],
+                asks=[OrderLevel(0.85, 1000.0)],
+            )
+            for candidate in candidates
+        }
+    )
+
+    decision = _apply_event_portfolio(
+        broker,
+        candidates,
+        usable_snapshot(1000.0),
+        client=client,
+    )
+
+    assert len(decision.selected) == 2
+    assert [(position.market_id, position.side) for position in broker.state.positions] == [
+        ("seoul-26", "NO"),
+        ("seoul-27", "NO"),
+    ]
+    assert [position.cost_usd for position in broker.state.positions] == pytest.approx([500.0, 500.0])
+    assert broker.state.cash_usd == pytest.approx(0.0)
+
+
+def test_event_portfolio_allows_later_direct_exact_no_to_share_budget_with_held_leg(tmp_path):
+    cfg = settings(tmp_path, bankroll_usd=1000.0, max_event_portfolio_legs=2)
+    broker = PaperBroker(cfg)
+    first = direct_exact_no_candidate("seoul-26", "26°C", size_usd=400.0)
+    held = broker.open_position(
+        first.market,
+        first.market.no_token_id or "",
+        first.result,
+        city="seoul",
+        date_hint="may 25",
+        entry_bankroll_usd=1000.0,
+        signal=first.signal,
+    )
+    assert held is not None
+
+    second = direct_exact_no_candidate("seoul-27", "27°C", size_usd=600.0)
+    client = FakeClient(
+        {
+            second.market.no_token_id: OrderBook(
+                second.market.no_token_id or "",
+                bids=[OrderLevel(0.84, 1000.0)],
+                asks=[OrderLevel(0.85, 1000.0)],
+            )
+        }
+    )
+    decision = _apply_event_portfolio(
+        broker,
+        [second],
+        usable_snapshot(1000.0),
+        client=client,
+    )
+
+    assert [(leg.market.market_id, leg.result.side) for leg in decision.selected] == [
+        ("seoul-27", "NO")
+    ]
+    assert decision.selected[0].result.size_usd == pytest.approx(600.0)
+    assert decision.existing_event_exposure_usd == pytest.approx(400.0)
+    assert decision.selected_exposure_usd == pytest.approx(600.0)
+    assert decision.event_cap_usd == pytest.approx(1000.0)
+    assert [(position.market_id, position.cost_usd) for position in broker.state.positions] == [
+        ("seoul-26", 400.0),
+        ("seoul-27", 600.0),
+    ]
+    assert broker.state.cash_usd == pytest.approx(0.0)
 
 
 def test_event_portfolio_blocks_yes_no_combination_with_overlapping_payoff_outcomes(tmp_path):

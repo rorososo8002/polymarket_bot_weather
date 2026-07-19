@@ -116,7 +116,7 @@ def test_vps_env_example_keeps_runtime_state_under_data_dir():
     assert "LARGE_BANKROLL_EVENT_DATE_EXPOSURE_FRACTION=0.05" in text
     assert "OFFICIAL_NOWCAST_LOCK_ENABLED=true" in text
     assert "OFFICIAL_NOWCAST_ENTRY_ONLY=false" in text
-    assert "STRATEGY_MODE=hybrid_observation_edge" in text
+    assert "STRATEGY_MODE=lock_only" in text
     assert "INTRADAY_OBSERVATION_EDGE_ENABLED=true" in text
     assert "INTRADAY_MIN_SIDE_PROBABILITY=0.90" in text
     assert "INTRADAY_STRONG_SIDE_PROBABILITY=0.97" in text

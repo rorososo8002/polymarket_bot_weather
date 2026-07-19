@@ -17,6 +17,7 @@ from .edge import (
     polymarket_taker_fee_usdc,
 )
 from .exit_policy import side_true_probability
+from .market_rules import market_rule_mismatch_reason, market_uses_wunderground_settlement_source
 from .models import EdgeResult, PaperPosition, RawMarket, WeatherSignal
 from .risk import same_observation_reentry_block_reason
 from .weather_client import (
@@ -31,7 +32,15 @@ if TYPE_CHECKING:
     from .polymarket_client import PolymarketClient
 
 
-LOCK_ONLY_HIGH_EXACT_NO_TIER = "lock_high_exact_no"
+LOCK_ONLY_EXACT_NO_TIER = "lock_exact_no"
+LEGACY_LOCK_ONLY_EXACT_NO_TIER = "lock_high_exact_no"
+LOCK_ONLY_EXACT_NO_MAX_ENTRY_PRICE = 0.90
+LOCK_ONLY_EXACT_NO_MIN_NET_RETURN_PCT = 0.08
+LOCK_ONLY_EXACT_NO_TIERS = {
+    LOCK_ONLY_EXACT_NO_TIER,
+    LEGACY_LOCK_ONLY_EXACT_NO_TIER,
+}
+DIRECT_SETTLEMENT_NOWCAST_SOURCE = "wunderground-history-direct"
 
 
 @dataclass(frozen=True)
@@ -60,26 +69,127 @@ class RejectedPortfolioLeg:
     reason: str
 
 
+def direct_exact_no_entry_block_reason(
+    market: RawMarket,
+    signal: WeatherSignal | None,
+    side: str,
+    result: EdgeResult | None = None,
+) -> str | None:
+    if signal is None:
+        return "direct_signal_required"
+    parsed = signal.parsed
+    market_parsed = parse_weather_question(market.question)
+    nowcast = signal.nowcast if isinstance(signal.nowcast, dict) else {}
+    if (
+        parsed is None
+        or parsed.variable != "temperature"
+        or parsed.temperature_metric not in {"max", "min"}
+        or parsed.temperature_bucket != "exact"
+        or parsed.threshold_original is None
+        or parsed.threshold_unit not in {"C", "F"}
+        or market_parsed.variable != "temperature"
+        or market_parsed.temperature_metric not in {"max", "min"}
+        or market_parsed.temperature_bucket != "exact"
+        or market_parsed.threshold_original is None
+        or market_parsed.threshold_unit not in {"C", "F"}
+    ):
+        return "exact_temperature_bucket_required"
+    if (
+        (market_parsed.city or "").casefold() != (parsed.city or "").casefold()
+        or market_parsed.temperature_metric != parsed.temperature_metric
+        or market_parsed.threshold_unit != parsed.threshold_unit
+        or market_parsed.date_hint != parsed.date_hint
+        or abs(float(market_parsed.threshold_original) - float(parsed.threshold_original)) > 1e-9
+    ):
+        return "signal_market_bucket_mismatch"
+    if market_rule_mismatch_reason(market):
+        return "market_rule_mismatch"
+    if not market_uses_wunderground_settlement_source(market):
+        return "wunderground_settlement_source_required"
+    if side != "NO":
+        return "no_side_required"
+    if nowcast.get("source") != DIRECT_SETTLEMENT_NOWCAST_SOURCE:
+        return "wunderground_direct_nowcast_required"
+    if str(nowcast.get("station_id") or "").upper() == "HKO":
+        return "wunderground_direct_station_required"
+    if signal.source != "official-station-lock-strong_no":
+        return "official_strong_no_lock_required"
+    if signal.signal_family != "lock_only":
+        return "lock_only_signal_family_required"
+    try:
+        signal_p_true = float(signal.p_true)
+    except (TypeError, ValueError):
+        signal_p_true = float("nan")
+    if not isfinite(signal_p_true) or not 0.0 <= signal_p_true <= 1e-12:
+        return "irreversible_no_probability_required"
+    if signal.settlement_precision_confidence != "verified":
+        return "verified_precision_required"
+    if str(nowcast.get("data_block_reason") or "").strip():
+        return "unblocked_direct_observation_required"
+    if result is not None:
+        try:
+            result_p_true = float(result.p_true)
+        except (TypeError, ValueError):
+            result_p_true = float("nan")
+        if result.side != "NO" or not isfinite(result_p_true) or not 0.0 <= result_p_true <= 1e-12:
+            return "result_irreversible_no_required"
+        if result.signal_family != "lock_only":
+            return "result_lock_only_signal_family_required"
+        if result.probability_tier not in LOCK_ONLY_EXACT_NO_TIERS:
+            return "result_exact_no_probability_tier_required"
+    return None
+
+
+def direct_exact_no_metric(
+    market: RawMarket,
+    signal: WeatherSignal | None,
+    result: EdgeResult,
+) -> str | None:
+    if direct_exact_no_entry_block_reason(market, signal, result.side, result) is not None:
+        return None
+    assert signal is not None and signal.parsed is not None
+    return signal.parsed.temperature_metric
+
+
+def direct_exact_no_position_metric(position: PaperPosition) -> str | None:
+    metadata = position.metadata
+    parsed = parse_weather_question(position.question)
+    station_audit = metadata.get("station_audit")
+    station_audit = station_audit if isinstance(station_audit, dict) else {}
+    try:
+        entry_p_true = float(metadata.get("entry_p_true"))
+    except (TypeError, ValueError):
+        return None
+    if not (
+        position.side == "NO"
+        and 0.0 <= entry_p_true <= 1e-12
+        and metadata.get("signal_family") == "lock_only"
+        and metadata.get("probability_tier") in LOCK_ONLY_EXACT_NO_TIERS
+        and metadata.get("signal_source") == "official-station-lock-strong_no"
+        and metadata.get("settlement_precision_confidence") == "verified"
+        and metadata.get("nowcast_source") == DIRECT_SETTLEMENT_NOWCAST_SOURCE
+        and metadata.get("wunderground_settlement_source") == "true"
+        and not str(station_audit.get("data_block_reason") or "").strip()
+        and parsed.variable == "temperature"
+        and parsed.temperature_metric in {"max", "min"}
+        and parsed.temperature_bucket == "exact"
+    ):
+        return None
+    return parsed.temperature_metric
+
+
 def structured_event_cap_override_fraction(
     signal: WeatherSignal | None,
     result: EdgeResult,
     settings: Settings,
+    market: RawMarket,
 ) -> float | None:
     """Return the tier-specific station override only when signal and result agree."""
     if signal is None:
         return None
-    parsed = signal.parsed
     if (
-        result.side == "NO"
-        and result.signal_family == "lock_only"
-        and result.probability_tier == LOCK_ONLY_HIGH_EXACT_NO_TIER
+        direct_exact_no_metric(market, signal, result) is not None
         and result.event_cap_override_fraction == 1.0
-        and signal.source == "official-station-lock-strong_no"
-        and signal.settlement_precision_confidence == "verified"
-        and parsed is not None
-        and parsed.variable == "temperature"
-        and parsed.temperature_metric == "max"
-        and parsed.temperature_bucket == "exact"
     ):
         return 1.0
     probability = (
@@ -924,8 +1034,31 @@ def select_event_portfolio(
         if held and not is_add_to_existing and not _is_complementary(candidate, [], held):
             rejected.append(RejectedPortfolioLeg(candidate.market.market_id, side, "event legs are not complementary"))
             continue
-        override = structured_event_cap_override_fraction(candidate.signal, candidate.result, settings)
-        if override is not None and held and not is_add_to_existing:
+        override = structured_event_cap_override_fraction(
+            candidate.signal,
+            candidate.result,
+            settings,
+            candidate.market,
+        )
+        candidate_direct_metric = direct_exact_no_metric(
+            candidate.market,
+            candidate.signal,
+            candidate.result,
+        )
+        held_direct_pair_compatible = (
+            override == 1.0
+            and candidate_direct_metric is not None
+            and all(
+                direct_exact_no_position_metric(position) == candidate_direct_metric
+                for position in held
+            )
+        )
+        if (
+            override is not None
+            and held
+            and not is_add_to_existing
+            and not held_direct_pair_compatible
+        ):
             rejected.append(
                 RejectedPortfolioLeg(
                     candidate.market.market_id,
@@ -948,7 +1081,12 @@ def select_event_portfolio(
         for candidate in eligible:
             if candidate.add_to_existing_position_id is None and remaining_slots <= 0:
                 continue
-            override = structured_event_cap_override_fraction(candidate.signal, candidate.result, settings)
+            override = structured_event_cap_override_fraction(
+                candidate.signal,
+                candidate.result,
+                settings,
+                candidate.market,
+            )
             event_fraction = override or ordinary_event_cap_fraction
             city_fraction = override or settings.max_city_exposure_fraction
             total_fraction = override or settings.max_total_exposure_fraction
@@ -977,25 +1115,24 @@ def select_event_portfolio(
                 )
                 if plan is not None:
                     plans.append(plan)
-    if entry_bankroll.usable and remaining_slots > 1:
-        ordinary_eligible = [
-            candidate
-            for candidate in eligible
-            if structured_event_cap_override_fraction(candidate.signal, candidate.result, settings) is None
-        ]
-        ordinary_single_limit = min(
-            ordinary_available_budget,
-            entry_bankroll.entry_bankroll * settings.max_single_market_fraction,
+    def append_shared_pair_plans(
+        pair_eligible: list[PortfolioCandidate],
+        available_budget: float,
+        single_fraction: float,
+    ) -> None:
+        single_limit = min(
+            available_budget,
+            entry_bankroll.entry_bankroll * single_fraction,
         )
-        for left, right in combinations(ordinary_eligible, 2):
+        for left, right in combinations(pair_eligible, 2):
             if left.market.market_id == right.market.market_id:
                 continue
             if not _is_complementary(right, [left], held):
                 continue
-            left_limit = min(ordinary_single_limit, left.result.size_usd)
-            right_limit = min(ordinary_single_limit, right.result.size_usd)
+            left_limit = min(single_limit, left.result.size_usd)
+            right_limit = min(single_limit, right.result.size_usd)
             minimum = settings.min_order_usd
-            total_limit = min(ordinary_available_budget, left_limit + right_limit)
+            total_limit = min(available_budget, left_limit + right_limit)
             if (
                 left_limit + 1e-9 < minimum
                 or right_limit + 1e-9 < minimum
@@ -1024,6 +1161,47 @@ def select_event_portfolio(
             if plan is not None:
                 plans.append(plan)
 
+    if entry_bankroll.usable and remaining_slots > 1:
+        ordinary_eligible = [
+            candidate
+            for candidate in eligible
+            if structured_event_cap_override_fraction(
+                candidate.signal,
+                candidate.result,
+                settings,
+                candidate.market,
+            ) is None
+        ]
+        append_shared_pair_plans(
+            ordinary_eligible,
+            ordinary_available_budget,
+            settings.max_single_market_fraction,
+        )
+        direct_exact_no_eligible = [
+            candidate
+            for candidate in eligible
+            if (
+                direct_exact_no_metric(candidate.market, candidate.signal, candidate.result) is not None
+                and structured_event_cap_override_fraction(
+                    candidate.signal,
+                    candidate.result,
+                    settings,
+                    candidate.market,
+                ) == 1.0
+            )
+        ]
+        direct_available_budget = min(
+            entry_bankroll.entry_bankroll - existing_event_exposure,
+            entry_bankroll.entry_bankroll - broker.city_exposure(city),
+            entry_bankroll.entry_bankroll - broker.total_exposure(),
+            broker.state.cash_usd,
+        )
+        append_shared_pair_plans(
+            direct_exact_no_eligible,
+            direct_available_budget,
+            1.0,
+        )
+
     best_plan = max(
         plans,
         key=lambda plan: (
@@ -1036,7 +1214,12 @@ def select_event_portfolio(
     selected = list(best_plan.selected) if best_plan is not None else []
     selected_override = max(
         (
-            structured_event_cap_override_fraction(leg.signal, leg.result, settings) or 0.0
+            structured_event_cap_override_fraction(
+                leg.signal,
+                leg.result,
+                settings,
+                leg.market,
+            ) or 0.0
             for leg in selected
         ),
         default=0.0,

@@ -3,8 +3,10 @@ from __future__ import annotations
 import csv
 from dataclasses import replace
 
+import pytest
+
 from weather_bot.config import Settings
-from weather_bot.models import EdgeResult, RawMarket, WeatherSignal
+from weather_bot.models import EdgeResult, MarketRuleProvenance, RawMarket, WeatherSignal
 from weather_bot.paper import PaperBroker
 from weather_bot.weather_client import parse_weather_question
 
@@ -81,6 +83,69 @@ def _concentrated_signal() -> WeatherSignal:
             "probability_tier": "95",
             "event_cap_override_fraction": 0.20,
         }
+    )
+
+
+def _direct_exact_no_market(
+    market_id: str,
+    bucket: int,
+    *,
+    metric: str = "highest",
+    wunderground_rules: bool = True,
+) -> RawMarket:
+    question = f"Will the {metric} temperature in Seoul be {bucket}°C on May 25?"
+    return RawMarket(
+        market_id,
+        question,
+        market_id,
+        True,
+        False,
+        f"{market_id}-yes",
+        f"{market_id}-no",
+        event_id="seoul-may-25",
+        rule_provenance=(
+            MarketRuleProvenance(
+                market_id=market_id,
+                question=question,
+                resolution_source="https://www.wunderground.com/history/daily/kr/incheon/RKSI",
+            )
+            if wunderground_rules
+            else None
+        ),
+    )
+
+
+def _direct_exact_no_signal(market: RawMarket) -> WeatherSignal:
+    return WeatherSignal(
+        p_true=0.0,
+        confidence=1.0,
+        source="official-station-lock-strong_no",
+        note="direct settlement history irreversibly broke exact bucket",
+        parsed=parse_weather_question(market.question),
+        nowcast={
+            "source": "wunderground-history-direct",
+            "target_date_local": "2026-05-25",
+        },
+        signal_family="lock_only",
+        settlement_precision_confidence="verified",
+    )
+
+
+def _direct_exact_no_result(*, size_usd: float = 500.0) -> EdgeResult:
+    return EdgeResult(
+        side="NO",
+        p_true=0.0,
+        p_exec=0.85,
+        net_edge=0.15,
+        size_usd=size_usd,
+        size_shares=size_usd / 0.85,
+        reason="direct exact NO",
+        expected_net_profit_usd=size_usd * ((1.0 / 0.85) - 1.0),
+        signal_family="lock_only",
+        entry_size_fraction_override=1.0,
+        selected_side_probability=1.0,
+        probability_tier="lock_high_exact_no",
+        event_cap_override_fraction=1.0,
     )
 
 
@@ -364,6 +429,234 @@ def test_broker_allows_structured_95_tier_to_use_twenty_percent_cap(tmp_path):
 
     assert position is not None
     assert position.cost_usd == 20.0
+
+
+def test_broker_allows_two_direct_exact_no_legs_to_share_full_city_date_budget(tmp_path):
+    broker = PaperBroker(
+        _settings(
+            tmp_path,
+            bankroll_usd=1000.0,
+            max_event_portfolio_legs=2,
+            max_single_market_fraction=0.50,
+            max_city_exposure_fraction=0.50,
+            max_event_date_exposure_fraction=0.50,
+            large_bankroll_event_date_exposure_fraction=0.50,
+            max_total_exposure_fraction=0.50,
+        )
+    )
+    first_market = _direct_exact_no_market("seoul-26", 26)
+    second_market = _direct_exact_no_market("seoul-27", 27)
+
+    first = broker.open_position(
+        first_market,
+        first_market.no_token_id or "",
+        _direct_exact_no_result(),
+        city="seoul",
+        date_hint="may 25",
+        entry_bankroll_usd=1000.0,
+        signal=_direct_exact_no_signal(first_market),
+    )
+    second = broker.open_position(
+        second_market,
+        second_market.no_token_id or "",
+        _direct_exact_no_result(),
+        city="seoul",
+        date_hint="may 25",
+        entry_bankroll_usd=1000.0,
+        signal=_direct_exact_no_signal(second_market),
+    )
+
+    assert first is not None
+    assert second is not None
+    assert first.metadata["nowcast_source"] == "wunderground-history-direct"
+    assert second.metadata["nowcast_source"] == "wunderground-history-direct"
+    assert broker.event_date_position_count("seoul", "may 25") == 2
+    assert broker.event_date_exposure("seoul", "may 25") == 1000.0
+
+
+def test_broker_keeps_non_direct_concentrated_override_exclusive(tmp_path):
+    broker = PaperBroker(_settings(tmp_path))
+    first_market = _market()
+    second_market = replace(
+        first_market,
+        market_id="m2",
+        question="Will the highest temperature in Seoul be 24C today?",
+        slug="m2",
+        yes_token_id="m2-yes",
+        no_token_id="m2-no",
+    )
+
+    first = broker.open_position(
+        first_market,
+        first_market.yes_token_id or "",
+        _result(size_usd=10.0, probability_tier="95", event_cap_override_fraction=0.20),
+        city="seoul",
+        date_hint="today",
+        entry_bankroll_usd=100.0,
+        signal=_concentrated_signal(),
+    )
+    second = broker.open_position(
+        second_market,
+        second_market.yes_token_id or "",
+        _result(size_usd=10.0, probability_tier="95", event_cap_override_fraction=0.20),
+        city="seoul",
+        date_hint="today",
+        entry_bankroll_usd=100.0,
+        signal=replace(
+            _concentrated_signal(),
+            parsed=parse_weather_question(second_market.question),
+        ),
+    )
+
+    assert first is not None
+    assert second is None
+    with (tmp_path / "trades.csv").open(newline="", encoding="utf-8") as handle:
+        assert list(csv.DictReader(handle))[-1]["action"] == "SKIP_EVENT_DATE_CONCENTRATION"
+
+
+def test_broker_blocks_direct_exact_no_pair_across_high_and_low_metrics(tmp_path):
+    broker = PaperBroker(_settings(tmp_path, bankroll_usd=1000.0, max_event_portfolio_legs=2))
+    high_market = _direct_exact_no_market("seoul-high-26", 26)
+    low_market = _direct_exact_no_market("seoul-low-27", 27, metric="lowest")
+
+    first = broker.open_position(
+        high_market,
+        high_market.no_token_id or "",
+        _direct_exact_no_result(size_usd=100.0),
+        city="seoul",
+        date_hint="may 25",
+        entry_bankroll_usd=1000.0,
+        signal=_direct_exact_no_signal(high_market),
+    )
+    second = broker.open_position(
+        low_market,
+        low_market.no_token_id or "",
+        _direct_exact_no_result(size_usd=100.0),
+        city="seoul",
+        date_hint="may 25",
+        entry_bankroll_usd=1000.0,
+        signal=_direct_exact_no_signal(low_market),
+    )
+
+    assert first is not None
+    assert second is None
+
+
+def test_broker_blocks_third_direct_exact_no_at_two_leg_cap(tmp_path):
+    broker = PaperBroker(_settings(tmp_path, bankroll_usd=1000.0, max_event_portfolio_legs=2))
+    opened = []
+    for market_id, bucket in [("seoul-26", 26), ("seoul-27", 27), ("seoul-28", 28)]:
+        raw_market = _direct_exact_no_market(market_id, bucket)
+        opened.append(
+            broker.open_position(
+                raw_market,
+                raw_market.no_token_id or "",
+                _direct_exact_no_result(size_usd=300.0),
+                city="seoul",
+                date_hint="may 25",
+                entry_bankroll_usd=1000.0,
+                signal=_direct_exact_no_signal(raw_market),
+            )
+        )
+
+    assert opened[0] is not None
+    assert opened[1] is not None
+    assert opened[2] is None
+    with (tmp_path / "trades.csv").open(newline="", encoding="utf-8") as handle:
+        assert list(csv.DictReader(handle))[-1]["action"] == "SKIP_EVENT_DATE_LEG_CAP"
+
+
+def test_broker_blocks_second_direct_exact_no_without_wunderground_market_rules(tmp_path):
+    broker = PaperBroker(_settings(tmp_path, bankroll_usd=1000.0, max_event_portfolio_legs=2))
+    first_market = _direct_exact_no_market("seoul-26", 26, wunderground_rules=False)
+    second_market = _direct_exact_no_market("seoul-27", 27, wunderground_rules=False)
+
+    first = broker.open_position(
+        first_market,
+        first_market.no_token_id or "",
+        _direct_exact_no_result(size_usd=50.0),
+        city="seoul",
+        date_hint="may 25",
+        entry_bankroll_usd=1000.0,
+        signal=_direct_exact_no_signal(first_market),
+    )
+    second = broker.open_position(
+        second_market,
+        second_market.no_token_id or "",
+        _direct_exact_no_result(size_usd=50.0),
+        city="seoul",
+        date_hint="may 25",
+        entry_bankroll_usd=1000.0,
+        signal=_direct_exact_no_signal(second_market),
+    )
+
+    assert first is not None
+    assert second is None
+
+
+@pytest.mark.parametrize(
+    ("p_true", "data_block_reason"),
+    [
+        (0.01, ""),
+        (0.0, "conflicting-direct-history"),
+    ],
+)
+def test_broker_rejects_concentrated_override_for_nonzero_or_blocked_direct_signal(
+    tmp_path,
+    p_true,
+    data_block_reason,
+):
+    broker = PaperBroker(_settings(tmp_path, bankroll_usd=1000.0, strategy_mode="lock_only"))
+    raw_market = _direct_exact_no_market("seoul-26", 26)
+    signal = _direct_exact_no_signal(raw_market)
+    signal = replace(
+        signal,
+        p_true=p_true,
+        nowcast={
+            **signal.nowcast,
+            "data_block_reason": data_block_reason,
+        },
+    )
+    result = replace(_direct_exact_no_result(size_usd=40.0), p_true=p_true)
+
+    position = broker.open_position(
+        raw_market,
+        raw_market.no_token_id or "",
+        result,
+        city="seoul",
+        date_hint="may 25",
+        entry_bankroll_usd=1000.0,
+        signal=signal,
+    )
+
+    assert position is None
+    with (tmp_path / "trades.csv").open(newline="", encoding="utf-8") as handle:
+        assert list(csv.DictReader(handle))[-1]["action"] == "SKIP_LOCK_ONLY_EXACT_NO"
+
+
+@pytest.mark.parametrize("price", [0.9001, 0.99])
+def test_broker_lock_only_final_gate_rejects_price_above_ninety_cents(tmp_path, price):
+    broker = PaperBroker(_settings(tmp_path, bankroll_usd=1000.0, strategy_mode="lock_only"))
+    market = _direct_exact_no_market("seoul-26", 26)
+    result = replace(
+        _direct_exact_no_result(size_usd=40.0),
+        p_exec=price,
+        size_shares=40.0 / price,
+    )
+
+    position = broker.open_position(
+        market,
+        market.no_token_id or "",
+        result,
+        city="seoul",
+        date_hint="may 25",
+        entry_bankroll_usd=1000.0,
+        signal=_direct_exact_no_signal(market),
+    )
+
+    assert position is None
+    with (tmp_path / "trades.csv").open(newline="", encoding="utf-8") as handle:
+        assert list(csv.DictReader(handle))[-1]["action"] == "SKIP_LOCK_ONLY_EXACT_NO"
 
 
 def test_broker_rejects_unstructured_95_tier_above_ordinary_event_cap(tmp_path):

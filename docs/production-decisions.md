@@ -17,6 +17,18 @@ notes only when they prevent a repeated mistake.
 ## 2. Official Observations
 
 - Entries use the mapped official settlement station, not generic forecasts.
+- Production `lock_only` entries use the Wunderground daily-history response
+  that the market names as its resolution source. The request is made with the
+  mapped station coordinates, every returned `obs_id` must match the registry
+  station, response units must be explicit, physically impossible sentinel
+  temperatures are rejected, and the local-day high/low is rebuilt from the
+  full response each time. `lock_only` refuses to start without
+  `WUNDERGROUND_API_KEY`; it must not look healthy while silently producing zero
+  entries. Wrong-station rows, malformed data, stale data, or a source other
+  than Wunderground blocks the entry.
+- AWC/KMA METAR can remain useful monitoring evidence in non-production
+  experiment modes, but it is not called 100% settlement evidence for a
+  Wunderground market and cannot open a production `lock_only` position.
 - Korean domestic METAR:
   - Seoul RKSI and Busan RKPK use the KMA direct METAR API first when
     `KMA_METAR_SERVICE_KEY` is configured. Check for newly published reports
@@ -53,10 +65,10 @@ notes only when they prevent a repeated mistake.
   - Seoul RKSI and Busan RKPK use this path when the KMA key is absent or its
     direct request fails.
 - HKO:
-  - Refresh the shared 46-station METAR feed first and release its changed-city
-    signals to the evaluator before starting the separate HKO request. METAR and
-    HKO use independent observation locks, so a slow Hong Kong response cannot
-    delay either the changed-city decision or a concurrent METAR cache read.
+  - Direct Wunderground station requests run independently. A completed changed
+    city is released to the urgent evaluator immediately; it never waits for the
+    slowest city. The separate HKO request also cannot delay a completed direct
+    station decision or a concurrent station-cache read.
   - Poll official since-midnight max/min at most once per 10 minutes.
   - Block after midnight until reset is proven. Same prior-day pair is not reset.
   - After reset, same-day high decrease or low increase blocks HKO.
@@ -131,6 +143,10 @@ notes only when they prevent a repeated mistake.
   affected same-day event must be queued; the normal four-event probe cap must
   never discard the fifth or later changed city. Urgent station events run
   ahead of ordinary order-book wakeups.
+- Near each learned direct-report boundary, a cache age of exactly five seconds
+  is expired, so a five-second runner poll produces a real five-second source
+  retry rather than an accidental ten-second retry. One valid timestamp gap is
+  enough to learn the next boundary; missing cadence still fails conservatively.
 - Ordinary WebSocket price changes reevaluate only the changed market and held
   positions, in preemptible batches of one event. An official station
   change instead queues every supported NO token for each affected event and
@@ -145,34 +161,42 @@ notes only when they prevent a repeated mistake.
 
 ## 6. Sizing
 
-Default mode: `hybrid_observation_edge` with `NO_ONLY_NEW_ENTRIES=true`.
-New YES entries and YES add-ons are disabled. A legacy YES position, if one
-exists, remains eligible for normal executable bid-side exit handling.
+Default deployed mode: `lock_only` with `NO_ONLY_NEW_ENTRIES=true`.
+New entries are limited to exact-temperature NO whose YES outcome has already
+become impossible in the directly queried Wunderground local-day history.
+Probability-only NO, range/tail NO, YES, HKO `needs_audit`, and proxy-only
+METAR locks are disabled. Legacy positions remain eligible for normal
+executable bid-side exit handling.
+The environment-loader fallback is also `lock_only`; omitting one environment
+line must never re-enable probability trading. `PaperBroker`, the final
+paper-ledger writer, independently rechecks the exact-NO evidence, the `0.90`
+price ceiling, and the configured settlement-return floor before changing cash.
 The default event portfolio limit is two open legs per city and local date.
-With `NO_ONLY_NEW_ENTRIES=true`, a second new NO leg is allowed only when both
-markets are distinct exact-temperature buckets for the same metric (both daily
-high or both daily low), so both NO legs cannot lose in the same settlement
-outcome. Range, tail, and mixed high/low NO pairs remain blocked. Both legs still
-share the same city-date exposure budget; a third leg remains blocked even if a
-higher setting value is supplied.
+The two legs must be distinct exact buckets for the same metric (both daily high
+or both daily low), so both NO legs cannot lose in one settlement outcome. They
+share one city-date budget; the first leg cannot reserve the whole budget before
+the second is considered. Range, tail, mixed high/low, and a third leg remain
+blocked.
 
-Allowed signal families:
+Production new-entry signal family:
 
 ```text
 lock_only
-intraday_observation_edge
-abnormal_official_station_mispricing
 ```
+
+The probability families remain available only for explicit offline experiments;
+they are not allowed by the deployed production mode.
 
 Sizing targets before liquidity/edge/cash cuts:
 
 - Non-lock residual probability entries are capped at 20% of bankroll per
   ordinary city exposure, even above 90% or 95%.
-- Only verified lock-only high NO can override this and use up to all remaining
-  cash when executable VWAP and net-return gates pass: exact buckets already
-  exceeded, or lower-tail high markets already broken by the same-day official
-  high. HKO `needs_audit` and NOAA WRH timeseries without direct `Temp`
-  verification stay excluded.
+- Only a directly verified lock-only exact high or exact low NO can use the
+  shared city-date concentrated budget. Executable ask-side VWAP must be at most
+  `0.90`, including the final refresh; a smaller still-profitable amount may be
+  used when depth shrinks instead of discarding the whole opportunity. HKO
+  `needs_audit`, tail buckets, proxy-only METAR, and NOAA WRH timeseries without
+  direct `Temp` verification stay excluded.
 
 Final executable VWAP, fee-aware edge, complete observations, CLOB state, cash,
 and single-market exposure gates may reduce or block a fill. HKO `needs_audit`

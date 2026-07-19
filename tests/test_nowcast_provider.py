@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -124,6 +125,7 @@ def provider_for(
     freshness_seconds: int = 5400,
     cache_ttl_seconds: int = 0,
     request_log_path: Path | None = None,
+    wunderground_api_key: str = "",
     clock=None,
 ):
     calls = []
@@ -137,9 +139,462 @@ def provider_for(
         freshness_seconds=freshness_seconds,
         cache_ttl_seconds=cache_ttl_seconds,
         request_log_path=request_log_path,
+        wunderground_api_key=wunderground_api_key,
         **({"clock": clock} if clock is not None else {}),
     )
     return provider, calls
+
+
+def wunderground_provider_for(
+    payload,
+    *,
+    cache_ttl_seconds: int = 0,
+    request_log_path: Path | None = None,
+    clock=None,
+):
+    return provider_for(
+        payload,
+        cache_ttl_seconds=cache_ttl_seconds,
+        request_log_path=request_log_path,
+        wunderground_api_key="test-wu-key",
+        clock=clock,
+    )
+
+
+def test_wunderground_history_direct_recomputes_metric_extremes_and_same_time_correction():
+    first_at = datetime(2026, 7, 19, 0, 0, tzinfo=timezone.utc)
+    corrected_at = datetime(2026, 7, 19, 1, 0, tzinfo=timezone.utc)
+    dropped_at = datetime(2026, 7, 19, 2, 0, tzinfo=timezone.utc)
+    payload = {
+        "metadata": {"units": "m"},
+        "observations": [
+            {"obs_id": "RKSI", "valid_time_gmt": int(first_at.timestamp()), "temp": 27},
+            {"obs_id": "RKSI", "valid_time_gmt": int(corrected_at.timestamp()), "temp": 29},
+            # Weather Underground can correct a row without changing its timestamp.
+            {"obs_id": "RKSI", "valid_time_gmt": int(corrected_at.timestamp()), "temp": 28},
+            {"obs_id": "RKSI", "valid_time_gmt": int(dropped_at.timestamp()), "temp": 26},
+        ],
+    }
+    provider, calls = wunderground_provider_for(payload)
+
+    observation = provider.observed_temperature_extremes_so_far(
+        STATION_MAP["seoul"],
+        target_date=date(2026, 7, 19),
+        now=datetime(2026, 7, 19, 3, 0, tzinfo=timezone.utc),
+    )
+
+    assert observation.usable is True
+    assert observation.source == "wunderground-history-direct"
+    assert observation.observed_high_c == pytest.approx(28.0)
+    assert observation.observed_low_c == pytest.approx(26.0)
+    assert observation.high_observed_at == corrected_at
+    assert observation.high_drop_observed_at == dropped_at
+    assert observation.raw_observation_count == 3
+    assert observation.daily_extremes_complete is True
+    assert len(calls) == 1
+    assert calls[0]["url"] == (
+        f"https://api.weather.com/v1/geocode/{STATION_MAP['seoul'].latitude}/"
+        f"{STATION_MAP['seoul'].longitude}/observations/historical.json"
+    )
+    assert calls[0]["params"] == {
+        "apiKey": "test-wu-key",
+        "startDate": "20260719",
+        "endDate": "20260719",
+        "units": "m",
+    }
+    assert "test-wu-key" not in observation.source_url
+
+
+def test_wunderground_history_direct_converts_fahrenheit_payload_to_celsius():
+    first_at = datetime(2026, 7, 19, 18, 0, tzinfo=timezone.utc)
+    latest_at = datetime(2026, 7, 19, 19, 0, tzinfo=timezone.utc)
+    provider, calls = wunderground_provider_for(
+        {
+            "metadata": {"units": "e"},
+            "observations": [
+                {"obs_id": "KAUS", "valid_time_gmt": int(first_at.timestamp()), "temp": 68},
+                {"obs_id": "KAUS", "valid_time_gmt": int(latest_at.timestamp()), "temp": 77},
+            ],
+        }
+    )
+
+    observation = provider.observed_temperature_extremes_so_far(
+        STATION_MAP["austin"],
+        target_date=date(2026, 7, 19),
+        now=datetime(2026, 7, 19, 20, 0, tzinfo=timezone.utc),
+    )
+
+    assert observation.usable is True
+    assert observation.observed_high_c == pytest.approx(25.0)
+    assert observation.observed_low_c == pytest.approx(20.0)
+    assert observation.latest_temp_c == pytest.approx(25.0)
+    assert calls[0]["params"]["units"] == "e"
+
+
+def test_wunderground_history_direct_preserves_fahrenheit_exact_boundaries():
+    first_at = datetime(2026, 7, 19, 18, 0, tzinfo=timezone.utc)
+    latest_at = datetime(2026, 7, 19, 19, 0, tzinfo=timezone.utc)
+    provider, _calls = wunderground_provider_for(
+        {
+            "metadata": {"units": "e"},
+            "observations": [
+                {"obs_id": "KAUS", "valid_time_gmt": int(first_at.timestamp()), "temp": 70},
+                {"obs_id": "KAUS", "valid_time_gmt": int(latest_at.timestamp()), "temp": 74},
+            ],
+        }
+    )
+
+    observation = provider.observed_temperature_extremes_so_far(
+        STATION_MAP["austin"],
+        target_date=date(2026, 7, 19),
+        now=datetime(2026, 7, 19, 20, 0, tzinfo=timezone.utc),
+    )
+
+    assert observation.observed_low_c * 9.0 / 5.0 + 32.0 == pytest.approx(70.0, abs=1e-9)
+    assert observation.observed_high_c * 9.0 / 5.0 + 32.0 == pytest.approx(74.0, abs=1e-9)
+
+
+def test_wunderground_history_learns_cadence_from_first_valid_gap():
+    first_at = datetime(2026, 7, 19, 0, 0, tzinfo=timezone.utc)
+    latest_at = first_at + timedelta(minutes=30)
+    provider, _calls = wunderground_provider_for(
+        {
+            "metadata": {"units": "m"},
+            "observations": [
+                {"obs_id": "RKSI", "valid_time_gmt": int(first_at.timestamp()), "temp": 27},
+                {"obs_id": "RKSI", "valid_time_gmt": int(latest_at.timestamp()), "temp": 28},
+            ],
+        }
+    )
+
+    observation = provider.observed_temperature_extremes_so_far(
+        STATION_MAP["seoul"],
+        target_date=date(2026, 7, 19),
+        now=latest_at + timedelta(minutes=1),
+    )
+
+    assert observation.learned_observation_interval_seconds == 30 * 60
+    assert observation.next_observation_due_at == latest_at + timedelta(minutes=30)
+
+
+@pytest.mark.parametrize("metadata", [None, {}, {"units": ""}])
+def test_wunderground_history_direct_requires_confirmed_response_units(metadata):
+    observed_at = datetime(2026, 7, 19, 1, 0, tzinfo=timezone.utc)
+    payload = {
+        "observations": [
+            {"obs_id": "RKSI", "valid_time_gmt": int(observed_at.timestamp()), "temp": 28},
+        ]
+    }
+    if metadata is not None:
+        payload["metadata"] = metadata
+    provider, _calls = wunderground_provider_for(payload)
+
+    observation = provider.observed_temperature_extremes_so_far(
+        STATION_MAP["seoul"],
+        target_date=date(2026, 7, 19),
+        now=datetime(2026, 7, 19, 2, 0, tzinfo=timezone.utc),
+    )
+
+    assert observation.usable is False
+    assert observation.unavailable_reason == "wunderground-units-missing"
+
+
+@pytest.mark.parametrize("temperature", [-999, 999])
+def test_wunderground_history_direct_rejects_physical_temperature_outliers(temperature):
+    observed_at = datetime(2026, 7, 19, 1, 0, tzinfo=timezone.utc)
+    provider, _calls = wunderground_provider_for(
+        {
+            "metadata": {"units": "m"},
+            "observations": [
+                {"obs_id": "RKSI", "valid_time_gmt": int(observed_at.timestamp()), "temp": temperature},
+            ],
+        }
+    )
+
+    observation = provider.observed_temperature_extremes_so_far(
+        STATION_MAP["seoul"],
+        target_date=date(2026, 7, 19),
+        now=datetime(2026, 7, 19, 2, 0, tzinfo=timezone.utc),
+    )
+
+    assert observation.usable is False
+    assert observation.unavailable_reason == "wunderground-temperature-out-of-range"
+
+
+def test_wunderground_history_accepts_observation_published_during_request():
+    requested_at = datetime(2026, 7, 19, 0, 59, 59, tzinfo=timezone.utc)
+    observed_at = requested_at + timedelta(seconds=1)
+    received_at = requested_at + timedelta(seconds=2)
+    clock_values = iter((requested_at, received_at, received_at))
+    provider, _calls = wunderground_provider_for(
+        {
+            "metadata": {"units": "m"},
+            "observations": [
+                {"obs_id": "RKSI", "valid_time_gmt": int(observed_at.timestamp()), "temp": 28},
+            ],
+        },
+        clock=lambda: next(clock_values),
+    )
+
+    observation = provider.observed_temperature_extremes_so_far(
+        STATION_MAP["seoul"],
+        target_date=date(2026, 7, 19),
+        now=requested_at,
+    )
+
+    assert observation.usable is True
+    assert observation.observed_at == observed_at
+
+
+def test_wunderground_history_direct_fails_closed_on_any_station_mismatch():
+    observed_at = datetime(2026, 7, 19, 1, 0, tzinfo=timezone.utc)
+    provider, _calls = wunderground_provider_for(
+        {
+            "metadata": {"units": "m"},
+            "observations": [
+                {"obs_id": "RKSI", "valid_time_gmt": int(observed_at.timestamp()), "temp": 28},
+                {"obs_id": "RKPK", "valid_time_gmt": int(observed_at.timestamp()), "temp": 29},
+            ],
+        }
+    )
+
+    observation = provider.observed_temperature_extremes_so_far(
+        STATION_MAP["seoul"],
+        target_date=date(2026, 7, 19),
+        now=datetime(2026, 7, 19, 2, 0, tzinfo=timezone.utc),
+    )
+
+    assert observation.usable is False
+    assert observation.unavailable_reason == "wunderground-observation-station-mismatch"
+    assert observation.source == "wunderground-history-direct"
+
+
+def test_wunderground_history_direct_refreshes_different_stations_in_parallel():
+    barrier = threading.Barrier(2)
+    counter_lock = threading.Lock()
+    active = 0
+    max_active = 0
+    observed_at = datetime(2026, 7, 19, 11, 30, tzinfo=timezone.utc)
+
+    def fake_get(_url, *, params, timeout, headers):
+        nonlocal active, max_active
+        del timeout, headers
+        with counter_lock:
+            active += 1
+            max_active = max(max_active, active)
+        try:
+            barrier.wait(timeout=2)
+            station_id, temp = ("RKSI", 28) if params["units"] == "m" else ("KAUS", 68)
+            return FakeResponse(
+                {
+                    "metadata": {"units": params["units"]},
+                    "observations": [
+                        {
+                            "obs_id": station_id,
+                            "valid_time_gmt": int(observed_at.timestamp()),
+                            "temp": temp,
+                        }
+                    ],
+                }
+            )
+        finally:
+            with counter_lock:
+                active -= 1
+
+    provider = AviationWeatherMetarNowcastProvider(
+        http_get=fake_get,
+        cache_ttl_seconds=60,
+        wunderground_api_key="test-wu-key",
+    )
+    now = datetime(2026, 7, 19, 12, 0, tzinfo=timezone.utc)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [
+            pool.submit(
+                provider.observed_temperature_extremes_so_far,
+                station,
+                target_date=date(2026, 7, 19),
+                now=now,
+            )
+            for station in (STATION_MAP["seoul"], STATION_MAP["austin"])
+        ]
+        observations = [future.result(timeout=3) for future in futures]
+
+    assert provider.supports_parallel_station_refresh is True
+    assert all(observation.usable for observation in observations)
+    assert max_active == 2
+
+
+def test_wunderground_entry_refresh_discards_only_selected_station_cache(tmp_path):
+    calls: list[str] = []
+    observed_at = datetime(2026, 7, 19, 11, 0, tzinfo=timezone.utc)
+
+    def fake_get(url, *, params, timeout, headers):
+        del timeout, headers
+        station_id = "RKSI" if params["units"] == "m" else "KAUS"
+        calls.append(station_id)
+        return FakeResponse(
+            {
+                "metadata": {"units": params["units"]},
+                "observations": [
+                    {
+                        "obs_id": station_id,
+                        "valid_time_gmt": int(observed_at.timestamp()),
+                        "temp": 28 if station_id == "RKSI" else 68,
+                    }
+                ],
+            }
+        )
+
+    request_log_path = tmp_path / "wu-requests.jsonl"
+    provider = AviationWeatherMetarNowcastProvider(
+        http_get=fake_get,
+        cache_ttl_seconds=900,
+        request_log_path=request_log_path,
+        wunderground_api_key="test-wu-key",
+        clock=lambda: datetime(2026, 7, 19, 2, 0, tzinfo=timezone.utc),
+    )
+    now = datetime(2026, 7, 19, 12, 0, tzinfo=timezone.utc)
+    for station in (STATION_MAP["seoul"], STATION_MAP["austin"]):
+        provider.observed_temperature_extremes_so_far(
+            station,
+            target_date=date(2026, 7, 19),
+            now=now,
+        )
+
+    provider.discard_cached_observations_before_entry(now=now, station_ids={"RKSI"})
+    for station in (STATION_MAP["seoul"], STATION_MAP["austin"]):
+        provider.observed_temperature_extremes_so_far(
+            station,
+            target_date=date(2026, 7, 19),
+            now=now,
+        )
+
+    assert calls == ["RKSI", "KAUS", "RKSI"]
+    assert provider.request_log_health()["status"] == "ok"
+    log_text = request_log_path.read_text(encoding="utf-8")
+    assert "wunderground-history-direct" in log_text
+    assert "test-wu-key" not in log_text
+
+
+def test_wunderground_cache_polls_every_five_seconds_only_near_learned_due_time():
+    latest_at = datetime(2026, 7, 18, 16, 0, tzinfo=timezone.utc)
+    next_due_at = latest_at + timedelta(minutes=30)
+    current = [next_due_at - timedelta(seconds=20)]
+    payload = {
+        "metadata": {"units": "m"},
+        "observations": [
+            {
+                "obs_id": "RKSI",
+                "valid_time_gmt": int((latest_at - timedelta(hours=1)).timestamp()),
+                "temp": 25,
+            },
+            {
+                "obs_id": "RKSI",
+                "valid_time_gmt": int((latest_at - timedelta(minutes=30)).timestamp()),
+                "temp": 26,
+            },
+            {
+                "obs_id": "RKSI",
+                "valid_time_gmt": int(latest_at.timestamp()),
+                "temp": 27,
+            },
+        ],
+    }
+    provider, calls = wunderground_provider_for(
+        payload,
+        cache_ttl_seconds=60,
+        clock=lambda: current[0],
+    )
+
+    def observe(at: datetime):
+        current[0] = at
+        return provider.observed_temperature_extremes_so_far(
+            STATION_MAP["seoul"],
+            target_date=date(2026, 7, 19),
+            now=at,
+        )
+
+    initial = observe(current[0])
+    assert initial.next_observation_due_at == next_due_at
+    observe(next_due_at - timedelta(seconds=10))
+    assert len(calls) == 1
+
+    observe(next_due_at - timedelta(seconds=4))
+    assert len(calls) == 2
+    observe(next_due_at + timedelta(seconds=1))
+    assert len(calls) == 3
+    observe(next_due_at + timedelta(seconds=2))
+    assert len(calls) == 3
+    observe(next_due_at + timedelta(seconds=5))
+    assert len(calls) == 3
+    observe(next_due_at + timedelta(seconds=8))
+    assert len(calls) == 4
+
+    observe(next_due_at + timedelta(minutes=9, seconds=58))
+    assert len(calls) == 5
+    observe(next_due_at + timedelta(minutes=10, seconds=5))
+    assert len(calls) == 5
+
+
+@pytest.mark.parametrize("failure_mode", ["429", "network"])
+def test_wunderground_due_poll_backs_off_after_http_or_network_error(failure_mode):
+    latest_at = datetime(2026, 7, 18, 16, 0, tzinfo=timezone.utc)
+    next_due_at = latest_at + timedelta(minutes=30)
+    current = [next_due_at - timedelta(seconds=20)]
+    payload = {
+        "metadata": {"units": "m"},
+        "observations": [
+            {
+                "obs_id": "RKSI",
+                "valid_time_gmt": int((latest_at - timedelta(hours=1)).timestamp()),
+                "temp": 25,
+            },
+            {
+                "obs_id": "RKSI",
+                "valid_time_gmt": int((latest_at - timedelta(minutes=30)).timestamp()),
+                "temp": 26,
+            },
+            {
+                "obs_id": "RKSI",
+                "valid_time_gmt": int(latest_at.timestamp()),
+                "temp": 27,
+            },
+        ],
+    }
+    calls: list[datetime] = []
+
+    def fake_get(_url, *, params, timeout, headers):
+        del params, timeout, headers
+        calls.append(current[0])
+        if len(calls) == 2:
+            if failure_mode == "429":
+                return FakeResponse({}, status_code=429)
+            raise TimeoutError("provider timed out")
+        return FakeResponse(payload)
+
+    provider = AviationWeatherMetarNowcastProvider(
+        http_get=fake_get,
+        cache_ttl_seconds=60,
+        wunderground_api_key="test-wu-key",
+        clock=lambda: current[0],
+    )
+
+    def observe(at: datetime):
+        current[0] = at
+        return provider.observed_temperature_extremes_so_far(
+            STATION_MAP["seoul"],
+            target_date=date(2026, 7, 19),
+            now=at,
+        )
+
+    assert observe(current[0]).usable is True
+    assert observe(next_due_at + timedelta(seconds=1)).usable is False
+    assert len(calls) == 2
+
+    assert observe(next_due_at + timedelta(seconds=7)).usable is False
+    assert len(calls) == 2
+    assert observe(next_due_at + timedelta(seconds=62)).usable is True
+    assert len(calls) == 3
 
 
 def metar_sequence_provider(payloads: list[list[dict[str, object]]], *, state_path: Path):

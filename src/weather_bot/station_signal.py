@@ -100,10 +100,10 @@ def _hours_until_event_end(target: date, timezone_name: str, now: datetime | Non
     return (_event_end_utc(target, timezone_name) - current.astimezone(timezone.utc)).total_seconds() / 3600.0
 
 
-def _whole_celsius_exact_bucket(parsed: ParsedWeatherQuestion) -> int | None:
+def _whole_exact_bucket(parsed: ParsedWeatherQuestion) -> int | None:
     if parsed.variable != "temperature":
         return None
-    if parsed.temperature_bucket != "exact" or parsed.threshold_unit != "C":
+    if parsed.temperature_bucket != "exact" or parsed.threshold_unit not in {"C", "F"}:
         return None
     if parsed.threshold_original is None:
         return None
@@ -124,55 +124,60 @@ def _official_station_exact_lock(
 ) -> _OfficialStationLock | None:
     if not settings.official_nowcast_lock_enabled or observed_value_c is None:
         return None
+    observed_value = _observed_value_in_source_unit(observed_value_c, parsed.threshold_unit)
+    if observed_value is None:
+        return None
+    unit_label = parsed.threshold_unit.lower()
     if (
-        parsed.temperature_metric == "max"
+        settings.strategy_mode != "lock_only"
+        and parsed.temperature_metric == "max"
         and parsed.temperature_bucket == "lower_tail"
-        and parsed.threshold_unit == "C"
+        and parsed.threshold_unit in {"C", "F"}
         and parsed.threshold_original is not None
     ):
-        upper_c = float(parsed.threshold_original)
-        if observed_value_c > upper_c:
+        upper = float(parsed.threshold_original)
+        if observed_value > upper + 1e-9:
             return _OfficialStationLock(
                 p_true=0.0,
                 lock_name="strong_no",
                 adjustment="official-lock-observed-high-above-lower-tail-threshold",
                 entry_fraction=settings.official_nowcast_lock_strong_entry_fraction,
                 size_reason=(
-                    f"official_nowcast_lock=strong_no; observed_high_c={observed_value_c:.1f} "
-                    f"> lower_tail_upper_c={upper_c:.1f}"
+                    f"official_nowcast_lock=strong_no; observed_high_{unit_label}={observed_value:.1f} "
+                    f"> lower_tail_upper_{unit_label}={upper:.1f}"
                 ),
             )
         return None
 
-    bucket_c = _whole_celsius_exact_bucket(parsed)
-    if bucket_c is None:
+    bucket = _whole_exact_bucket(parsed)
+    if bucket is None:
         return None
 
-    lower_c = float(bucket_c)
-    upper_c = float(bucket_c + 1)
+    lower = float(bucket)
+    upper = float(bucket + 1)
     if parsed.temperature_metric == "min":
-        if observed_value_c < lower_c:
+        if observed_value < lower - 1e-9:
             return _OfficialStationLock(
                 p_true=0.0,
                 lock_name="strong_no",
                 adjustment="official-lock-observed-low-below-source-display-integer",
                 entry_fraction=settings.official_nowcast_lock_strong_entry_fraction,
                 size_reason=(
-                    f"official_nowcast_lock=strong_no; observed_low_c={observed_value_c:.1f} "
-                    f"< displayed_bucket_lower_c={lower_c:.1f}"
+                    f"official_nowcast_lock=strong_no; observed_low_{unit_label}={observed_value:.1f} "
+                    f"< displayed_bucket_lower_{unit_label}={lower:.1f}"
                 ),
             )
         return None
 
-    if observed_value_c >= upper_c:
+    if observed_value >= upper - 1e-9:
         return _OfficialStationLock(
             p_true=0.0,
             lock_name="strong_no",
             adjustment="official-lock-observed-high-reached-next-source-display-integer",
             entry_fraction=settings.official_nowcast_lock_strong_entry_fraction,
             size_reason=(
-                f"official_nowcast_lock=strong_no; observed_high_c={observed_value_c:.1f} "
-                f">= next_displayed_integer_c={upper_c:.1f}"
+                f"official_nowcast_lock=strong_no; observed_high_{unit_label}={observed_value:.1f} "
+                f">= next_displayed_integer_{unit_label}={upper:.1f}"
             ),
         )
     return None
