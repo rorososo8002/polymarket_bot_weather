@@ -8,6 +8,7 @@ import inspect
 import json
 from datetime import date, datetime, timedelta, timezone
 import math
+from queue import Empty, SimpleQueue
 import threading
 import time
 from typing import Any, Callable
@@ -78,6 +79,7 @@ NO_ONLY_NEW_ENTRY_REASON = (
     "SKIP_NO_ONLY_NEW_ENTRY: 신규 YES 진입 중단 정책; 기존 YES 포지션 청산은 계속 허용"
 )
 _station_refresh_probe_cursor = 0
+_station_observation_refresh_cursor = 0
 
 
 def _utc_datetime(value: datetime) -> datetime:
@@ -1074,6 +1076,7 @@ def _station_observation_state_key(observation: Any) -> tuple[Any, ...]:
         str(getattr(observation, "observation_due_status", "") or ""),
         bool(getattr(observation, "daily_extremes_complete", True)),
         str(getattr(observation, "midnight_reset_status", "") or ""),
+        str(getattr(observation, "fast_shadow_state_key", "") or ""),
     )
 
 
@@ -1243,13 +1246,29 @@ def _enqueue_station_refresh_high_exact_no_probes(
     markets: list[RawMarket],
     signal_refreshed_at_by_market: dict[str, datetime] | None,
     *,
+    pending_signal_invalidations: SimpleQueue[str] | None = None,
     station_ids: set[str] | None = None,
 ) -> int:
     token_ids, market_ids_to_expire = _station_refresh_high_exact_no_probe_tokens(markets, station_ids=station_ids)
-    if signal_refreshed_at_by_market is not None:
+    if pending_signal_invalidations is not None:
+        for market_id in market_ids_to_expire:
+            pending_signal_invalidations.put(market_id)
+    elif signal_refreshed_at_by_market is not None:
         for market_id in market_ids_to_expire:
             signal_refreshed_at_by_market.pop(market_id, None)
     return _enqueue_realtime_update(evaluator_worker, token_ids, urgent=True)
+
+
+def _drain_pending_signal_invalidations(
+    pending_signal_invalidations: SimpleQueue[str],
+    signal_refreshed_at_by_market: dict[str, datetime],
+) -> None:
+    while True:
+        try:
+            market_id = pending_signal_invalidations.get_nowait()
+        except Empty:
+            return
+        signal_refreshed_at_by_market.pop(market_id, None)
 
 
 def position_size_usd(
@@ -3575,6 +3594,59 @@ def _record_realtime_prefilter_skip(
     broker.log_decision(market, result, signal.note, market_type, signal=signal)
 
 
+def _record_fast_shadow_order_book_probes(
+    broker: PaperBroker,
+    markets: list[RawMarket],
+    signals_by_market: dict[str, WeatherSignal],
+    candidate_book: Callable[[str], OrderBook] | None,
+    fast_shadow_book_state_by_market: dict[str, str] | None,
+) -> None:
+    if candidate_book is None or fast_shadow_book_state_by_market is None:
+        return
+    for market in markets:
+        signal = signals_by_market.get(market.market_id)
+        nowcast = signal.nowcast if signal is not None and isinstance(signal.nowcast, dict) else {}
+        state_key = str(nowcast.get("fast_shadow_state_key") or "")
+        if (
+            not state_key
+            or str(nowcast.get("fast_shadow_match_status") or "") != "pending"
+            or not market.no_token_id
+            or fast_shadow_book_state_by_market.get(market.market_id) == state_key
+        ):
+            continue
+        try:
+            book = candidate_book(str(market.no_token_id))
+        except Exception:  # noqa: BLE001
+            continue
+        fast_shadow_book_state_by_market[market.market_id] = state_key
+        broker.log_raw_snapshot(
+            "wunderground_fast_shadow_book",
+            market,
+            {
+                "trade_evidence": False,
+                "fast_shadow_state_key": state_key,
+                "fast_shadow_match_status": "pending",
+                "fast_shadow_first_seen_at": nowcast.get("fast_shadow_first_seen_at"),
+                "fast_shadow_observed_at": nowcast.get("fast_shadow_observed_at"),
+                "fast_shadow_temp_c": nowcast.get("fast_shadow_temp_c"),
+                "no_order_book": {
+                    "token_id": book.token_id,
+                    "timestamp": book.timestamp,
+                    "best_bid": book.best_bid,
+                    "best_ask": book.best_ask,
+                    "bids_top5": [
+                        {"price": level.price, "size": level.size}
+                        for level in book.bids[:5]
+                    ],
+                    "asks_top5": [
+                        {"price": level.price, "size": level.size}
+                        for level in book.asks[:5]
+                    ],
+                },
+            },
+        )
+
+
 def _evaluate_realtime_update(
     updated_token_ids: set[str],
     client: StreamBackedPolymarketClient,
@@ -3592,6 +3664,7 @@ def _evaluate_realtime_update(
     now: datetime | None = None,
     wake_when_book_returns: set[str] | None = None,
     prefilter_skip_state_by_market: dict[str, str] | None = None,
+    fast_shadow_book_state_by_market: dict[str, str] | None = None,
 ) -> dict[str, object]:
     evaluation_started_at = time.monotonic()
     current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
@@ -3731,6 +3804,13 @@ def _evaluate_realtime_update(
         now=current,
     )
     signal_prefetch_duration_seconds = time.monotonic() - signal_prefetch_started_at
+    _record_fast_shadow_order_book_probes(
+        broker,
+        markets_ready_for_evaluation,
+        signals_by_market,
+        candidate_book if callable(candidate_book) else None,
+        fast_shadow_book_state_by_market,
+    )
     signal_ineligible_reasons: dict[str, str] = {}
     for market in markets_ready_for_evaluation:
         if (
@@ -4119,9 +4199,24 @@ def _refresh_official_station_observations(
     now: datetime,
     station_state_by_id: dict[str, tuple[Any, ...]] | None = None,
     on_shared_metar_refreshed: Callable[[set[str]], None] | None = None,
+    station_ids: set[str] | None = None,
 ) -> set[str]:
+    global _station_observation_refresh_cursor
     current = _utc_datetime(now)
-    stations = list(TRADING_READY_STATION_MAP.values())
+    allowed_station_ids = (
+        None
+        if station_ids is None
+        else {str(station_id).upper() for station_id in station_ids}
+    )
+    stations = [
+        station
+        for station in TRADING_READY_STATION_MAP.values()
+        if allowed_station_ids is None or station.station_id.upper() in allowed_station_ids
+    ]
+    if stations:
+        offset = _station_observation_refresh_cursor % len(stations)
+        stations = stations[offset:] + stations[:offset]
+        _station_observation_refresh_cursor = (offset + 1) % len(stations)
 
     def refresh(
         group: list[Any],
@@ -4389,6 +4484,15 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
                 broker,
                 now=datetime.now(timezone.utc),
             )
+            station_ids_for_refresh: set[str] = set()
+            for market in stream_markets:
+                try:
+                    parsed = parse_weather_question(market.question)
+                except Exception:  # noqa: BLE001
+                    continue
+                station_id = _market_station_id(market, parsed)
+                if station_id:
+                    station_ids_for_refresh.add(station_id)
             for market in stream_markets:
                 market_by_id[market.market_id] = market
             coverage = _discovery_coverage(stream_markets)
@@ -4417,6 +4521,7 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
                 market_types[market.market_id] = "temperature"
             latest_edges: dict[tuple[str, str], EdgeResult] = {}
             update_lock = threading.RLock()
+            pending_signal_invalidations: SimpleQueue[str] = SimpleQueue()
             stream_holder: dict[str, StreamBackedPolymarketClient] = {}
             latest_realtime_evaluation: dict[str, object] | None = None
             latest_official_station_refresh: dict[str, object] | None = None
@@ -4429,6 +4534,7 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
             )
             wake_when_book_returns: set[str] = set()
             prefilter_skip_state_by_market: dict[str, str] = {}
+            fast_shadow_book_state_by_market: dict[str, str] = {}
             event_priorities = _realtime_event_priorities(
                 list(market_by_id.values()),
                 open_market_ids=open_market_ids,
@@ -4438,6 +4544,10 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
             def evaluate_queued_update(updated_token_ids: set[str]) -> None:
                 nonlocal latest_realtime_evaluation, price_watch_token_ids
                 with update_lock, broker.batch_skip_diagnostics():
+                    _drain_pending_signal_invalidations(
+                        pending_signal_invalidations,
+                        signal_refreshed_at_by_market,
+                    )
                     stream_client = stream_holder.get("client")
                     if stream_client is not None:
                         latest_realtime_evaluation = _evaluate_realtime_update(
@@ -4454,6 +4564,7 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
                             residual_profile_store=residual_profile_store,
                             wake_when_book_returns=wake_when_book_returns,
                             prefilter_skip_state_by_market=prefilter_skip_state_by_market,
+                            fast_shadow_book_state_by_market=fast_shadow_book_state_by_market,
                         )
                         price_watch_token_ids = _realtime_price_watch_token_ids(
                             stream_markets,
@@ -4578,35 +4689,41 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
                                 time.monotonic() - station_refresh_started_at,
                                 3,
                             )
-                            with update_lock:
-                                _enqueue_official_station_refresh_updates(
-                                    evaluator_worker,
-                                    stream_markets,
-                                    signals_by_market,
-                                    timer_bucket_by_market,
-                                    signal_refreshed_at_by_market,
-                                    station_ids=changed_ids,
-                                    now=now,
-                                )
+                            _enqueue_station_refresh_high_exact_no_probes(
+                                evaluator_worker,
+                                stream_markets,
+                                signal_refreshed_at_by_market,
+                                pending_signal_invalidations=pending_signal_invalidations,
+                                station_ids=changed_ids,
+                            )
 
                         changed_station_ids = _refresh_official_station_observations(
                             observation_provider,
                             now=now,
                             station_state_by_id=station_state_by_id,
                             on_shared_metar_refreshed=release_shared_metar_changes,
+                            station_ids=station_ids_for_refresh,
                         )
                         station_refresh_duration_seconds = round(
                             time.monotonic() - station_refresh_started_at,
                             3,
                         )
+                        _enqueue_station_refresh_high_exact_no_probes(
+                            evaluator_worker,
+                            stream_markets,
+                            signal_refreshed_at_by_market,
+                            pending_signal_invalidations=pending_signal_invalidations,
+                            station_ids=(changed_station_ids - metar_changed_station_ids),
+                        )
                         with update_lock:
-                            _enqueue_station_refresh_high_exact_no_probes(
+                            _enqueue_official_station_refresh_updates(
                                 evaluator_worker,
                                 stream_markets,
+                                signals_by_market,
+                                timer_bucket_by_market,
                                 signal_refreshed_at_by_market,
-                                station_ids=(
-                                    changed_station_ids - metar_changed_station_ids
-                                ),
+                                station_ids=set(),
+                                now=now,
                             )
                         latest_official_station_refresh = {
                             "duration_seconds": station_refresh_duration_seconds,

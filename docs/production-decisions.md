@@ -29,6 +29,10 @@ notes only when they prevent a repeated mistake.
 - AWC/KMA METAR can remain useful monitoring evidence in non-production
   experiment modes, but it is not called 100% settlement evidence for a
   Wunderground market and cannot open a production `lock_only` position.
+- The Weather Company site-based time-series feed is also research-only. It
+  may wake an immediate daily-history recheck and capture the contemporaneous
+  order book, but it cannot authorize an entry until daily history matches the
+  settlement station, local date, observation time, temperature, and units.
 - Korean domestic METAR:
   - Seoul RKSI and Busan RKPK use the KMA direct METAR API first when
     `KMA_METAR_SERVICE_KEY` is configured. Check for newly published reports

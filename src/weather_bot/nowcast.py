@@ -8,6 +8,7 @@ import json
 import os
 import threading
 import uuid
+from collections import deque
 from contextlib import ExitStack
 from dataclasses import dataclass, replace
 from datetime import date, datetime, time, timedelta, timezone
@@ -23,6 +24,7 @@ AVIATIONWEATHER_METAR_SOURCE_URL = "https://aviationweather.gov/api/data/metar"
 KMA_METAR_SOURCE_URL = "https://apis.data.go.kr/1360000/AmmService/getMetar"
 HKO_MAXMIN_SOURCE_URL = "https://data.weather.gov.hk/weatherAPI/hko_data/regional-weather/latest_since_midnight_maxmin.csv"
 WUNDERGROUND_HISTORY_GEOCODE_BASE_URL = "https://api.weather.com/v1/geocode"
+WUNDERGROUND_TIMESERIES_GEOCODE_BASE_URL = "https://api.weather.com/v1/geocode"
 SEOUL_SETTLEMENT_SOURCE_URL = "https://www.wunderground.com/history/daily/kr/incheon/RKSI"
 AWC_METAR_UPDATE_CADENCE = (
     "Aviation Weather Center METAR API requests are floored at one real request per minute; "
@@ -37,6 +39,10 @@ WUNDERGROUND_HISTORY_UPDATE_CADENCE = (
 WUNDERGROUND_DUE_POLL_INTERVAL_SECONDS = 5
 WUNDERGROUND_DUE_POLL_WINDOW_SECONDS = 10 * 60
 WUNDERGROUND_ERROR_BACKOFF_SECONDS = 60
+WUNDERGROUND_FAST_RATE_LIMIT_BACKOFF_SECONDS = 15 * 60
+WUNDERGROUND_REQUEST_LIMIT_PER_MINUTE = 90
+WUNDERGROUND_FAST_REQUEST_LIMIT_PER_MINUTE = 30
+WUNDERGROUND_HISTORY_RESERVED_REQUESTS_PER_MINUTE = 10
 WUNDERGROUND_MIN_TEMPERATURE_C = -100.0
 WUNDERGROUND_MAX_TEMPERATURE_C = 70.0
 AWC_METAR_MIN_REAL_REQUEST_INTERVAL_SECONDS = 60
@@ -98,6 +104,16 @@ class StationNowcastObservation:
     source_latency_seconds: int | None = None
     source_latency_status: str = ""
     bot_detection_latency_seconds: int | None = None
+    # Research-only. These fields may wake a fresh daily-history check, but
+    # they are never settlement evidence and never replace the fields above.
+    fast_shadow_state_key: str = ""
+    fast_shadow_status: str = ""
+    fast_shadow_observed_at: datetime | None = None
+    fast_shadow_first_seen_at: datetime | None = None
+    fast_shadow_daily_first_seen_at: datetime | None = None
+    fast_shadow_temp_c: float | None = None
+    fast_shadow_match_status: str = ""
+    fast_shadow_lead_seconds: int | None = None
 
     @property
     def usable(self) -> bool:
@@ -161,6 +177,16 @@ class StationNowcastObservation:
             "source_latency_seconds": self.source_latency_seconds,
             "source_latency_status": self.source_latency_status,
             "bot_detection_latency_seconds": self.bot_detection_latency_seconds,
+            "fast_shadow_state_key": self.fast_shadow_state_key,
+            "fast_shadow_status": self.fast_shadow_status,
+            "fast_shadow_observed_at": _iso_or_empty(self.fast_shadow_observed_at),
+            "fast_shadow_first_seen_at": _iso_or_empty(self.fast_shadow_first_seen_at),
+            "fast_shadow_daily_first_seen_at": _iso_or_empty(
+                self.fast_shadow_daily_first_seen_at
+            ),
+            "fast_shadow_temp_c": self.fast_shadow_temp_c,
+            "fast_shadow_match_status": self.fast_shadow_match_status,
+            "fast_shadow_lead_seconds": self.fast_shadow_lead_seconds,
         }
 
 
@@ -181,6 +207,30 @@ class _KmaMetarFetch:
     requested_at: datetime
     received_at: datetime | None
     unavailable_reason: str = ""
+
+
+@dataclass
+class _WundergroundFastRow:
+    station_key: str
+    observed_at: datetime
+    native_temp: float
+    temp_c: float
+    units: str
+    first_seen_at: datetime
+    daily_history_first_seen_at: datetime | None = None
+    match_status: str = "pending"
+    match_logged: bool = False
+
+    @property
+    def state_key(self) -> str:
+        native = f"{self.native_temp:.6f}".rstrip("0").rstrip(".")
+        return f"{self.station_key}|{self.observed_at.isoformat()}|{native}|{self.units}"
+
+
+@dataclass(frozen=True)
+class _WundergroundFastPoll:
+    healthy: bool
+    new_observation: bool = False
 
 
 def _default_nowcast_sources() -> dict[str, StationNowcastSource]:
@@ -462,6 +512,7 @@ class AviationWeatherMetarNowcastProvider:
         kma_metar_timeout_seconds: float = 3.0,
         kma_metar_station_ids: set[str] | None = None,
         wunderground_api_key: str = "",
+        wunderground_fast_shadow_enabled: bool = False,
         clock: Callable[[], datetime] = _utc_now,
     ) -> None:
         self.http_get = http_get
@@ -477,6 +528,9 @@ class AviationWeatherMetarNowcastProvider:
             if str(station_id).strip()
         }
         self.wunderground_api_key = str(wunderground_api_key or "").strip()
+        self.wunderground_fast_shadow_enabled = bool(
+            wunderground_fast_shadow_enabled and self.wunderground_api_key
+        )
         self.supports_parallel_station_refresh = bool(self.wunderground_api_key)
         configured_cache_ttl = max(0, int(cache_ttl_seconds))
         self.cache_ttl_seconds = (
@@ -502,6 +556,23 @@ class AviationWeatherMetarNowcastProvider:
         self._hko_observation_lock = threading.RLock()
         self._wunderground_station_locks: dict[str, threading.RLock] = {}
         self._wunderground_station_locks_guard = threading.RLock()
+        self._wunderground_fast_latest: dict[tuple[str, str], _WundergroundFastRow] = {}
+        self._wunderground_history_first_seen: dict[
+            tuple[str, str, datetime, float, str], datetime
+        ] = {}
+        self._wunderground_fast_last_polled_at: dict[str, datetime] = {}
+        self._wunderground_fast_last_healthy: dict[str, bool] = {}
+        self._wunderground_fast_cache_until: dict[str, datetime] = {}
+        self._wunderground_fast_unavailable_until: dict[str, datetime] = {}
+        self._wunderground_fast_blocked_station_ids: set[str] = set()
+        self._wunderground_fast_circuit_reason = ""
+        self._wunderground_fast_global_unavailable_until: datetime | None = None
+        self._wunderground_fast_global_unavailable_reason = ""
+        self._wunderground_fast_entitlement_confirmed = False
+        self._wunderground_fast_entitlement_lock = threading.Lock()
+        self._wunderground_request_times: deque[datetime] = deque()
+        self._wunderground_fast_request_times: deque[datetime] = deque()
+        self._wunderground_request_budget_lock = threading.Lock()
         self._request_log_lock = threading.RLock()
         self._hko_rollover_state = self._load_hko_rollover_state()
         self._metar_daily_extremes_state = self._load_metar_daily_extremes_state()
@@ -534,6 +605,11 @@ class AviationWeatherMetarNowcastProvider:
                 if station_id.strip()
             },
             wunderground_api_key=getattr(settings, "wunderground_api_key", ""),
+            wunderground_fast_shadow_enabled=getattr(
+                settings,
+                "wunderground_fast_shadow_enabled",
+                False,
+            ),
         )
 
     def _load_metar_daily_extremes_state(self) -> dict[str, Any]:
@@ -999,7 +1075,25 @@ class AviationWeatherMetarNowcastProvider:
         cache_key = (station.station_id, target_date.isoformat())
         with self._cache_lock:
             cached = self._cache.get(cache_key)
+        stale_cached = cached
         cache_miss_reason = "empty-cache"
+        fast_poll = _WundergroundFastPoll(healthy=False)
+        if (
+            cached is not None
+            and cached[1].source == "wunderground-history-direct"
+            and self.wunderground_fast_shadow_enabled
+        ):
+            fast_poll = self._maybe_poll_wunderground_fast_shadow(
+                station,
+                target_date,
+                current,
+                cached[1],
+            )
+            if fast_poll.new_observation:
+                with self._cache_lock:
+                    self._cache.pop(cache_key, None)
+                cached = None
+                cache_miss_reason = "wunderground-fast-shadow-new-observation"
         provider_floor_seconds = self._source_min_real_request_interval_seconds(source)
         effective_cache_ttl_seconds = max(self.cache_ttl_seconds, provider_floor_seconds)
         if cached is not None and self.cache_ttl_seconds > 0:
@@ -1024,7 +1118,15 @@ class AviationWeatherMetarNowcastProvider:
                             WUNDERGROUND_DUE_POLL_INTERVAL_SECONDS,
                         )
             if (current - cached_at).total_seconds() < effective_cache_ttl_seconds:
-                return observation
+                enriched = self._with_wunderground_fast_shadow(
+                    observation,
+                    station,
+                    target_date,
+                )
+                if enriched is not observation:
+                    with self._cache_lock:
+                        self._cache[cache_key] = (cached_at, enriched)
+                return enriched
             cache_miss_reason = "expired-cache"
         elif cached is not None:
             cached_at, observation = cached
@@ -1059,9 +1161,596 @@ class AviationWeatherMetarNowcastProvider:
         else:
             observation = self._unavailable(station, "unsupported-nowcast-source", source)
 
+        if observation.unavailable_reason == "wunderground-request-budget-exhausted":
+            if stale_cached is None:
+                return observation
+            stale_at, stale_observation = stale_cached
+            stale_observation = self._with_wunderground_fast_shadow(
+                stale_observation,
+                station,
+                target_date,
+            )
+            with self._cache_lock:
+                self._cache[cache_key] = (stale_at, stale_observation)
+            return stale_observation
+
+        observation = self._with_wunderground_fast_shadow(
+            observation,
+            station,
+            target_date,
+        )
         with self._cache_lock:
             self._cache[cache_key] = (current, observation)
         return observation
+
+    def wunderground_fast_shadow_runtime_status(self) -> dict[str, Any]:
+        if self._wunderground_fast_circuit_reason:
+            return {
+                "enabled": False,
+                "status": "circuit_open",
+                "reason": self._wunderground_fast_circuit_reason,
+            }
+        if not self.wunderground_fast_shadow_enabled:
+            return {"enabled": False, "status": "disabled", "reason": "not-configured"}
+        if (
+            self._wunderground_fast_global_unavailable_until is not None
+            and _as_utc(self.clock()) < self._wunderground_fast_global_unavailable_until
+        ):
+            return {
+                "enabled": True,
+                "status": "backoff",
+                "reason": self._wunderground_fast_global_unavailable_reason,
+                "retry_at": _iso_or_empty(
+                    self._wunderground_fast_global_unavailable_until
+                ),
+            }
+        return {"enabled": True, "status": "available", "reason": ""}
+
+    def _reserve_wunderground_request(
+        self,
+        now: datetime,
+        *,
+        fast: bool = False,
+    ) -> bool:
+        current = _as_utc(now)
+        with self._wunderground_request_budget_lock:
+            minute_ago = current - timedelta(minutes=1)
+            while (
+                self._wunderground_request_times
+                and self._wunderground_request_times[0] <= minute_ago
+            ):
+                self._wunderground_request_times.popleft()
+            while (
+                self._wunderground_fast_request_times
+                and self._wunderground_fast_request_times[0] <= minute_ago
+            ):
+                self._wunderground_fast_request_times.popleft()
+            if len(self._wunderground_request_times) >= WUNDERGROUND_REQUEST_LIMIT_PER_MINUTE:
+                return False
+            if fast:
+                if (
+                    len(self._wunderground_fast_request_times)
+                    >= WUNDERGROUND_FAST_REQUEST_LIMIT_PER_MINUTE
+                    or len(self._wunderground_request_times)
+                    >= max(
+                        0,
+                        WUNDERGROUND_REQUEST_LIMIT_PER_MINUTE
+                        - WUNDERGROUND_HISTORY_RESERVED_REQUESTS_PER_MINUTE,
+                    )
+                ):
+                    return False
+            self._wunderground_request_times.append(current)
+            if fast:
+                self._wunderground_fast_request_times.append(current)
+            return True
+
+    def _wunderground_fast_shadow_source(
+        self,
+        station: StationMeta,
+        fallback_source: StationNowcastSource,
+    ) -> StationNowcastSource:
+        return StationNowcastSource(
+            station_id=station.station_id,
+            source="wunderground-timeseries-shadow",
+            source_url=(
+                f"{WUNDERGROUND_TIMESERIES_GEOCODE_BASE_URL}/{station.latitude}/"
+                f"{station.longitude}/observations/timeseries.json"
+            ),
+            settlement_source_url=fallback_source.settlement_source_url,
+            update_cadence="Research-only physical-station time-series near the learned report boundary.",
+            note="Shadow wake-up source only; daily history remains the trade gate.",
+        )
+
+    def _with_wunderground_fast_shadow(
+        self,
+        observation: StationNowcastObservation,
+        station: StationMeta,
+        target_date: date,
+    ) -> StationNowcastObservation:
+        if observation.source != "wunderground-history-direct":
+            return observation
+        row = self._wunderground_fast_latest.get(
+            (station.station_id.upper(), target_date.isoformat())
+        )
+        if row is None:
+            return observation
+        return replace(
+            observation,
+            fast_shadow_state_key=row.state_key,
+            fast_shadow_status="observation_seen",
+            fast_shadow_observed_at=row.observed_at,
+            fast_shadow_first_seen_at=row.first_seen_at,
+            fast_shadow_daily_first_seen_at=row.daily_history_first_seen_at,
+            fast_shadow_temp_c=round(row.temp_c, 3),
+            fast_shadow_match_status=row.match_status,
+            fast_shadow_lead_seconds=(
+                None
+                if row.daily_history_first_seen_at is None
+                or row.daily_history_first_seen_at < row.first_seen_at
+                else int(
+                    (
+                        row.daily_history_first_seen_at - row.first_seen_at
+                    ).total_seconds()
+                )
+            ),
+        )
+
+    def _maybe_poll_wunderground_fast_shadow(
+        self,
+        station: StationMeta,
+        target_date: date,
+        now: datetime,
+        cached_history: StationNowcastObservation,
+    ) -> _WundergroundFastPoll:
+        station_id = station.station_id.upper()
+        if (
+            not self.wunderground_fast_shadow_enabled
+            or self._wunderground_fast_circuit_reason
+            or station_id in self._wunderground_fast_blocked_station_ids
+            or cached_history.next_observation_due_at is None
+        ):
+            return _WundergroundFastPoll(healthy=False)
+        seconds_since_due = (
+            now - _as_utc(cached_history.next_observation_due_at)
+        ).total_seconds()
+        if not (
+            -WUNDERGROUND_DUE_POLL_INTERVAL_SECONDS
+            <= seconds_since_due
+            < WUNDERGROUND_DUE_POLL_WINDOW_SECONDS
+        ):
+            return _WundergroundFastPoll(
+                healthy=self._wunderground_fast_last_healthy.get(station_id, False)
+            )
+        if (
+            self._wunderground_fast_global_unavailable_until is not None
+            and now < self._wunderground_fast_global_unavailable_until
+        ):
+            return _WundergroundFastPoll(healthy=False)
+        if now < self._wunderground_fast_unavailable_until.get(
+            station_id,
+            datetime.min.replace(tzinfo=timezone.utc),
+        ):
+            return _WundergroundFastPoll(healthy=False)
+        if now < self._wunderground_fast_cache_until.get(
+            station_id,
+            datetime.min.replace(tzinfo=timezone.utc),
+        ):
+            return _WundergroundFastPoll(
+                healthy=self._wunderground_fast_last_healthy.get(station_id, False)
+            )
+        last_polled_at = self._wunderground_fast_last_polled_at.get(station_id)
+        if (
+            last_polled_at is not None
+            and (now - last_polled_at).total_seconds()
+            < WUNDERGROUND_DUE_POLL_INTERVAL_SECONDS
+        ):
+            return _WundergroundFastPoll(
+                healthy=self._wunderground_fast_last_healthy.get(station_id, False)
+            )
+        self._wunderground_fast_last_polled_at[station_id] = now
+        if self._wunderground_fast_entitlement_confirmed:
+            return self._fetch_wunderground_fast_shadow(station, target_date, now)
+        if not self._wunderground_fast_entitlement_lock.acquire(blocking=False):
+            return _WundergroundFastPoll(healthy=False)
+        try:
+            if self._wunderground_fast_circuit_reason:
+                return _WundergroundFastPoll(healthy=False)
+            return self._fetch_wunderground_fast_shadow(station, target_date, now)
+        finally:
+            self._wunderground_fast_entitlement_lock.release()
+
+    def _fetch_wunderground_fast_shadow(
+        self,
+        station: StationMeta,
+        target_date: date,
+        now: datetime,
+    ) -> _WundergroundFastPoll:
+        fallback_source = self.sources[station.station_id]
+        source = self._wunderground_fast_shadow_source(station, fallback_source)
+        units = "m" if station.temperature_unit == "celsius" else "e"
+        station_id = station.station_id.upper()
+        response: Any | None = None
+        requested_at = _as_utc(self.clock())
+        received_at: datetime | None = None
+        if not self._reserve_wunderground_request(requested_at, fast=True):
+            self._append_request_log(
+                self._request_log_row(
+                    requested_at=requested_at,
+                    response_received_at=requested_at,
+                    request_mode="wunderground_timeseries_shadow",
+                    station=station,
+                    target_date=target_date,
+                    source=source,
+                    cache_miss_reason="learned-report-boundary",
+                    status="deferred",
+                    unavailable_reason="wunderground-request-budget-exhausted",
+                )
+            )
+            return _WundergroundFastPoll(
+                healthy=self._wunderground_fast_last_healthy.get(station_id, False)
+            )
+        try:
+            response = self.http_get(
+                source.source_url,
+                params={
+                    "apiKey": self.wunderground_api_key,
+                    "language": "en-US",
+                    "units": units,
+                    "hours": "1",
+                },
+                timeout=min(self.timeout, 2.0),
+                headers={"User-Agent": "polymarket-weather-bot/nowcast"},
+            )
+            received_at = _as_utc(self.clock())
+            status_code = int(getattr(response, "status_code", 200) or 0)
+            if status_code in {401, 403}:
+                self._wunderground_fast_circuit_reason = f"http-{status_code}"
+                self._wunderground_fast_last_healthy[station_id] = False
+                reason = f"wunderground-fast-http-{status_code}"
+                self._append_request_log(
+                    self._request_log_row(
+                        requested_at=requested_at,
+                        response_received_at=received_at,
+                        request_mode="wunderground_timeseries_shadow",
+                        station=station,
+                        target_date=target_date,
+                        source=source,
+                        cache_miss_reason="learned-report-boundary",
+                        status="error",
+                        status_code=status_code,
+                        unavailable_reason=reason,
+                    )
+                )
+                return _WundergroundFastPoll(healthy=False)
+            if status_code == 429:
+                retry_after = WUNDERGROUND_FAST_RATE_LIMIT_BACKOFF_SECONDS
+                try:
+                    retry_after = max(
+                        60,
+                        int(float(getattr(response, "headers", {}).get("Retry-After"))),
+                    )
+                except (TypeError, ValueError):
+                    pass
+                self._wunderground_fast_global_unavailable_until = now + timedelta(
+                    seconds=retry_after
+                )
+                self._wunderground_fast_global_unavailable_reason = "http-429"
+            elif status_code == 404:
+                self._wunderground_fast_blocked_station_ids.add(station_id)
+            elif status_code >= 500:
+                self._wunderground_fast_unavailable_until[station_id] = now + timedelta(
+                    seconds=WUNDERGROUND_ERROR_BACKOFF_SECONDS
+                )
+            response.raise_for_status()
+            self._wunderground_fast_entitlement_confirmed = True
+            cache_control = str(
+                getattr(response, "headers", {}).get("Cache-Control")
+                or getattr(response, "headers", {}).get("cache-control")
+                or ""
+            )
+            max_age = re.search(r"(?:^|,)\s*max-age\s*=\s*\"?(\d+)", cache_control, re.I)
+            if max_age:
+                self._wunderground_fast_cache_until[station_id] = received_at + timedelta(
+                    seconds=int(max_age.group(1))
+                )
+            else:
+                self._wunderground_fast_cache_until.pop(station_id, None)
+            row, reason = self._parse_wunderground_fast_shadow_payload(
+                response.json(),
+                station,
+                target_date,
+                now=max(now, received_at),
+                units=units,
+                first_seen_at=received_at,
+            )
+            if row is None:
+                self._wunderground_fast_last_healthy[station_id] = False
+                if reason == "wunderground-fast-station-key-mismatch":
+                    self._wunderground_fast_blocked_station_ids.add(station_id)
+                else:
+                    self._wunderground_fast_unavailable_until[station_id] = now + timedelta(
+                        seconds=WUNDERGROUND_ERROR_BACKOFF_SECONDS
+                    )
+                self._append_request_log(
+                    self._request_log_row(
+                        requested_at=requested_at,
+                        response_received_at=received_at,
+                        request_mode="wunderground_timeseries_shadow",
+                        station=station,
+                        target_date=target_date,
+                        source=source,
+                        cache_miss_reason="learned-report-boundary",
+                        status="invalid_response",
+                        status_code=status_code,
+                        unavailable_reason=reason,
+                    )
+                )
+                return _WundergroundFastPoll(healthy=False)
+
+            self._wunderground_fast_last_healthy[station_id] = True
+            key = (station_id, target_date.isoformat())
+            previous = self._wunderground_fast_latest.get(key)
+            history_key = self._wunderground_history_row_key(
+                station,
+                target_date,
+                row.observed_at,
+                row.native_temp,
+                row.units,
+            )
+            baseline_already_in_history = (
+                previous is None and history_key in self._wunderground_history_first_seen
+            )
+            is_new = (
+                not baseline_already_in_history
+                and (previous is None or previous.state_key != row.state_key)
+            )
+            if is_new:
+                if previous is not None and previous.match_status == "pending":
+                    previous.match_status = "superseded_unmatched"
+                    self._log_wunderground_fast_match(station, target_date, previous)
+                self._wunderground_fast_latest[key] = row
+            elif previous is not None:
+                row = previous
+            log_row = self._request_log_row(
+                requested_at=requested_at,
+                response_received_at=received_at,
+                request_mode="wunderground_timeseries_shadow",
+                station=station,
+                target_date=target_date,
+                source=source,
+                cache_miss_reason="learned-report-boundary",
+                status="success",
+                status_code=status_code,
+            )
+            log_row.update(
+                {
+                    "new_observation": is_new,
+                    "baseline_already_in_history": baseline_already_in_history,
+                    "station_key": row.station_key,
+                    "observation_observed_at": _iso_or_empty(row.observed_at),
+                    "fast_first_seen_at": _iso_or_empty(row.first_seen_at),
+                    "temperature_c": round(row.temp_c, 3),
+                    "units": row.units,
+                    "trade_evidence": False,
+                }
+            )
+            self._append_request_log(log_row)
+            return _WundergroundFastPoll(healthy=True, new_observation=is_new)
+        except Exception as exc:  # noqa: BLE001
+            received_at = received_at or _as_utc(self.clock())
+            status_code = int(getattr(response, "status_code", 0) or 0)
+            if status_code not in {401, 403, 404, 429}:
+                self._wunderground_fast_unavailable_until[station_id] = now + timedelta(
+                    seconds=WUNDERGROUND_ERROR_BACKOFF_SECONDS
+                )
+                if not self._wunderground_fast_entitlement_confirmed:
+                    self._wunderground_fast_global_unavailable_until = now + timedelta(
+                        seconds=WUNDERGROUND_ERROR_BACKOFF_SECONDS
+                    )
+                    self._wunderground_fast_global_unavailable_reason = (
+                        f"http-{status_code}" if status_code else type(exc).__name__
+                    )
+            self._wunderground_fast_last_healthy[station_id] = False
+            self._append_request_log(
+                self._request_log_row(
+                    requested_at=requested_at,
+                    response_received_at=received_at,
+                    request_mode="wunderground_timeseries_shadow",
+                    station=station,
+                    target_date=target_date,
+                    source=source,
+                    cache_miss_reason="learned-report-boundary",
+                    status="error",
+                    status_code=status_code or None,
+                    error=type(exc).__name__,
+                    unavailable_reason=(
+                        f"wunderground-fast-http-{status_code}"
+                        if status_code
+                        else f"wunderground-fast-fetch-error:{type(exc).__name__}"
+                    ),
+                )
+            )
+            return _WundergroundFastPoll(healthy=False)
+
+    def _parse_wunderground_fast_shadow_payload(
+        self,
+        payload: Any,
+        station: StationMeta,
+        target_date: date,
+        *,
+        now: datetime,
+        units: str,
+        first_seen_at: datetime,
+    ) -> tuple[_WundergroundFastRow | None, str]:
+        if not isinstance(payload, dict):
+            return None, "wunderground-fast-malformed-payload"
+        metadata = payload.get("metadata")
+        if not isinstance(metadata, dict) or not str(metadata.get("units") or "").strip():
+            return None, "wunderground-fast-units-missing"
+        if str(metadata["units"]).strip().lower() != units:
+            return None, "wunderground-fast-units-mismatch"
+        if isinstance(payload.get("observation"), dict):
+            records = [payload["observation"]]
+        elif isinstance(payload.get("observations"), list):
+            records = payload["observations"]
+        else:
+            return None, "wunderground-fast-malformed-payload"
+        zone = _zone(station.timezone)
+        parsed: list[_WundergroundFastRow] = []
+        for record in records:
+            if not isinstance(record, dict):
+                return None, "wunderground-fast-malformed-payload"
+            station_key = str(record.get("key") or "").strip().upper()
+            if station_key != station.station_id.upper():
+                return None, "wunderground-fast-station-key-mismatch"
+            observed_at = _parse_observation_time(record.get("valid_time_gmt"))
+            try:
+                native_temp = (
+                    float(record.get("temp"))
+                    if not isinstance(record.get("temp"), bool)
+                    else math.nan
+                )
+            except (TypeError, ValueError):
+                native_temp = math.nan
+            if observed_at is None or not math.isfinite(native_temp):
+                return None, "wunderground-fast-malformed-payload"
+            if observed_at > now:
+                return None, "wunderground-fast-future-observation"
+            if observed_at.astimezone(zone).date() != target_date:
+                continue
+            temp_c = native_temp if units == "m" else (native_temp - 32.0) * 5.0 / 9.0
+            if not WUNDERGROUND_MIN_TEMPERATURE_C <= temp_c <= WUNDERGROUND_MAX_TEMPERATURE_C:
+                return None, "wunderground-fast-temperature-out-of-range"
+            parsed.append(
+                _WundergroundFastRow(
+                    station_key=station_key,
+                    observed_at=observed_at,
+                    native_temp=native_temp,
+                    temp_c=temp_c,
+                    units=units,
+                    first_seen_at=first_seen_at,
+                )
+            )
+        if not parsed:
+            return None, "wunderground-fast-local-date-mismatch"
+        return max(parsed, key=lambda row: row.observed_at), ""
+
+    def _wunderground_history_row_key(
+        self,
+        station: StationMeta,
+        target_date: date,
+        observed_at: datetime,
+        native_temp: float,
+        units: str,
+    ) -> tuple[str, str, datetime, float, str]:
+        return (
+            station.station_id.upper(),
+            target_date.isoformat(),
+            observed_at,
+            round(native_temp, 6),
+            units,
+        )
+
+    def _record_wunderground_history_first_seen(
+        self,
+        station: StationMeta,
+        target_date: date,
+        ordered: list[tuple[datetime, float, float, dict[str, Any]]],
+        units: str,
+        first_seen_at: datetime,
+    ) -> None:
+        current_keys: set[tuple[str, str, datetime, float, str]] = set()
+        for observed_at, _temp_c, native_temp, _record in ordered:
+            key = self._wunderground_history_row_key(
+                station,
+                target_date,
+                observed_at,
+                native_temp,
+                units,
+            )
+            current_keys.add(key)
+            self._wunderground_history_first_seen.setdefault(key, first_seen_at)
+        fast = self._wunderground_fast_latest.get(
+            (station.station_id.upper(), target_date.isoformat())
+        )
+        if fast is None or fast.match_status != "pending":
+            return
+        exact_key = self._wunderground_history_row_key(
+            station,
+            target_date,
+            fast.observed_at,
+            fast.native_temp,
+            units,
+        )
+        exact_first_seen = (
+            self._wunderground_history_first_seen.get(exact_key)
+            if exact_key in current_keys
+            else None
+        )
+        if exact_first_seen is not None:
+            fast.daily_history_first_seen_at = exact_first_seen
+            fast.match_status = (
+                "matched"
+                if exact_first_seen >= fast.first_seen_at
+                else "invalid_negative_lead"
+            )
+            self._log_wunderground_fast_match(station, target_date, fast)
+            return
+        same_time = [
+            self._wunderground_history_first_seen[key]
+            for key in current_keys
+            if key[0] == station.station_id.upper()
+            and key[1] == target_date.isoformat()
+            and key[2] == fast.observed_at
+            and key[4] == units
+        ]
+        if same_time:
+            fast.daily_history_first_seen_at = min(same_time)
+            fast.match_status = "temperature_mismatch"
+            self._log_wunderground_fast_match(station, target_date, fast)
+
+    def _log_wunderground_fast_match(
+        self,
+        station: StationMeta,
+        target_date: date,
+        fast: _WundergroundFastRow,
+    ) -> None:
+        if fast.match_logged:
+            return
+        fast.match_logged = True
+        temperature_matched = fast.match_status in {"matched", "invalid_negative_lead"}
+        lead_seconds = None
+        if fast.daily_history_first_seen_at is not None:
+            candidate_lead = int(
+                (fast.daily_history_first_seen_at - fast.first_seen_at).total_seconds()
+            )
+            if candidate_lead >= 0:
+                lead_seconds = candidate_lead
+        self._append_request_log(
+            {
+                "request_mode": "wunderground_timeseries_shadow_match",
+                "city": station.city,
+                "station_id": station.station_id,
+                "station_name": station.station_name,
+                "timezone": station.timezone,
+                "target_date": target_date.isoformat(),
+                "fast_first_seen_at": _iso_or_empty(fast.first_seen_at),
+                "daily_history_first_seen_at": _iso_or_empty(
+                    fast.daily_history_first_seen_at
+                ),
+                "observation_observed_at": _iso_or_empty(fast.observed_at),
+                "temperature_c": round(fast.temp_c, 3),
+                "units": fast.units,
+                "station_match": True,
+                "time_match": fast.daily_history_first_seen_at is not None,
+                "temperature_match": temperature_matched,
+                "units_match": True,
+                "match_status": fast.match_status,
+                "lead_seconds": lead_seconds,
+                "trade_evidence": False,
+                "logged_at": _iso_or_empty(_as_utc(self.clock())),
+            }
+        )
 
     def _wunderground_source(
         self,
@@ -1101,6 +1790,22 @@ class AviationWeatherMetarNowcastProvider:
         response: Any | None = None
         response_received_at: datetime | None = None
         requested_at = _as_utc(self.clock())
+        if not self._reserve_wunderground_request(requested_at):
+            reason = "wunderground-request-budget-exhausted"
+            self._append_request_log(
+                self._request_log_row(
+                    requested_at=requested_at,
+                    response_received_at=requested_at,
+                    request_mode="wunderground_history_direct",
+                    station=station,
+                    target_date=target_date,
+                    source=source,
+                    cache_miss_reason=cache_miss_reason,
+                    status="deferred",
+                    unavailable_reason=reason,
+                )
+            )
+            return self._unavailable(station, reason, source)
         try:
             response = self.http_get(
                 source.source_url,
@@ -1252,6 +1957,13 @@ class AviationWeatherMetarNowcastProvider:
                 source,
                 raw_count=len(ordered),
             )
+        self._record_wunderground_history_first_seen(
+            station,
+            target_date,
+            ordered,
+            units,
+            bot_received_at,
+        )
 
         high_c = max(temp_c for _observed_at, temp_c, _native, _record in ordered)
         low_c = min(temp_c for _observed_at, temp_c, _native, _record in ordered)

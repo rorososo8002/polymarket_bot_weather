@@ -193,6 +193,7 @@ def test_default_station_nowcast_is_pilot_cached_and_freshness_bounded():
     assert Settings.kma_metar_timeout_seconds == 3.0
     assert Settings.kma_metar_station_ids == "RKSI,RKPK"
     assert Settings.wunderground_api_key == ""
+    assert Settings.wunderground_fast_shadow_enabled is False
     assert Settings.station_nowcast_freshness_seconds == 5400
     assert Settings.station_nowcast_request_log_path == ""
     assert Settings.hko_rollover_state_path == ""
@@ -455,6 +456,7 @@ def test_load_settings_reads_station_nowcast_controls(monkeypatch):
     monkeypatch.setenv("KMA_METAR_TIMEOUT_SECONDS", "2.5")
     monkeypatch.setenv("KMA_METAR_STATION_IDS", "RKSI")
     monkeypatch.setenv("WUNDERGROUND_API_KEY", "wu-secret-value")
+    monkeypatch.setenv("WUNDERGROUND_FAST_SHADOW_ENABLED", "true")
     monkeypatch.setenv("HKO_ROLLOVER_STATE_PATH", "data/custom_hko_rollover_state.json")
 
     settings = load_settings()
@@ -469,6 +471,7 @@ def test_load_settings_reads_station_nowcast_controls(monkeypatch):
     assert settings.kma_metar_timeout_seconds == 2.5
     assert settings.kma_metar_station_ids == "RKSI"
     assert settings.wunderground_api_key == "wu-secret-value"
+    assert settings.wunderground_fast_shadow_enabled is True
     assert settings.hko_rollover_state_path == "data/custom_hko_rollover_state.json"
 
 

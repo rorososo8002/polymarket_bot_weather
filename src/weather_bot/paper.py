@@ -610,6 +610,8 @@ def _raw_snapshot_event_is_error(event: str, payload: dict[str, Any]) -> bool:
 def _should_write_raw_snapshot(mode: str, event: str, payload: dict[str, Any]) -> bool:
     if _trade_action(event) in ACCOUNTING_TRADE_ACTIONS:
         return True
+    if event == "wunderground_fast_shadow_book":
+        return True
     if mode == "debug":
         return True
     if mode == "error":

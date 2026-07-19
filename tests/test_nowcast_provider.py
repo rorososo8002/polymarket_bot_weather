@@ -17,9 +17,10 @@ FIXTURES = Path(__file__).parent / "fixtures" / "nowcast"
 
 
 class FakeResponse:
-    def __init__(self, payload, status_code: int = 200) -> None:
+    def __init__(self, payload, status_code: int = 200, *, headers=None) -> None:
         self._payload = payload
         self.status_code = status_code
+        self.headers = headers or {}
 
     def raise_for_status(self) -> None:
         if self.status_code >= 400:
@@ -203,6 +204,478 @@ def test_wunderground_history_direct_recomputes_metric_extremes_and_same_time_co
         "units": "m",
     }
     assert "test-wu-key" not in observation.source_url
+
+
+def test_wunderground_fast_shadow_wakes_history_and_records_same_row_lead(tmp_path):
+    first_at = datetime(2026, 7, 19, 0, 0, tzinfo=timezone.utc)
+    previous_at = datetime(2026, 7, 19, 1, 0, tzinfo=timezone.utc)
+    fast_at = datetime(2026, 7, 19, 2, 0, tzinfo=timezone.utc)
+    initial_history = {
+        "metadata": {"units": "m"},
+        "observations": [
+            {"obs_id": "RKSI", "valid_time_gmt": int(first_at.timestamp()), "temp": 27},
+            {"obs_id": "RKSI", "valid_time_gmt": int(previous_at.timestamp()), "temp": 29},
+        ],
+    }
+    updated_history = {
+        "metadata": {"units": "m"},
+        "observations": [
+            *initial_history["observations"],
+            {"obs_id": "RKSI", "valid_time_gmt": int(fast_at.timestamp()), "temp": 30},
+        ],
+    }
+    fast_payload = {
+        "metadata": {"units": "m"},
+        "observation": {
+            "key": "RKSI",
+            "obs_id": "Incheon International Airport",
+            "valid_time_gmt": int(fast_at.timestamp()),
+            "temp": 30,
+        },
+    }
+    history_payloads = iter((initial_history, initial_history, updated_history))
+    calls: list[str] = []
+
+    def fake_get(url, *, params, timeout, headers):
+        calls.append(url)
+        if url.endswith("/observations/timeseries.json"):
+            return FakeResponse(fast_payload)
+        return FakeResponse(next(history_payloads))
+
+    current = [datetime(2026, 7, 19, 1, 59, 55, tzinfo=timezone.utc)]
+    request_log_path = tmp_path / "station_requests.jsonl"
+    provider = AviationWeatherMetarNowcastProvider(
+        http_get=fake_get,
+        cache_ttl_seconds=60,
+        request_log_path=request_log_path,
+        wunderground_api_key="test-wu-key",
+        wunderground_fast_shadow_enabled=True,
+        clock=lambda: current[0],
+    )
+
+    initial = provider.observed_temperature_extremes_so_far(
+        STATION_MAP["seoul"], target_date=date(2026, 7, 19), now=current[0]
+    )
+    current[0] = datetime(2026, 7, 19, 2, 0, tzinfo=timezone.utc)
+    pending = provider.observed_temperature_extremes_so_far(
+        STATION_MAP["seoul"], target_date=date(2026, 7, 19), now=current[0]
+    )
+    current[0] += timedelta(seconds=5)
+    matched = provider.observed_temperature_extremes_so_far(
+        STATION_MAP["seoul"], target_date=date(2026, 7, 19), now=current[0]
+    )
+
+    assert initial.observed_at == previous_at
+    assert pending.source == "wunderground-history-direct"
+    assert pending.observed_at == previous_at
+    assert pending.fast_shadow_state_key == "RKSI|2026-07-19T02:00:00+00:00|30|m"
+    assert pending.fast_shadow_match_status == "pending"
+    assert matched.observed_at == fast_at
+    assert matched.fast_shadow_match_status == "matched"
+    assert matched.fast_shadow_first_seen_at == datetime(
+        2026, 7, 19, 2, 0, tzinfo=timezone.utc
+    )
+    assert matched.fast_shadow_daily_first_seen_at == datetime(
+        2026, 7, 19, 2, 0, 5, tzinfo=timezone.utc
+    )
+    assert matched.fast_shadow_lead_seconds == 5
+    assert sum(url.endswith("/observations/timeseries.json") for url in calls) == 2
+    assert sum(url.endswith("/observations/historical.json") for url in calls) == 3
+
+    match_rows = [
+        row
+        for row in read_jsonl(request_log_path)
+        if row.get("request_mode") == "wunderground_timeseries_shadow_match"
+    ]
+    assert len(match_rows) == 1
+    assert match_rows[0]["fast_first_seen_at"] == "2026-07-19T02:00:00+00:00"
+    assert match_rows[0]["daily_history_first_seen_at"] == "2026-07-19T02:00:05+00:00"
+    assert match_rows[0]["station_match"] is True
+    assert match_rows[0]["time_match"] is True
+    assert match_rows[0]["temperature_match"] is True
+    assert match_rows[0]["units_match"] is True
+    assert match_rows[0]["lead_seconds"] == 5
+
+
+def test_wunderground_fast_shadow_honors_response_cache_control(tmp_path):
+    first_at = datetime(2026, 7, 19, 0, 0, tzinfo=timezone.utc)
+    latest_at = datetime(2026, 7, 19, 1, 0, tzinfo=timezone.utc)
+    history_payload = {
+        "metadata": {"units": "m"},
+        "observations": [
+            {"obs_id": "RKSI", "valid_time_gmt": int(first_at.timestamp()), "temp": 27},
+            {"obs_id": "RKSI", "valid_time_gmt": int(latest_at.timestamp()), "temp": 29},
+        ],
+    }
+    fast_payload = {
+        "metadata": {"units": "m"},
+        "observation": {
+            "key": "RKSI",
+            "valid_time_gmt": int(latest_at.timestamp()),
+            "temp": 29,
+        },
+    }
+    calls: list[str] = []
+
+    def fake_get(url, *, params, timeout, headers):
+        del params, timeout, headers
+        calls.append(url)
+        if url.endswith("/observations/timeseries.json"):
+            return FakeResponse(
+                fast_payload,
+                headers={"Cache-Control": "public, max-age=30"},
+            )
+        return FakeResponse(history_payload)
+
+    current = [datetime(2026, 7, 19, 1, 59, 55, tzinfo=timezone.utc)]
+    provider = AviationWeatherMetarNowcastProvider(
+        http_get=fake_get,
+        cache_ttl_seconds=60,
+        request_log_path=tmp_path / "station_requests.jsonl",
+        wunderground_api_key="test-wu-key",
+        wunderground_fast_shadow_enabled=True,
+        clock=lambda: current[0],
+    )
+    station = STATION_MAP["seoul"]
+    provider.observed_temperature_extremes_so_far(
+        station, target_date=date(2026, 7, 19), now=current[0]
+    )
+
+    current[0] = datetime(2026, 7, 19, 2, 0, tzinfo=timezone.utc)
+    provider.observed_temperature_extremes_so_far(
+        station, target_date=date(2026, 7, 19), now=current[0]
+    )
+    current[0] += timedelta(seconds=10)
+    provider.observed_temperature_extremes_so_far(
+        station, target_date=date(2026, 7, 19), now=current[0]
+    )
+    assert sum(url.endswith("/observations/timeseries.json") for url in calls) == 1
+    assert sum(url.endswith("/observations/historical.json") for url in calls) == 3
+
+    current[0] += timedelta(seconds=21)
+    provider.observed_temperature_extremes_so_far(
+        station, target_date=date(2026, 7, 19), now=current[0]
+    )
+    assert sum(url.endswith("/observations/timeseries.json") for url in calls) == 2
+    assert sum(url.endswith("/observations/historical.json") for url in calls) == 4
+
+
+def test_wunderground_fast_shadow_timeout_cannot_delay_daily_history_by_twenty_seconds(
+    tmp_path,
+):
+    first_at = datetime(2026, 7, 19, 0, 0, tzinfo=timezone.utc)
+    latest_at = datetime(2026, 7, 19, 1, 0, tzinfo=timezone.utc)
+    history_payload = {
+        "metadata": {"units": "m"},
+        "observations": [
+            {"obs_id": "RKSI", "valid_time_gmt": int(first_at.timestamp()), "temp": 27},
+            {"obs_id": "RKSI", "valid_time_gmt": int(latest_at.timestamp()), "temp": 29},
+        ],
+    }
+    current = [datetime(2026, 7, 19, 1, 59, 55, tzinfo=timezone.utc)]
+    calls: list[tuple[str, float, datetime]] = []
+
+    def fake_get(url, *, params, timeout, headers):
+        del params, headers
+        calls.append((url, timeout, current[0]))
+        if url.endswith("/observations/timeseries.json"):
+            current[0] += timedelta(seconds=timeout)
+            raise TimeoutError("fast shadow stalled")
+        return FakeResponse(history_payload)
+
+    provider = AviationWeatherMetarNowcastProvider(
+        http_get=fake_get,
+        timeout=20,
+        cache_ttl_seconds=60,
+        request_log_path=tmp_path / "station_requests.jsonl",
+        wunderground_api_key="test-wu-key",
+        wunderground_fast_shadow_enabled=True,
+        clock=lambda: current[0],
+    )
+    station = STATION_MAP["seoul"]
+    provider.observed_temperature_extremes_so_far(
+        station, target_date=date(2026, 7, 19), now=current[0]
+    )
+
+    current[0] = datetime(2026, 7, 19, 2, 0, tzinfo=timezone.utc)
+    provider.observed_temperature_extremes_so_far(
+        station, target_date=date(2026, 7, 19), now=current[0]
+    )
+
+    assert [
+        "fast" if url.endswith("/observations/timeseries.json") else "history"
+        for url, _timeout, _called_at in calls
+    ] == ["history", "fast", "history"]
+    assert calls[1][1] == 2.0
+    assert calls[2][2] == datetime(2026, 7, 19, 2, 0, 2, tzinfo=timezone.utc)
+
+
+def test_wunderground_request_budget_is_shared_and_keeps_fast_wake_state(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setattr(nowcast_module, "WUNDERGROUND_REQUEST_LIMIT_PER_MINUTE", 2)
+    monkeypatch.setattr(
+        nowcast_module,
+        "WUNDERGROUND_HISTORY_RESERVED_REQUESTS_PER_MINUTE",
+        0,
+    )
+    first_at = datetime(2026, 7, 19, 0, 0, tzinfo=timezone.utc)
+    previous_at = datetime(2026, 7, 19, 1, 0, tzinfo=timezone.utc)
+    fast_at = datetime(2026, 7, 19, 2, 0, tzinfo=timezone.utc)
+    history_payload = {
+        "metadata": {"units": "m"},
+        "observations": [
+            {"obs_id": "RKSI", "valid_time_gmt": int(first_at.timestamp()), "temp": 27},
+            {"obs_id": "RKSI", "valid_time_gmt": int(previous_at.timestamp()), "temp": 29},
+        ],
+    }
+    fast_payload = {
+        "metadata": {"units": "m"},
+        "observation": {
+            "key": "RKSI",
+            "valid_time_gmt": int(fast_at.timestamp()),
+            "temp": 30,
+        },
+    }
+    calls: list[str] = []
+
+    def fake_get(url, *, params, timeout, headers):
+        del params, timeout, headers
+        calls.append(url)
+        return FakeResponse(
+            fast_payload if url.endswith("/observations/timeseries.json") else history_payload
+        )
+
+    current = [datetime(2026, 7, 19, 1, 59, 55, tzinfo=timezone.utc)]
+    provider = AviationWeatherMetarNowcastProvider(
+        http_get=fake_get,
+        cache_ttl_seconds=60,
+        request_log_path=tmp_path / "station_requests.jsonl",
+        wunderground_api_key="test-wu-key",
+        wunderground_fast_shadow_enabled=True,
+        clock=lambda: current[0],
+    )
+    station = STATION_MAP["seoul"]
+    initial = provider.observed_temperature_extremes_so_far(
+        station, target_date=date(2026, 7, 19), now=current[0]
+    )
+
+    current[0] = datetime(2026, 7, 19, 2, 0, tzinfo=timezone.utc)
+    pending = provider.observed_temperature_extremes_so_far(
+        station, target_date=date(2026, 7, 19), now=current[0]
+    )
+
+    assert len(calls) == 2
+    assert initial.observed_at == previous_at
+    assert pending.observed_at == previous_at
+    assert pending.fast_shadow_match_status == "pending"
+    deferred_rows = [
+        row
+        for row in read_jsonl(tmp_path / "station_requests.jsonl")
+        if row.get("status") == "deferred"
+    ]
+    assert deferred_rows[-1]["unavailable_reason"] == (
+        "wunderground-request-budget-exhausted"
+    )
+
+
+def test_wunderground_fast_budget_yields_capacity_to_daily_history(monkeypatch):
+    monkeypatch.setattr(nowcast_module, "WUNDERGROUND_REQUEST_LIMIT_PER_MINUTE", 3)
+    monkeypatch.setattr(nowcast_module, "WUNDERGROUND_FAST_REQUEST_LIMIT_PER_MINUTE", 1)
+    monkeypatch.setattr(
+        nowcast_module,
+        "WUNDERGROUND_HISTORY_RESERVED_REQUESTS_PER_MINUTE",
+        1,
+    )
+    provider = AviationWeatherMetarNowcastProvider(wunderground_api_key="test-wu-key")
+    first = datetime(2026, 7, 19, 2, 0, tzinfo=timezone.utc)
+
+    assert provider._reserve_wunderground_request(first, fast=True) is True
+    assert provider._reserve_wunderground_request(first, fast=True) is False
+    assert provider._reserve_wunderground_request(first) is True
+    assert provider._reserve_wunderground_request(first) is True
+    assert provider._reserve_wunderground_request(first) is False
+
+
+def test_wunderground_fast_shadow_existing_history_row_is_only_a_baseline(tmp_path):
+    first_at = datetime(2026, 7, 19, 0, 0, tzinfo=timezone.utc)
+    latest_at = datetime(2026, 7, 19, 1, 0, tzinfo=timezone.utc)
+    history_payload = {
+        "metadata": {"units": "m"},
+        "observations": [
+            {"obs_id": "RKSI", "valid_time_gmt": int(first_at.timestamp()), "temp": 27},
+            {"obs_id": "RKSI", "valid_time_gmt": int(latest_at.timestamp()), "temp": 29},
+        ],
+    }
+    fast_payload = {
+        "metadata": {"units": "m"},
+        "observation": {
+            "key": "RKSI",
+            "obs_id": "Incheon International Airport",
+            "valid_time_gmt": int(latest_at.timestamp()),
+            "temp": 29,
+        },
+    }
+    calls: list[str] = []
+
+    def fake_get(url, *, params, timeout, headers):
+        calls.append(url)
+        return FakeResponse(
+            fast_payload if url.endswith("/observations/timeseries.json") else history_payload
+        )
+
+    current = [datetime(2026, 7, 19, 1, 59, 55, tzinfo=timezone.utc)]
+    request_log_path = tmp_path / "station_requests.jsonl"
+    provider = AviationWeatherMetarNowcastProvider(
+        http_get=fake_get,
+        cache_ttl_seconds=60,
+        request_log_path=request_log_path,
+        wunderground_api_key="test-wu-key",
+        wunderground_fast_shadow_enabled=True,
+        clock=lambda: current[0],
+    )
+    provider.observed_temperature_extremes_so_far(
+        STATION_MAP["seoul"], target_date=date(2026, 7, 19), now=current[0]
+    )
+    current[0] += timedelta(seconds=1)
+    baseline = provider.observed_temperature_extremes_so_far(
+        STATION_MAP["seoul"], target_date=date(2026, 7, 19), now=current[0]
+    )
+
+    assert baseline.fast_shadow_state_key == ""
+    assert sum(url.endswith("/observations/historical.json") for url in calls) == 1
+    assert not any(
+        row.get("request_mode") == "wunderground_timeseries_shadow_match"
+        for row in read_jsonl(request_log_path)
+    )
+    shadow_rows = [
+        row
+        for row in read_jsonl(request_log_path)
+        if row.get("request_mode") == "wunderground_timeseries_shadow"
+    ]
+    assert shadow_rows[-1]["new_observation"] is False
+    assert shadow_rows[-1]["baseline_already_in_history"] is True
+
+
+@pytest.mark.parametrize(
+    ("fast_metadata", "fast_row", "expected_reason"),
+    [
+        (
+            {"units": "e"},
+            {"key": "RKSI", "valid_time_gmt": 1784426400, "temp": 86},
+            "wunderground-fast-units-mismatch",
+        ),
+        (
+            {"units": "m"},
+            {"key": "KATL", "valid_time_gmt": 1784426400, "temp": 30},
+            "wunderground-fast-station-key-mismatch",
+        ),
+    ],
+)
+def test_wunderground_fast_shadow_rejects_wrong_units_or_selected_station(
+    tmp_path,
+    fast_metadata,
+    fast_row,
+    expected_reason,
+):
+    first_at = datetime(2026, 7, 19, 0, 0, tzinfo=timezone.utc)
+    previous_at = datetime(2026, 7, 19, 1, 0, tzinfo=timezone.utc)
+    history_payload = {
+        "metadata": {"units": "m"},
+        "observations": [
+            {"obs_id": "RKSI", "valid_time_gmt": int(first_at.timestamp()), "temp": 27},
+            {"obs_id": "RKSI", "valid_time_gmt": int(previous_at.timestamp()), "temp": 29},
+        ],
+    }
+    current = [datetime(2026, 7, 19, 1, 59, 55, tzinfo=timezone.utc)]
+    request_log_path = tmp_path / "station_requests.jsonl"
+
+    def fake_get(url, *, params, timeout, headers):
+        if url.endswith("/observations/timeseries.json"):
+            return FakeResponse(
+                {"metadata": fast_metadata, "observations": [fast_row]}
+            )
+        return FakeResponse(history_payload)
+
+    provider = AviationWeatherMetarNowcastProvider(
+        http_get=fake_get,
+        cache_ttl_seconds=60,
+        request_log_path=request_log_path,
+        wunderground_api_key="test-wu-key",
+        wunderground_fast_shadow_enabled=True,
+        clock=lambda: current[0],
+    )
+    provider.observed_temperature_extremes_so_far(
+        STATION_MAP["seoul"], target_date=date(2026, 7, 19), now=current[0]
+    )
+    current[0] += timedelta(seconds=5)
+    observation = provider.observed_temperature_extremes_so_far(
+        STATION_MAP["seoul"], target_date=date(2026, 7, 19), now=current[0]
+    )
+
+    assert observation.fast_shadow_state_key == ""
+    invalid_rows = [
+        row
+        for row in read_jsonl(request_log_path)
+        if row.get("request_mode") == "wunderground_timeseries_shadow"
+        and row.get("status") == "invalid_response"
+    ]
+    assert invalid_rows[-1]["unavailable_reason"] == expected_reason
+
+
+def test_wunderground_fast_shadow_403_opens_provider_wide_circuit(tmp_path):
+    station_history = {
+        "RKSI": {
+            "metadata": {"units": "m"},
+            "observations": [
+                {"obs_id": "RKSI", "valid_time_gmt": 1784422800, "temp": 27},
+                {"obs_id": "RKSI", "valid_time_gmt": 1784426400, "temp": 29},
+            ],
+        },
+        "RJTT": {
+            "metadata": {"units": "m"},
+            "observations": [
+                {"obs_id": "RJTT", "valid_time_gmt": 1784422800, "temp": 27},
+                {"obs_id": "RJTT", "valid_time_gmt": 1784426400, "temp": 29},
+            ],
+        },
+    }
+    fast_calls = 0
+
+    def fake_get(url, *, params, timeout, headers):
+        nonlocal fast_calls
+        if url.endswith("/observations/timeseries.json"):
+            fast_calls += 1
+            return FakeResponse({}, status_code=403)
+        station_id = "RJTT" if str(STATION_MAP["tokyo"].latitude) in url else "RKSI"
+        return FakeResponse(station_history[station_id])
+
+    current = [datetime(2026, 7, 19, 2, 59, 55, tzinfo=timezone.utc)]
+    provider = AviationWeatherMetarNowcastProvider(
+        http_get=fake_get,
+        cache_ttl_seconds=60,
+        request_log_path=tmp_path / "station_requests.jsonl",
+        wunderground_api_key="test-wu-key",
+        wunderground_fast_shadow_enabled=True,
+        clock=lambda: current[0],
+    )
+    for city in ("seoul", "tokyo"):
+        station = STATION_MAP[city]
+        provider.observed_temperature_extremes_so_far(
+            station, target_date=date(2026, 7, 19), now=current[0]
+        )
+        current[0] += timedelta(seconds=5)
+        provider.observed_temperature_extremes_so_far(
+            station, target_date=date(2026, 7, 19), now=current[0]
+        )
+
+    assert fast_calls == 1
+    assert provider.wunderground_fast_shadow_runtime_status() == {
+        "enabled": False,
+        "status": "circuit_open",
+        "reason": "http-403",
+    }
 
 
 def test_wunderground_history_direct_converts_fahrenheit_payload_to_celsius():

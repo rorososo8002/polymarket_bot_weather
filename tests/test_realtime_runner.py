@@ -1,6 +1,7 @@
 import csv
 import hashlib
 import json
+from queue import SimpleQueue
 import threading
 import time
 from dataclasses import replace
@@ -630,6 +631,42 @@ def test_changed_station_refresh_enqueues_every_changed_event_without_probe_cap(
     assert worker.status_snapshot()["queue_depth"] == 0
 
 
+def test_station_refresh_can_defer_signal_invalidation_until_evaluator_is_ready():
+    market = RawMarket(
+        "seoul-high-29",
+        "Will the highest temperature in Seoul be 29C on July 8?",
+        "seoul-high-29",
+        True,
+        False,
+        "seoul-yes",
+        "seoul-no",
+        event_id="seoul-high-event",
+    )
+    worker = RealtimeEvaluationCoalescer(
+        event_key_by_token={"seoul-no": "seoul-high-event"},
+        evaluator=lambda _tokens: None,
+    )
+    refreshed_at = {market.market_id: datetime(2026, 7, 8, 3, 0, tzinfo=timezone.utc)}
+    pending_invalidations: SimpleQueue[str] = SimpleQueue()
+
+    accepted = runner_module._enqueue_station_refresh_high_exact_no_probes(
+        worker,
+        [market],
+        refreshed_at,
+        pending_signal_invalidations=pending_invalidations,
+        station_ids={runner_module.TRADING_READY_STATION_MAP["seoul"].station_id},
+    )
+
+    assert accepted == 1
+    assert market.market_id in refreshed_at
+    runner_module._drain_pending_signal_invalidations(
+        pending_invalidations,
+        refreshed_at,
+    )
+    assert market.market_id not in refreshed_at
+    assert worker.status_snapshot()["urgent_queue_depth"] == 1
+
+
 def test_station_refresh_enqueues_only_changed_city_high_exact_no(monkeypatch):
     seoul = runner_module.TRADING_READY_STATION_MAP["seoul"]
     london = runner_module.TRADING_READY_STATION_MAP["london"]
@@ -797,9 +834,16 @@ def test_station_state_key_detects_due_and_unavailable_status_changes():
     unavailable = runner_module._station_observation_state_key(
         replace(observation, unavailable_reason="stale-observation")
     )
+    fast_shadow = runner_module._station_observation_state_key(
+        replace(
+            observation,
+            fast_shadow_state_key="RKSI|2026-07-08T07:30:00+00:00|31|m",
+        )
+    )
 
     assert current != overdue
     assert current != unavailable
+    assert current != fast_shadow
 
 
 def test_quiet_market_wakes_when_local_q75_gate_is_crossed():
@@ -2516,6 +2560,95 @@ def test_realtime_update_skips_known_yes_leaning_signal_in_no_only_mode(tmp_path
     assert len(diagnostic_rows) == 2
     assert diagnostic_rows[-1]["market_id"] == market.market_id
     assert diagnostic_rows[-1]["reason_code"] == "SKIP_SIGNAL_INELIGIBLE"
+
+
+def test_fast_shadow_wake_records_contemporaneous_no_book_without_trading(tmp_path):
+    question = "Will the highest temperature in Seoul be 29C today?"
+    market = RawMarket(
+        "seoul-fast-shadow",
+        question,
+        "seoul-fast-shadow",
+        True,
+        False,
+        "yes-token",
+        "no-token",
+        condition_id="condition-no",
+        event_id="seoul-today",
+    )
+
+    class CachedAskClient:
+        def get_candidate_order_book(self, token_id: str) -> OrderBook:
+            assert token_id == "no-token"
+            return OrderBook(
+                token_id,
+                bids=[OrderLevel(0.84, 75.0)],
+                asks=[OrderLevel(0.86, 40.0), OrderLevel(0.88, 100.0)],
+                timestamp="2026-07-20T04:00:01Z",
+            )
+
+        def prefetch_candidate_order_books(self, token_ids: list[str]) -> dict[str, int]:
+            assert token_ids == []
+            return {"requested": 0, "book_ready": 0, "failed": 0, "deferred": 0}
+
+    settings = Settings(
+        state_path=str(tmp_path / "state.json"),
+        trades_csv_path=str(tmp_path / "trades.csv"),
+        decisions_csv_path=str(tmp_path / "decisions.csv"),
+        raw_snapshots_path=str(tmp_path / "raw.jsonl"),
+        portfolio_decisions_jsonl_path=str(tmp_path / "portfolio.jsonl"),
+        no_only_new_entries=True,
+    )
+    broker = runner_module.PaperBroker(settings)
+    signal = WeatherSignal(
+        0.5,
+        0.0,
+        "official-station-neutral",
+        "daily history has not matched the fast row yet",
+        parse_weather_question(question),
+        nowcast={
+            "station_id": "RKSI",
+            "fast_shadow_state_key": "RKSI|2026-07-20T04:00:00+00:00|30|m",
+            "fast_shadow_match_status": "pending",
+            "fast_shadow_first_seen_at": "2026-07-20T04:00:01+00:00",
+            "fast_shadow_observed_at": "2026-07-20T04:00:00+00:00",
+            "fast_shadow_temp_c": 30.0,
+        },
+    )
+    fast_book_state: dict[str, str] = {}
+
+    for _ in range(2):
+        runner_module._evaluate_realtime_update(
+            {"no-token"},
+            CachedAskClient(),
+            broker,
+            settings,
+            {"yes-token": market, "no-token": market},
+            {market.market_id: signal},
+            {market.market_id: "temperature"},
+            {},
+            fast_shadow_book_state_by_market=fast_book_state,
+        )
+
+    snapshots = [
+        json.loads(line)
+        for line in (tmp_path / "raw.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    probes = [
+        row for row in snapshots if row["event"] == "wunderground_fast_shadow_book"
+    ]
+    assert len(probes) == 1
+    probe = probes[0]
+    assert probe["payload"]["trade_evidence"] is False
+    assert probe["payload"]["fast_shadow_state_key"].endswith("|30|m")
+    assert probe["payload"]["no_order_book"]["best_ask"] == 0.86
+    assert probe["payload"]["no_order_book"]["asks_top5"][0] == {
+        "price": 0.86,
+        "size": 40.0,
+    }
+    assert fast_book_state == {
+        market.market_id: "RKSI|2026-07-20T04:00:00+00:00|30|m"
+    }
+    assert broker.state.positions == []
 
 
 def test_realtime_price_update_evaluates_only_the_changed_market_in_event(tmp_path):
@@ -4881,6 +5014,59 @@ def test_official_station_health_refresh_polls_every_ready_station_for_its_local
     assert all(observed_now == now for _station_id, _target_date, observed_now in calls)
 
 
+def test_official_station_refresh_can_poll_only_selected_station_ids(monkeypatch):
+    seoul = runner_module.TRADING_READY_STATION_MAP["seoul"]
+    london = runner_module.TRADING_READY_STATION_MAP["london"]
+    monkeypatch.setattr(
+        runner_module,
+        "TRADING_READY_STATION_MAP",
+        {"seoul": seoul, "london": london},
+    )
+    calls: list[str] = []
+
+    class FakeProvider:
+        def observed_temperature_extremes_so_far(self, station, *, target_date, now):
+            del target_date, now
+            calls.append(station.station_id)
+
+    runner_module._refresh_official_station_observations(
+        FakeProvider(),
+        now=datetime(2026, 7, 20, 0, 0, tzinfo=timezone.utc),
+        station_ids={seoul.station_id},
+    )
+
+    assert calls == [seoul.station_id]
+
+
+def test_official_station_refresh_rotates_which_city_is_submitted_first(monkeypatch):
+    seoul = runner_module.TRADING_READY_STATION_MAP["seoul"]
+    london = runner_module.TRADING_READY_STATION_MAP["london"]
+    tokyo = runner_module.TRADING_READY_STATION_MAP["tokyo"]
+    monkeypatch.setattr(
+        runner_module,
+        "TRADING_READY_STATION_MAP",
+        {"seoul": seoul, "london": london, "tokyo": tokyo},
+    )
+    monkeypatch.setattr(runner_module, "_station_observation_refresh_cursor", 0)
+    calls: list[str] = []
+
+    class SequentialProvider:
+        supports_parallel_station_refresh = False
+
+        def observed_temperature_extremes_so_far(self, station, *, target_date, now):
+            del target_date, now
+            calls.append(station.station_id)
+
+    now = datetime(2026, 7, 20, 0, 0, tzinfo=timezone.utc)
+    runner_module._refresh_official_station_observations(SequentialProvider(), now=now)
+    first_round = list(calls)
+    calls.clear()
+    runner_module._refresh_official_station_observations(SequentialProvider(), now=now)
+
+    assert first_round == [seoul.station_id, london.station_id, tokyo.station_id]
+    assert calls == [london.station_id, tokyo.station_id, seoul.station_id]
+
+
 def test_official_station_health_refresh_polls_direct_sources_in_parallel(monkeypatch):
     seoul = runner_module.TRADING_READY_STATION_MAP["seoul"]
     london = runner_module.TRADING_READY_STATION_MAP["london"]
@@ -5133,6 +5319,11 @@ def test_runner_releases_only_newly_completed_station_ids(tmp_path, monkeypatch)
         event_id="seoul-high-event",
     )
     released: list[set[str]] = []
+    refresh_station_ids: list[set[str]] = []
+    evaluation_can_start = threading.Event()
+    evaluation_started = threading.Event()
+    allow_evaluation_to_finish = threading.Event()
+    released_before_evaluation_finished: list[bool] = []
 
     class FakeClient:
         def __init__(self, *_args, **_kwargs):
@@ -5147,14 +5338,30 @@ def test_runner_releases_only_newly_completed_station_ids(tmp_path, monkeypatch)
             return market
 
     class RecordingEvaluator:
-        def __init__(self, **_kwargs):
-            pass
+        def __init__(self, *, evaluator, **_kwargs):
+            self.evaluator = evaluator
+            self.thread = None
 
         def start(self):
-            return None
+            def run_evaluation():
+                assert evaluation_can_start.wait(timeout=1)
+                self.evaluator({"no"})
+
+            self.thread = threading.Thread(
+                target=run_evaluation,
+                daemon=True,
+            )
+            self.thread.start()
 
         def stop(self, *, drain=True, timeout=5.0):
-            del drain, timeout
+            del drain
+            allow_evaluation_to_finish.set()
+            if self.thread is not None:
+                self.thread.join(timeout=timeout)
+
+        def enqueue_tokens(self, _token_ids, *, urgent=False):
+            del urgent
+            return 1
 
         def status_snapshot(self):
             return {"thread_alive": True, "queue_depth": 0}
@@ -5165,6 +5372,8 @@ def test_runner_releases_only_newly_completed_station_ids(tmp_path, monkeypatch)
 
         def start(self, token_ids):
             assert set(token_ids) == {"yes", "no"}
+            evaluation_can_start.set()
+            assert evaluation_started.wait(timeout=1)
 
         def stop(self):
             return None
@@ -5183,10 +5392,15 @@ def test_runner_releases_only_newly_completed_station_ids(tmp_path, monkeypatch)
         now,
         station_state_by_id,
         on_shared_metar_refreshed,
+        station_ids=None,
     ):
         del now, station_state_by_id
+        refresh_station_ids.append(set(station_ids or set()))
+        release_timer = threading.Timer(0.2, allow_evaluation_to_finish.set)
+        release_timer.start()
         on_shared_metar_refreshed({"FIRST"})
         on_shared_metar_refreshed({"SECOND"})
+        release_timer.join(timeout=1)
         return {"FIRST", "SECOND"}
 
     def record_release(
@@ -5200,7 +5414,20 @@ def test_runner_releases_only_newly_completed_station_ids(tmp_path, monkeypatch)
         now,
     ):
         del now
-        released.append(set(station_ids))
+        if station_ids:
+            released.append(set(station_ids))
+            released_before_evaluation_finished.append(
+                not allow_evaluation_to_finish.is_set()
+            )
+
+    def record_station_release(*_args, station_ids, **_kwargs):
+        record_release(None, None, None, None, None, station_ids=station_ids, now=None)
+        return 0
+
+    def block_realtime_evaluation(*_args, **_kwargs):
+        evaluation_started.set()
+        assert allow_evaluation_to_finish.wait(timeout=2)
+        return {}
 
     monkeypatch.setattr(runner_module, "PolymarketClient", FakeClient)
     monkeypatch.setattr(runner_module, "OrderBookMarketStream", RecordingStream)
@@ -5214,8 +5441,9 @@ def test_runner_releases_only_newly_completed_station_ids(tmp_path, monkeypatch)
     monkeypatch.setattr(
         runner_module,
         "_enqueue_station_refresh_high_exact_no_probes",
-        lambda *_args, **_kwargs: 0,
+        record_station_release,
     )
+    monkeypatch.setattr(runner_module, "_evaluate_realtime_update", block_realtime_evaluation)
 
     def stop_after_first_loop(_seconds):
         raise RuntimeError("stop after station release")
@@ -5235,6 +5463,10 @@ def test_runner_releases_only_newly_completed_station_ids(tmp_path, monkeypatch)
         runner_module.run_realtime_forever(settings)
 
     assert released == [{"FIRST"}, {"SECOND"}]
+    assert released_before_evaluation_finished == [True, True]
+    assert refresh_station_ids == [
+        {runner_module.TRADING_READY_STATION_MAP["seoul"].station_id}
+    ]
 
 
 def test_lock_only_runtime_rejects_missing_wunderground_key(tmp_path):
