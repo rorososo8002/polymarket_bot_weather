@@ -113,7 +113,12 @@ _RATE_SETTINGS = (
 
 _RAW_SNAPSHOT_MODES = ("off", "error", "debug")
 _SIZE_MODES = ("fixed_fraction", "kelly")
-_STRATEGY_MODES = ("lock_only", "intraday_observation_edge", "hybrid_observation_edge")
+_STRATEGY_MODES = (
+    "lock_only",
+    "upstream_lock_paper",
+    "intraday_observation_edge",
+    "hybrid_observation_edge",
+)
 
 
 @dataclass(frozen=True)

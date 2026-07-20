@@ -20,6 +20,17 @@ from .exit_policy import side_true_probability
 from .market_rules import market_rule_mismatch_reason, market_uses_wunderground_settlement_source
 from .models import EdgeResult, PaperPosition, RawMarket, WeatherSignal
 from .risk import same_observation_reentry_block_reason
+from .stations import TRADING_READY_STATION_MAP
+from .upstream_lock_policy import (
+    UPSTREAM_LOCK_PAPER_EVENT_CAP_FRACTION,
+    UPSTREAM_LOCK_PAPER_EXACT_NO_TIER,
+    UPSTREAM_LOCK_PAPER_MAX_ENTRY_PRICE,
+    UPSTREAM_LOCK_PAPER_MIN_BUCKET_DISTANCE_C,
+    UPSTREAM_LOCK_PAPER_MODE,
+    UPSTREAM_LOCK_PAPER_NOWCAST_SOURCES,
+    UPSTREAM_LOCK_PAPER_SETTLEMENT_UNCERTAINTY_FLOOR,
+    UPSTREAM_LOCK_PAPER_SIGNAL_FAMILY,
+)
 from .weather_client import (
     TemperatureBucketInterval,
     parse_weather_question,
@@ -41,6 +52,8 @@ LOCK_ONLY_EXACT_NO_TIERS = {
     LEGACY_LOCK_ONLY_EXACT_NO_TIER,
 }
 DIRECT_SETTLEMENT_NOWCAST_SOURCE = "wunderground-history-direct"
+UPSTREAM_LOCK_PAPER_EXACT_NO_TIERS = {UPSTREAM_LOCK_PAPER_EXACT_NO_TIER}
+LOCK_EXACT_NO_STRATEGY_MODES = frozenset({"lock_only", UPSTREAM_LOCK_PAPER_MODE})
 
 
 @dataclass(frozen=True)
@@ -140,12 +153,177 @@ def direct_exact_no_entry_block_reason(
     return None
 
 
+def upstream_exact_no_entry_block_reason(
+    market: RawMarket,
+    signal: WeatherSignal | None,
+    side: str,
+    result: EdgeResult | None = None,
+) -> str | None:
+    if signal is None:
+        return "upstream_signal_required"
+    parsed = signal.parsed
+    market_parsed = parse_weather_question(market.question)
+    nowcast = signal.nowcast if isinstance(signal.nowcast, dict) else {}
+    if (
+        parsed is None
+        or parsed.variable != "temperature"
+        or parsed.temperature_metric not in {"max", "min"}
+        or parsed.temperature_bucket != "exact"
+        or parsed.threshold_original is None
+        or market_parsed.variable != "temperature"
+        or market_parsed.temperature_metric not in {"max", "min"}
+        or market_parsed.temperature_bucket != "exact"
+        or market_parsed.threshold_original is None
+    ):
+        return "exact_temperature_bucket_required"
+    if parsed.threshold_unit != "C" or market_parsed.threshold_unit != "C":
+        return "exact_celsius_bucket_required"
+    if (
+        (market_parsed.city or "").casefold() != (parsed.city or "").casefold()
+        or market_parsed.temperature_metric != parsed.temperature_metric
+        or market_parsed.threshold_unit != parsed.threshold_unit
+        or market_parsed.date_hint != parsed.date_hint
+        or abs(float(market_parsed.threshold_original) - float(parsed.threshold_original)) > 1e-9
+    ):
+        return "signal_market_bucket_mismatch"
+    if market_rule_mismatch_reason(market):
+        return "market_rule_mismatch"
+    if not market_uses_wunderground_settlement_source(market):
+        return "wunderground_settlement_source_required"
+    if side != "NO":
+        return "no_side_required"
+    if nowcast.get("source") not in UPSTREAM_LOCK_PAPER_NOWCAST_SOURCES:
+        return "awc_or_kma_same_station_nowcast_required"
+    station_id = str(nowcast.get("station_id") or "").upper()
+    expected_station = TRADING_READY_STATION_MAP.get((parsed.city or "").casefold())
+    if expected_station is None or station_id != expected_station.station_id.upper():
+        return "same_registered_station_required"
+    if station_id == "HKO":
+        return "upstream_verified_metar_station_required"
+    if signal.source != "official-station-lock-strong_no":
+        return "official_strong_no_lock_required"
+    if signal.signal_family != UPSTREAM_LOCK_PAPER_SIGNAL_FAMILY:
+        return "upstream_lock_paper_signal_family_required"
+    try:
+        signal_p_true = float(signal.p_true)
+        conservative_yes_probability = float(signal.conservative_yes_probability)
+        conservative_no_probability = float(signal.conservative_no_probability)
+    except (TypeError, ValueError):
+        signal_p_true = float("nan")
+        conservative_yes_probability = float("nan")
+        conservative_no_probability = float("nan")
+    if not isfinite(signal_p_true) or not 0.0 <= signal_p_true <= 1e-12:
+        return "irreversible_no_probability_required"
+    if (
+        not isfinite(conservative_yes_probability)
+        or not isfinite(conservative_no_probability)
+        or not UPSTREAM_LOCK_PAPER_SETTLEMENT_UNCERTAINTY_FLOOR
+        <= conservative_yes_probability
+        < 0.5
+        or not 0.5
+        < conservative_no_probability
+        <= 1.0 - UPSTREAM_LOCK_PAPER_SETTLEMENT_UNCERTAINTY_FLOOR
+        or abs(conservative_yes_probability + conservative_no_probability - 1.0) > 1e-9
+    ):
+        return "conservative_upstream_settlement_probability_required"
+    if signal.settlement_precision_confidence != "verified":
+        return "verified_precision_required"
+    if str(nowcast.get("data_block_reason") or "").strip():
+        return "unblocked_upstream_observation_required"
+    if nowcast.get("daily_extremes_complete") is not True:
+        return "complete_upstream_daily_extremes_required"
+    if nowcast.get("entry_evidence_mode") != "upstream_same_station_paper":
+        return "upstream_paper_evidence_marker_required"
+    if nowcast.get("settlement_source_verified") is not False:
+        return "unconfirmed_settlement_marker_required"
+    try:
+        upstream_distance_c = float(nowcast.get("upstream_bucket_distance_c"))
+        upstream_required_c = float(nowcast.get("upstream_min_bucket_distance_c"))
+    except (TypeError, ValueError):
+        return "upstream_two_celsius_step_evidence_required"
+    if (
+        not isfinite(upstream_distance_c)
+        or not isfinite(upstream_required_c)
+        or upstream_required_c + 1e-9 < UPSTREAM_LOCK_PAPER_MIN_BUCKET_DISTANCE_C
+        or upstream_distance_c + 1e-9 < upstream_required_c
+    ):
+        return "upstream_two_celsius_step_evidence_required"
+    target_date = str(nowcast.get("target_date_local") or "")
+    station_date = str(nowcast.get("station_local_date") or "")
+    if not target_date or not station_date or target_date != station_date:
+        return "matching_station_local_date_required"
+    if result is not None:
+        try:
+            result_p_true = float(result.p_true)
+            result_conservative_yes = float(result.conservative_yes_probability)
+            result_conservative_no = float(result.conservative_no_probability)
+        except (TypeError, ValueError):
+            result_p_true = float("nan")
+            result_conservative_yes = float("nan")
+            result_conservative_no = float("nan")
+        if result.side != "NO" or not isfinite(result_p_true) or not 0.0 <= result_p_true <= 1e-12:
+            return "result_irreversible_no_required"
+        if result.signal_family != UPSTREAM_LOCK_PAPER_SIGNAL_FAMILY:
+            return "result_upstream_lock_paper_signal_family_required"
+        if result.probability_tier not in UPSTREAM_LOCK_PAPER_EXACT_NO_TIERS:
+            return "result_exact_no_probability_tier_required"
+        if (
+            not isfinite(result_conservative_yes)
+            or not isfinite(result_conservative_no)
+            or abs(result_conservative_yes - conservative_yes_probability) > 1e-9
+            or abs(result_conservative_no - conservative_no_probability) > 1e-9
+        ):
+            return "result_conservative_upstream_probability_required"
+    return None
+
+
+def exact_no_entry_block_reason_for_strategy(
+    market: RawMarket,
+    signal: WeatherSignal | None,
+    side: str,
+    result: EdgeResult | None = None,
+    *,
+    strategy_mode: str = "",
+) -> str | None:
+    mode = strategy_mode or (signal.strategy_mode if signal is not None else "")
+    if not mode and signal is not None:
+        if signal.signal_family == "lock_only":
+            mode = "lock_only"
+        elif signal.signal_family == UPSTREAM_LOCK_PAPER_SIGNAL_FAMILY:
+            mode = UPSTREAM_LOCK_PAPER_MODE
+    if mode == "lock_only":
+        return direct_exact_no_entry_block_reason(market, signal, side, result)
+    if mode == UPSTREAM_LOCK_PAPER_MODE:
+        return upstream_exact_no_entry_block_reason(market, signal, side, result)
+    return "exact_no_lock_strategy_required"
+
+
 def direct_exact_no_metric(
     market: RawMarket,
     signal: WeatherSignal | None,
     result: EdgeResult,
 ) -> str | None:
     if direct_exact_no_entry_block_reason(market, signal, result.side, result) is not None:
+        return None
+    assert signal is not None and signal.parsed is not None
+    return signal.parsed.temperature_metric
+
+
+def lock_exact_no_metric(
+    market: RawMarket,
+    signal: WeatherSignal | None,
+    result: EdgeResult,
+) -> str | None:
+    if (
+        exact_no_entry_block_reason_for_strategy(
+            market,
+            signal,
+            result.side,
+            result,
+            strategy_mode=(signal.strategy_mode if signal is not None else result.strategy_mode),
+        )
+        is not None
+    ):
         return None
     assert signal is not None and signal.parsed is not None
     return signal.parsed.temperature_metric
@@ -173,6 +351,52 @@ def direct_exact_no_position_metric(position: PaperPosition) -> str | None:
         and parsed.variable == "temperature"
         and parsed.temperature_metric in {"max", "min"}
         and parsed.temperature_bucket == "exact"
+        and parsed.threshold_unit in {"C", "F"}
+    ):
+        return None
+    return parsed.temperature_metric
+
+
+def lock_exact_no_position_metric(position: PaperPosition) -> str | None:
+    direct_metric = direct_exact_no_position_metric(position)
+    if direct_metric is not None:
+        return direct_metric
+    metadata = position.metadata
+    parsed = parse_weather_question(position.question)
+    station_audit = metadata.get("station_audit")
+    station_audit = station_audit if isinstance(station_audit, dict) else {}
+    try:
+        entry_p_true = float(metadata.get("entry_p_true"))
+        entry_side_probability = float(metadata.get("entry_side_probability"))
+        upstream_distance_c = float(
+            station_audit.get("upstream_bucket_distance_c", -1.0)
+        )
+        upstream_required_c = float(
+            station_audit.get("upstream_min_bucket_distance_c", -1.0)
+        )
+    except (TypeError, ValueError):
+        return None
+    if not (
+        position.side == "NO"
+        and 0.0 <= entry_p_true <= 1e-12
+        and 0.5 < entry_side_probability < 1.0
+        and metadata.get("strategy_mode") == UPSTREAM_LOCK_PAPER_MODE
+        and metadata.get("signal_family") == UPSTREAM_LOCK_PAPER_SIGNAL_FAMILY
+        and metadata.get("probability_tier") in UPSTREAM_LOCK_PAPER_EXACT_NO_TIERS
+        and metadata.get("signal_source") == "official-station-lock-strong_no"
+        and metadata.get("settlement_precision_confidence") == "verified"
+        and metadata.get("nowcast_source") in UPSTREAM_LOCK_PAPER_NOWCAST_SOURCES
+        and metadata.get("wunderground_settlement_source") == "true"
+        and station_audit.get("entry_evidence_mode") == "upstream_same_station_paper"
+        and station_audit.get("settlement_source_verified") is False
+        and upstream_distance_c >= UPSTREAM_LOCK_PAPER_MIN_BUCKET_DISTANCE_C
+        and upstream_required_c >= UPSTREAM_LOCK_PAPER_MIN_BUCKET_DISTANCE_C
+        and station_audit.get("daily_extremes_complete") is True
+        and not str(station_audit.get("data_block_reason") or "").strip()
+        and parsed.variable == "temperature"
+        and parsed.temperature_metric in {"max", "min"}
+        and parsed.temperature_bucket == "exact"
+        and parsed.threshold_unit == "C"
     ):
         return None
     return parsed.temperature_metric
@@ -327,6 +551,26 @@ def adaptive_event_cap_fraction(entry_bankroll: float, settings: Settings) -> fl
     if entry_bankroll >= settings.event_date_exposure_transition_usd:
         return settings.large_bankroll_event_date_exposure_fraction
     return settings.max_event_date_exposure_fraction
+
+
+def ordinary_event_cap_for_strategy(
+    *,
+    strategy_mode: str,
+    entry_bankroll: float,
+    cost_basis_bankroll: float,
+    settings: Settings,
+) -> tuple[float, float]:
+    """Return the ordinary city-date cap fraction and dollar limit.
+
+    The personal upstream experiment always shares 5% of cost-basis bankroll.
+    A temporary executable mark below $1,000 must never switch that experiment
+    back to the ordinary small-account 10% tier.
+    """
+    if strategy_mode == UPSTREAM_LOCK_PAPER_MODE:
+        fraction = UPSTREAM_LOCK_PAPER_EVENT_CAP_FRACTION
+        return fraction, max(cost_basis_bankroll, 0.0) * fraction
+    fraction = adaptive_event_cap_fraction(entry_bankroll, settings)
+    return fraction, max(entry_bankroll, 0.0) * fraction
 
 
 def websocket_pricing_block_reason(health: dict[str, Any]) -> str | None:
@@ -759,10 +1003,16 @@ def _scenario_probabilities(candidates: list[PortfolioCandidate]) -> _ScenarioPr
     if not unique:
         return _ScenarioProbabilityAssessment({"other": 1.0})
 
-    bucket_probabilities = {
-        market_id: clamp_probability(candidate.signal.p_true)
-        for market_id, candidate in unique.items()
-    }
+    bucket_probabilities = {}
+    for market_id, candidate in unique.items():
+        signal = candidate.signal
+        probability = signal.p_true
+        if (
+            signal.strategy_mode == UPSTREAM_LOCK_PAPER_MODE
+            and signal.conservative_yes_probability is not None
+        ):
+            probability = signal.conservative_yes_probability
+        bucket_probabilities[market_id] = clamp_probability(probability)
     total = sum(bucket_probabilities.values())
     rounded_probabilities = {
         market_id: round(probability, 12)
@@ -949,9 +1199,14 @@ def select_event_portfolio(
     first = candidates[0] if candidates else None
     city, date_hint = _candidate_city_and_date(first) if first is not None else ("", "")
     settings = broker.settings
-    ordinary_event_cap_fraction = adaptive_event_cap_fraction(entry_bankroll.entry_bankroll, settings)
+    ordinary_event_cap_fraction, ordinary_event_cap_usd = ordinary_event_cap_for_strategy(
+        strategy_mode=settings.strategy_mode,
+        entry_bankroll=entry_bankroll.entry_bankroll,
+        cost_basis_bankroll=entry_bankroll.cost_basis_bankroll,
+        settings=settings,
+    )
     event_cap_fraction = ordinary_event_cap_fraction
-    event_cap_usd = entry_bankroll.entry_bankroll * ordinary_event_cap_fraction
+    event_cap_usd = ordinary_event_cap_usd
     existing_event_exposure = broker.event_date_exposure(city, date_hint) if city and date_hint else 0.0
     held = _event_positions(broker, city, date_hint)
     rejected: list[RejectedPortfolioLeg] = []
@@ -1040,7 +1295,7 @@ def select_event_portfolio(
             settings,
             candidate.market,
         )
-        candidate_direct_metric = direct_exact_no_metric(
+        candidate_direct_metric = lock_exact_no_metric(
             candidate.market,
             candidate.signal,
             candidate.result,
@@ -1049,7 +1304,7 @@ def select_event_portfolio(
             override == 1.0
             and candidate_direct_metric is not None
             and all(
-                direct_exact_no_position_metric(position) == candidate_direct_metric
+                lock_exact_no_position_metric(position) == candidate_direct_metric
                 for position in held
             )
         )
@@ -1070,7 +1325,7 @@ def select_event_portfolio(
         eligible.append(candidate)
 
     ordinary_available_budget = min(
-        entry_bankroll.entry_bankroll * ordinary_event_cap_fraction - existing_event_exposure,
+        ordinary_event_cap_usd - existing_event_exposure,
         entry_bankroll.entry_bankroll * settings.max_city_exposure_fraction - broker.city_exposure(city),
         entry_bankroll.entry_bankroll * settings.max_total_exposure_fraction - broker.total_exposure(),
         broker.state.cash_usd,
@@ -1088,11 +1343,16 @@ def select_event_portfolio(
                 candidate.market,
             )
             event_fraction = override or ordinary_event_cap_fraction
+            candidate_event_cap_usd = (
+                entry_bankroll.entry_bankroll * override
+                if override is not None
+                else ordinary_event_cap_usd
+            )
             city_fraction = override or settings.max_city_exposure_fraction
             total_fraction = override or settings.max_total_exposure_fraction
             single_fraction = override or settings.max_single_market_fraction
             available_budget = min(
-                entry_bankroll.entry_bankroll * event_fraction - existing_event_exposure,
+                candidate_event_cap_usd - existing_event_exposure,
                 entry_bankroll.entry_bankroll * city_fraction - broker.city_exposure(city),
                 entry_bankroll.entry_bankroll * total_fraction - broker.total_exposure(),
                 broker.state.cash_usd,
@@ -1181,7 +1441,7 @@ def select_event_portfolio(
             candidate
             for candidate in eligible
             if (
-                direct_exact_no_metric(candidate.market, candidate.signal, candidate.result) is not None
+                lock_exact_no_metric(candidate.market, candidate.signal, candidate.result) is not None
                 and structured_event_cap_override_fraction(
                     candidate.signal,
                     candidate.result,

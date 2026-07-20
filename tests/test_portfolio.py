@@ -209,6 +209,62 @@ def direct_exact_no_candidate(
     )
 
 
+def upstream_exact_no_candidate(
+    market_id: str,
+    bucket: str,
+    *,
+    size_usd: float = 40.0,
+    metric: str = "max",
+) -> PortfolioCandidate:
+    item = direct_exact_no_candidate(
+        market_id,
+        bucket,
+        size_usd=size_usd,
+        p_exec=0.85,
+        metric=metric,
+    )
+    return replace(
+        item,
+        signal=replace(
+            item.signal,
+            note="two-C upstream paper candidate; WU settlement unverified",
+            nowcast={
+                "source": "aviationweather-metar",
+                "station_id": "RKSI",
+                "target_date_local": "2026-05-25",
+                "station_local_date": "2026-05-25",
+                "daily_extremes_complete": True,
+                "data_block_reason": "",
+                "entry_evidence_mode": "upstream_same_station_paper",
+                "settlement_source_verified": False,
+                "upstream_bucket_distance_c": 2.0,
+                "upstream_min_bucket_distance_c": 2.0,
+            },
+            strategy_mode="upstream_lock_paper",
+            signal_family="upstream_lock_paper",
+            entry_size_fraction_override=0.10,
+            raw_probability=0.0,
+            conservative_yes_probability=0.04,
+            conservative_no_probability=0.96,
+            raw_selected_side_probability=1.0,
+            selected_side_probability=0.96,
+        ),
+        result=replace(
+            item.result,
+            strategy_mode="upstream_lock_paper",
+            signal_family="upstream_lock_paper",
+            probability_tier="upstream_2c_exact_no",
+            event_cap_override_fraction=None,
+            entry_size_fraction_override=0.10,
+            raw_probability=0.0,
+            conservative_yes_probability=0.04,
+            conservative_no_probability=0.96,
+            raw_selected_side_probability=1.0,
+            selected_side_probability=0.96,
+        ),
+    )
+
+
 def usable_snapshot(entry_bankroll: float = 100.0) -> EntryBankrollSnapshot:
     return EntryBankrollSnapshot(
         usable=True,
@@ -1025,6 +1081,113 @@ def test_event_portfolio_blocks_third_direct_exact_no_leg(tmp_path):
     assert len(decision.selected) == 2
     assert decision.selected_exposure_usd <= 1000.0
     assert [item.reason for item in decision.rejected] == ["event leg cap reached"]
+
+
+def test_direct_exact_no_keeps_fahrenheit_markets_supported():
+    item = direct_exact_no_candidate("seoul-84f", "84°F")
+
+    reason = portfolio_module.direct_exact_no_entry_block_reason(
+        item.market,
+        item.signal,
+        item.result.side,
+        item.result,
+    )
+
+    assert reason is None
+
+
+def test_upstream_two_c_exact_no_pair_shares_small_city_date_budget(tmp_path):
+    broker = PaperBroker(
+        settings(
+            tmp_path,
+            strategy_mode="upstream_lock_paper",
+            bankroll_usd=1000.0,
+            max_event_portfolio_legs=2,
+        )
+    )
+
+    decision = select_event_portfolio(
+        broker,
+        [
+            upstream_exact_no_candidate("seoul-27", "27째C"),
+            upstream_exact_no_candidate("seoul-28", "28째C"),
+            upstream_exact_no_candidate("seoul-29", "29째C"),
+        ],
+        usable_snapshot(1000.0),
+    )
+
+    assert len(decision.selected) == 2
+    assert decision.event_cap_fraction == pytest.approx(0.05)
+    assert decision.selected_exposure_usd == pytest.approx(50.0)
+    assert decision.scenario_probabilities == {
+        "seoul-27": pytest.approx(0.04),
+        "seoul-28": pytest.approx(0.04),
+        "seoul-29": pytest.approx(0.04),
+        "other": pytest.approx(0.88),
+    }
+    assert all(leg.result.event_cap_override_fraction is None for leg in decision.selected)
+    assert [item.reason for item in decision.rejected] == ["event leg cap reached"]
+
+
+def test_upstream_city_date_cap_stays_five_percent_below_transition(tmp_path):
+    broker = PaperBroker(
+        settings(
+            tmp_path,
+            strategy_mode="upstream_lock_paper",
+            bankroll_usd=1000.0,
+            max_event_portfolio_legs=2,
+        )
+    )
+
+    decision = select_event_portfolio(
+        broker,
+        [
+            upstream_exact_no_candidate("seoul-27", "27°C"),
+            upstream_exact_no_candidate("seoul-28", "28°C"),
+        ],
+        EntryBankrollSnapshot(
+            usable=True,
+            cost_basis_bankroll=1000.0,
+            liquidation_bankroll=999.0,
+            entry_bankroll=999.0,
+            reason="held position marked slightly below cost",
+        ),
+    )
+
+    assert decision.event_cap_fraction == pytest.approx(0.05)
+    assert decision.event_cap_usd == pytest.approx(50.0)
+    assert decision.selected_exposure_usd == pytest.approx(50.0)
+
+
+def test_upstream_two_c_exact_no_pair_still_rejects_mixed_high_low(tmp_path):
+    broker = PaperBroker(
+        settings(tmp_path, strategy_mode="upstream_lock_paper", bankroll_usd=1000.0)
+    )
+
+    decision = select_event_portfolio(
+        broker,
+        [
+            upstream_exact_no_candidate("seoul-high-27", "27째C", metric="max"),
+            upstream_exact_no_candidate("seoul-low-28", "28째C", metric="min"),
+        ],
+        usable_snapshot(1000.0),
+    )
+
+    assert len(decision.selected) == 1
+    assert any(item.reason == "event legs are not complementary" for item in decision.rejected)
+
+
+def test_upstream_exact_no_portfolio_gate_rejects_fahrenheit_even_if_signal_is_forged():
+    item = upstream_exact_no_candidate("seoul-84f", "84°F")
+
+    reason = portfolio_module.upstream_exact_no_entry_block_reason(
+        item.market,
+        item.signal,
+        item.result.side,
+        item.result,
+    )
+
+    assert reason == "exact_celsius_bucket_required"
 
 
 def test_apply_event_portfolio_opens_two_direct_exact_no_legs_with_shared_budget(tmp_path):

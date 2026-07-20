@@ -36,14 +36,23 @@ from .nowcast import AviationWeatherMetarNowcastProvider
 from .paper import PaperBroker, maybe_close_positions, maybe_settle_resolved_positions
 from .polymarket_client import PolymarketClient
 from .portfolio import (
+    LOCK_EXACT_NO_STRATEGY_MODES,
     LOCK_ONLY_EXACT_NO_MAX_ENTRY_PRICE,
     LOCK_ONLY_EXACT_NO_MIN_NET_RETURN_PCT,
     LOCK_ONLY_EXACT_NO_TIER,
+    UPSTREAM_LOCK_PAPER_MODE,
+    UPSTREAM_LOCK_PAPER_EXACT_NO_TIER,
+    UPSTREAM_LOCK_PAPER_MAX_ENTRY_PRICE,
+    UPSTREAM_LOCK_PAPER_MIN_BUCKET_DISTANCE_C,
+    UPSTREAM_LOCK_PAPER_NOWCAST_SOURCES,
+    UPSTREAM_LOCK_PAPER_SETTLEMENT_UNCERTAINTY_FLOOR,
+    UPSTREAM_LOCK_PAPER_SIGNAL_FAMILY,
     EntryBankrollSnapshot,
     EventPortfolioDecision,
     PortfolioCandidate,
     available_entry_bankroll,
     direct_exact_no_entry_block_reason,
+    exact_no_entry_block_reason_for_strategy,
     select_event_portfolio,
     websocket_pricing_block_reason,
 )
@@ -130,6 +139,16 @@ def _is_official_nowcast_lock(signal: WeatherSignal) -> bool:
     )
 
 
+def _is_verified_settlement_lock_signal(signal: WeatherSignal) -> bool:
+    nowcast = signal.nowcast if isinstance(signal.nowcast, dict) else {}
+    return (
+        signal.signal_family == "lock_only"
+        and signal.source == "official-station-lock-strong_no"
+        and nowcast.get("source") == "wunderground-history-direct"
+        and nowcast.get("settlement_source_verified") is True
+    )
+
+
 def _is_intraday_observation_edge(signal: WeatherSignal) -> bool:
     return (
         "signal_family=intraday_observation_edge" in signal.note
@@ -143,6 +162,8 @@ def _is_official_station_entry_signal(signal: WeatherSignal) -> bool:
 
 
 def _base_signal_family(signal: WeatherSignal) -> str:
+    if signal.signal_family == UPSTREAM_LOCK_PAPER_SIGNAL_FAMILY:
+        return UPSTREAM_LOCK_PAPER_SIGNAL_FAMILY
     if _is_intraday_observation_edge(signal):
         return "intraday_observation_edge"
     if _is_official_nowcast_lock(signal):
@@ -169,6 +190,60 @@ def _is_lock_only_exact_no(side: str, signal: WeatherSignal) -> bool:
         and str(nowcast.get("source") or "") == "wunderground-history-direct"
         and station_id != "HKO"
         and not str(nowcast.get("data_block_reason") or "")
+    )
+
+
+def _is_upstream_lock_paper_exact_no(side: str, signal: WeatherSignal) -> bool:
+    parsed = signal.parsed
+    nowcast = signal.nowcast if isinstance(signal.nowcast, dict) else {}
+    p_true = _finite_float(signal.p_true)
+    conservative_yes_probability = _finite_float(signal.conservative_yes_probability)
+    conservative_no_probability = _finite_float(signal.conservative_no_probability)
+    upstream_distance_c = _finite_float(nowcast.get("upstream_bucket_distance_c"))
+    upstream_required_c = _finite_float(nowcast.get("upstream_min_bucket_distance_c"))
+    target_date = str(nowcast.get("target_date_local") or "")
+    station_date = str(nowcast.get("station_local_date") or "")
+    return (
+        side == "NO"
+        and parsed is not None
+        and parsed.variable == "temperature"
+        and parsed.temperature_metric in {"max", "min"}
+        and parsed.temperature_bucket == "exact"
+        and parsed.threshold_unit == "C"
+        and signal.strategy_mode == UPSTREAM_LOCK_PAPER_MODE
+        and signal.signal_family == UPSTREAM_LOCK_PAPER_SIGNAL_FAMILY
+        and signal.source == "official-station-lock-strong_no"
+        and p_true is not None
+        and 0.0 <= p_true <= 1e-12
+        and conservative_yes_probability is not None
+        and conservative_no_probability is not None
+        and UPSTREAM_LOCK_PAPER_SETTLEMENT_UNCERTAINTY_FLOOR
+        <= conservative_yes_probability
+        < 0.5
+        and 0.5
+        < conservative_no_probability
+        <= 1.0 - UPSTREAM_LOCK_PAPER_SETTLEMENT_UNCERTAINTY_FLOOR
+        and abs(conservative_yes_probability + conservative_no_probability - 1.0) <= 1e-9
+        and signal.settlement_precision_confidence == "verified"
+        and nowcast.get("source") in UPSTREAM_LOCK_PAPER_NOWCAST_SOURCES
+        and str(nowcast.get("station_id") or "").upper() != "HKO"
+        and nowcast.get("daily_extremes_complete") is True
+        and nowcast.get("entry_evidence_mode") == "upstream_same_station_paper"
+        and nowcast.get("settlement_source_verified") is False
+        and upstream_distance_c is not None
+        and upstream_required_c is not None
+        and upstream_required_c >= UPSTREAM_LOCK_PAPER_MIN_BUCKET_DISTANCE_C - 1e-12
+        and upstream_distance_c >= upstream_required_c - 1e-12
+        and bool(target_date)
+        and target_date == station_date
+        and not str(nowcast.get("data_block_reason") or "")
+    )
+
+
+def _is_exact_no_lock(side: str, signal: WeatherSignal) -> bool:
+    return _is_lock_only_exact_no(side, signal) or _is_upstream_lock_paper_exact_no(
+        side,
+        signal,
     )
 
 
@@ -200,14 +275,49 @@ def _lock_only_exact_no_entry_skip_reason(
     )
 
 
+def _exact_no_entry_skip_reason(
+    market: RawMarket,
+    signal: WeatherSignal,
+    side: str | None,
+    settings: Settings,
+) -> str | None:
+    blocked_reason = exact_no_entry_block_reason_for_strategy(
+        market,
+        signal,
+        side or "",
+        strategy_mode=settings.strategy_mode,
+    )
+    if blocked_reason is None:
+        return None
+    if settings.strategy_mode == "lock_only":
+        return _lock_only_exact_no_entry_skip_reason(market, signal, side)
+    parsed = signal.parsed
+    nowcast = signal.nowcast if isinstance(signal.nowcast, dict) else {}
+    p_true = _finite_float(signal.p_true)
+    p_true_label = "UNKNOWN" if p_true is None else f"{p_true:.6f}"
+    return (
+        "SKIP_UPSTREAM_LOCK_PAPER_EXACT_NO_REQUIRED: upstream_lock_paper permits new paper "
+        "entry only for an exact temperature NO made physically impossible by a complete, "
+        "fresh AWC/KMA same-station day; it does not claim Wunderground settlement confirmation; "
+        f"blocked_reason={blocked_reason}; side={side or 'UNKNOWN'}; "
+        f"metric={(parsed.temperature_metric if parsed is not None else None) or 'UNKNOWN'}; "
+        f"bucket={(parsed.temperature_bucket if parsed is not None else None) or 'UNKNOWN'}; "
+        f"p_true={p_true_label}; signal_source={signal.source or 'UNKNOWN'}; "
+        f"nowcast_source={str(nowcast.get('source') or 'UNKNOWN')}; "
+        f"precision={signal.settlement_precision_confidence or 'UNKNOWN'}"
+    )
+
+
 def _entry_price_cap(side: str, signal: WeatherSignal) -> float:
     if _is_lock_only_exact_no(side, signal):
         return LOCK_ONLY_EXACT_NO_MAX_ENTRY_PRICE
+    if _is_upstream_lock_paper_exact_no(side, signal):
+        return UPSTREAM_LOCK_PAPER_MAX_ENTRY_PRICE
     return MAX_ENTRY_EXECUTION_PRICE
 
 
 def _entry_min_return_pct(side: str, signal: WeatherSignal, settings: Settings) -> float:
-    if _is_lock_only_exact_no(side, signal):
+    if _is_exact_no_lock(side, signal):
         return max(settings.entry_min_expected_net_return_pct, LOCK_ONLY_EXACT_NO_MIN_NET_RETURN_PCT)
     return settings.entry_min_expected_net_return_pct
 
@@ -302,7 +412,13 @@ def _raw_side_probability(side: str, signal: WeatherSignal) -> float | None:
 
 
 def _edge_error_margins(signal: WeatherSignal, settings: Settings) -> tuple[float, float]:
-    if _is_official_nowcast_lock(signal):
+    if _is_verified_settlement_lock_signal(signal):
+        return 0.0, 0.0
+    if (
+        signal.strategy_mode == UPSTREAM_LOCK_PAPER_MODE
+        and signal.conservative_yes_probability is not None
+        and signal.conservative_no_probability is not None
+    ):
         return 0.0, 0.0
     return settings.model_error_margin, settings.resolution_error_margin
 
@@ -311,14 +427,14 @@ def _conservative_settlement_value_for_signal(side: str, signal: WeatherSignal, 
     explicit_probability = _explicit_conservative_side_probability(side, signal)
     if explicit_probability is not None:
         return explicit_probability
-    if _is_official_nowcast_lock(signal):
+    if _is_verified_settlement_lock_signal(signal):
         return _side_probability(side, signal.p_true)
     return conservative_settlement_value(side, signal.p_true, settings)
 
 
 def _model_fair_price_for_signal(side: str, signal: WeatherSignal, settings: Settings) -> float:
     explicit_probability = _explicit_conservative_side_probability(side, signal)
-    if explicit_probability is None and not _is_official_nowcast_lock(signal):
+    if explicit_probability is None and not _is_verified_settlement_lock_signal(signal):
         return model_fair_price(side, signal.p_true, settings)
     settlement_value = _conservative_settlement_value_for_signal(side, signal, settings)
     fair = settlement_value - polymarket_taker_fee_per_share(
@@ -1229,11 +1345,11 @@ def _realtime_signal_allows_new_entry(
     min_confidence, _min_edge, _entry_fraction = _market_params(settings, "temperature")
     if signal.confidence < min_confidence:
         return False
-    if settings.strategy_mode == "lock_only":
+    if settings.strategy_mode in LOCK_EXACT_NO_STRATEGY_MODES:
         side = _preferred_entry_side(signal)
         if market is None:
-            return _is_lock_only_exact_no(side or "", signal)
-        return _lock_only_exact_no_entry_skip_reason(market, signal, side) is None
+            return _is_exact_no_lock(side or "", signal)
+        return _exact_no_entry_skip_reason(market, signal, side, settings) is None
     if settings.official_nowcast_entry_only and not _is_official_station_entry_signal(signal):
         return False
     if settings.no_only_new_entries and _preferred_entry_side(signal) != "NO":
@@ -1712,11 +1828,26 @@ def _entry_price_cap_skip_result(
     settings: Settings,
     p_exec: float,
     market_type: str,
+    book: OrderBook | None = None,
 ) -> EdgeResult | None:
     cap = _entry_price_cap(side, signal)
     if p_exec <= cap + 1e-12:
         return None
     _entry_fee_per_share, edge, _side_probability = _side_edge_metrics(side, signal, p_exec, settings)
+    depth_json = ""
+    if book is not None:
+        _checked_price, checked_shares, _checked_slip = executable_buy_price(
+            book,
+            settings.min_order_usd,
+            fee_rate=settings.weather_taker_fee_rate,
+        )
+        depth_json = _entry_ask_depth_top5_json(
+            book,
+            entry_size_usd=settings.min_order_usd,
+            entry_vwap=p_exec,
+            entry_shares=checked_shares,
+            fee_rate=settings.weather_taker_fee_rate,
+        )
     return EdgeResult(
         "SKIP",
         signal.p_true,
@@ -1729,6 +1860,7 @@ def _entry_price_cap_skip_result(
             f"> max_entry_price={cap:.4f}; edge={edge:.4f} "
             f"[{market_type}]"
         ),
+        entry_ask_depth_top5_json=depth_json,
     )
 
 
@@ -1836,11 +1968,19 @@ def _side_result(
             0.0,
             f"SKIP_NO_EXECUTABLE_DEPTH: {side} liquidity filter: insufficient ask depth [{market_type}]",
         )
-    price_cap_result = _entry_price_cap_skip_result(side, signal, settings, p_exec, market_type)
+    price_cap_result = _entry_price_cap_skip_result(
+        side,
+        signal,
+        settings,
+        p_exec,
+        market_type,
+        book,
+    )
     if price_cap_result is not None:
         return price_cap_result
 
     lock_only_exact_no = _is_lock_only_exact_no(side, signal)
+    upstream_exact_no = _is_upstream_lock_paper_exact_no(side, signal)
     lock_budget = (
         _lock_only_exact_no_budget(
             side,
@@ -2098,6 +2238,8 @@ def _side_result(
         probability_tier=(
             LOCK_ONLY_EXACT_NO_TIER
             if lock_only_exact_no
+            else UPSTREAM_LOCK_PAPER_EXACT_NO_TIER
+            if upstream_exact_no
             else
             observation_tier.probability_tier
             if observation_tier is not None
@@ -2143,11 +2285,12 @@ def _final_pre_trade_entry_result(
             result,
             f"SKIP_RULE_MISMATCH: final pre-trade check failed: {rule_mismatch}",
         )
-    if settings.strategy_mode == "lock_only":
-        strategy_reason = _lock_only_exact_no_entry_skip_reason(
+    if settings.strategy_mode in LOCK_EXACT_NO_STRATEGY_MODES:
+        strategy_reason = _exact_no_entry_skip_reason(
             market,
             signal,
             result.side,
+            settings,
         )
         if strategy_reason is not None:
             return _skip_entry_result(result, strategy_reason)
@@ -2220,13 +2363,18 @@ def _final_pre_trade_entry_result(
         settings,
         checked_p_exec,
         market_type,
+        book,
     )
     if price_cap_result is not None:
-        return _skip_entry_result(
+        blocked = _skip_entry_result(
             result,
             f"final pre-trade check failed: {price_cap_result.reason}",
             p_exec=checked_p_exec,
             net_edge=price_cap_result.net_edge,
+        )
+        return replace(
+            blocked,
+            entry_ask_depth_top5_json=price_cap_result.entry_ask_depth_top5_json,
         )
 
     if not lock_only_exact_no:
@@ -2634,10 +2782,14 @@ def _new_entry_candidates_for_strategy(
         if candidate.result.side not in {"YES", "NO"}:
             eligible.append(candidate)
             continue
-        if settings.strategy_mode == "lock_only" and _lock_only_exact_no_entry_skip_reason(
-            candidate.market,
-            candidate.signal,
-            candidate.result.side,
+        if (
+            settings.strategy_mode in LOCK_EXACT_NO_STRATEGY_MODES
+            and _exact_no_entry_skip_reason(
+                candidate.market,
+                candidate.signal,
+                candidate.result.side,
+                settings,
+            )
         ):
             continue
         if settings.no_only_new_entries and candidate.result.side == "YES":
@@ -3224,11 +3376,12 @@ def _open_position_if_needed(
     if result.side not in {"YES", "NO"}:
         return result
     token_id = market.yes_token_id if result.side == "YES" else market.no_token_id
-    if broker.settings.strategy_mode == "lock_only":
-        strategy_reason = _lock_only_exact_no_entry_skip_reason(
+    if broker.settings.strategy_mode in LOCK_EXACT_NO_STRATEGY_MODES:
+        strategy_reason = _exact_no_entry_skip_reason(
             market,
             signal,
             result.side,
+            broker.settings,
         )
         if strategy_reason is not None:
             blocked = _skip_entry_result(result, strategy_reason)
@@ -3404,11 +3557,12 @@ def _apply_event_portfolio(
         if candidate.result.side not in {"YES", "NO"}:
             continue
         strategy_reason = None
-        if broker.settings.strategy_mode == "lock_only":
-            strategy_reason = _lock_only_exact_no_entry_skip_reason(
+        if broker.settings.strategy_mode in LOCK_EXACT_NO_STRATEGY_MODES:
+            strategy_reason = _exact_no_entry_skip_reason(
                 candidate.market,
                 candidate.signal,
                 candidate.result.side,
+                broker.settings,
             )
         if strategy_reason is None and broker.settings.no_only_new_entries and candidate.result.side == "YES":
             strategy_reason = NO_ONLY_NEW_ENTRY_REASON
@@ -3824,11 +3978,12 @@ def _evaluate_realtime_update(
         if _realtime_signal_allows_new_entry(signal, settings, market):
             continue
         reason = "SKIP_SIGNAL_INELIGIBLE: realtime signal is not eligible for a new NO entry"
-        if settings.strategy_mode == "lock_only":
-            reason = _lock_only_exact_no_entry_skip_reason(
+        if settings.strategy_mode in LOCK_EXACT_NO_STRATEGY_MODES:
+            reason = _exact_no_entry_skip_reason(
                 market,
                 signal,
                 _preferred_entry_side(signal),
+                settings,
             ) or reason
         signal_ineligible_reasons[market.market_id] = reason
     signal_ineligible_market_ids = set(signal_ineligible_reasons)

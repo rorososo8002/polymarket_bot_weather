@@ -1,7 +1,7 @@
 ---
 title: Exact temperature locks must preserve display boundaries and source precision
 date: 2026-06-16
-last_updated: 2026-07-20
+last_updated: 2026-07-21
 category: logic-errors
 module: weather_bot.nowcast, weather_bot.station_signal, weather_bot.live_paper_runner
 problem_type: logic_error
@@ -39,6 +39,12 @@ model. Rounding that intermediate Celsius value to three decimals before
 converting it back to Fahrenheit moved exact integer boundaries: `70F` became
 about `69.9998F`, while `74F` became about `73.9994F`. The first artifact could
 create false certainty; the second could hide a real irreversible break.
+
+The same distinction applies across providers. On 2026-07-19, AWC RKSI reached
+27C while Wunderground settled Seoul's daily high at 26C. Therefore an AWC/KMA
+bucket break is physical upstream evidence, not a Wunderground settlement lock.
+Even when a two-degree audit has no counterexample, zero observed failures is
+not proof of zero future failures.
 
 ## Symptoms
 
@@ -137,6 +143,12 @@ assert observation.observed_low_c * 9.0 / 5.0 + 32.0 == approx(70.0, abs=1e-9)
 assert observation.observed_high_c * 9.0 / 5.0 + 32.0 == approx(74.0, abs=1e-9)
 ```
 
+For an upstream paper experiment, keep the physical crossing and settlement
+probability separate. The raw crossing may remain `p_true=0` for replay, while
+the portfolio and expected-profit calculation use an explicit conservative
+probability such as `YES=0.04`, `NO=0.96`. The final ledger must reject a
+missing or near-100% forged conservative pair.
+
 Realtime and portfolio tests that intentionally exercise downstream sizing or
 liquidity math should mark their fixture signals as station locks, so they test
 the intended downstream behavior instead of the entry-only gate.
@@ -176,6 +188,9 @@ an unchanged 70F low into proof that the low fell below 70F.
   that it is far smaller than the settlement source's display step.
 - Keep docs focused on official station observations; do not describe removed
   model-entry paths as active strategy.
+- Never label a same-station proxy as settlement-confirmed merely because its
+  recent audit has no counterexample. Store the source-verification marker and
+  reserve explicit settlement uncertainty in sizing and scenario calculations.
 - When replacing a strategy formula, grep the implementation for the old
   constants and source names after tests pass. Removed formulas should not
   remain as callable helper branches.

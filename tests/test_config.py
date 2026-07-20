@@ -141,7 +141,12 @@ def test_station_residual_wilson_z_must_be_finite_and_positive(wilson_z):
 
 @pytest.mark.parametrize(
     "strategy_mode",
-    ["lock_only", "intraday_observation_edge", "hybrid_observation_edge"],
+    [
+        "lock_only",
+        "upstream_lock_paper",
+        "intraday_observation_edge",
+        "hybrid_observation_edge",
+    ],
 )
 def test_strategy_mode_allowed_values(strategy_mode):
     assert Settings(strategy_mode=strategy_mode).strategy_mode == strategy_mode

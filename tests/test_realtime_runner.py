@@ -3356,6 +3356,7 @@ def _direct_exact_no_signal(
             "station_id": "RKSI",
             "source": nowcast_source,
             "data_block_reason": "",
+            "settlement_source_verified": nowcast_source == "wunderground-history-direct",
         },
         entry_size_fraction_override=0.50,
         entry_size_reason="verified exact bucket is irreversibly false",
@@ -3373,6 +3374,47 @@ def _strict_lock_settings(tmp_path) -> Settings:
         max_entry_spread_abs=0.20,
         max_entry_spread_pct=1.0,
         decisions_log_skip_enabled=True,
+    )
+
+
+def _upstream_lock_settings(tmp_path) -> Settings:
+    return replace(
+        _strict_lock_settings(tmp_path),
+        strategy_mode="upstream_lock_paper",
+        wunderground_api_key="",
+    )
+
+
+def _upstream_exact_no_signal(question: str, **overrides) -> WeatherSignal:
+    signal = _direct_exact_no_signal(
+        question,
+        nowcast_source="aviationweather-metar",
+        signal_family="upstream_lock_paper",
+    )
+    nowcast = {
+        **(signal.nowcast or {}),
+        "station_local_date": "2026-07-21",
+        "target_date_local": "2026-07-21",
+        "daily_extremes_complete": True,
+        "entry_evidence_mode": "upstream_same_station_paper",
+        "settlement_source_verified": False,
+        "upstream_bucket_distance_c": 2.0,
+        "upstream_min_bucket_distance_c": 2.0,
+    }
+    nowcast.update(overrides.pop("nowcast", {}))
+    return replace(
+        signal,
+        note="strategy_mode=upstream_lock_paper; signal_family=upstream_lock_paper; official_nowcast_lock=strong_no",
+        nowcast=nowcast,
+        strategy_mode="upstream_lock_paper",
+        signal_family="upstream_lock_paper",
+        entry_size_fraction_override=0.10,
+        raw_probability=0.0,
+        conservative_yes_probability=0.04,
+        conservative_no_probability=0.96,
+        raw_selected_side_probability=1.0,
+        selected_side_probability=0.96,
+        **overrides,
     )
 
 
@@ -3440,6 +3482,85 @@ def test_lock_only_direct_exact_no_is_symmetric_and_can_size_to_full_bankroll(
     assert per_side["NO"].p_exec == pytest.approx(0.90)
     assert per_side["NO"].size_usd == pytest.approx(200.0)
     assert per_side["NO"].event_cap_override_fraction == pytest.approx(1.0)
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "Will the highest temperature in Seoul be 29°C on July 21?",
+        "Will the lowest temperature in Seoul be 22°C on July 21?",
+    ],
+)
+def test_upstream_lock_paper_exact_no_is_symmetric_small_and_capped_at_eighty_five(
+    tmp_path,
+    question,
+):
+    market = _wunderground_exact_market(question, market_id="upstream-lock")
+    signal = _upstream_exact_no_signal(question)
+    no_book = OrderBook(
+        market.no_token_id or "",
+        bids=[OrderLevel(0.84, 2000.0)],
+        asks=[OrderLevel(0.85, 2000.0)],
+    )
+    client = _AbnormalPriceClient(
+        OrderBook(market.yes_token_id or "", bids=[], asks=[]),
+        no_book,
+    )
+    client.books = {
+        market.yes_token_id or "": client.books["yes"],
+        market.no_token_id or "": no_book,
+    }
+
+    result, per_side = runner_module.evaluate_market(
+        market,
+        signal,
+        client,
+        _upstream_lock_settings(tmp_path),
+        200.0,
+        "temperature",
+        allowed_sides={"NO"},
+    )
+
+    assert result.side == "NO"
+    assert per_side["NO"].p_exec == pytest.approx(0.85)
+    assert per_side["NO"].size_usd == pytest.approx(20.0)
+    assert per_side["NO"].signal_family == "upstream_lock_paper"
+    assert per_side["NO"].event_cap_override_fraction is None
+
+
+def test_upstream_lock_paper_skip_above_cap_keeps_orderbook_depth_for_replay(tmp_path):
+    question = "Will the highest temperature in Seoul be 29C on July 21?"
+    market = _wunderground_exact_market(question, market_id="upstream-price-audit")
+    signal = _upstream_exact_no_signal(question)
+    no_book = OrderBook(
+        market.no_token_id or "",
+        bids=[OrderLevel(0.85, 100.0)],
+        asks=[OrderLevel(0.86, 12.0), OrderLevel(0.87, 20.0)],
+    )
+    client = _AbnormalPriceClient(
+        OrderBook(market.yes_token_id or "", bids=[], asks=[]),
+        no_book,
+    )
+    client.books = {
+        market.yes_token_id or "": client.books["yes"],
+        market.no_token_id or "": no_book,
+    }
+
+    result, per_side = runner_module.evaluate_market(
+        market,
+        signal,
+        client,
+        _upstream_lock_settings(tmp_path),
+        200.0,
+        "temperature",
+        allowed_sides={"NO"},
+    )
+
+    assert result.side == "SKIP"
+    assert "SKIP_ENTRY_PRICE_TOO_HIGH" in per_side["NO"].reason
+    depth = json.loads(per_side["NO"].entry_ask_depth_top5_json)
+    assert depth["levels"][0]["price"] == pytest.approx(0.86)
+    assert depth["levels"][0]["size"] == pytest.approx(12.0)
 
 
 def test_lock_only_direct_low_exact_no_opens_through_portfolio_and_final_check(tmp_path):
@@ -5478,6 +5599,16 @@ def test_lock_only_runtime_rejects_missing_wunderground_key(tmp_path):
 
     with pytest.raises(RuntimeError, match="WUNDERGROUND_API_KEY"):
         runner_module.run_realtime_forever(settings)
+
+
+def test_upstream_lock_paper_runtime_accepts_missing_wunderground_key(tmp_path):
+    settings = replace(
+        _entry_gate_settings(tmp_path),
+        strategy_mode="upstream_lock_paper",
+        wunderground_api_key="",
+    )
+
+    runner_module._validate_runtime_strategy_dependencies(settings)
 
 
 def test_station_refresh_releases_shared_metar_before_slow_single_station_source(monkeypatch):

@@ -15,6 +15,12 @@ from .nowcast import StationNowcastObservation
 from .residual_probability import ResidualProbabilityEstimate
 from .settlement_precision import SettlementPrecisionProfile, settlement_precision_profile_for_station
 from .stations import StationMeta, TRADING_READY_STATION_MAP
+from .upstream_lock_policy import (
+    UPSTREAM_LOCK_PAPER_ENTRY_FRACTION,
+    UPSTREAM_LOCK_PAPER_MIN_BUCKET_DISTANCE_C,
+    UPSTREAM_LOCK_PAPER_NOWCAST_SOURCES,
+    upstream_settlement_probabilities,
+)
 from .weather_client import parse_weather_question
 
 
@@ -25,8 +31,6 @@ LOW_EXACT_NO_WEATHER_BUFFER_C = 1.0
 LOW_EXACT_NO_WEATHER_PENALTY = 0.08
 LOW_EXACT_NO_WEATHER_MAX_FRACTION = 0.05
 PRECIPITATION_TOKENS = frozenset({"RA", "DZ", "SHRA", "TSRA", "FZRA", "SN", "SHSN", "TSSN"})
-
-
 @dataclass(frozen=True)
 class _OfficialStationLock:
     p_true: float
@@ -129,7 +133,7 @@ def _official_station_exact_lock(
         return None
     unit_label = parsed.threshold_unit.lower()
     if (
-        settings.strategy_mode != "lock_only"
+        settings.strategy_mode in {"intraday_observation_edge", "hybrid_observation_edge"}
         and parsed.temperature_metric == "max"
         and parsed.temperature_bucket == "lower_tail"
         and parsed.threshold_unit in {"C", "F"}
@@ -181,6 +185,33 @@ def _official_station_exact_lock(
             ),
         )
     return None
+
+
+def _upstream_exact_no_bucket_distance_c(
+    parsed: ParsedWeatherQuestion,
+    observed_value_c: float | None,
+) -> float | None:
+    """Return whole-C distance from the exact bucket for the paper proxy.
+
+    WU settled Seoul 26C YES while AWC reported 27C at the same RKSI time.
+    Therefore the adjacent one-degree bucket is not treated as a lock here.
+    Fahrenheit markets remain excluded until their source/display mapping has
+    its own settlement audit.
+    """
+    if (
+        observed_value_c is None
+        or not math.isfinite(observed_value_c)
+        or parsed.temperature_bucket != "exact"
+        or parsed.temperature_metric not in {"max", "min"}
+        or parsed.threshold_unit != "C"
+    ):
+        return None
+    bucket = _whole_exact_bucket(parsed)
+    if bucket is None:
+        return None
+    if parsed.temperature_metric == "max":
+        return observed_value_c - float(bucket)
+    return float(bucket) - observed_value_c
 
 def _observed_value_in_source_unit(observed_value_c: float, unit: str) -> float | None:
     if unit == "C":
@@ -1012,6 +1043,7 @@ def estimate_station_signal(
     payload = observation.to_log_payload()
     payload.update(
         {
+            "target_date_local": target.isoformat(),
             "settlement_precision_confidence": precision_profile.confidence,
             "settlement_precision_bucket_model": precision_profile.bucket_model,
             "settlement_reporting_precision": precision_profile.reporting_precision,
@@ -1020,10 +1052,15 @@ def estimate_station_signal(
     )
     observed_value_c = observation.observed_low_c if parsed.temperature_metric == "min" else observation.observed_high_c
     observed_label = "observed_low_c" if parsed.temperature_metric == "min" else "observed_high_c"
+    extreme_observed_at_key = (
+        "low_observed_at" if parsed.temperature_metric == "min" else "high_observed_at"
+    )
     base_note = (
         f"{station.station_name} [{station.station_id}] target_date={target.isoformat()}; "
         f"evidence=official-station; {observed_label}={observed_value_c}; "
-        f"observed_at={payload.get('observed_at')}; freshness_seconds={observation.freshness_seconds}; "
+        f"{extreme_observed_at_key}={payload.get(extreme_observed_at_key)}; "
+        f"latest_observed_at={payload.get('observed_at')}; "
+        f"freshness_seconds={observation.freshness_seconds}; "
         f"bot_received_at={payload.get('bot_received_at')}; "
         f"bot_detection_latency_seconds={payload.get('bot_detection_latency_seconds')}; "
         f"nowcast_source={observation.source}; {precision_note}"
@@ -1077,7 +1114,7 @@ def estimate_station_signal(
         return replace(
             _neutral_signal(
                 parsed,
-                "official-station-unavailable",
+                "official-station-neutral",
                 f"{base_note}; nowcast_unavailable={reason}",
             ),
             nowcast=payload,
@@ -1095,8 +1132,63 @@ def estimate_station_signal(
     )
     base_note = f"{base_note}; {formation_note}"
 
+    if (
+        settings.strategy_mode == "upstream_lock_paper"
+        and parsed.temperature_bucket == "exact"
+        and parsed.temperature_metric in {"max", "min"}
+    ):
+        if parsed.threshold_unit != "C":
+            payload["data_block_reason"] = "upstream-celsius-exact-only"
+            payload["strategy_allowed_reason"] = (
+                "upstream paper evidence is calibrated only as a Celsius two-step experiment"
+            )
+            return replace(
+                _neutral_signal(
+                    parsed,
+                    "official-station-neutral",
+                    f"{base_note}; upstream_celsius_exact_only=true",
+                ),
+                nowcast=payload,
+                strategy_mode=settings.strategy_mode,
+                settlement_precision_confidence=precision_profile.confidence,
+            )
+        upstream_distance_c = _upstream_exact_no_bucket_distance_c(
+            parsed,
+            observed_value_c,
+        )
+        payload["upstream_bucket_distance_c"] = upstream_distance_c
+        payload["upstream_min_bucket_distance_c"] = (
+            UPSTREAM_LOCK_PAPER_MIN_BUCKET_DISTANCE_C
+        )
+        if (
+            upstream_distance_c is None
+            or upstream_distance_c + 1e-9 < UPSTREAM_LOCK_PAPER_MIN_BUCKET_DISTANCE_C
+        ):
+            payload["data_block_reason"] = "upstream-two-celsius-step-required"
+            payload["strategy_allowed_reason"] = (
+                "adjacent one-degree AWC/KMA bucket is blocked after a real WU settlement mismatch"
+            )
+            return replace(
+                _neutral_signal(
+                    parsed,
+                    "official-station-neutral",
+                    (
+                        f"{base_note}; upstream_bucket_distance_c={upstream_distance_c}; "
+                        f"required={UPSTREAM_LOCK_PAPER_MIN_BUCKET_DISTANCE_C:.1f}"
+                    ),
+                ),
+                nowcast=payload,
+                strategy_mode=settings.strategy_mode,
+                settlement_precision_confidence=precision_profile.confidence,
+            )
+
     lock = None
-    if settings.strategy_mode in {"lock_only", "intraday_observation_edge", "hybrid_observation_edge"}:
+    if settings.strategy_mode in {
+        "lock_only",
+        "upstream_lock_paper",
+        "intraday_observation_edge",
+        "hybrid_observation_edge",
+    }:
         lock = _official_station_exact_lock(
             parsed,
             observed_value_c,
@@ -1106,6 +1198,24 @@ def estimate_station_signal(
             now=current,
         )
     if lock is not None:
+        if (
+            settings.strategy_mode == "upstream_lock_paper"
+            and observation.source not in UPSTREAM_LOCK_PAPER_NOWCAST_SOURCES
+        ):
+            payload["data_block_reason"] = "upstream-lock-source-not-allowed"
+            payload["strategy_allowed_reason"] = (
+                "personal paper lock requires complete AWC or KMA same-station METAR evidence"
+            )
+            return replace(
+                _neutral_signal(
+                    parsed,
+                    "official-station-unavailable",
+                    f"{base_note}; nowcast_unavailable=upstream-lock-source-not-allowed",
+                ),
+                nowcast=payload,
+                strategy_mode=settings.strategy_mode,
+                settlement_precision_confidence=precision_profile.confidence,
+            )
         lock_probability = lock.p_true
         lock_fraction = lock.entry_fraction
         lock_size_reason = lock.size_reason
@@ -1117,15 +1227,43 @@ def estimate_station_signal(
                 f"; hko_needs_audit_probability_cap={strong_probability:.2f}; "
                 f"hko_needs_audit_multiplier={settings.intraday_hko_needs_audit_fraction_multiplier:.2f}"
             )
+        upstream_paper = settings.strategy_mode == "upstream_lock_paper"
+        conservative_yes_probability = None
+        conservative_no_probability = None
+        if upstream_paper:
+            lock_fraction = min(lock_fraction, UPSTREAM_LOCK_PAPER_ENTRY_FRACTION)
+            (
+                conservative_yes_probability,
+                conservative_no_probability,
+            ) = upstream_settlement_probabilities(settings)
+            lock_size_reason += (
+                f"; upstream_paper_entry_fraction_cap={UPSTREAM_LOCK_PAPER_ENTRY_FRACTION:.2f}"
+            )
+        signal_family = "upstream_lock_paper" if upstream_paper else "lock_only"
+        payload["entry_evidence_mode"] = (
+            "upstream_same_station_paper" if upstream_paper else "wunderground_direct"
+        )
+        payload["settlement_source_verified"] = not upstream_paper
         payload["data_block_reason"] = ""
-        payload["strategy_allowed_reason"] = "verified same-day observation irreversibly broke the bucket"
-        base_note += "; data_block_reason=; strategy_allowed_reason=verified bucket break"
+        payload["strategy_allowed_reason"] = (
+            "two-Celsius-step same-station upstream candidate; paper validation only, "
+            "Wunderground settlement not confirmed"
+            if upstream_paper
+            else "verified same-day observation irreversibly broke the bucket"
+        )
+        base_note += (
+            "; data_block_reason=; strategy_allowed_reason=upstream paper bucket break; "
+            "settlement_source_verified=false"
+            if upstream_paper
+            else "; data_block_reason=; strategy_allowed_reason=verified bucket break; "
+            "settlement_source_verified=true"
+        )
         return WeatherSignal(
             p_true=lock_probability,
             confidence=1.0,
             source=f"official-station-lock-{lock.lock_name}",
             note=(
-                f"{base_note}; strategy_mode={settings.strategy_mode}; signal_family=lock_only; "
+                f"{base_note}; strategy_mode={settings.strategy_mode}; signal_family={signal_family}; "
                 f"station_adjustment={lock.adjustment}; "
                 f"{lock_size_reason}; entry_size_fraction_override={lock_fraction:.4f}"
             ),
@@ -1134,8 +1272,13 @@ def estimate_station_signal(
             entry_size_fraction_override=lock_fraction,
             entry_size_reason=lock_size_reason,
             strategy_mode=settings.strategy_mode,
-            signal_family="lock_only",
+            signal_family=signal_family,
             settlement_precision_confidence=precision_profile.confidence,
+            raw_probability=lock_probability if upstream_paper else None,
+            conservative_yes_probability=conservative_yes_probability,
+            conservative_no_probability=conservative_no_probability,
+            raw_selected_side_probability=(1.0 - lock_probability) if upstream_paper else None,
+            selected_side_probability=conservative_no_probability,
         )
 
     if (

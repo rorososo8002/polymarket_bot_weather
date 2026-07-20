@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from weather_bot import nowcast as nowcast_module
+from weather_bot.config import Settings
 from weather_bot.nowcast import AviationWeatherMetarNowcastProvider, DEFAULT_NOWCAST_SOURCES
 from weather_bot.stations import STATION_MAP, station_audit_rows
 
@@ -46,6 +47,13 @@ def load_text_fixture(name: str):
 
 def read_jsonl(path: Path) -> list[dict[str, object]]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+
+
+def without_awc_bootstrap(
+    provider: AviationWeatherMetarNowcastProvider,
+) -> AviationWeatherMetarNowcastProvider:
+    provider._bootstrap_awc_metar_daily_extremes = lambda *_args, **_kwargs: None
+    return provider
 
 
 def seed_complete_metar_day(
@@ -89,6 +97,36 @@ def test_aviationweather_provider_default_cache_ttl_matches_provider_floor():
     provider = AviationWeatherMetarNowcastProvider(http_get=lambda *_args, **_kwargs: FakeResponse({}))
 
     assert provider.cache_ttl_seconds == 60
+
+
+def test_upstream_mode_uses_metar_even_when_wunderground_key_exists(tmp_path):
+    calls: list[str] = []
+
+    def fake_get(url, *, params, timeout, headers):
+        calls.append(url)
+        return FakeResponse(
+            [{"icaoId": "RKSI", "obsTime": "2026-06-01T16:00:00Z", "temp": 20.0}]
+        )
+
+    provider = AviationWeatherMetarNowcastProvider.from_settings(
+        Settings(
+            state_path=str(tmp_path / "state.json"),
+            strategy_mode="upstream_lock_paper",
+            wunderground_api_key="configured-wu-key",
+            station_nowcast_cache_ttl_seconds=60,
+        )
+    )
+    provider.http_get = fake_get
+    provider = without_awc_bootstrap(provider)
+
+    observation = provider.observed_temperature_extremes_so_far(
+        STATION_MAP["seoul"],
+        target_date=date(2026, 6, 2),
+        now=datetime(2026, 6, 1, 16, 0, tzinfo=timezone.utc),
+    )
+
+    assert calls == [nowcast_module.AVIATIONWEATHER_METAR_SOURCE_URL]
+    assert observation.source == "aviationweather-metar"
 
 
 def test_metar_daily_extremes_state_writes_use_thread_safe_temp_files(tmp_path, monkeypatch):
@@ -135,13 +173,15 @@ def provider_for(
         calls.append({"url": url, "params": params, "timeout": timeout, "headers": headers})
         return FakeResponse(payload)
 
-    provider = AviationWeatherMetarNowcastProvider(
-        http_get=fake_get,
-        freshness_seconds=freshness_seconds,
-        cache_ttl_seconds=cache_ttl_seconds,
-        request_log_path=request_log_path,
-        wunderground_api_key=wunderground_api_key,
-        **({"clock": clock} if clock is not None else {}),
+    provider = without_awc_bootstrap(
+        AviationWeatherMetarNowcastProvider(
+            http_get=fake_get,
+            freshness_seconds=freshness_seconds,
+            cache_ttl_seconds=cache_ttl_seconds,
+            request_log_path=request_log_path,
+            wunderground_api_key=wunderground_api_key,
+            **({"clock": clock} if clock is not None else {}),
+        )
     )
     return provider, calls
 
@@ -1076,10 +1116,12 @@ def metar_sequence_provider(payloads: list[list[dict[str, object]]], *, state_pa
     def fake_get(url, *, params, timeout, headers):
         return FakeResponse(next(remaining))
 
-    return AviationWeatherMetarNowcastProvider(
-        http_get=fake_get,
-        cache_ttl_seconds=0,
-        metar_daily_extremes_state_path=state_path,
+    return without_awc_bootstrap(
+        AviationWeatherMetarNowcastProvider(
+            http_get=fake_get,
+            cache_ttl_seconds=0,
+            metar_daily_extremes_state_path=state_path,
+        )
     )
 
 
@@ -1111,6 +1153,338 @@ def test_aviationweather_latest_only_is_not_a_complete_daily_extreme(tmp_path):
     assert observation.latest_weather == "-RA"
     assert observation.daily_extremes_complete is False
     assert observation.data_block_reason == "metar-daily-extremes-baseline-missing"
+
+
+def test_aviationweather_parse_accumulates_cross_date_rows_but_returns_target_date_rows(tmp_path):
+    provider = AviationWeatherMetarNowcastProvider(
+        metar_daily_extremes_state_path=tmp_path / "metar_daily_extremes_state.json"
+    )
+    payload = [
+        {
+            "icaoId": "RJTT",
+            "obsTime": "2026-06-22T14:30:00.000Z",
+            "temp": 31.0,
+            "rawOb": "RJTT 221430Z 18005KT 9999 FEW020 31/18 Q1010",
+        },
+        {
+            "icaoId": "RJTT",
+            "obsTime": "2026-06-22T15:30:00.000Z",
+            "temp": 20.0,
+            "rawOb": "RJTT 221530Z 18005KT 9999 FEW020 20/18 Q1010",
+        },
+    ]
+
+    observation = provider._parse_payload(
+        payload,
+        STATION_MAP["tokyo"],
+        date(2026, 6, 23),
+        datetime(2026, 6, 22, 15, 35, tzinfo=timezone.utc),
+        DEFAULT_NOWCAST_SOURCES["RJTT"],
+    )
+
+    assert observation.daily_extremes_complete is True
+    assert observation.observed_high_c == 20.0
+    assert observation.observed_low_c == 20.0
+    assert observation.latest_temp_c == 20.0
+    assert observation.raw_observation_count == 1
+
+
+def test_aviationweather_daytime_bootstrap_keeps_four_hour_bulk_cache_and_runs_once(tmp_path):
+    calls: list[dict[str, object]] = []
+    latest_row = {
+        "icaoId": "RJTT",
+        "obsTime": "2026-06-23T06:00:00.000Z",
+        "temp": 23.0,
+        "rawOb": "RJTT 230600Z 18005KT 9999 FEW020 23/18 Q1010",
+    }
+    historical_payload = [
+        {
+            "icaoId": "RJTT",
+            "obsTime": "2026-06-22T14:30:00.000Z",
+            "temp": 21.0,
+            "rawOb": "RJTT 221430Z 18005KT 9999 FEW020 21/18 Q1010",
+        },
+        *[
+            {
+                "icaoId": "RJTT",
+                "obsTime": (
+                    datetime(2026, 6, 22, 15, 30, tzinfo=timezone.utc)
+                    + timedelta(hours=index)
+                ).isoformat(),
+                "temp": 24.0 if index == 8 else 20.0 + index % 3,
+            }
+            for index in range(15)
+        ],
+        latest_row,
+    ]
+    fast_payload = [
+        {
+            "icaoId": "RJTT",
+            "obsTime": "2026-06-23T05:00:00.000Z",
+            "temp": 22.0,
+            "rawOb": "RJTT 230500Z 18005KT 9999 FEW020 22/18 Q1010",
+        },
+        latest_row,
+    ]
+
+    def fake_get(url, *, params, timeout, headers):
+        calls.append({"url": url, "params": params, "timeout": timeout, "headers": headers})
+        return FakeResponse(historical_payload if params["hours"] == 30 else fast_payload)
+
+    provider = AviationWeatherMetarNowcastProvider(
+        http_get=fake_get,
+        cache_ttl_seconds=0,
+        metar_daily_extremes_state_path=tmp_path / "metar_daily_extremes_state.json",
+    )
+    provider._accumulate_metar_daily_extremes(
+        STATION_MAP["tokyo"],
+        [(datetime(2026, 6, 23, 5, 0, tzinfo=timezone.utc), 22.0)],
+        date(2026, 6, 23),
+    )
+    first = provider.observed_temperature_extremes_so_far(
+        STATION_MAP["tokyo"],
+        target_date=date(2026, 6, 23),
+        now=datetime(2026, 6, 23, 6, 5, tzinfo=timezone.utc),
+    )
+    first_call_count = len(calls)
+    second = provider.observed_temperature_extremes_so_far(
+        STATION_MAP["tokyo"],
+        target_date=date(2026, 6, 23),
+        now=datetime(2026, 6, 23, 6, 6, 1, tzinfo=timezone.utc),
+    )
+
+    bootstrap_calls = [call for call in calls if call["params"]["hours"] == 30]
+    fast_calls = [call for call in calls if call["params"]["hours"] == 4]
+    assert first_call_count == 1
+    assert len(bootstrap_calls) == 1
+    assert len(bootstrap_calls[0]["params"]["ids"].split(",")) <= 4
+    assert len(fast_calls) == 1
+    assert set(fast_calls[0]["params"]["ids"].split(",")) == set(
+        provider._awc_metar_bulk_station_ids()
+    )
+    assert first.daily_extremes_complete is True
+    assert first.observed_high_c == 24.0
+    assert first.observed_low_c == 20.0
+    assert first.latest_temp_c == 23.0
+    assert first.raw_observation_count == 16
+    assert second.daily_extremes_complete is True
+
+
+def test_aviationweather_bootstrap_recovers_station_missing_from_successful_group(tmp_path):
+    calls: list[dict[str, object]] = []
+    complete_tokyo_history = [
+        {"icaoId": "RJTT", "obsTime": "2026-06-22T14:30:00Z", "temp": 21.0},
+        *[
+            {
+                "icaoId": "RJTT",
+                "obsTime": (
+                    datetime(2026, 6, 22, 15, 30, tzinfo=timezone.utc)
+                    + timedelta(hours=index)
+                ).isoformat(),
+                "temp": 20.0 + index % 4,
+            }
+            for index in range(15)
+        ],
+        {"icaoId": "RJTT", "obsTime": "2026-06-23T06:00:00Z", "temp": 24.0},
+    ]
+
+    def fake_get(url, *, params, timeout, headers):
+        calls.append({"url": url, "params": params, "timeout": timeout, "headers": headers})
+        if params["hours"] == 30 and params["ids"] == "RJTT":
+            return FakeResponse(complete_tokyo_history)
+        if params["hours"] == 30:
+            return FakeResponse(
+                [{"icaoId": "RCSS", "obsTime": "2026-06-23T06:00:00Z", "temp": 28.0}]
+            )
+        return FakeResponse(complete_tokyo_history[-1:])
+
+    provider = AviationWeatherMetarNowcastProvider(
+        http_get=fake_get,
+        cache_ttl_seconds=0,
+        metar_daily_extremes_state_path=tmp_path / "metar_daily_extremes_state.json",
+    )
+
+    missing = provider.observed_temperature_extremes_so_far(
+        STATION_MAP["tokyo"],
+        target_date=date(2026, 6, 23),
+        now=datetime(2026, 6, 23, 6, 5, tzinfo=timezone.utc),
+    )
+    recovered = provider.observed_temperature_extremes_so_far(
+        STATION_MAP["tokyo"],
+        target_date=date(2026, 6, 23),
+        now=datetime(2026, 6, 23, 6, 6, 1, tzinfo=timezone.utc),
+    )
+
+    bootstrap_calls = [call for call in calls if call["params"]["hours"] == 30]
+    assert [call["params"]["ids"] for call in bootstrap_calls] == [
+        "RCSS,RJTT,RKPK,RKSI",
+        "RJTT",
+    ]
+    assert missing.daily_extremes_complete is False
+    assert recovered.daily_extremes_complete is True
+    assert recovered.observed_high_c == 24.0
+
+
+def test_aviationweather_bootstrap_preserves_no_observations_reason_for_204(tmp_path):
+    provider = AviationWeatherMetarNowcastProvider(
+        http_get=lambda *_args, **_kwargs: FakeResponse(None, status_code=204),
+        cache_ttl_seconds=0,
+        metar_daily_extremes_state_path=tmp_path / "metar_daily_extremes_state.json",
+    )
+
+    observation = provider.observed_temperature_extremes_so_far(
+        STATION_MAP["tokyo"],
+        target_date=date(2026, 6, 23),
+        now=datetime(2026, 6, 23, 6, 5, tzinfo=timezone.utc),
+    )
+
+    assert observation.unavailable_reason == "no-observations-returned"
+
+
+def test_aviationweather_bootstrap_retries_truncated_group_with_trigger_station(tmp_path):
+    calls: list[dict[str, object]] = []
+    complete_single_station_history = [
+        {"icaoId": "RJTT", "obsTime": "2026-06-22T14:30:00Z", "temp": 21.0},
+        *[
+            {
+                "icaoId": "RJTT",
+                "obsTime": (
+                    datetime(2026, 6, 22, 15, 30, tzinfo=timezone.utc)
+                    + timedelta(hours=index)
+                ).isoformat(),
+                "temp": 20.0 + index % 3,
+            }
+            for index in range(15)
+        ],
+        {"icaoId": "RJTT", "obsTime": "2026-06-23T06:00:00Z", "temp": 23.0},
+    ]
+
+    def fake_get(url, *, params, timeout, headers):
+        calls.append({"url": url, "params": params, "timeout": timeout, "headers": headers})
+        ids = params["ids"].split(",")
+        if params["hours"] == 30 and len(ids) > 1:
+            return FakeResponse([{"row": index} for index in range(400)])
+        if params["hours"] == 30:
+            return FakeResponse(complete_single_station_history)
+        return FakeResponse(complete_single_station_history[-1:])
+
+    provider = AviationWeatherMetarNowcastProvider(
+        http_get=fake_get,
+        metar_daily_extremes_state_path=tmp_path / "metar_daily_extremes_state.json",
+    )
+    truncated = provider.observed_temperature_extremes_so_far(
+        STATION_MAP["tokyo"],
+        target_date=date(2026, 6, 23),
+        now=datetime(2026, 6, 23, 6, 5, tzinfo=timezone.utc),
+    )
+    observation = provider.observed_temperature_extremes_so_far(
+        STATION_MAP["tokyo"],
+        target_date=date(2026, 6, 23),
+        now=datetime(2026, 6, 23, 6, 6, 1, tzinfo=timezone.utc),
+    )
+
+    bootstrap_calls = [call for call in calls if call["params"]["hours"] == 30]
+    station_ids = provider._awc_metar_bulk_station_ids()
+    station_index = station_ids.index("RJTT")
+    group_start = station_index - station_index % nowcast_module.AWC_METAR_BOOTSTRAP_GROUP_SIZE
+    expected_group = station_ids[
+        group_start : group_start + nowcast_module.AWC_METAR_BOOTSTRAP_GROUP_SIZE
+    ]
+    assert [call["params"]["ids"] for call in bootstrap_calls] == [
+        ",".join(expected_group),
+        "RJTT",
+    ]
+    assert "RJTT" in expected_group
+    assert len(bootstrap_calls[0]["params"]["ids"].split(",")) == 4
+    assert truncated.unavailable_reason == "metar-response-row-limit"
+    assert observation.daily_extremes_complete is True
+
+
+def test_aviationweather_bootstrap_discards_truncated_single_station_and_does_not_storm(tmp_path):
+    calls: list[dict[str, object]] = []
+    current_row = {
+        "icaoId": "RJTT",
+        "obsTime": "2026-06-23T06:00:00Z",
+        "temp": 23.0,
+    }
+
+    def fake_get(url, *, params, timeout, headers):
+        calls.append({"url": url, "params": params, "timeout": timeout, "headers": headers})
+        if params["hours"] == 30:
+            return FakeResponse([dict(current_row, receiptTime=index) for index in range(400)])
+        return FakeResponse([current_row])
+
+    provider = AviationWeatherMetarNowcastProvider(
+        http_get=fake_get,
+        cache_ttl_seconds=0,
+        metar_daily_extremes_state_path=tmp_path / "metar_daily_extremes_state.json",
+    )
+    first = provider.observed_temperature_extremes_so_far(
+        STATION_MAP["tokyo"],
+        target_date=date(2026, 6, 23),
+        now=datetime(2026, 6, 23, 6, 5, tzinfo=timezone.utc),
+    )
+    second = provider.observed_temperature_extremes_so_far(
+        STATION_MAP["tokyo"],
+        target_date=date(2026, 6, 23),
+        now=datetime(2026, 6, 23, 6, 6, 1, tzinfo=timezone.utc),
+    )
+    third = provider.observed_temperature_extremes_so_far(
+        STATION_MAP["tokyo"],
+        target_date=date(2026, 6, 23),
+        now=datetime(2026, 6, 23, 6, 7, 2, tzinfo=timezone.utc),
+    )
+
+    bootstrap_calls = [call for call in calls if call["params"]["hours"] == 30]
+    assert len(bootstrap_calls) == 2
+    assert len(bootstrap_calls[0]["params"]["ids"].split(",")) == 4
+    assert bootstrap_calls[1]["params"]["ids"] == "RJTT"
+    assert first.unavailable_reason == "metar-response-row-limit"
+    assert second.unavailable_reason == "metar-response-row-limit"
+    assert third.daily_extremes_complete is False
+    assert third.data_block_reason == "metar-daily-extremes-baseline-missing"
+
+
+def test_aviationweather_bootstrap_failure_retries_once_then_uses_four_hour_path(tmp_path):
+    calls: list[int] = []
+    current_row = {
+        "icaoId": "RJTT",
+        "obsTime": "2026-06-23T06:00:00Z",
+        "temp": 23.0,
+    }
+
+    def fake_get(url, *, params, timeout, headers):
+        calls.append(params["hours"])
+        if params["hours"] == 30:
+            raise TimeoutError("network down")
+        return FakeResponse([current_row])
+
+    provider = AviationWeatherMetarNowcastProvider(
+        http_get=fake_get,
+        cache_ttl_seconds=0,
+        metar_daily_extremes_state_path=tmp_path / "metar_daily_extremes_state.json",
+    )
+    first = provider.observed_temperature_extremes_so_far(
+        STATION_MAP["tokyo"],
+        target_date=date(2026, 6, 23),
+        now=datetime(2026, 6, 23, 6, 5, tzinfo=timezone.utc),
+    )
+    retried = provider.observed_temperature_extremes_so_far(
+        STATION_MAP["tokyo"],
+        target_date=date(2026, 6, 23),
+        now=datetime(2026, 6, 23, 6, 6, 1, tzinfo=timezone.utc),
+    )
+    fallback = provider.observed_temperature_extremes_so_far(
+        STATION_MAP["tokyo"],
+        target_date=date(2026, 6, 23),
+        now=datetime(2026, 6, 23, 6, 7, 2, tzinfo=timezone.utc),
+    )
+
+    assert calls == [30, 30, 4]
+    assert first.unavailable_reason == "nowcast-fetch-error:TimeoutError"
+    assert retried.unavailable_reason == "nowcast-fetch-error:TimeoutError"
+    assert fallback.daily_extremes_complete is False
+    assert fallback.data_block_reason == "metar-daily-extremes-baseline-missing"
 
 
 def test_aviationweather_midnight_handoff_builds_persistent_daily_extremes(tmp_path):
@@ -1457,10 +1831,12 @@ def test_entry_refresh_network_error_returns_unavailable_observation(tmp_path):
             raise response
         return response
 
-    provider = AviationWeatherMetarNowcastProvider(
-        http_get=fake_get,
-        cache_ttl_seconds=900,
-        metar_daily_extremes_state_path=tmp_path / "metar.json",
+    provider = without_awc_bootstrap(
+        AviationWeatherMetarNowcastProvider(
+            http_get=fake_get,
+            cache_ttl_seconds=900,
+            metar_daily_extremes_state_path=tmp_path / "metar.json",
+        )
     )
     provider.observed_temperature_extremes_so_far(
         STATION_MAP["seoul"],
@@ -1692,13 +2068,13 @@ def test_aviationweather_bulk_request_floor_is_one_minute_even_when_station_cach
     provider.observed_high_so_far(
         STATION_MAP["seoul"],
         target_date=date(2026, 6, 2),
-        now=datetime(2026, 6, 2, 8, 30, 30, tzinfo=timezone.utc),
+        now=datetime(2026, 6, 2, 8, 30, 59, 999000, tzinfo=timezone.utc),
     )
-    clock_now[0] = datetime(2026, 6, 2, 8, 31, 1, tzinfo=timezone.utc)
+    clock_now[0] = datetime(2026, 6, 2, 8, 31, 0, tzinfo=timezone.utc)
     provider.observed_high_so_far(
         STATION_MAP["seoul"],
         target_date=date(2026, 6, 2),
-        now=datetime(2026, 6, 2, 8, 31, 1, tzinfo=timezone.utc),
+        now=datetime(2026, 6, 2, 8, 31, 0, tzinfo=timezone.utc),
     )
 
     rows = [
@@ -1709,7 +2085,7 @@ def test_aviationweather_bulk_request_floor_is_one_minute_even_when_station_cach
     assert len(calls) == 2
     assert len(rows) == 2
     assert rows[0]["requested_at"] == "2026-06-02T08:30:00+00:00"
-    assert rows[1]["requested_at"] == "2026-06-02T08:31:01+00:00"
+    assert rows[1]["requested_at"] == "2026-06-02T08:31:00+00:00"
 
 
 def test_kma_metar_is_primary_for_configured_korean_station(tmp_path):
@@ -1783,12 +2159,14 @@ def test_kma_metar_failure_falls_back_to_awc(tmp_path):
             return FakeResponse({}, status_code=503)
         return FakeResponse(awc_payload)
 
-    provider = AviationWeatherMetarNowcastProvider(
-        http_get=fake_get,
-        cache_ttl_seconds=60,
-        request_log_path=tmp_path / "requests.jsonl",
-        kma_metar_service_key="test-key",
-        kma_metar_station_ids={"RKSI"},
+    provider = without_awc_bootstrap(
+        AviationWeatherMetarNowcastProvider(
+            http_get=fake_get,
+            cache_ttl_seconds=60,
+            request_log_path=tmp_path / "requests.jsonl",
+            kma_metar_service_key="test-key",
+            kma_metar_station_ids={"RKSI"},
+        )
     )
 
     observation = provider.observed_high_so_far(

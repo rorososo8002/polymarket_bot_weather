@@ -130,6 +130,7 @@ class ExactTemperatureProvider:
             unavailable_reason="",
             raw_observation_count=8,
             update_cadence="fixture",
+            station_local_date=target_date.isoformat(),
             daily_extremes_complete=self.daily_extremes_complete,
             data_block_reason=self.data_block_reason,
             latest_temp_c=self.latest_temp_c,
@@ -175,8 +176,9 @@ def test_incomplete_metar_daily_extremes_block_signal_before_probability_calcula
     )
 
     assert signal.p_true == pytest.approx(0.5)
+    assert signal.source == "official-station-neutral"
+    assert signal.entry_size_fraction_override is None
     assert signal.confidence == 0.0
-    assert signal.source == "official-station-unavailable"
     assert "metar-daily-extremes-baseline-missing" in signal.note
     assert store.calls == []
 
@@ -227,6 +229,106 @@ def test_lock_only_mode_does_not_call_lower_tail_a_certain_exact_no() -> None:
     )
 
     assert signal.p_true == pytest.approx(0.5)
+
+
+@pytest.mark.parametrize(
+    ("question", "observed_high_c", "observed_low_c", "source"),
+    [
+        ("Will the highest temperature in Seoul be 29C today?", 31.0, None, "aviationweather-metar"),
+        ("Will the lowest temperature in Seoul be 22C today?", None, 20.0, "aviationweather-metar"),
+        ("Will the highest temperature in Seoul be 29C today?", 31.0, None, "kma-aviation-metar"),
+    ],
+)
+def test_upstream_lock_paper_requires_two_celsius_steps_and_labels_unverified_source(
+    question,
+    observed_high_c,
+    observed_low_c,
+    source,
+) -> None:
+    signal = estimate_station_signal(
+        question,
+        settings=Settings(strategy_mode="upstream_lock_paper"),
+        observation_provider=ExactTemperatureProvider(
+            observed_high_c=observed_high_c,
+            observed_low_c=observed_low_c,
+            source=source,
+        ),
+        now=datetime(2026, 6, 19, 14, 30, tzinfo=timezone.utc),
+    )
+
+    assert signal.p_true == pytest.approx(0.0)
+    assert signal.raw_probability == pytest.approx(0.0)
+    assert signal.conservative_yes_probability == pytest.approx(0.04)
+    assert signal.conservative_no_probability == pytest.approx(0.96)
+    assert signal.raw_selected_side_probability == pytest.approx(1.0)
+    assert signal.selected_side_probability == pytest.approx(0.96)
+    assert signal.source == "official-station-lock-strong_no"
+    assert signal.strategy_mode == "upstream_lock_paper"
+    assert signal.signal_family == "upstream_lock_paper"
+    assert signal.nowcast["entry_evidence_mode"] == "upstream_same_station_paper"
+    assert signal.nowcast["settlement_source_verified"] is False
+    assert signal.nowcast["upstream_bucket_distance_c"] >= 2.0
+    assert signal.nowcast["upstream_min_bucket_distance_c"] == pytest.approx(2.0)
+    assert signal.nowcast["target_date_local"] == "2026-06-19"
+    assert signal.nowcast["station_local_date"] == "2026-06-19"
+
+
+@pytest.mark.parametrize(
+    ("question", "observed_high_c", "observed_low_c"),
+    [
+        ("Will the highest temperature in Seoul be 29C today?", 30.0, None),
+        ("Will the lowest temperature in Seoul be 22C today?", None, 21.0),
+    ],
+)
+def test_upstream_lock_paper_rejects_adjacent_bucket_after_real_wu_mismatch(
+    question,
+    observed_high_c,
+    observed_low_c,
+) -> None:
+    signal = estimate_station_signal(
+        question,
+        settings=Settings(strategy_mode="upstream_lock_paper"),
+        observation_provider=ExactTemperatureProvider(
+            observed_high_c=observed_high_c,
+            observed_low_c=observed_low_c,
+            source="aviationweather-metar",
+        ),
+        now=datetime(2026, 6, 19, 14, 30, tzinfo=timezone.utc),
+    )
+
+    assert signal.source != "official-station-lock-strong_no"
+    assert signal.p_true != pytest.approx(0.0)
+    assert signal.nowcast["data_block_reason"] == "upstream-two-celsius-step-required"
+
+
+def test_upstream_lock_paper_rejects_fahrenheit_bucket_until_separately_calibrated() -> None:
+    signal = estimate_station_signal(
+        "Will the highest temperature in Seoul be 84F today?",
+        settings=Settings(strategy_mode="upstream_lock_paper"),
+        observation_provider=ExactTemperatureProvider(
+            observed_high_c=31.0,
+            source="aviationweather-metar",
+        ),
+        now=datetime(2026, 6, 19, 14, 30, tzinfo=timezone.utc),
+    )
+
+    assert signal.source != "official-station-lock-strong_no"
+    assert signal.nowcast["data_block_reason"] == "upstream-celsius-exact-only"
+
+
+def test_upstream_lock_paper_does_not_promote_lower_tail_no() -> None:
+    signal = estimate_station_signal(
+        "Will the highest temperature in Seoul be 29C or below today?",
+        settings=Settings(strategy_mode="upstream_lock_paper"),
+        observation_provider=ExactTemperatureProvider(
+            observed_high_c=30.0,
+            source="aviationweather-metar",
+        ),
+        now=datetime(2026, 6, 19, 14, 30, tzinfo=timezone.utc),
+    )
+
+    assert signal.p_true == pytest.approx(0.5)
+    assert signal.source != "official-station-lock-strong_no"
     assert signal.source == "official-station-neutral"
     assert signal.entry_size_fraction_override is None
 

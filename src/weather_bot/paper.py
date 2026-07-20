@@ -29,13 +29,16 @@ from .exit_policy import ExitAssessment, assess_exit, build_entry_plan, conserva
 from .market_rules import market_uses_wunderground_settlement_source
 from .polymarket_client import PolymarketClient, parse_api_bool
 from .portfolio import (
+    LOCK_EXACT_NO_STRATEGY_MODES,
     LOCK_ONLY_EXACT_NO_MAX_ENTRY_PRICE,
     LOCK_ONLY_EXACT_NO_MIN_NET_RETURN_PCT,
-    adaptive_event_cap_fraction,
-    direct_exact_no_entry_block_reason,
-    direct_exact_no_metric,
-    direct_exact_no_position_metric,
+    UPSTREAM_LOCK_PAPER_MODE,
+    UPSTREAM_LOCK_PAPER_MAX_ENTRY_PRICE,
+    exact_no_entry_block_reason_for_strategy,
     is_complementary_with_positions,
+    lock_exact_no_metric,
+    lock_exact_no_position_metric,
+    ordinary_event_cap_for_strategy,
     structured_event_cap_override_fraction,
     websocket_pricing_block_reason,
 )
@@ -82,6 +85,14 @@ PAPER_MODEL_VERSION = "weather-paper-v1"
 
 STATION_AUDIT_KEYS = (
     "station_observed_at",
+    "observed_high_c",
+    "high_observed_at",
+    "high_last_observed_at",
+    "high_drop_observed_at",
+    "observed_low_c",
+    "low_observed_at",
+    "low_last_observed_at",
+    "low_rise_observed_at",
     "request_started_at",
     "source_received_at",
     "bot_received_at",
@@ -106,6 +117,10 @@ STATION_AUDIT_KEYS = (
     "daily_extremes_complete",
     "daily_extremes_status",
     "data_block_reason",
+    "entry_evidence_mode",
+    "settlement_source_verified",
+    "upstream_bucket_distance_c",
+    "upstream_min_bucket_distance_c",
     "clob_accepting_orders",
     "clob_enable_order_book",
     "clob_active",
@@ -222,6 +237,7 @@ DECISION_CSV_FIELDNAMES = [
     "fee_rate",
     "entry_fee_usdc",
     "expected_net_profit_usd",
+    "entry_ask_depth_top5_json",
     "model_version",
     "config_version",
     *STATION_AUDIT_KEYS,
@@ -1318,15 +1334,33 @@ class PaperBroker:
     ) -> PaperPosition | None:
         if result.side not in {"YES", "NO"} or result.p_exec is None or result.size_usd <= 0:
             return None
-        if self.settings.strategy_mode == "lock_only":
-            block_reason = direct_exact_no_entry_block_reason(
+        if self.settings.strategy_mode in LOCK_EXACT_NO_STRATEGY_MODES:
+            block_reason = exact_no_entry_block_reason_for_strategy(
                 market,
                 signal,
                 result.side,
                 result,
+                strategy_mode=self.settings.strategy_mode,
             )
-            if block_reason is None and result.p_exec > LOCK_ONLY_EXACT_NO_MAX_ENTRY_PRICE + 1e-12:
-                block_reason = "exact_no_entry_price_above_0.90"
+            nowcast = getattr(signal, "nowcast", None)
+            nowcast = nowcast if isinstance(nowcast, dict) else {}
+            if (
+                block_reason is None
+                and self.settings.strategy_mode == UPSTREAM_LOCK_PAPER_MODE
+            ):
+                try:
+                    freshness_seconds = float(nowcast.get("freshness_seconds"))
+                except (TypeError, ValueError):
+                    freshness_seconds = float("inf")
+                if not 0.0 <= freshness_seconds <= self.settings.station_nowcast_freshness_seconds:
+                    block_reason = "fresh_upstream_observation_required"
+            max_entry_price = (
+                UPSTREAM_LOCK_PAPER_MAX_ENTRY_PRICE
+                if self.settings.strategy_mode == UPSTREAM_LOCK_PAPER_MODE
+                else LOCK_ONLY_EXACT_NO_MAX_ENTRY_PRICE
+            )
+            if block_reason is None and result.p_exec > max_entry_price + 1e-12:
+                block_reason = f"exact_no_entry_price_above_{max_entry_price:.2f}"
             if block_reason is None:
                 settlement_shares = fee_adjusted_entry_shares(
                     result.size_usd,
@@ -1345,12 +1379,17 @@ class PaperBroker:
                 if settlement_return_pct < required_return_pct - 1e-12:
                     block_reason = "exact_no_settlement_return_below_required_floor"
             if block_reason is not None:
+                action = (
+                    "SKIP_LOCK_ONLY_EXACT_NO"
+                    if self.settings.strategy_mode == "lock_only"
+                    else "SKIP_UPSTREAM_LOCK_PAPER_EXACT_NO"
+                )
                 reason = (
-                    "SKIP_LOCK_ONLY_EXACT_NO: final paper-ledger gate rejected entry; "
+                    f"{action}: final paper-ledger gate rejected entry; "
                     f"blocked_reason={block_reason}"
                 )
                 self.log_trade(
-                    "SKIP_LOCK_ONLY_EXACT_NO",
+                    action,
                     market,
                     result.side,
                     token_id,
@@ -1430,12 +1469,12 @@ class PaperBroker:
         if city and date_hint:
             event_positions = self.event_date_positions(city, date_hint)
             event_leg_count = len(event_positions)
-            candidate_direct_metric = direct_exact_no_metric(market, signal, result)
+            candidate_direct_metric = lock_exact_no_metric(market, signal, result)
             direct_pair_compatible = (
                 event_cap_override == 1.0
                 and candidate_direct_metric is not None
                 and all(
-                    direct_exact_no_position_metric(position) == candidate_direct_metric
+                    lock_exact_no_position_metric(position) == candidate_direct_metric
                     for position in event_positions
                 )
             )
@@ -1463,8 +1502,16 @@ class PaperBroker:
                 self.log_trade("SKIP_EVENT_DATE_CONCENTRATION", market, result.side, token_id, 0, result.p_exec, 0, reason)
                 return None
             event_exp = self.event_date_exposure(city, date_hint)
-            event_fraction = event_cap_override or adaptive_event_cap_fraction(risk_bankroll, self.settings)
-            event_limit = risk_bankroll * event_fraction
+            if event_cap_override is not None:
+                event_fraction = event_cap_override
+                event_limit = risk_bankroll * event_fraction
+            else:
+                event_fraction, event_limit = ordinary_event_cap_for_strategy(
+                    strategy_mode=self.settings.strategy_mode,
+                    entry_bankroll=risk_bankroll,
+                    cost_basis_bankroll=bankroll_before,
+                    settings=self.settings,
+                )
             if event_exp + result.size_usd > event_limit:
                 reason = (
                     f"SKIP_EVENT_DATE_CAP: {city}/{date_hint} exposure={event_exp:.2f}+{result.size_usd:.2f} "
@@ -1879,6 +1926,7 @@ class PaperBroker:
                 "fee_rate": f"{self.settings.weather_taker_fee_rate:.6f}",
                 "entry_fee_usdc": strategy_replay["entry_fee_usdc"],
                 "expected_net_profit_usd": strategy_replay["expected_net_profit_usd"],
+                "entry_ask_depth_top5_json": result_replay["entry_ask_depth_top5_json"],
                 "model_version": PAPER_MODEL_VERSION,
                 "config_version": _config_version(self.settings),
                 **{
@@ -1993,6 +2041,7 @@ class PaperBroker:
                 if strategy_replay["expected_net_profit_usd"] == ""
                 else float(strategy_replay["expected_net_profit_usd"])
             ),
+            "entry_ask_depth_top5_json": result_replay["entry_ask_depth_top5_json"],
             "model_version": PAPER_MODEL_VERSION,
             "config_version": _config_version(self.settings),
             **signal_replay["station_audit"],

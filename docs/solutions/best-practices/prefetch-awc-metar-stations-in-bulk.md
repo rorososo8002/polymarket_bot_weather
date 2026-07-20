@@ -1,7 +1,7 @@
 ---
 title: Prefetch AWC METAR stations in bulk
 date: 2026-06-04
-last_updated: 2026-07-18
+last_updated: 2026-07-21
 category: best-practices
 module: station_nowcast
 problem_type: best_practice
@@ -44,6 +44,14 @@ Use one shared AWC bulk cache and request all enabled station IDs with
 The four-hour response is only a restart bridge. It is not the daily-history
 ledger. `metar_daily_extremes_state.json` persists the uninterrupted
 station-local high and low, survives restarts, and keeps the latest two dates.
+
+When that ledger is incomplete after restart, recover with bounded 30-hour
+requests in deterministic groups of four. A successful group response does not
+mean every requested station was returned or completed. After the one-minute
+request floor, retry an affected station once by itself; otherwise one omitted
+ICAO can remain blocked until the process restarts. Treat exactly 60 seconds as
+the next allowed request boundary, and preserve HTTP 204 as
+`no-observations-returned` rather than rewriting it as malformed data.
 
 Fail closed when the response contains 400 rows:
 
@@ -104,6 +112,10 @@ Required regression checks:
 - latest-only data cannot become a complete daily extreme;
 - a continuous local-midnight handoff survives restart;
 - a continuity gap invalidates the affected day.
+- a successful group response that omits one ICAO triggers one bounded
+  single-station recovery after 60 seconds;
+- 59.999 seconds reuses the cache, while exactly 60 seconds permits a request;
+- HTTP 204 keeps the `no-observations-returned` reason;
 - an internal gap between two direct-provider rows triggers AWC recovery;
 - an older direct report cannot inherit a newer saved timestamp;
 - one station's malformed direct response does not suppress another station.

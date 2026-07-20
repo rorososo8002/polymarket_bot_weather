@@ -91,9 +91,10 @@ def _direct_exact_no_market(
     bucket: int,
     *,
     metric: str = "highest",
+    unit: str = "C",
     wunderground_rules: bool = True,
 ) -> RawMarket:
-    question = f"Will the {metric} temperature in Seoul be {bucket}°C on May 25?"
+    question = f"Will the {metric} temperature in Seoul be {bucket}°{unit} on May 25?"
     return RawMarket(
         market_id,
         question,
@@ -146,6 +147,51 @@ def _direct_exact_no_result(*, size_usd: float = 500.0) -> EdgeResult:
         selected_side_probability=1.0,
         probability_tier="lock_high_exact_no",
         event_cap_override_fraction=1.0,
+    )
+
+
+def _upstream_exact_no_signal(market: RawMarket, **nowcast_overrides) -> WeatherSignal:
+    signal = _direct_exact_no_signal(market)
+    return replace(
+        signal,
+        note="upstream same-station observation irreversibly broke exact bucket",
+        nowcast={
+            "station_id": "RKSI",
+            "source": "aviationweather-metar",
+            "target_date_local": "2026-05-25",
+            "station_local_date": "2026-05-25",
+            "daily_extremes_complete": True,
+            "freshness_seconds": 120,
+            "data_block_reason": "",
+            "entry_evidence_mode": "upstream_same_station_paper",
+            "settlement_source_verified": False,
+            "upstream_bucket_distance_c": 2.0,
+            "upstream_min_bucket_distance_c": 2.0,
+            **nowcast_overrides,
+        },
+        strategy_mode="upstream_lock_paper",
+        signal_family="upstream_lock_paper",
+        raw_probability=0.0,
+        conservative_yes_probability=0.04,
+        conservative_no_probability=0.96,
+        raw_selected_side_probability=1.0,
+        selected_side_probability=0.96,
+    )
+
+
+def _upstream_exact_no_result(*, size_usd: float = 500.0, price: float = 0.85) -> EdgeResult:
+    return replace(
+        _direct_exact_no_result(size_usd=size_usd),
+        p_exec=price,
+        size_shares=size_usd / price,
+        signal_family="upstream_lock_paper",
+        probability_tier="upstream_2c_exact_no",
+        event_cap_override_fraction=None,
+        raw_probability=0.0,
+        conservative_yes_probability=0.04,
+        conservative_no_probability=0.96,
+        raw_selected_side_probability=1.0,
+        selected_side_probability=0.96,
     )
 
 
@@ -657,6 +703,164 @@ def test_broker_lock_only_final_gate_rejects_price_above_ninety_cents(tmp_path, 
     assert position is None
     with (tmp_path / "trades.csv").open(newline="", encoding="utf-8") as handle:
         assert list(csv.DictReader(handle))[-1]["action"] == "SKIP_LOCK_ONLY_EXACT_NO"
+
+
+def test_broker_lock_only_final_gate_keeps_fahrenheit_exact_no_supported(tmp_path):
+    broker = PaperBroker(_settings(tmp_path, bankroll_usd=1000.0, strategy_mode="lock_only"))
+    market = _direct_exact_no_market("seoul-84f", 84, unit="F")
+
+    position = broker.open_position(
+        market,
+        market.no_token_id or "",
+        _direct_exact_no_result(size_usd=40.0),
+        city="seoul",
+        date_hint="may 25",
+        entry_bankroll_usd=1000.0,
+        signal=_direct_exact_no_signal(market),
+    )
+
+    assert position is not None
+
+
+@pytest.mark.parametrize(
+    ("nowcast_overrides", "price", "allowed"),
+    [
+        ({}, 0.85, True),
+        ({"daily_extremes_complete": False}, 0.85, False),
+        ({"station_id": "HKO"}, 0.85, False),
+        ({"station_id": "WRONG"}, 0.85, False),
+        ({"station_local_date": "2026-05-24"}, 0.85, False),
+        ({"freshness_seconds": 5401}, 0.85, False),
+        ({"source": "official-station-fixture"}, 0.85, False),
+        ({"entry_evidence_mode": "forged"}, 0.85, False),
+        ({"settlement_source_verified": True}, 0.85, False),
+        ({"upstream_bucket_distance_c": 1.0}, 0.85, False),
+        ({}, 0.8501, False),
+    ],
+)
+def test_broker_upstream_lock_paper_final_gate_is_fail_closed(
+    tmp_path,
+    nowcast_overrides,
+    price,
+    allowed,
+):
+    broker = PaperBroker(
+        _settings(
+            tmp_path,
+            bankroll_usd=1000.0,
+            strategy_mode="upstream_lock_paper",
+        )
+    )
+    market = _direct_exact_no_market("seoul-upstream-29", 29)
+
+    position = broker.open_position(
+        market,
+        market.no_token_id or "",
+        _upstream_exact_no_result(size_usd=40.0, price=price),
+        city="seoul",
+        date_hint="may 25",
+        entry_bankroll_usd=1000.0,
+        signal=_upstream_exact_no_signal(market, **nowcast_overrides),
+    )
+
+    assert (position is not None) is allowed
+
+
+@pytest.mark.parametrize(
+    ("signal_overrides", "result_overrides", "unit"),
+    [
+        ({"signal_family": "lock_only"}, {}, "C"),
+        ({}, {"signal_family": "lock_only"}, "C"),
+        ({}, {"probability_tier": "lock_high_exact_no"}, "C"),
+        ({"p_true": 0.01}, {"p_true": 0.01}, "C"),
+        (
+            {
+                "conservative_yes_probability": 0.01,
+                "conservative_no_probability": 0.99,
+            },
+            {
+                "conservative_yes_probability": 0.01,
+                "conservative_no_probability": 0.99,
+            },
+            "C",
+        ),
+        ({}, {}, "F"),
+    ],
+)
+def test_broker_upstream_final_gate_rejects_forged_certainty_markers(
+    tmp_path,
+    signal_overrides,
+    result_overrides,
+    unit,
+):
+    broker = PaperBroker(
+        _settings(tmp_path, bankroll_usd=1000.0, strategy_mode="upstream_lock_paper")
+    )
+    market = _direct_exact_no_market("seoul-upstream-forged", 29, unit=unit)
+    signal = replace(_upstream_exact_no_signal(market), **signal_overrides)
+    result = replace(_upstream_exact_no_result(size_usd=40.0), **result_overrides)
+
+    position = broker.open_position(
+        market,
+        market.no_token_id or "",
+        result,
+        city="seoul",
+        date_hint="may 25",
+        entry_bankroll_usd=1000.0,
+        signal=signal,
+    )
+
+    assert position is None
+    with (tmp_path / "trades.csv").open(newline="", encoding="utf-8") as handle:
+        assert list(csv.DictReader(handle))[-1]["action"] == "SKIP_UPSTREAM_LOCK_PAPER_EXACT_NO"
+
+
+def test_broker_upstream_pair_keeps_one_fixed_fifty_dollar_city_date_budget(tmp_path):
+    broker = PaperBroker(
+        _settings(
+            tmp_path,
+            bankroll_usd=1000.0,
+            strategy_mode="upstream_lock_paper",
+            max_event_portfolio_legs=2,
+        )
+    )
+    market = _direct_exact_no_market("seoul-upstream-27", 27)
+
+    first = broker.open_position(
+        market,
+        market.no_token_id or "",
+        _upstream_exact_no_result(size_usd=40.0),
+        city="seoul",
+        date_hint="may 25",
+        entry_bankroll_usd=1000.0,
+        signal=_upstream_exact_no_signal(market),
+    )
+    second = broker.open_position(
+        market,
+        market.no_token_id or "",
+        _upstream_exact_no_result(size_usd=10.0),
+        city="seoul",
+        date_hint="may 25",
+        entry_bankroll_usd=999.0,
+        allow_same_side_add=True,
+        signal=_upstream_exact_no_signal(market),
+    )
+    third = broker.open_position(
+        market,
+        market.no_token_id or "",
+        _upstream_exact_no_result(size_usd=10.0),
+        city="seoul",
+        date_hint="may 25",
+        entry_bankroll_usd=999.0,
+        allow_same_side_add=True,
+        signal=_upstream_exact_no_signal(market),
+    )
+
+    assert first is not None
+    assert second is not None
+    assert third is None
+    assert broker.event_date_exposure("seoul", "may 25") == pytest.approx(50.0)
+    assert broker.state.cash_usd == pytest.approx(950.0)
 
 
 def test_broker_rejects_unstructured_95_tier_above_ordinary_event_cap(tmp_path):

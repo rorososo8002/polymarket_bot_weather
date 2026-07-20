@@ -29,6 +29,22 @@ notes only when they prevent a repeated mistake.
 - AWC/KMA METAR can remain useful monitoring evidence in non-production
   experiment modes, but it is not called 100% settlement evidence for a
   Wunderground market and cannot open a production `lock_only` position.
+- The personal paper-only `upstream_lock_paper` experiment may use AWC or KMA
+  METAR from the same registered station, but only for exact Celsius buckets
+  that the observed daily extreme has passed by at least two whole degrees.
+  The one-degree proxy rule stays blocked because the Seoul RKSI 2026-07-19
+  cross-check found a one-degree disagreement between AWC METAR and the
+  Wunderground settlement history. Every such candidate is recorded with
+  `settlement_source_verified=false`; it is research evidence, not a claim of
+  100% settlement certainty. The 2026-07-06 through 2026-07-20 audit found no
+  adverse two-degree mismatch in 500 complete labels whose rule station matched
+  the registered airport (431 high, 69 low), but each city/metric had at most
+  15 days, so that result is not a safety certificate. Known rule/station
+  conflicts such as Shenzhen and Karachi remain blocked; including conflicted
+  Shenzhen would add three real two-degree counterexamples. HKO and Fahrenheit
+  buckets are excluded. A configured Wunderground key does not replace AWC/KMA
+  while this experiment mode is active; otherwise the source gate would reject
+  every candidate.
 - The Weather Company site-based time-series feed is also research-only. It
   may wake an immediate daily-history recheck and capture the contemporaneous
   order book, but it cannot authorize an entry until daily history matches the
@@ -192,6 +208,27 @@ lock_only
 
 The probability families remain available only for explicit offline experiments;
 they are not allowed by the deployed production mode.
+
+Explicit personal paper-validation mode:
+
+```text
+upstream_lock_paper
+```
+
+This mode is separate from production `lock_only`. It permits only same-station,
+complete-local-day AWC/KMA exact Celsius NO candidates at least two degrees away
+from the observed high or low. The final executable NO ask-side VWAP must be at
+most `0.85`. The physical upstream bucket break remains `p_true=0` for evidence
+auditing, but sizing, expected profit, and portfolio scenarios must reserve at
+least 4% Wunderground settlement uncertainty (`NO <= 96%`). This separates
+"the station crossed by two degrees" from the false claim "settlement is 100%".
+At the `0.85` ceiling, that 4% cushion still leaves room for the configured
+minimum return after the executable fee check. A signal may request at most 10%
+of bankroll, but all positions for one city and local date share a fixed 5% of
+cost-basis bankroll; an open-position price wobble around $1,000 must never
+switch the cap back to 10%. At most two distinct exact buckets for the same
+metric may share that budget. The paper ledger independently repeats these
+checks before cash changes.
 
 Sizing targets before liquidity/edge/cash cuts:
 
