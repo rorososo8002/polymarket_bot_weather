@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 from contextlib import contextmanager
 import gzip
+import io
 import json
 import os
 import re
@@ -46,6 +47,116 @@ from .risk import same_observation_reentry_block_reason
 from .runner_status import update_runner_status_fields
 
 _ATOMIC_REPLACE_RETRY_DELAYS_SECONDS = (0.01, 0.05, 0.1)
+_EXACT_NO_SKIP_AUDIT_MAX_READ_BYTES = 16 * 1024 * 1024
+_CSV_TAIL_READ_CHUNK_BYTES = 64 * 1024
+_CSV_HEADER_MAX_BYTES = 64 * 1024
+
+
+def _is_auditable_exact_no_candidate(signal: Any | None) -> bool:
+    """Return whether a skipped lock candidate belongs in the decision ledger."""
+    parsed = getattr(signal, "parsed", None)
+    nowcast = getattr(signal, "nowcast", None)
+    return bool(
+        signal is not None
+        and getattr(signal, "source", "") == "official-station-lock-strong_no"
+        and getattr(signal, "signal_family", "") in {"lock_only", "upstream_lock_paper"}
+        and parsed is not None
+        and parsed.variable == "temperature"
+        and parsed.temperature_metric in {"max", "min"}
+        and parsed.temperature_bucket == "exact"
+        and isinstance(nowcast, dict)
+        and not str(nowcast.get("data_block_reason") or "")
+    )
+
+
+def _exact_no_skip_audit_key(
+    market: RawMarket,
+    result: EdgeResult,
+    signal: Any,
+) -> tuple[str, str, str, str]:
+    nowcast = signal.nowcast if isinstance(signal.nowcast, dict) else {}
+    evidence_at = str(
+        nowcast.get("observed_at")
+        or nowcast.get("high_observed_at")
+        or nowcast.get("low_observed_at")
+        or nowcast.get("bot_received_at")
+        or "unknown"
+    )
+    price = "" if result.p_exec is None else f"{result.p_exec:.4f}"
+    return market.market_id, evidence_at, _reason_code(result.reason, result.side), price
+
+
+def _load_exact_no_skip_audit_keys(
+    path: Path,
+    *,
+    max_keys: int = 10_000,
+    max_read_bytes: int = _EXACT_NO_SKIP_AUDIT_MAX_READ_BYTES,
+) -> set[tuple[str, str, str, str]]:
+    """Restore recent dedupe keys so a runner restart cannot repeat rows."""
+    if max_keys <= 0 or max_read_bytes <= 0:
+        return set()
+    try:
+        if not path.exists() or path.stat().st_size <= 0:
+            return set()
+    except OSError:
+        return set()
+
+    try:
+        with path.open("rb") as handle:
+            header = handle.readline(_CSV_HEADER_MAX_BYTES)
+            if not header.endswith((b"\n", b"\r")):
+                return set()
+            body_start = handle.tell()
+            handle.seek(0, os.SEEK_END)
+            position = handle.tell()
+            chunks: list[bytes] = []
+            bytes_read = 0
+            newline_count = 0
+            while (
+                position > body_start
+                and bytes_read < max_read_bytes
+                and newline_count <= max_keys
+            ):
+                size = min(
+                    _CSV_TAIL_READ_CHUNK_BYTES,
+                    position - body_start,
+                    max_read_bytes - bytes_read,
+                )
+                position -= size
+                handle.seek(position)
+                chunk = handle.read(size)
+                chunks.append(chunk)
+                bytes_read += len(chunk)
+                newline_count += chunk.count(b"\n")
+
+        body = b"".join(reversed(chunks))
+        if position > body_start:
+            _, separator, body = body.partition(b"\n")
+            if not separator:
+                return set()
+        body_lines = body.splitlines(keepends=True)[-max_keys:]
+        tail_text = (header + b"".join(body_lines)).decode("utf-8")
+        reader = csv.DictReader(io.StringIO(tail_text))
+        recent: set[tuple[str, str, str, str]] = set()
+        for row in reader:
+            market_id = str(row.get("market_id") or "")
+            evidence_at = str(
+                row.get("station_observed_at")
+                or row.get("high_observed_at")
+                or row.get("low_observed_at")
+                or ""
+            )
+            reason_code = str(row.get("reason_code") or "")
+            raw_price = str(row.get("p_exec") or "")
+            try:
+                price = "" if not raw_price else f"{float(raw_price):.4f}"
+            except (TypeError, ValueError):
+                continue
+            if market_id and evidence_at and reason_code:
+                recent.add((market_id, evidence_at, reason_code, price))
+    except (OSError, UnicodeDecodeError, csv.Error):
+        return set()
+    return recent
 
 
 def utc_now_iso() -> str:
@@ -759,6 +870,31 @@ def _ensure_csv_columns(path: Path, required_fieldnames: list[str]) -> list[str]
     return existing_fieldnames
 
 
+def _upgrade_csv_columns(path: Path, required_fieldnames: list[str]) -> list[str]:
+    """Atomically add audit columns while preserving every legacy row."""
+    existing_fieldnames = _ensure_csv_columns(path, required_fieldnames)
+    missing = [name for name in required_fieldnames if name not in existing_fieldnames]
+    if not missing or not path.exists() or path.stat().st_size == 0:
+        return existing_fieldnames
+    expanded_fieldnames = [*existing_fieldnames, *missing]
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{uuid4().hex}.tmp")
+    try:
+        with path.open("r", newline="", encoding="utf-8") as source_handle:
+            rows = csv.DictReader(source_handle)
+            with tmp.open("w", newline="", encoding="utf-8") as target_handle:
+                writer = csv.DictWriter(
+                    target_handle,
+                    fieldnames=expanded_fieldnames,
+                    extrasaction="ignore",
+                )
+                writer.writeheader()
+                writer.writerows(rows)
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
+    return expanded_fieldnames
+
+
 def _trade_action(value: Any) -> str:
     return str(value or "").strip().upper()
 
@@ -843,6 +979,10 @@ class PaperBroker:
         self.raw_snapshots_path = Path(settings.raw_snapshots_path)
         self._raw_snapshot_storage_suspended = False
         self._skip_diagnostic_lines: list[str] | None = None
+        self._exact_no_skip_audit_keys = _load_exact_no_skip_audit_keys(
+            self.decisions_csv_path
+        )
+        self.last_open_rejection_result: EdgeResult | None = None
         self._accounting_halted_reason = ""
         self._fail_if_unresolved_accounting_journal()
         self._fail_if_missing_state_has_executed_trades()
@@ -1332,8 +1472,41 @@ class PaperBroker:
         allow_same_side_add: bool = False,
         signal: Any | None = None,
     ) -> PaperPosition | None:
+        self.last_open_rejection_result = None
         if result.side not in {"YES", "NO"} or result.p_exec is None or result.size_usd <= 0:
             return None
+
+        def reject_entry(action: str, reason: str) -> None:
+            audit_reason = reason if reason.startswith("SKIP_") else f"{action}: {reason}"
+            rejected = replace(
+                result,
+                side="SKIP",
+                size_usd=0.0,
+                size_shares=0.0,
+                expected_net_profit_usd=0.0,
+                reason=audit_reason,
+            )
+            self.last_open_rejection_result = rejected
+            self.log_trade(
+                action,
+                market,
+                result.side,
+                token_id,
+                0,
+                result.p_exec,
+                0,
+                audit_reason,
+                market_type,
+            )
+            self.log_decision(
+                market,
+                rejected,
+                audit_reason,
+                market_type,
+                signal=signal,
+            )
+            return None
+
         if self.settings.strategy_mode in LOCK_EXACT_NO_STRATEGY_MODES:
             block_reason = exact_no_entry_block_reason_for_strategy(
                 market,
@@ -1388,18 +1561,7 @@ class PaperBroker:
                     f"{action}: final paper-ledger gate rejected entry; "
                     f"blocked_reason={block_reason}"
                 )
-                self.log_trade(
-                    action,
-                    market,
-                    result.side,
-                    token_id,
-                    0,
-                    result.p_exec,
-                    0,
-                    reason,
-                    market_type,
-                )
-                return None
+                return reject_entry(action, reason)
         nowcast = getattr(signal, "nowcast", None)
         nowcast = nowcast if isinstance(nowcast, dict) else {}
         reentry_reason = same_observation_reentry_block_reason(
@@ -1409,24 +1571,12 @@ class PaperBroker:
             station_observed_at=str(nowcast.get("observed_at") or ""),
         )
         if reentry_reason:
-            self.log_trade(
-                "SKIP_SAME_OBSERVATION_REENTRY",
-                market,
-                result.side,
-                token_id,
-                0,
-                result.p_exec,
-                0,
-                reentry_reason,
-                market_type,
-            )
-            return None
+            return reject_entry("SKIP_SAME_OBSERVATION_REENTRY", reentry_reason)
         market_positions = [pos for pos in self.state.positions if pos.market_id == market.market_id]
         add_position = next((pos for pos in market_positions if pos.side == result.side), None)
         opposite_position = next((pos for pos in market_positions if pos.side != result.side), None)
         if market_positions and (opposite_position is not None or not (allow_same_side_add and add_position is not None)):
-            self.log_trade("SKIP_SAME_MARKET", market, result.side, token_id, 0, result.p_exec, 0, "same-market position already open")
-            return None
+            return reject_entry("SKIP_SAME_MARKET", "same-market position already open")
         bankroll_before = self.current_bankroll_before_entry()
         risk_bankroll = min(bankroll_before, entry_bankroll_usd) if entry_bankroll_usd is not None else bankroll_before
         event_cap_override = structured_event_cap_override_fraction(
@@ -1444,13 +1594,11 @@ class PaperBroker:
                 f"> limit={single_market_limit:.2f} "
                 f"({single_fraction:.0%} bankroll)"
             )
-            self.log_trade("SKIP_SINGLE_MARKET_CAP", market, result.side, token_id, 0, result.p_exec, 0, reason)
-            return None
+            return reject_entry("SKIP_SINGLE_MARKET_CAP", reason)
         total_fraction = event_cap_override or self.settings.max_total_exposure_fraction
         allowed_exposure = risk_bankroll * total_fraction
         if self.total_exposure() + result.size_usd > allowed_exposure:
-            self.log_trade("SKIP_EXPOSURE_CAP", market, result.side, token_id, 0, result.p_exec, 0, "total exposure cap")
-            return None
+            return reject_entry("SKIP_EXPOSURE_CAP", "total exposure cap")
 
         # City exposure cap.
         if city:
@@ -1462,8 +1610,7 @@ class PaperBroker:
                     f"SKIP_CITY_CAP: {city} exposure={city_exp:.2f}+{result.size_usd:.2f} "
                     f"> limit={city_limit:.2f} ({self.settings.max_city_exposure_fraction:.0%} bankroll)"
                 )
-                self.log_trade("SKIP_CITY_CAP", market, result.side, token_id, 0, result.p_exec, 0, reason)
-                return None
+                return reject_entry("SKIP_CITY_CAP", reason)
 
         # City-date exposure cap.
         if city and date_hint:
@@ -1488,19 +1635,16 @@ class PaperBroker:
                     f"SKIP_EVENT_DATE_CONCENTRATION: {city}/{date_hint} "
                     "concentrated event override requires one exclusive position"
                 )
-                self.log_trade("SKIP_EVENT_DATE_CONCENTRATION", market, result.side, token_id, 0, result.p_exec, 0, reason)
-                return None
+                return reject_entry("SKIP_EVENT_DATE_CONCENTRATION", reason)
             if event_leg_count >= self.settings.max_event_portfolio_legs and add_position is None:
                 reason = (
                     f"SKIP_EVENT_DATE_LEG_CAP: {city}/{date_hint} legs={event_leg_count} "
                     f">= limit={self.settings.max_event_portfolio_legs}"
                 )
-                self.log_trade("SKIP_EVENT_DATE_LEG_CAP", market, result.side, token_id, 0, result.p_exec, 0, reason)
-                return None
+                return reject_entry("SKIP_EVENT_DATE_LEG_CAP", reason)
             if add_position is None and not is_complementary_with_positions(market.question, result.side, event_positions):
                 reason = f"SKIP_EVENT_DATE_CONCENTRATION: {city}/{date_hint} new leg is not complementary"
-                self.log_trade("SKIP_EVENT_DATE_CONCENTRATION", market, result.side, token_id, 0, result.p_exec, 0, reason)
-                return None
+                return reject_entry("SKIP_EVENT_DATE_CONCENTRATION", reason)
             event_exp = self.event_date_exposure(city, date_hint)
             if event_cap_override is not None:
                 event_fraction = event_cap_override
@@ -1517,13 +1661,11 @@ class PaperBroker:
                     f"SKIP_EVENT_DATE_CAP: {city}/{date_hint} exposure={event_exp:.2f}+{result.size_usd:.2f} "
                     f"> limit={event_limit:.2f} ({event_fraction:.0%} bankroll)"
                 )
-                self.log_trade("SKIP_EVENT_DATE_CAP", market, result.side, token_id, 0, result.p_exec, 0, reason)
-                return None
+                return reject_entry("SKIP_EVENT_DATE_CAP", reason)
 
         spend = min(result.size_usd, self.state.cash_usd)
         if spend < self.settings.min_order_usd:
-            self.log_trade("SKIP_CASH", market, result.side, token_id, 0, result.p_exec, 0, "not enough cash")
-            return None
+            return reject_entry("SKIP_CASH", "not enough cash")
         expected_profit = result.expected_net_profit_usd * spend / result.size_usd
         shares = fee_adjusted_entry_shares(spend, result.p_exec, self.settings.weather_taker_fee_rate)
         entry_fee_usdc = polymarket_taker_fee_usdc(shares, result.p_exec, self.settings.weather_taker_fee_rate)
@@ -1846,10 +1988,21 @@ class PaperBroker:
         # Suppress SKIP rows by default — they are 95%+ of all writes and carry
         # no analytical value.  Set DECISIONS_LOG_SKIP_ENABLED=true only for
         # short debugging sessions.
+        # Confirmed exact-NO candidates are the exception: keep one row per
+        # evidence/reason/price so late arrival remains visible after the fact.
+        exact_no_skip_key: tuple[str, str, str, str] | None = None
         if result.side == "SKIP" and not self.settings.decisions_log_skip_enabled:
-            return ts
+            if not _is_auditable_exact_no_candidate(signal):
+                return ts
+            exact_no_skip_key = _exact_no_skip_audit_key(market, result, signal)
+            if exact_no_skip_key in self._exact_no_skip_audit_keys:
+                return ts
         exists = self.decisions_csv_path.exists() and self.decisions_csv_path.stat().st_size > 0
-        fieldnames = _ensure_csv_columns(self.decisions_csv_path, DECISION_CSV_FIELDNAMES)
+        fieldnames = (
+            _upgrade_csv_columns(self.decisions_csv_path, DECISION_CSV_FIELDNAMES)
+            if exact_no_skip_key is not None
+            else _ensure_csv_columns(self.decisions_csv_path, DECISION_CSV_FIELDNAMES)
+        )
         market_replay = _market_replay_metadata(market)
         signal_replay = _signal_replay_metadata(signal)
         result_replay = _result_replay_metadata(result)
@@ -1934,6 +2087,8 @@ class PaperBroker:
                     for key in STATION_AUDIT_KEYS
                 },
             })
+        if exact_no_skip_key is not None:
+            self._exact_no_skip_audit_keys.add(exact_no_skip_key)
         return ts
 
     def _record_skip_diagnostic_error(self, exc: Exception) -> None:

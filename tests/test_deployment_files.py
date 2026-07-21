@@ -87,6 +87,9 @@ def test_vps_env_example_keeps_runtime_state_under_data_dir():
     assert "HKO_ROLLOVER_STATE_PATH=/opt/polymarket-weather-bot/data/hko_rollover_state.json" in text
     assert "STATION_NOWCAST_ENABLED=true" in text
     assert "STATION_NOWCAST_CACHE_TTL_SECONDS=60" in text
+    assert "STATION_REFRESH_POLL_SECONDS=5" in text
+    assert "AWC_CURRENT_CACHE_ENABLED=true" in text
+    assert "KMA_PUBLIC_HTML_ENABLED=true" in text
     assert "STATION_NOWCAST_FRESHNESS_SECONDS=5400" in text
     assert "PORTFOLIO_DECISIONS_JSONL_PATH=/opt/polymarket-weather-bot/data/paper_event_portfolios.jsonl" in text
     assert "ORDERBOOK_STREAM_STALE_SECONDS=60" in text
@@ -116,7 +119,7 @@ def test_vps_env_example_keeps_runtime_state_under_data_dir():
     assert "LARGE_BANKROLL_EVENT_DATE_EXPOSURE_FRACTION=0.05" in text
     assert "OFFICIAL_NOWCAST_LOCK_ENABLED=true" in text
     assert "OFFICIAL_NOWCAST_ENTRY_ONLY=false" in text
-    assert "STRATEGY_MODE=lock_only" in text
+    assert "STRATEGY_MODE=upstream_lock_paper" in text
     assert "INTRADAY_OBSERVATION_EDGE_ENABLED=true" in text
     assert "INTRADAY_MIN_SIDE_PROBABILITY=0.90" in text
     assert "INTRADAY_STRONG_SIDE_PROBABILITY=0.97" in text

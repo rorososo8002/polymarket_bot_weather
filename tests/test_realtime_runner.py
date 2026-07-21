@@ -840,10 +840,14 @@ def test_station_state_key_detects_due_and_unavailable_status_changes():
             fast_shadow_state_key="RKSI|2026-07-08T07:30:00+00:00|31|m",
         )
     )
+    precise_source = runner_module._station_observation_state_key(
+        replace(observation, source="kma-official-public-metars")
+    )
 
     assert current != overdue
     assert current != unavailable
     assert current != fast_shadow
+    assert current != precise_source
 
 
 def test_quiet_market_wakes_when_local_q75_gate_is_crossed():
@@ -2453,6 +2457,83 @@ def test_realtime_update_defers_no_ask_market_until_book_becomes_executable(tmp_
     assert "realtime candidate book unavailable" in diagnostic_rows[-1]["reason"]
 
 
+def test_realtime_exact_no_without_depth_keeps_each_new_observation_in_ledger(tmp_path):
+    question = "Will the highest temperature in Seoul be 29C on July 21?"
+    market = _wunderground_exact_market(question, market_id="seoul-exact-no-book")
+
+    class BidOnlyClient:
+        def get_candidate_order_book(self, token_id: str) -> OrderBook:
+            return OrderBook(token_id, bids=[OrderLevel(0.20, 100.0)], asks=[])
+
+        def prefetch_candidate_order_books(self, token_ids: list[str]) -> dict[str, int]:
+            return {
+                "requested": len(token_ids),
+                "book_ready": 0,
+                "failed": 0,
+                "deferred": len(token_ids),
+            }
+
+        def prefetch_final_entry_checks(self, checks: list[tuple[str, str]]) -> dict[str, int]:
+            return {"requested": 0, "book_ready": 0, "failed": 0, "deferred": 0}
+
+    settings = replace(
+        _upstream_lock_settings(tmp_path),
+        decisions_log_skip_enabled=False,
+    )
+    broker = runner_module.PaperBroker(settings)
+    signals: dict[str, WeatherSignal] = {}
+    refreshed_at: dict[str, datetime] = {}
+    prefilter_state: dict[str, str] = {}
+    observation_times = iter(
+        [
+            "2026-07-21T04:00:00+00:00",
+            "2026-07-21T04:01:00+00:00",
+        ]
+    )
+
+    def exact_signal_estimator(requested_question, **_kwargs):
+        return _upstream_exact_no_signal(
+            requested_question,
+            nowcast={"observed_at": next(observation_times)},
+        )
+
+    def evaluate(at: datetime) -> None:
+        runner_module._evaluate_realtime_update(
+            {market.no_token_id or ""},
+            BidOnlyClient(),
+            broker,
+            settings,
+            {
+                market.yes_token_id or "": market,
+                market.no_token_id or "": market,
+            },
+            signals,
+            {market.market_id: "temperature"},
+            {},
+            signal_refreshed_at_by_market=refreshed_at,
+            probability_estimator=exact_signal_estimator,
+            now=at,
+            prefilter_skip_state_by_market=prefilter_state,
+        )
+
+    now = datetime(2026, 7, 21, 4, 0, tzinfo=timezone.utc)
+    evaluate(now)
+    evaluate(now)
+    refreshed_at.pop(market.market_id, None)
+    evaluate(now + timedelta(minutes=1))
+
+    with Path(settings.decisions_csv_path).open(encoding="utf-8", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    assert [row["reason_code"] for row in rows] == [
+        "SKIP_NO_EXECUTABLE_DEPTH",
+        "SKIP_NO_EXECUTABLE_DEPTH",
+    ]
+    assert [row["station_observed_at"] for row in rows] == [
+        "2026-07-21T04:00:00+00:00",
+        "2026-07-21T04:01:00+00:00",
+    ]
+
+
 def test_station_refresh_poll_is_due_every_five_seconds_independent_of_provider_cache():
     settings = Settings(
         station_refresh_poll_seconds=5,
@@ -3122,6 +3203,9 @@ def test_open_position_if_needed_blocks_inactive_or_closed_markets():
         def log_trade(self, *_args, **_kwargs):
             return None
 
+        def log_decision(self, *_args, **_kwargs):
+            return None
+
     markets = [
         RawMarket(
             "inactive",
@@ -3523,9 +3607,216 @@ def test_upstream_lock_paper_exact_no_is_symmetric_small_and_capped_at_eighty_fi
 
     assert result.side == "NO"
     assert per_side["NO"].p_exec == pytest.approx(0.85)
-    assert per_side["NO"].size_usd == pytest.approx(20.0)
+    assert per_side["NO"].size_usd == pytest.approx(10.0)
     assert per_side["NO"].signal_family == "upstream_lock_paper"
     assert per_side["NO"].event_cap_override_fraction is None
+
+
+@pytest.mark.parametrize(
+    ("nowcast_overrides", "allowed"),
+    [
+        (
+            {
+                "source": "kma-official-public-metars",
+                "upstream_bucket_distance_c": 1.0,
+                "upstream_min_bucket_distance_c": 1.0,
+            },
+            True,
+        ),
+        ({"upstream_min_bucket_distance_c": 1.0}, False),
+        (
+            {
+                "source": "kma-official-public-metars",
+                "station_id": "RKPK",
+                "upstream_bucket_distance_c": 1.0,
+                "upstream_min_bucket_distance_c": 1.0,
+            },
+            False,
+        ),
+        (
+            {
+                "source": "kma-official-public-metars",
+                "upstream_bucket_distance_c": 0.1,
+                "upstream_min_bucket_distance_c": 1.0,
+            },
+            False,
+        ),
+    ],
+)
+def test_upstream_lock_paper_runner_recomputes_source_specific_distance(
+    nowcast_overrides,
+    allowed,
+):
+    signal = _upstream_exact_no_signal(
+        "Will the highest temperature in Seoul be 29C on July 21?",
+        nowcast=nowcast_overrides,
+    )
+
+    assert runner_module._is_upstream_lock_paper_exact_no("NO", signal) is allowed
+
+
+def test_precise_kma_one_c_exact_no_is_labeled_separately(tmp_path):
+    question = "Will the highest temperature in Seoul be 29C on July 21?"
+    market = _wunderground_exact_market(question, market_id="upstream-kma-one-c")
+    signal = _upstream_exact_no_signal(
+        question,
+        nowcast={
+            "source": "kma-official-public-metars",
+            "upstream_bucket_distance_c": 1.0,
+            "upstream_min_bucket_distance_c": 1.0,
+        },
+    )
+    no_book = OrderBook(
+        market.no_token_id or "",
+        bids=[OrderLevel(0.84, 2000.0)],
+        asks=[OrderLevel(0.85, 2000.0)],
+    )
+    client = _AbnormalPriceClient(
+        OrderBook(market.yes_token_id or "", bids=[], asks=[]),
+        no_book,
+    )
+    client.books = {
+        market.yes_token_id or "": client.books["yes"],
+        market.no_token_id or "": no_book,
+    }
+
+    result, per_side = runner_module.evaluate_market(
+        market,
+        signal,
+        client,
+        _upstream_lock_settings(tmp_path),
+        1000.0,
+        "temperature",
+        allowed_sides={"NO"},
+    )
+
+    assert result.side == "NO"
+    assert per_side["NO"].probability_tier == "upstream_1c_exact_no"
+
+
+def test_upstream_lock_paper_prices_only_the_fifty_dollar_city_budget(tmp_path):
+    question = "Will the highest temperature in Seoul be 29C on July 21?"
+    market = _wunderground_exact_market(question, market_id="upstream-city-budget-vwap")
+    signal = _upstream_exact_no_signal(question)
+    no_book = OrderBook(
+        market.no_token_id or "",
+        bids=[OrderLevel(0.83, 2000.0)],
+        asks=[OrderLevel(0.84, 60.0), OrderLevel(0.90, 2000.0)],
+    )
+    client = _AbnormalPriceClient(
+        OrderBook(market.yes_token_id or "", bids=[], asks=[]),
+        no_book,
+    )
+    client.books = {
+        market.yes_token_id or "": client.books["yes"],
+        market.no_token_id or "": no_book,
+    }
+
+    result, per_side = runner_module.evaluate_market(
+        market,
+        signal,
+        client,
+        _upstream_lock_settings(tmp_path),
+        1000.0,
+        "temperature",
+        allowed_sides={"NO"},
+    )
+
+    assert result.side == "NO"
+    assert per_side["NO"].p_exec == pytest.approx(0.84)
+    assert per_side["NO"].size_usd == pytest.approx(50.0)
+
+
+def test_upstream_lock_paper_keeps_smaller_fill_when_full_city_budget_breaks_cap(
+    tmp_path,
+):
+    question = "Will the highest temperature in Seoul be 29C on July 21?"
+    market = _wunderground_exact_market(question, market_id="upstream-smaller-safe-fill")
+    signal = _upstream_exact_no_signal(question)
+    no_book = OrderBook(
+        market.no_token_id or "",
+        bids=[OrderLevel(0.83, 2000.0)],
+        asks=[OrderLevel(0.84, 30.0), OrderLevel(0.90, 2000.0)],
+    )
+    client = _AbnormalPriceClient(
+        OrderBook(market.yes_token_id or "", bids=[], asks=[]),
+        no_book,
+    )
+    client.books = {
+        market.yes_token_id or "": client.books["yes"],
+        market.no_token_id or "": no_book,
+    }
+
+    result, per_side = runner_module.evaluate_market(
+        market,
+        signal,
+        client,
+        _upstream_lock_settings(tmp_path),
+        1000.0,
+        "temperature",
+        allowed_sides={"NO"},
+    )
+
+    assert result.side == "NO"
+    assert per_side["NO"].requested_size_usd == pytest.approx(50.0)
+    assert 10.0 <= per_side["NO"].size_usd < 50.0
+    assert per_side["NO"].p_exec <= 0.85 + 1e-12
+    assert "price_capped_fill=" in per_side["NO"].reason
+
+
+def test_price_cap_budget_scans_depth_once_and_keeps_fee_adjusted_boundary(monkeypatch):
+    book = OrderBook(
+        "no",
+        bids=[],
+        asks=[OrderLevel(0.80, 20.0), OrderLevel(0.92, 1000.0)],
+    )
+    real_executable_buy_price = runner_module.executable_buy_price
+    executable_price_calls = 0
+
+    def counted_executable_buy_price(*args, **kwargs):
+        nonlocal executable_price_calls
+        executable_price_calls += 1
+        return real_executable_buy_price(*args, **kwargs)
+
+    monkeypatch.setattr(
+        runner_module,
+        "executable_buy_price",
+        counted_executable_buy_price,
+    )
+
+    budget = runner_module._max_executable_budget_at_price_cap(
+        book,
+        requested_size_usd=50.0,
+        minimum_size_usd=10.0,
+        price_cap=0.85,
+        fee_rate=0.02,
+    )
+
+    safe_expensive_shares = (0.85 * 20.0 - 0.80 * 20.0) / (0.92 - 0.85)
+    safe_shares = 20.0 + safe_expensive_shares
+    expected_budget = safe_shares * (
+        0.85 + runner_module.polymarket_taker_fee_per_share(0.85, 0.02)
+    )
+    assert budget == pytest.approx(expected_budget)
+    assert executable_price_calls <= 1
+
+    p_exec, shares, _slippage = real_executable_buy_price(book, budget, fee_rate=0.02)
+    assert shares > 0
+    assert p_exec == pytest.approx(0.85, abs=1e-12)
+    too_large_p_exec, _shares, _slippage = real_executable_buy_price(
+        book,
+        budget + 0.01,
+        fee_rate=0.02,
+    )
+    assert too_large_p_exec is not None
+    assert too_large_p_exec > 0.85
+    assert runner_module._max_executable_budget_at_price_cap(
+        book,
+        requested_size_usd=50.0,
+        minimum_size_usd=30.0,
+        price_cap=0.85,
+        fee_rate=0.02,
+    ) is None
 
 
 def test_upstream_lock_paper_skip_above_cap_keeps_orderbook_depth_for_replay(tmp_path):
@@ -4494,6 +4785,227 @@ def test_final_pre_trade_direct_exact_no_shrinks_to_safe_fresh_book_budget(tmp_p
     assert "final_size_reduced=" in result.reason
 
 
+def test_final_pre_trade_upstream_exact_no_keeps_smaller_fresh_book_fill(tmp_path):
+    question = "Will the highest temperature in Seoul be 29C on July 21?"
+    market = _wunderground_exact_market(question, market_id="upstream-final-smaller-fill")
+    signal = _upstream_exact_no_signal(question)
+    selected = runner_module.EdgeResult(
+        "NO",
+        0.0,
+        0.84,
+        0.10,
+        50.0,
+        59.0,
+        "selected upstream exact no",
+        signal_family="upstream_lock_paper",
+        probability_tier="upstream_2c_exact_no",
+        requested_size_usd=50.0,
+        executable_size_usd=50.0,
+    )
+
+    class ShallowerFreshBookClient(_FinalGateClient):
+        def refresh_order_book(self, token_id: str) -> OrderBook:
+            return OrderBook(
+                token_id,
+                bids=[OrderLevel(0.83, 1000.0)],
+                asks=[OrderLevel(0.84, 25.0), OrderLevel(0.90, 1000.0)],
+            )
+
+    result = runner_module._final_pre_trade_entry_result(
+        market,
+        signal,
+        selected,
+        market.no_token_id or "",
+        ShallowerFreshBookClient(),
+        _upstream_lock_settings(tmp_path),
+        "temperature",
+    )
+
+    assert result.side == "NO"
+    assert 10.0 <= result.size_usd < selected.size_usd
+    assert result.p_exec <= 0.85 + 1e-12
+    assert "final_size_reduced=" in result.reason
+
+
+def test_final_upstream_exact_no_rejection_is_kept_in_decision_ledger(tmp_path):
+    question = "Will the highest temperature in Seoul be 29C on July 21?"
+    settings = replace(
+        _upstream_lock_settings(tmp_path),
+        decisions_log_skip_enabled=False,
+    )
+    broker = runner_module.PaperBroker(settings)
+    market = _wunderground_exact_market(
+        question,
+        market_id="upstream-final-rejection-audit",
+    )
+    signal = _upstream_exact_no_signal(
+        question,
+        nowcast={"observed_at": "2026-07-21T04:00:00+00:00"},
+    )
+    selected = runner_module.EdgeResult(
+        "NO",
+        0.0,
+        0.84,
+        0.10,
+        50.0,
+        59.0,
+        "selected upstream exact no",
+        strategy_mode="upstream_lock_paper",
+        signal_family="upstream_lock_paper",
+        probability_tier="upstream_2c_exact_no",
+        conservative_yes_probability=0.04,
+        conservative_no_probability=0.96,
+        requested_size_usd=50.0,
+        executable_size_usd=50.0,
+    )
+
+    class TooExpensiveFreshBookClient(_FinalGateClient):
+        def get_order_book(self, token_id: str) -> OrderBook:
+            return OrderBook(
+                token_id,
+                bids=[OrderLevel(0.89, 1000.0)],
+                asks=[OrderLevel(0.90, 1000.0)],
+            )
+
+    result = runner_module._open_position_if_needed(
+        broker,
+        market,
+        signal,
+        selected,
+        "temperature",
+        client=TooExpensiveFreshBookClient(),
+    )
+
+    assert result is not None
+    assert result.side == "SKIP"
+    assert "SKIP_FINAL_UPSTREAM_BUDGET" in result.reason
+    with Path(settings.decisions_csv_path).open(encoding="utf-8", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    assert len(rows) == 1
+    assert rows[0]["market_id"] == market.market_id
+    assert rows[0]["reason_code"] == "SKIP_FINAL_UPSTREAM_BUDGET"
+    assert rows[0]["station_observed_at"] == "2026-07-21T04:00:00+00:00"
+
+
+def test_final_station_recheck_failure_keeps_original_exact_no_audit_once(tmp_path):
+    question = "Will the highest temperature in Seoul be 29C on July 21?"
+    settings = replace(
+        _upstream_lock_settings(tmp_path),
+        decisions_log_skip_enabled=False,
+    )
+    market = _wunderground_exact_market(
+        question,
+        market_id="upstream-final-station-recheck-audit",
+    )
+    signal = _upstream_exact_no_signal(
+        question,
+        nowcast={"observed_at": "2026-07-21T04:00:00+00:00"},
+    )
+    selected = runner_module.EdgeResult(
+        "NO",
+        0.0,
+        0.84,
+        0.10,
+        50.0,
+        59.0,
+        "selected upstream exact no",
+        strategy_mode="upstream_lock_paper",
+        signal_family="upstream_lock_paper",
+        probability_tier="upstream_2c_exact_no",
+        conservative_yes_probability=0.04,
+        conservative_no_probability=0.96,
+        requested_size_usd=50.0,
+        executable_size_usd=50.0,
+    )
+
+    def unavailable_estimator(requested_question, **_kwargs):
+        return WeatherSignal(
+            0.5,
+            0.0,
+            "official-station-unavailable",
+            "fresh official request failed",
+            parse_weather_question(requested_question),
+        )
+
+    for _ in range(2):
+        broker = runner_module.PaperBroker(settings)
+        result = runner_module._open_position_if_needed(
+            broker,
+            market,
+            signal,
+            selected,
+            "temperature",
+            client=_FinalGateClient(),
+            probability_estimator=unavailable_estimator,
+            observation_provider=object(),
+        )
+        assert result is not None
+        assert result.side == "SKIP"
+        assert "SKIP_FINAL_STATION_SIGNAL" in result.reason
+
+    with Path(settings.decisions_csv_path).open(encoding="utf-8", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    assert len(rows) == 1
+    assert rows[0]["reason_code"] == "SKIP_FINAL_STATION_SIGNAL"
+    assert rows[0]["station_observed_at"] == "2026-07-21T04:00:00+00:00"
+
+
+def test_paper_ledger_rejection_returns_skip_and_keeps_exact_no_reason(tmp_path):
+    question = "Will the highest temperature in Seoul be 29C on July 21?"
+    settings = replace(
+        _upstream_lock_settings(tmp_path),
+        decisions_log_skip_enabled=False,
+    )
+    broker = runner_module.PaperBroker(settings)
+    broker.state.cash_usd = 5.0
+    market = _wunderground_exact_market(
+        question,
+        market_id="upstream-paper-ledger-rejection",
+    )
+    signal = _upstream_exact_no_signal(
+        question,
+        nowcast={
+            "observed_at": "2026-07-21T04:00:00+00:00",
+            "freshness_seconds": 0,
+        },
+    )
+    selected = runner_module.EdgeResult(
+        "NO",
+        0.0,
+        0.84,
+        0.10,
+        50.0,
+        59.0,
+        "selected upstream exact no",
+        strategy_mode="upstream_lock_paper",
+        signal_family="upstream_lock_paper",
+        probability_tier="upstream_2c_exact_no",
+        conservative_yes_probability=0.04,
+        conservative_no_probability=0.96,
+        requested_size_usd=50.0,
+        executable_size_usd=50.0,
+    )
+
+    result = runner_module._open_position_if_needed(
+        broker,
+        market,
+        signal,
+        selected,
+        "temperature",
+        client=_FinalGateClient(),
+    )
+
+    assert result is not None
+    assert result.side == "SKIP"
+    assert result.reason.startswith("SKIP_SINGLE_MARKET_CAP")
+    assert broker.state.positions == []
+    with Path(settings.decisions_csv_path).open(encoding="utf-8", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    assert len(rows) == 1
+    assert rows[0]["reason_code"] == "SKIP_SINGLE_MARKET_CAP"
+    assert rows[0]["station_observed_at"] == "2026-07-21T04:00:00+00:00"
+
+
 def test_final_pre_trade_exact_no_resizes_to_configured_return_floor(tmp_path):
     question = "Will the lowest temperature in Seoul be 21째C today?"
     market = _wunderground_exact_market(question, market_id="seoul-low-return-floor")
@@ -5157,6 +5669,40 @@ def test_official_station_refresh_can_poll_only_selected_station_ids(monkeypatch
     )
 
     assert calls == [seoul.station_id]
+
+
+def test_official_station_refresh_prepares_cold_start_history_before_city_fetches(
+    monkeypatch,
+):
+    seoul = runner_module.TRADING_READY_STATION_MAP["seoul"]
+    london = runner_module.TRADING_READY_STATION_MAP["london"]
+    monkeypatch.setattr(
+        runner_module,
+        "TRADING_READY_STATION_MAP",
+        {"seoul": seoul, "london": london},
+    )
+    prepared = threading.Event()
+    prepared_station_ids: list[set[str] | None] = []
+
+    class Provider:
+        supports_parallel_station_refresh = True
+
+        def prepare_daily_extremes(self, *, now, station_ids=None):
+            assert now == datetime(2026, 7, 20, 0, 0, tzinfo=timezone.utc)
+            prepared_station_ids.append(set(station_ids) if station_ids is not None else None)
+            prepared.set()
+
+        def observed_temperature_extremes_so_far(self, station, *, target_date, now):
+            del station, target_date, now
+            assert prepared.is_set()
+
+    runner_module._refresh_official_station_observations(
+        Provider(),
+        now=datetime(2026, 7, 20, 0, 0, tzinfo=timezone.utc),
+        station_ids={seoul.station_id, london.station_id},
+    )
+
+    assert prepared_station_ids == [{seoul.station_id, london.station_id}]
 
 
 def test_official_station_refresh_rotates_which_city_is_submitted_first(monkeypatch):

@@ -17,8 +17,8 @@ from .settlement_precision import SettlementPrecisionProfile, settlement_precisi
 from .stations import StationMeta, TRADING_READY_STATION_MAP
 from .upstream_lock_policy import (
     UPSTREAM_LOCK_PAPER_ENTRY_FRACTION,
-    UPSTREAM_LOCK_PAPER_MIN_BUCKET_DISTANCE_C,
     UPSTREAM_LOCK_PAPER_NOWCAST_SOURCES,
+    required_upstream_bucket_distance_c,
     upstream_settlement_probabilities,
 )
 from .weather_client import parse_weather_question
@@ -1106,10 +1106,7 @@ def estimate_station_signal(
             strategy_mode=settings.strategy_mode,
             settlement_precision_confidence=precision_profile.confidence,
         )
-    if (
-        observation.source in {"aviationweather-metar", "kma-aviation-metar"}
-        and not observation.daily_extremes_complete
-    ):
+    if observation.source in UPSTREAM_LOCK_PAPER_NOWCAST_SOURCES and not observation.daily_extremes_complete:
         reason = observation.data_block_reason or "metar-daily-extremes-incomplete"
         return replace(
             _neutral_signal(
@@ -1156,17 +1153,22 @@ def estimate_station_signal(
             parsed,
             observed_value_c,
         )
-        payload["upstream_bucket_distance_c"] = upstream_distance_c
-        payload["upstream_min_bucket_distance_c"] = (
-            UPSTREAM_LOCK_PAPER_MIN_BUCKET_DISTANCE_C
+        upstream_required_c = required_upstream_bucket_distance_c(
+            source=observation.source,
+            station_id=observation.station_id,
+            temperature_metric=parsed.temperature_metric,
+            temperature_bucket=parsed.temperature_bucket,
+            threshold_unit=parsed.threshold_unit,
         )
+        payload["upstream_bucket_distance_c"] = upstream_distance_c
+        payload["upstream_min_bucket_distance_c"] = upstream_required_c
         if (
             upstream_distance_c is None
-            or upstream_distance_c + 1e-9 < UPSTREAM_LOCK_PAPER_MIN_BUCKET_DISTANCE_C
+            or upstream_distance_c + 1e-9 < upstream_required_c
         ):
             payload["data_block_reason"] = "upstream-two-celsius-step-required"
             payload["strategy_allowed_reason"] = (
-                "adjacent one-degree AWC/KMA bucket is blocked after a real WU settlement mismatch"
+                "the calibrated source-specific whole-Celsius break was not fully crossed"
             )
             return replace(
                 _neutral_signal(
@@ -1174,7 +1176,7 @@ def estimate_station_signal(
                     "official-station-neutral",
                     (
                         f"{base_note}; upstream_bucket_distance_c={upstream_distance_c}; "
-                        f"required={UPSTREAM_LOCK_PAPER_MIN_BUCKET_DISTANCE_C:.1f}"
+                        f"required={upstream_required_c:.1f}"
                     ),
                 ),
                 nowcast=payload,
@@ -1246,7 +1248,7 @@ def estimate_station_signal(
         payload["settlement_source_verified"] = not upstream_paper
         payload["data_block_reason"] = ""
         payload["strategy_allowed_reason"] = (
-            "two-Celsius-step same-station upstream candidate; paper validation only, "
+            "audited same-station upstream bucket break; paper validation only, "
             "Wunderground settlement not confirmed"
             if upstream_paper
             else "verified same-day observation irreversibly broke the bucket"

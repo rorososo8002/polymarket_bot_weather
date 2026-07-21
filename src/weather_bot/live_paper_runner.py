@@ -40,13 +40,13 @@ from .portfolio import (
     LOCK_ONLY_EXACT_NO_MAX_ENTRY_PRICE,
     LOCK_ONLY_EXACT_NO_MIN_NET_RETURN_PCT,
     LOCK_ONLY_EXACT_NO_TIER,
+    UPSTREAM_LOCK_PAPER_EVENT_CAP_FRACTION,
     UPSTREAM_LOCK_PAPER_MODE,
-    UPSTREAM_LOCK_PAPER_EXACT_NO_TIER,
     UPSTREAM_LOCK_PAPER_MAX_ENTRY_PRICE,
-    UPSTREAM_LOCK_PAPER_MIN_BUCKET_DISTANCE_C,
     UPSTREAM_LOCK_PAPER_NOWCAST_SOURCES,
     UPSTREAM_LOCK_PAPER_SETTLEMENT_UNCERTAINTY_FLOOR,
     UPSTREAM_LOCK_PAPER_SIGNAL_FAMILY,
+    required_upstream_bucket_distance_c,
     EntryBankrollSnapshot,
     EventPortfolioDecision,
     PortfolioCandidate,
@@ -62,6 +62,7 @@ from .risk import confidence_size_multiplier, drawdown_entry_block_reason, fract
 from .runner_status import read_runner_status, update_runner_status_fields, utc_now_iso, write_runner_status
 from .station_signal import estimate_station_signal
 from .stations import TRADING_READY_STATION_MAP
+from .upstream_lock_policy import upstream_lock_paper_exact_no_tier
 from .weather_client import parse_weather_question, temperature_bucket_interval_bounds_f
 
 estimate_station_probability = estimate_station_signal
@@ -201,6 +202,19 @@ def _is_upstream_lock_paper_exact_no(side: str, signal: WeatherSignal) -> bool:
     conservative_no_probability = _finite_float(signal.conservative_no_probability)
     upstream_distance_c = _finite_float(nowcast.get("upstream_bucket_distance_c"))
     upstream_required_c = _finite_float(nowcast.get("upstream_min_bucket_distance_c"))
+    station_id = str(nowcast.get("station_id") or "").upper()
+    expected_station = (
+        TRADING_READY_STATION_MAP.get((parsed.city or "").casefold())
+        if parsed is not None
+        else None
+    )
+    expected_required_c = required_upstream_bucket_distance_c(
+        source=str(nowcast.get("source") or ""),
+        station_id=station_id,
+        temperature_metric=parsed.temperature_metric if parsed is not None else None,
+        temperature_bucket=parsed.temperature_bucket if parsed is not None else None,
+        threshold_unit=parsed.threshold_unit if parsed is not None else None,
+    )
     target_date = str(nowcast.get("target_date_local") or "")
     station_date = str(nowcast.get("station_local_date") or "")
     return (
@@ -226,14 +240,16 @@ def _is_upstream_lock_paper_exact_no(side: str, signal: WeatherSignal) -> bool:
         and abs(conservative_yes_probability + conservative_no_probability - 1.0) <= 1e-9
         and signal.settlement_precision_confidence == "verified"
         and nowcast.get("source") in UPSTREAM_LOCK_PAPER_NOWCAST_SOURCES
-        and str(nowcast.get("station_id") or "").upper() != "HKO"
+        and expected_station is not None
+        and station_id == expected_station.station_id.upper()
+        and station_id != "HKO"
         and nowcast.get("daily_extremes_complete") is True
         and nowcast.get("entry_evidence_mode") == "upstream_same_station_paper"
         and nowcast.get("settlement_source_verified") is False
         and upstream_distance_c is not None
         and upstream_required_c is not None
-        and upstream_required_c >= UPSTREAM_LOCK_PAPER_MIN_BUCKET_DISTANCE_C - 1e-12
-        and upstream_distance_c >= upstream_required_c - 1e-12
+        and abs(upstream_required_c - expected_required_c) <= 1e-12
+        and upstream_distance_c >= expected_required_c - 1e-12
         and bool(target_date)
         and target_date == station_date
         and not str(nowcast.get("data_block_reason") or "")
@@ -314,6 +330,18 @@ def _entry_price_cap(side: str, signal: WeatherSignal) -> float:
     if _is_upstream_lock_paper_exact_no(side, signal):
         return UPSTREAM_LOCK_PAPER_MAX_ENTRY_PRICE
     return MAX_ENTRY_EXECUTION_PRICE
+
+
+def _upstream_lock_paper_probability_tier(signal: WeatherSignal) -> str:
+    parsed = signal.parsed
+    nowcast = signal.nowcast if isinstance(signal.nowcast, dict) else {}
+    return upstream_lock_paper_exact_no_tier(
+        source=str(nowcast.get("source") or ""),
+        station_id=str(nowcast.get("station_id") or ""),
+        temperature_metric=parsed.temperature_metric if parsed is not None else None,
+        temperature_bucket=parsed.temperature_bucket if parsed is not None else None,
+        threshold_unit=parsed.threshold_unit if parsed is not None else None,
+    )
 
 
 def _entry_min_return_pct(side: str, signal: WeatherSignal, settings: Settings) -> float:
@@ -1176,6 +1204,7 @@ def _datetime_state_text(value: Any) -> str:
 def _station_observation_state_key(observation: Any) -> tuple[Any, ...]:
     return (
         str(getattr(observation, "station_id", "") or "").upper(),
+        str(getattr(observation, "source", "") or ""),
         _datetime_state_text(getattr(observation, "observed_at", None)),
         _datetime_state_text(getattr(observation, "high_observed_at", None)),
         _datetime_state_text(getattr(observation, "high_last_observed_at", None)),
@@ -1754,6 +1783,41 @@ def _max_executable_buy_target_usd(book: OrderBook, fee_rate: float) -> float:
     return total
 
 
+def _max_executable_budget_at_price_cap(
+    book: OrderBook,
+    *,
+    requested_size_usd: float,
+    minimum_size_usd: float,
+    price_cap: float,
+    fee_rate: float,
+) -> float | None:
+    """Return the largest real ask-side budget whose VWAP clears the cap."""
+    shares = 0.0
+    notional = 0.0
+    for level in book.asks:
+        if level.size <= 0:
+            continue
+        take = level.size
+        if level.price > price_cap:
+            headroom = price_cap * shares - notional
+            if headroom <= 0:
+                break
+            take = min(take, headroom / (level.price - price_cap))
+        shares += take
+        notional += take * level.price
+        if take + 1e-12 < level.size:
+            break
+
+    if shares <= 0:
+        return None
+    p_exec = notional / shares
+    safe_budget = shares * (
+        p_exec + polymarket_taker_fee_per_share(p_exec, fee_rate)
+    )
+    limit = min(requested_size_usd, safe_budget)
+    return limit if limit + 1e-9 >= minimum_size_usd else None
+
+
 def _settlement_return_pct_for_budget(
     book: OrderBook,
     size_usd: float,
@@ -2055,6 +2119,11 @@ def _side_result(
                 confidence=signal.confidence,
                 min_confidence=min_confidence,
             )
+            if upstream_exact_no:
+                requested_size_usd = min(
+                    requested_size_usd,
+                    bankroll_before_entry * UPSTREAM_LOCK_PAPER_EVENT_CAP_FRACTION,
+                )
         size_usd = requested_size_usd
         if size_usd < settings.min_order_usd:
             break
@@ -2102,6 +2171,33 @@ def _side_result(
                 f", partial_fill=${capped_size_usd:.2f}/${requested_size_usd:.2f}"
             )
         price_cap_result = _entry_price_cap_skip_result(side, signal, settings, checked_p_exec, market_type)
+        if price_cap_result is not None and upstream_exact_no:
+            capped_size_usd = _max_executable_budget_at_price_cap(
+                book,
+                requested_size_usd=requested_size_usd,
+                minimum_size_usd=settings.min_order_usd,
+                price_cap=_entry_price_cap(side, signal),
+                fee_rate=settings.weather_taker_fee_rate,
+            )
+            if capped_size_usd is not None:
+                checked_p_exec, _checked_shares, checked_slip = executable_buy_price(
+                    book,
+                    capped_size_usd,
+                    fee_rate=settings.weather_taker_fee_rate,
+                )
+                size_usd = capped_size_usd
+                partial_fill_reason = (
+                    f", price_capped_fill=${capped_size_usd:.2f}/${requested_size_usd:.2f}"
+                )
+                if checked_p_exec is not None:
+                    price_cap_result = _entry_price_cap_skip_result(
+                        side,
+                        signal,
+                        settings,
+                        checked_p_exec,
+                        market_type,
+                        book,
+                    )
         if price_cap_result is not None:
             return price_cap_result
         if abs(checked_p_exec - p_exec) <= 1e-12 and abs(checked_slip - slip) <= 1e-12:
@@ -2238,7 +2334,7 @@ def _side_result(
         probability_tier=(
             LOCK_ONLY_EXACT_NO_TIER
             if lock_only_exact_no
-            else UPSTREAM_LOCK_PAPER_EXACT_NO_TIER
+            else _upstream_lock_paper_probability_tier(signal)
             if upstream_exact_no
             else
             observation_tier.probability_tier
@@ -2320,6 +2416,7 @@ def _final_pre_trade_entry_result(
         )
 
     lock_only_exact_no = _is_lock_only_exact_no(result.side, signal)
+    upstream_exact_no = _is_upstream_lock_paper_exact_no(result.side, signal)
     final_size_usd = result.size_usd
     final_size_note = ""
     if lock_only_exact_no:
@@ -2337,6 +2434,27 @@ def _final_pre_trade_entry_result(
                 f"exact-NO amount of at least ${settings.min_order_usd:.2f} clearing "
                 f"max_entry_price={LOCK_ONLY_EXACT_NO_MAX_ENTRY_PRICE:.4f} and "
                 f"min_settlement_net_return={LOCK_ONLY_EXACT_NO_MIN_NET_RETURN_PCT:.2%} "
+                f"[{market_type}]",
+            )
+        final_size_usd = min(result.size_usd, safe_budget)
+        if final_size_usd + 1e-9 < result.size_usd:
+            final_size_note = (
+                f", final_size_reduced=${final_size_usd:.2f}/${result.size_usd:.2f}"
+            )
+    elif upstream_exact_no:
+        safe_budget = _max_executable_budget_at_price_cap(
+            book,
+            requested_size_usd=result.size_usd,
+            minimum_size_usd=settings.min_order_usd,
+            price_cap=_entry_price_cap(result.side, signal),
+            fee_rate=settings.weather_taker_fee_rate,
+        )
+        if safe_budget is None:
+            return _skip_entry_result(
+                result,
+                "SKIP_FINAL_UPSTREAM_BUDGET: final pre-trade book has no executable "
+                f"exact-NO amount of at least ${settings.min_order_usd:.2f} clearing "
+                f"max_entry_price={_entry_price_cap(result.side, signal):.4f} "
                 f"[{market_type}]",
             )
         final_size_usd = min(result.size_usd, safe_budget)
@@ -3341,6 +3459,8 @@ def _record_pre_trade_skip(
     skip_result: EdgeResult,
     token_id: str,
     market_type: str,
+    *,
+    signal: WeatherSignal | None = None,
 ) -> EdgeResult:
     action = skip_result.reason.split(":", 1)[0]
     if not action.startswith("SKIP_"):
@@ -3356,6 +3476,14 @@ def _record_pre_trade_skip(
         skip_result.reason,
         market_type,
     )
+    if signal is not None:
+        broker.log_decision(
+            market,
+            skip_result,
+            skip_result.reason,
+            market_type,
+            signal=signal,
+        )
     return skip_result
 
 
@@ -3392,6 +3520,7 @@ def _open_position_if_needed(
                 blocked,
                 token_id or "",
                 market_type,
+                signal=signal,
             )
     if result.side == "YES" and broker.settings.no_only_new_entries:
         blocked = _skip_entry_result(
@@ -3405,6 +3534,7 @@ def _open_position_if_needed(
             blocked,
             token_id or "",
             market_type,
+            signal=signal,
         )
     initial_reason = _market_tradability_skip_reason(
         market,
@@ -3432,6 +3562,7 @@ def _open_position_if_needed(
             final_result,
             token_id or "",
             market_type,
+            signal=signal,
         )
 
     allow_same_side_add = (
@@ -3494,6 +3625,10 @@ def _open_position_if_needed(
                 final_result,
                 token_id,
                 market_type,
+                # Keep the exact-NO evidence that reached this final gate.  A
+                # neutral/unavailable recheck explains the rejection but must
+                # not erase the candidate from the audit ledger.
+                signal=signal,
             )
         selected_size_usd = min(result.size_usd, final_side.size_usd)
         selected_size_scale = (
@@ -3526,10 +3661,11 @@ def _open_position_if_needed(
             final_result,
             token_id,
             market_type,
+            signal=final_signal,
         )
     city = final_signal.parsed.city if final_signal.parsed is not None else ""
     date_hint = final_signal.parsed.date_hint if final_signal.parsed is not None else ""
-    broker.open_position(
+    opened_position = broker.open_position(
         market,
         token_id,
         final_result,
@@ -3541,6 +3677,14 @@ def _open_position_if_needed(
         allow_same_side_add=allow_same_side_add,
         signal=final_signal,
     )
+    if opened_position is None:
+        ledger_rejection = getattr(broker, "last_open_rejection_result", None)
+        if isinstance(ledger_rejection, EdgeResult):
+            return ledger_rejection
+        return _skip_entry_result(
+            final_result,
+            "SKIP_PAPER_LEDGER_REJECTED: final paper ledger did not open the selected entry",
+        )
     return final_result
 
 
@@ -3640,6 +3784,7 @@ def _apply_event_portfolio(
                 blocked,
                 token_id,
                 candidate.market_type,
+                signal=candidate.signal,
             )
             continue
         _open_position_if_needed(
@@ -3728,10 +3873,6 @@ def _record_realtime_prefilter_skip(
     prefilter_skip_state_by_market: dict[str, str] | None = None,
 ) -> None:
     reason_code = reason.split(":", 1)[0]
-    if prefilter_skip_state_by_market is not None:
-        if prefilter_skip_state_by_market.get(market.market_id) == reason_code:
-            return
-        prefilter_skip_state_by_market[market.market_id] = reason_code
     if signal is None:
         try:
             parsed = parse_weather_question(market.question)
@@ -3744,6 +3885,21 @@ def _record_realtime_prefilter_skip(
             note=reason,
             parsed=parsed,
         )
+    state_key = reason_code
+    if _is_exact_no_lock("NO", signal):
+        nowcast = signal.nowcast if isinstance(signal.nowcast, dict) else {}
+        evidence_at = str(
+            nowcast.get("observed_at")
+            or nowcast.get("high_observed_at")
+            or nowcast.get("low_observed_at")
+            or nowcast.get("bot_received_at")
+            or "unknown"
+        )
+        state_key = f"{reason_code}|{evidence_at}"
+    if prefilter_skip_state_by_market is not None:
+        if prefilter_skip_state_by_market.get(market.market_id) == state_key:
+            return
+        prefilter_skip_state_by_market[market.market_id] = state_key
     result = EdgeResult("SKIP", signal.p_true, None, -999.0, 0.0, 0.0, reason)
     broker.log_decision(market, result, signal.note, market_type, signal=signal)
 
@@ -3923,15 +4079,41 @@ def _evaluate_realtime_update(
         else:
             book_unavailable_market_ids.add(market.market_id)
 
-    for market in markets_to_prefetch:
-        if market.market_id in book_unavailable_market_ids:
-            _record_realtime_prefilter_skip(
-                broker,
-                market,
-                market_types.get(market.market_id, "temperature"),
-                "SKIP_NO_EXECUTABLE_DEPTH: realtime candidate book unavailable; new NO entry deferred",
-                prefilter_skip_state_by_market=prefilter_skip_state_by_market,
-            )
+    book_unavailable_markets = [
+        market
+        for market in markets_to_prefetch
+        if market.market_id in book_unavailable_market_ids
+    ]
+    book_unavailable_signal_errors: dict[str, Exception] = {}
+    if settings.strategy_mode in LOCK_EXACT_NO_STRATEGY_MODES:
+        # An urgent weather change can prove an exact-NO even while CLOB depth
+        # is temporarily unavailable.  Compute that evidence before recording
+        # the book rejection so a zero-fill day still has an auditable candidate.
+        book_unavailable_signal_errors = _prefetch_realtime_signals(
+            book_unavailable_markets,
+            settings,
+            signals_by_market,
+            signal_refreshed_at_by_market,
+            probability_estimator=probability_estimator,
+            observation_provider=observation_provider,
+            residual_profile_store=residual_profile_store,
+            now=current,
+        )
+
+    for market in book_unavailable_markets:
+        signal = None
+        if market.market_id not in book_unavailable_signal_errors:
+            candidate_signal = signals_by_market.get(market.market_id)
+            if candidate_signal is not None and _is_exact_no_lock("NO", candidate_signal):
+                signal = candidate_signal
+        _record_realtime_prefilter_skip(
+            broker,
+            market,
+            market_types.get(market.market_id, "temperature"),
+            "SKIP_NO_EXECUTABLE_DEPTH: realtime candidate book unavailable; new NO entry deferred",
+            signal=signal,
+            prefilter_skip_state_by_market=prefilter_skip_state_by_market,
+        )
 
     touched_candidate_tokens = {
         str(token_id)
@@ -4363,6 +4545,22 @@ def _refresh_official_station_observations(
         if station_ids is None
         else {str(station_id).upper() for station_id in station_ids}
     )
+    prepare_daily_extremes = getattr(
+        observation_provider,
+        "prepare_daily_extremes",
+        None,
+    )
+    if callable(prepare_daily_extremes):
+        try:
+            prepare_daily_extremes(
+                now=current,
+                station_ids=allowed_station_ids,
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(
+                "STATION HISTORY PREPARE ERROR: "
+                f"error_type={type(exc).__name__}"
+            )
     stations = [
         station
         for station in TRADING_READY_STATION_MAP.values()
@@ -4906,6 +5104,9 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
                             settings,
                             official_station_refresh=latest_official_station_refresh,
                         )
+                        # Keep the five-second cadence measured start-to-start.
+                        # Provider-specific caches enforce the external request
+                        # floors, while completed city data is reconsidered at once.
                         station_refreshed_at = now
                     if (now - status_updated_at).total_seconds() >= settings.runner_health_status_interval_seconds:
                         failed_phase = "runner_status_update"

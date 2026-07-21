@@ -142,8 +142,8 @@ class Settings:
     state_path: str = "paper_state.json"
     trades_csv_path: str = "paper_trades.csv"
     decisions_csv_path: str = "paper_decisions.csv"
-    # When False (default), SKIP rows are NOT written to paper_decisions.csv.
-    # SKIP rows are 95%+ of all writes and have zero analytical value.
+    # When False (default), ordinary SKIP rows are not written to paper_decisions.csv.
+    # Confirmed exact-NO candidates are still kept once per evidence/reason/price.
     # Set DECISIONS_LOG_SKIP_ENABLED=true only for short debugging sessions.
     decisions_log_skip_enabled: bool = False
     skip_diagnostics_enabled: bool = True
@@ -163,7 +163,9 @@ class Settings:
     station_nowcast_enabled: bool = True
     station_nowcast_cache_ttl_seconds: int = 60  # 1 min: matches AWC METAR documented API cadence
     station_refresh_poll_seconds: int = 5
+    awc_current_cache_enabled: bool = False
     kma_metar_service_key: str = ""
+    kma_public_html_enabled: bool = False
     kma_metar_poll_seconds: int = 30
     kma_metar_timeout_seconds: float = 3.0
     kma_metar_station_ids: str = "RKSI,RKPK"
@@ -555,9 +557,17 @@ def load_settings() -> Settings:
             "STATION_REFRESH_POLL_SECONDS",
             Settings.station_refresh_poll_seconds,
         ),
+        awc_current_cache_enabled=_bool_env(
+            "AWC_CURRENT_CACHE_ENABLED",
+            Settings.awc_current_cache_enabled,
+        ),
         kma_metar_service_key=os.getenv(
             "KMA_METAR_SERVICE_KEY",
             Settings.kma_metar_service_key,
+        ),
+        kma_public_html_enabled=_bool_env(
+            "KMA_PUBLIC_HTML_ENABLED",
+            Settings.kma_public_html_enabled,
         ),
         kma_metar_poll_seconds=_int_env(
             "KMA_METAR_POLL_SECONDS",

@@ -726,6 +726,15 @@ def test_broker_lock_only_final_gate_keeps_fahrenheit_exact_no_supported(tmp_pat
     ("nowcast_overrides", "price", "allowed"),
     [
         ({}, 0.85, True),
+        (
+            {
+                "source": "kma-official-public-metars",
+                "upstream_bucket_distance_c": 1.0,
+                "upstream_min_bucket_distance_c": 1.0,
+            },
+            0.85,
+            True,
+        ),
         ({"daily_extremes_complete": False}, 0.85, False),
         ({"station_id": "HKO"}, 0.85, False),
         ({"station_id": "WRONG"}, 0.85, False),
@@ -735,6 +744,16 @@ def test_broker_lock_only_final_gate_keeps_fahrenheit_exact_no_supported(tmp_pat
         ({"entry_evidence_mode": "forged"}, 0.85, False),
         ({"settlement_source_verified": True}, 0.85, False),
         ({"upstream_bucket_distance_c": 1.0}, 0.85, False),
+        ({"upstream_min_bucket_distance_c": 1.0}, 0.85, False),
+        (
+            {
+                "source": "kma-official-public-metars",
+                "upstream_bucket_distance_c": 0.1,
+                "upstream_min_bucket_distance_c": 1.0,
+            },
+            0.85,
+            False,
+        ),
         ({}, 0.8501, False),
     ],
 )

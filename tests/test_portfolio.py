@@ -1190,6 +1190,32 @@ def test_upstream_exact_no_portfolio_gate_rejects_fahrenheit_even_if_signal_is_f
     assert reason == "exact_celsius_bucket_required"
 
 
+def test_upstream_precise_one_c_tier_remains_a_valid_portfolio_candidate():
+    item = upstream_exact_no_candidate("seoul-29", "29°C")
+    precise_signal = replace(
+        item.signal,
+        nowcast={
+            **(item.signal.nowcast or {}),
+            "source": "kma-official-public-metars",
+            "upstream_bucket_distance_c": 1.0,
+            "upstream_min_bucket_distance_c": 1.0,
+        },
+    )
+    precise_result = replace(
+        item.result,
+        probability_tier="upstream_1c_exact_no",
+    )
+
+    reason = portfolio_module.upstream_exact_no_entry_block_reason(
+        item.market,
+        precise_signal,
+        precise_result.side,
+        precise_result,
+    )
+
+    assert reason is None
+
+
 def test_apply_event_portfolio_opens_two_direct_exact_no_legs_with_shared_budget(tmp_path):
     cfg = settings(
         tmp_path,

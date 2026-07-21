@@ -29,12 +29,16 @@ notes only when they prevent a repeated mistake.
 - AWC/KMA METAR can remain useful monitoring evidence in non-production
   experiment modes, but it is not called 100% settlement evidence for a
   Wunderground market and cannot open a production `lock_only` position.
-- The personal paper-only `upstream_lock_paper` experiment may use AWC or KMA
-  METAR from the same registered station, but only for exact Celsius buckets
-  that the observed daily extreme has passed by at least two whole degrees.
-  The one-degree proxy rule stays blocked because the Seoul RKSI 2026-07-19
-  cross-check found a one-degree disagreement between AWC METAR and the
-  Wunderground settlement history. Every such candidate is recorded with
+- The personal paper-only `upstream_lock_paper` experiment may use same-station
+  METAR for exact Celsius buckets. Rounded AWC and KMA API rows still require a
+  two-degree break. The KMA public 0.1C table may use a fully crossed 1.0C break
+  only for RKSI/RKPK high or low exact buckets: `high - bucket >= 1.0` or
+  `bucket - low >= 1.0`. A fractional crossing such as 22.9C below a 23C bucket
+  is not enough. The 2026-07-06 through 2026-07-20 audit found zero false NOs
+  in 28 high and 15 low winning buckets under that full 1.0C rule, but the
+  sample is a paper pilot, not a safety certificate. The adjacent AWC rule
+  remains blocked because Seoul RKSI 2026-07-19 had AWC 27C while Wunderground
+  settled 26C. Every upstream candidate is recorded with
   `settlement_source_verified=false`; it is research evidence, not a claim of
   100% settlement certainty. The 2026-07-06 through 2026-07-20 audit found no
   adverse two-degree mismatch in 500 complete labels whose rule station matched
@@ -53,6 +57,17 @@ notes only when they prevent a repeated mistake.
   - Seoul RKSI and Busan RKPK use the KMA direct METAR API first when
     `KMA_METAR_SERVICE_KEY` is configured. Check for newly published reports
     every 30 seconds while the runner checks its local cache every 5 seconds.
+  - Without a key, the official KMA public METAR table may supply precise 0.1C
+    rows. It is an HTML adapter, so require the expected table schema, station,
+    report time, plausible temperature, complete local-day continuity, and
+    freshness; malformed or blocked HTML fails closed.
+  - Do not assume the KMA page is faster. In the 2026-07-22 RKSI probe, AWC first
+    showed the 16:00Z report by 16:05:00Z while the KMA page still lacked it at
+    16:08:50Z. Fetch the shared AWC current cache and compare report timestamps;
+    a complete local-day source beats an incomplete source, newer complete AWC
+    wins, and equal complete timestamps prefer precise KMA.
+  - Keep AWC integer and KMA decimal daily-extreme ledgers separate. A rounded
+    AWC row must never inflate a later observation labelled as KMA evidence.
   - Give the direct KMA request at most 3 seconds. On timeout or malformed
     response, suppress another KMA attempt for one poll interval and use AWC so
     one slow domestic request cannot hold every following city.
@@ -62,8 +77,30 @@ notes only when they prevent a repeated mistake.
   - Keep AWC as recovery and network-failure fallback. A missing, malformed, or
     wrong-station KMA report never becomes trade evidence by itself.
 - AWC METAR:
-  - Background monitoring polls the bulk API at most once per minute; one response covers supported ICAO
-    stations.
+  - Background monitoring downloads the official current-cache file once per
+    published minute; one response covers all supported ICAO stations. Follow
+    `Last-Modified`, retry the same phase after three seconds when the CDN still
+    serves the previous file, and invalidate every affected city cache together.
+    Station consumers run concurrently behind that one shared download; Seoul
+    and Busan KMA requests do not put later cities in a serial queue. If a report
+    crosses into the next minute while the HTTP request is in flight, compare it
+    with the actual response time rather than the stale loop-start timestamp.
+  - The history bulk API remains the restart/recovery fallback. Ordinary
+    recovery is requested at most once per minute. When the persisted day
+    ledger is missing or incomplete at process start, split the supported
+    stations into disjoint groups of at most four and issue one bounded request
+    per group concurrently, with no more than twelve AWC requests in flight
+    across both grouped and single-station fallback work. Run this
+    recovery in the background, apply each finished group immediately, and
+    fail closed only for a city whose group is still pending; one slow group
+    must not hold every other city. Include incomplete stations at every local
+    time, including the Asian 00:00-02:30 window. Persist the wave start time so
+    a 30-second process restart cannot repeat it before the one-minute floor.
+    Retry transiently failed groups together after that floor. A 400-row group
+    is split into bounded single-station requests in the same background wave.
+    This keeps responses below the row ceiling without putting the last city
+    eleven minutes behind the first. Direct Wunderground-history mode skips
+    this AWC-only preparation.
   - Final entry validation discards derived per-station results only after the
     official one-request-per-minute floor has elapsed. Inside that floor it
     reuses the newest allowed bulk response instead of risking an API block;
@@ -163,6 +200,9 @@ notes only when they prevent a repeated mistake.
   affected same-day event must be queued; the normal four-event probe cap must
   never discard the fifth or later changed city. Urgent station events run
   ahead of ordinary order-book wakeups.
+- Once an exact-NO lock signal exists, retain one decision row per observation,
+  rejection reason, and executable price even when the final result is SKIP.
+  A zero-trade day with zero candidate/rejection evidence is not auditable.
 - Near each learned direct-report boundary, a cache age of exactly five seconds
   is expired, so a five-second runner poll produces a real five-second source
   retry rather than an accidental ten-second retry. One valid timestamp gap is
@@ -183,16 +223,19 @@ notes only when they prevent a repeated mistake.
 
 ## 6. Sizing
 
-Default deployed mode: `lock_only` with `NO_ONLY_NEW_ENTRIES=true`.
-New entries are limited to exact-temperature NO whose YES outcome has already
-become impossible in the directly queried Wunderground local-day history.
-Probability-only NO, range/tail NO, YES, HKO `needs_audit`, and proxy-only
-METAR locks are disabled. Legacy positions remain eligible for normal
+Strict settlement-source mode remains `lock_only`: it requires directly queried
+Wunderground local-day history and uses the `0.90` ceiling. The active personal
+paper-validation deployment instead explicitly sets `upstream_lock_paper` with
+`NO_ONLY_NEW_ENTRIES=true`; its narrower AWC/KMA rules and `0.85` ceiling are
+defined below. Probability-only NO, range/tail NO, YES, and HKO `needs_audit`
+remain disabled in both modes. Legacy positions remain eligible for normal
 executable bid-side exit handling.
-The environment-loader fallback is also `lock_only`; omitting one environment
-line must never re-enable probability trading. `PaperBroker`, the final
-paper-ledger writer, independently rechecks the exact-NO evidence, the `0.90`
-price ceiling, and the configured settlement-return floor before changing cash.
+The environment-loader fallback stays `lock_only`; omitting the explicit
+strategy line must fail closed rather than re-enable probability trading. The
+systemd paper template explicitly selects `upstream_lock_paper` because it also
+enables the audited AWC/KMA sources. `PaperBroker`, the final paper-ledger
+writer, independently rechecks the selected mode's source, exact-NO evidence,
+price ceiling, and settlement-return floor before changing cash.
 The default event portfolio limit is two open legs per city and local date.
 The two legs must be distinct exact buckets for the same metric (both daily high
 or both daily low), so both NO legs cannot lose in one settlement outcome. They
@@ -200,7 +243,7 @@ share one city-date budget; the first leg cannot reserve the whole budget before
 the second is considered. Range, tail, mixed high/low, and a third leg remain
 blocked.
 
-Production new-entry signal family:
+Strict direct-settlement new-entry signal family:
 
 ```text
 lock_only
@@ -215,13 +258,14 @@ Explicit personal paper-validation mode:
 upstream_lock_paper
 ```
 
-This mode is separate from production `lock_only`. It permits only same-station,
-complete-local-day AWC/KMA exact Celsius NO candidates at least two degrees away
-from the observed high or low. The final executable NO ask-side VWAP must be at
-most `0.85`. The physical upstream bucket break remains `p_true=0` for evidence
-auditing, but sizing, expected profit, and portfolio scenarios must reserve at
-least 4% Wunderground settlement uncertainty (`NO <= 96%`). This separates
-"the station crossed by two degrees" from the false claim "settlement is 100%".
+This mode is separate from strict `lock_only`. It permits only same-station,
+complete-local-day exact Celsius NO candidates. Rounded AWC/KMA API evidence
+requires a two-degree break; the precise KMA public RKSI/RKPK pilot requires a
+full 1.0C break. The final executable NO ask-side VWAP must be at most `0.85`.
+The physical upstream bucket break remains `p_true=0` for evidence auditing,
+but sizing, expected profit, and portfolio scenarios must reserve at least 4%
+Wunderground settlement uncertainty (`NO <= 96%`). This separates "the upstream
+station crossed the audited boundary" from the false claim "settlement is 100%".
 At the `0.85` ceiling, that 4% cushion still leaves room for the configured
 minimum return after the executable fee check. A signal may request at most 10%
 of bankroll, but all positions for one city and local date share a fixed 5% of
@@ -229,6 +273,12 @@ cost-basis bankroll; an open-position price wobble around $1,000 must never
 switch the cap back to 10%. At most two distinct exact buckets for the same
 metric may share that budget. The paper ledger independently repeats these
 checks before cash changes.
+If the full 5% request crosses `0.85` but a smaller order of at least the
+configured minimum still clears it, keep the largest executable amount below
+the ceiling and let the two-leg portfolio share the remaining budget. Do not
+discard a valid $10-$49 candidate merely because a hypothetical $50 order
+would consume more expensive depth. The final REST book refresh recalculates
+VWAP for the actually selected dollars before the paper fill.
 
 Sizing targets before liquidity/edge/cash cuts:
 
@@ -244,6 +294,11 @@ Sizing targets before liquidity/edge/cash cuts:
 Final executable VWAP, fee-aware edge, complete observations, CLOB state, cash,
 and single-market exposure gates may reduce or block a fill. HKO `needs_audit`
 cannot use concentrated sizing.
+
+Deployment completion requires one remote runtime contract: deployed code
+identity, `STRATEGY_MODE`, source flags, observation time, bot receipt time,
+evaluation time, first book-check time, and fill or one explicit rejection
+reason. Local tests alone are not deployment proof.
 
 Low exact NO weather risk:
 

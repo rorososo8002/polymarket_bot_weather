@@ -25,11 +25,12 @@ from .upstream_lock_policy import (
     UPSTREAM_LOCK_PAPER_EVENT_CAP_FRACTION,
     UPSTREAM_LOCK_PAPER_EXACT_NO_TIER,
     UPSTREAM_LOCK_PAPER_MAX_ENTRY_PRICE,
-    UPSTREAM_LOCK_PAPER_MIN_BUCKET_DISTANCE_C,
     UPSTREAM_LOCK_PAPER_MODE,
     UPSTREAM_LOCK_PAPER_NOWCAST_SOURCES,
+    UPSTREAM_LOCK_PAPER_PRECISE_EXACT_NO_TIER,
     UPSTREAM_LOCK_PAPER_SETTLEMENT_UNCERTAINTY_FLOOR,
     UPSTREAM_LOCK_PAPER_SIGNAL_FAMILY,
+    required_upstream_bucket_distance_c,
 )
 from .weather_client import (
     TemperatureBucketInterval,
@@ -52,7 +53,10 @@ LOCK_ONLY_EXACT_NO_TIERS = {
     LEGACY_LOCK_ONLY_EXACT_NO_TIER,
 }
 DIRECT_SETTLEMENT_NOWCAST_SOURCE = "wunderground-history-direct"
-UPSTREAM_LOCK_PAPER_EXACT_NO_TIERS = {UPSTREAM_LOCK_PAPER_EXACT_NO_TIER}
+UPSTREAM_LOCK_PAPER_EXACT_NO_TIERS = {
+    UPSTREAM_LOCK_PAPER_EXACT_NO_TIER,
+    UPSTREAM_LOCK_PAPER_PRECISE_EXACT_NO_TIER,
+}
 LOCK_EXACT_NO_STRATEGY_MODES = frozenset({"lock_only", UPSTREAM_LOCK_PAPER_MODE})
 
 
@@ -241,11 +245,18 @@ def upstream_exact_no_entry_block_reason(
         upstream_required_c = float(nowcast.get("upstream_min_bucket_distance_c"))
     except (TypeError, ValueError):
         return "upstream_two_celsius_step_evidence_required"
+    expected_required_c = required_upstream_bucket_distance_c(
+        source=str(nowcast.get("source") or ""),
+        station_id=station_id,
+        temperature_metric=parsed.temperature_metric,
+        temperature_bucket=parsed.temperature_bucket,
+        threshold_unit=parsed.threshold_unit,
+    )
     if (
         not isfinite(upstream_distance_c)
         or not isfinite(upstream_required_c)
-        or upstream_required_c + 1e-9 < UPSTREAM_LOCK_PAPER_MIN_BUCKET_DISTANCE_C
-        or upstream_distance_c + 1e-9 < upstream_required_c
+        or abs(upstream_required_c - expected_required_c) > 1e-9
+        or upstream_distance_c + 1e-9 < expected_required_c
     ):
         return "upstream_two_celsius_step_evidence_required"
     target_date = str(nowcast.get("target_date_local") or "")
@@ -376,6 +387,15 @@ def lock_exact_no_position_metric(position: PaperPosition) -> str | None:
         )
     except (TypeError, ValueError):
         return None
+    station_id = str(station_audit.get("station_id") or "").upper()
+    expected_station = TRADING_READY_STATION_MAP.get((parsed.city or "").casefold())
+    expected_required_c = required_upstream_bucket_distance_c(
+        source=str(metadata.get("nowcast_source") or ""),
+        station_id=station_id,
+        temperature_metric=parsed.temperature_metric,
+        temperature_bucket=parsed.temperature_bucket,
+        threshold_unit=parsed.threshold_unit,
+    )
     if not (
         position.side == "NO"
         and 0.0 <= entry_p_true <= 1e-12
@@ -386,11 +406,13 @@ def lock_exact_no_position_metric(position: PaperPosition) -> str | None:
         and metadata.get("signal_source") == "official-station-lock-strong_no"
         and metadata.get("settlement_precision_confidence") == "verified"
         and metadata.get("nowcast_source") in UPSTREAM_LOCK_PAPER_NOWCAST_SOURCES
+        and expected_station is not None
+        and station_id == expected_station.station_id.upper()
         and metadata.get("wunderground_settlement_source") == "true"
         and station_audit.get("entry_evidence_mode") == "upstream_same_station_paper"
         and station_audit.get("settlement_source_verified") is False
-        and upstream_distance_c >= UPSTREAM_LOCK_PAPER_MIN_BUCKET_DISTANCE_C
-        and upstream_required_c >= UPSTREAM_LOCK_PAPER_MIN_BUCKET_DISTANCE_C
+        and upstream_distance_c + 1e-9 >= expected_required_c
+        and abs(upstream_required_c - expected_required_c) <= 1e-9
         and station_audit.get("daily_extremes_complete") is True
         and not str(station_audit.get("data_block_reason") or "").strip()
         and parsed.variable == "temperature"

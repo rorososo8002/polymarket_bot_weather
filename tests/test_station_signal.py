@@ -157,7 +157,10 @@ def _estimate_seoul_high(observed_high_c: float, **kwargs):
     )
 
 
-@pytest.mark.parametrize("source", ["aviationweather-metar", "kma-aviation-metar"])
+@pytest.mark.parametrize(
+    "source",
+    ["aviationweather-metar", "kma-aviation-metar", "kma-official-public-metars"],
+)
 def test_incomplete_metar_daily_extremes_block_signal_before_probability_calculation(source) -> None:
     store = FakeResidualProfileStore(
         _residual_estimate(raw=0.99, yes=0.97, no=0.01)
@@ -298,6 +301,71 @@ def test_upstream_lock_paper_rejects_adjacent_bucket_after_real_wu_mismatch(
 
     assert signal.source != "official-station-lock-strong_no"
     assert signal.p_true != pytest.approx(0.0)
+    assert signal.nowcast["data_block_reason"] == "upstream-two-celsius-step-required"
+
+
+@pytest.mark.parametrize(
+    ("question", "station_id", "observed_high_c", "observed_low_c"),
+    [
+        ("Will the highest temperature in Seoul be 29C today?", "RKSI", 30.0, None),
+        ("Will the lowest temperature in Seoul be 22C today?", "RKSI", None, 21.0),
+        ("Will the highest temperature in Busan be 29C today?", "RKPK", 30.0, None),
+        ("Will the lowest temperature in Busan be 22C today?", "RKPK", None, 21.0),
+    ],
+)
+def test_upstream_lock_paper_allows_calibrated_kma_public_one_degree_break(
+    question,
+    station_id,
+    observed_high_c,
+    observed_low_c,
+) -> None:
+    signal = estimate_station_signal(
+        question,
+        settings=Settings(strategy_mode="upstream_lock_paper"),
+        observation_provider=ExactTemperatureProvider(
+            observed_high_c=observed_high_c,
+            observed_low_c=observed_low_c,
+            station_id=station_id,
+            source="kma-official-public-metars",
+        ),
+        now=datetime(2026, 6, 19, 14, 30, tzinfo=timezone.utc),
+    )
+
+    assert signal.source == "official-station-lock-strong_no"
+    assert signal.p_true == pytest.approx(0.0)
+    assert signal.conservative_yes_probability == pytest.approx(0.04)
+    assert signal.nowcast["settlement_source_verified"] is False
+    assert signal.nowcast["upstream_bucket_distance_c"] == pytest.approx(1.0)
+    assert signal.nowcast["upstream_min_bucket_distance_c"] == pytest.approx(1.0)
+
+
+@pytest.mark.parametrize(
+    ("question", "station_id", "observed_high_c", "observed_low_c"),
+    [
+        ("Will the highest temperature in Seoul be 29C today?", "RKSI", 29.99, None),
+        ("Will the lowest temperature in Seoul be 23C today?", "RKSI", None, 22.9),
+        ("Will the highest temperature in Tokyo be 29C today?", "RJTT", 30.0, None),
+    ],
+)
+def test_upstream_lock_paper_kma_one_degree_rule_fails_closed_outside_full_domestic_break(
+    question,
+    station_id,
+    observed_high_c,
+    observed_low_c,
+) -> None:
+    signal = estimate_station_signal(
+        question,
+        settings=Settings(strategy_mode="upstream_lock_paper"),
+        observation_provider=ExactTemperatureProvider(
+            observed_high_c=observed_high_c,
+            observed_low_c=observed_low_c,
+            station_id=station_id,
+            source="kma-official-public-metars",
+        ),
+        now=datetime(2026, 6, 19, 14, 30, tzinfo=timezone.utc),
+    )
+
+    assert signal.source != "official-station-lock-strong_no"
     assert signal.nowcast["data_block_reason"] == "upstream-two-celsius-step-required"
 
 

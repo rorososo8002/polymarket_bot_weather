@@ -8,8 +8,9 @@ import pytest
 
 import weather_bot.paper as paper
 from weather_bot.config import Settings
-from weather_bot.models import EdgeResult, RawMarket
+from weather_bot.models import EdgeResult, RawMarket, WeatherSignal
 from weather_bot.paper import PaperBroker, PaperStateLoadError
+from weather_bot.weather_client import parse_weather_question
 
 
 def settings_for(tmp_path: Path) -> Settings:
@@ -523,6 +524,94 @@ def test_skip_decision_writes_bounded_diagnostic_without_decision_csv(tmp_path):
     assert row["market_id"] == "m3"
     assert row["side"] == "SKIP"
     assert row["reason_code"] == "SKIP_WIDE_SPREAD"
+
+
+def test_confirmed_exact_no_skip_is_kept_once_in_decision_ledger(tmp_path):
+    settings = settings_for(tmp_path)
+    Path(settings.decisions_csv_path).write_text(
+        "ts,market_id,side,p_exec\n2026-07-21T00:00:00Z,legacy,SKIP,\n",
+        encoding="utf-8",
+    )
+    broker = PaperBroker(settings)
+    market = RawMarket(
+        market_id="seoul-29-no",
+        question="Will the highest temperature in Seoul be 29C today?",
+        slug="seoul-29-no",
+        active=True,
+        closed=False,
+        yes_token_id="yes",
+        no_token_id="no",
+    )
+    signal = WeatherSignal(
+        p_true=0.0,
+        confidence=1.0,
+        source="official-station-lock-strong_no",
+        note="confirmed exact NO",
+        parsed=parse_weather_question(market.question),
+        nowcast={
+            "station_id": "RKSI",
+            "observed_at": "2026-07-22T03:00:00+00:00",
+            "data_block_reason": "",
+        },
+        strategy_mode="upstream_lock_paper",
+        signal_family="upstream_lock_paper",
+    )
+    result = EdgeResult(
+        "SKIP",
+        0.0,
+        0.99,
+        0.0,
+        0.0,
+        0.0,
+        "SKIP_ENTRY_PRICE_TOO_HIGH: executable NO ask=0.990",
+    )
+
+    broker.log_decision(market, result, "first check", signal=signal)
+    restarted_broker = PaperBroker(settings)
+    restarted_broker.log_decision(market, result, "duplicate check", signal=signal)
+
+    with Path(settings.decisions_csv_path).open(encoding="utf-8", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    candidate_rows = [row for row in rows if row["market_id"] == "seoul-29-no"]
+    assert len(candidate_rows) == 1
+    assert candidate_rows[0]["reason_code"] == "SKIP_ENTRY_PRICE_TOO_HIGH"
+    assert candidate_rows[0]["station_observed_at"] == "2026-07-22T03:00:00+00:00"
+
+
+def test_exact_no_restart_reads_only_the_bounded_legacy_csv_tail(tmp_path):
+    path = tmp_path / "paper_decisions.csv"
+    header = "market_id,station_observed_at,reason_code,p_exec\n"
+    old_rows = "".join(
+        f"old-{index},2026-07-20T00:{index % 60:02d}:00+00:00,SKIP_OLD,0.9900\n"
+        for index in range(20)
+    )
+    recent_rows = (
+        "recent-1,2026-07-22T03:00:00+00:00,SKIP_ENTRY_PRICE_TOO_HIGH,0.91\n"
+        "recent-2,2026-07-22T03:01:00+00:00,SKIP_ENTRY_PRICE_TOO_HIGH,0.92\n"
+    )
+    path.write_text(header + old_rows + recent_rows, encoding="utf-8")
+
+    keys = paper._load_exact_no_skip_audit_keys(
+        path,
+        max_keys=2,
+        max_read_bytes=256,
+    )
+
+    assert keys == {
+        (
+            "recent-1",
+            "2026-07-22T03:00:00+00:00",
+            "SKIP_ENTRY_PRICE_TOO_HIGH",
+            "0.9100",
+        ),
+        (
+            "recent-2",
+            "2026-07-22T03:01:00+00:00",
+            "SKIP_ENTRY_PRICE_TOO_HIGH",
+            "0.9200",
+        ),
+    }
+    assert path.read_text(encoding="utf-8").splitlines()[0] == header.rstrip()
 
 
 def test_skip_diagnostic_does_not_scan_archives_before_rotation(tmp_path, monkeypatch):

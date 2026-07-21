@@ -10,19 +10,29 @@ import os
 import threading
 import uuid
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import ExitStack
 from dataclasses import dataclass, replace
 from datetime import date, datetime, time, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
 import requests
 
+from .awc_current_cache import parse_awc_current_metars
+from .kma_public import parse_kma_public_metar_html
 from .stations import STATION_MAP, StationMeta
 
 AVIATIONWEATHER_METAR_SOURCE_URL = "https://aviationweather.gov/api/data/metar"
+AVIATIONWEATHER_METAR_CURRENT_CACHE_URL = (
+    "https://aviationweather.gov/data/cache/metars.cache.csv.gz"
+)
 KMA_METAR_SOURCE_URL = "https://apis.data.go.kr/1360000/AmmService/getMetar"
+KMA_PUBLIC_METAR_SOURCE_URL = (
+    "https://global.amo.go.kr/control/metar-metreport-dep1.do"
+)
 HKO_MAXMIN_SOURCE_URL = "https://data.weather.gov.hk/weatherAPI/hko_data/regional-weather/latest_since_midnight_maxmin.csv"
 WUNDERGROUND_HISTORY_GEOCODE_BASE_URL = "https://api.weather.com/v1/geocode"
 WUNDERGROUND_TIMESERIES_GEOCODE_BASE_URL = "https://api.weather.com/v1/geocode"
@@ -47,11 +57,17 @@ WUNDERGROUND_HISTORY_RESERVED_REQUESTS_PER_MINUTE = 10
 WUNDERGROUND_MIN_TEMPERATURE_C = -100.0
 WUNDERGROUND_MAX_TEMPERATURE_C = 70.0
 AWC_METAR_MIN_REAL_REQUEST_INTERVAL_SECONDS = 60
+AWC_CURRENT_CACHE_PHASE_CUSHION_SECONDS = 0.5
+AWC_CURRENT_CACHE_UNCHANGED_RETRY_SECONDS = 3
+AWC_CURRENT_CACHE_ERROR_RETRY_SECONDS = 3
+AWC_CURRENT_CACHE_LAST_MODIFIED_MAX_AGE_SECONDS = 600
+AWC_CURRENT_CACHE_LAST_MODIFIED_MAX_FUTURE_SECONDS = 60
 HKO_MAXMIN_MIN_REAL_REQUEST_INTERVAL_SECONDS = 10 * 60
 AWC_METAR_MAX_CONTINUITY_GAP_SECONDS = 90 * 60
 AWC_METAR_RECOVERY_LOOKBACK_HOURS = 4
 AWC_METAR_BOOTSTRAP_LOOKBACK_HOURS = 30
 AWC_METAR_BOOTSTRAP_GROUP_SIZE = 4
+AWC_METAR_BOOTSTRAP_MAX_PARALLEL_GROUPS = 12
 AWC_METAR_MAX_RESPONSE_ROWS = 400
 HKO_MAXMIN_MAX_OBSERVATION_AGE_SECONDS = 2 * HKO_MAXMIN_MIN_REAL_REQUEST_INTERVAL_SECONDS
 
@@ -285,6 +301,19 @@ def _as_utc(value: datetime) -> datetime:
     return value.astimezone(timezone.utc)
 
 
+def _response_bounded_now(
+    requested_now: datetime,
+    response_received_at: datetime | None,
+) -> datetime:
+    """Advance a loop timestamp only by a plausible in-flight request delay."""
+    requested = _as_utc(requested_now)
+    if response_received_at is None:
+        return requested
+    received = _as_utc(response_received_at)
+    elapsed = (received - requested).total_seconds()
+    return received if 0.0 <= elapsed <= 30.0 else requested
+
+
 def _parse_observation_time(value: Any) -> datetime | None:
     if value is None:
         return None
@@ -511,6 +540,8 @@ class AviationWeatherMetarNowcastProvider:
         metar_daily_extremes_state_path: str | Path | None = None,
         sources: dict[str, StationNowcastSource] | None = None,
         kma_metar_service_key: str = "",
+        kma_public_html_enabled: bool = False,
+        awc_current_cache_enabled: bool = False,
         kma_metar_poll_seconds: int = 30,
         kma_metar_timeout_seconds: float = 3.0,
         kma_metar_station_ids: set[str] | None = None,
@@ -523,6 +554,8 @@ class AviationWeatherMetarNowcastProvider:
         self.timeout = timeout
         self.freshness_seconds = max(0, int(freshness_seconds))
         self.kma_metar_service_key = str(kma_metar_service_key or "").strip()
+        self.kma_public_html_enabled = bool(kma_public_html_enabled)
+        self.awc_current_cache_enabled = bool(awc_current_cache_enabled)
         self.kma_metar_poll_seconds = max(5, int(kma_metar_poll_seconds))
         self.kma_metar_timeout_seconds = max(0.1, float(kma_metar_timeout_seconds))
         self.kma_metar_station_ids = {
@@ -534,11 +567,19 @@ class AviationWeatherMetarNowcastProvider:
         self.wunderground_fast_shadow_enabled = bool(
             wunderground_fast_shadow_enabled and self.wunderground_api_key
         )
-        self.supports_parallel_station_refresh = bool(self.wunderground_api_key)
+        # The AWC current cache is one shared download, so every METAR station
+        # can consume it concurrently.  KMA requests for Seoul and Busan must
+        # also run side by side instead of putting all cities behind one lock.
+        self.supports_parallel_station_refresh = bool(
+            self.wunderground_api_key or self.awc_current_cache_enabled
+        )
         configured_cache_ttl = max(0, int(cache_ttl_seconds))
         self.cache_ttl_seconds = (
             min(configured_cache_ttl, self.kma_metar_poll_seconds)
-            if self.kma_metar_service_key and configured_cache_ttl > 0
+            if (
+                (self.kma_metar_service_key or self.kma_public_html_enabled)
+                and configured_cache_ttl > 0
+            )
             else configured_cache_ttl
         )
         self.request_log_path = Path(request_log_path) if request_log_path else None
@@ -553,6 +594,11 @@ class AviationWeatherMetarNowcastProvider:
         self.sources = sources or PILOT_NOWCAST_SOURCES
         self._cache: dict[tuple[str, str], tuple[datetime, StationNowcastObservation]] = {}
         self._awc_metar_bulk_cache: _MetarBulkCacheEntry | None = None
+        self._awc_current_cache_entry: _MetarBulkCacheEntry | None = None
+        self._awc_current_cache_next_request_at: datetime | None = None
+        self._awc_current_cache_last_modified: datetime | None = None
+        self._awc_current_cache_lock = threading.Lock()
+        self._awc_history_lock = threading.Lock()
         self._awc_metar_bootstrap_attempts: dict[
             tuple[tuple[str, ...], str], _MetarBulkCacheEntry
         ] = {}
@@ -561,12 +607,19 @@ class AviationWeatherMetarNowcastProvider:
             tuple[str, str], _MetarBulkCacheEntry
         ] = {}
         self._awc_metar_last_real_request_at: datetime | None = None
+        self._awc_bootstrap_wave_guard = threading.Lock()
+        self._awc_bootstrap_wave_active = threading.Event()
+        self._awc_bootstrap_wave_thread: threading.Thread | None = None
+        self._awc_bootstrap_request_slots = threading.BoundedSemaphore(
+            AWC_METAR_BOOTSTRAP_MAX_PARALLEL_GROUPS
+        )
         self._logged_observation_delivery: dict[tuple[str, str], datetime] = {}
         self._cache_lock = threading.RLock()
         self._observation_lock = threading.RLock()
         self._hko_observation_lock = threading.RLock()
-        self._wunderground_station_locks: dict[str, threading.RLock] = {}
-        self._wunderground_station_locks_guard = threading.RLock()
+        self._metar_station_locks: dict[str, threading.RLock] = {}
+        self._metar_station_locks_guard = threading.RLock()
+        self._metar_state_lock = threading.RLock()
         self._wunderground_fast_latest: dict[tuple[str, str], _WundergroundFastRow] = {}
         self._wunderground_history_first_seen: dict[
             tuple[str, str, datetime, float, str], datetime
@@ -587,6 +640,18 @@ class AviationWeatherMetarNowcastProvider:
         self._request_log_lock = threading.RLock()
         self._hko_rollover_state = self._load_hko_rollover_state()
         self._metar_daily_extremes_state = self._load_metar_daily_extremes_state()
+        persisted_bootstrap_started_at = _parse_observation_time(
+            self._metar_daily_extremes_state.get(
+                "awc_parallel_bootstrap_started_at"
+            )
+        )
+        if persisted_bootstrap_started_at is not None:
+            loaded_at = _as_utc(self.clock())
+            persisted_age_seconds = (
+                loaded_at - persisted_bootstrap_started_at
+            ).total_seconds()
+            if 0 <= persisted_age_seconds < AWC_METAR_MIN_REAL_REQUEST_INTERVAL_SECONDS:
+                self._awc_metar_last_real_request_at = persisted_bootstrap_started_at
 
     @classmethod
     def from_settings(cls, settings: Any) -> "AviationWeatherMetarNowcastProvider":
@@ -614,6 +679,16 @@ class AviationWeatherMetarNowcastProvider:
             hko_rollover_state_path=hko_rollover_state_path,
             metar_daily_extremes_state_path=metar_daily_extremes_state_path,
             kma_metar_service_key=getattr(settings, "kma_metar_service_key", ""),
+            kma_public_html_enabled=getattr(
+                settings,
+                "kma_public_html_enabled",
+                False,
+            ),
+            awc_current_cache_enabled=getattr(
+                settings,
+                "awc_current_cache_enabled",
+                False,
+            ),
             kma_metar_poll_seconds=getattr(settings, "kma_metar_poll_seconds", 30),
             kma_metar_timeout_seconds=getattr(settings, "kma_metar_timeout_seconds", 3.0),
             kma_metar_station_ids={
@@ -643,7 +718,25 @@ class AviationWeatherMetarNowcastProvider:
             or not isinstance(payload.get("stations"), dict)
         ):
             return {"schema_version": 1, "stations": {}}
-        return payload
+        cleaned_stations: dict[str, dict[str, Any]] = {}
+        for state_key, station_state in payload["stations"].items():
+            if not isinstance(station_state, dict):
+                continue
+            cleaned_state = dict(station_state)
+            raw_days = station_state.get("days", {})
+            cleaned_state["days"] = (
+                {
+                    str(local_date): dict(day)
+                    for local_date, day in raw_days.items()
+                    if isinstance(day, dict)
+                }
+                if isinstance(raw_days, dict)
+                else {}
+            )
+            cleaned_stations[str(state_key)] = cleaned_state
+        cleaned_payload = dict(payload)
+        cleaned_payload["stations"] = cleaned_stations
+        return cleaned_payload
 
     def _write_metar_daily_extremes_state(self) -> None:
         path = self.metar_daily_extremes_state_path
@@ -667,13 +760,51 @@ class AviationWeatherMetarNowcastProvider:
         target_date: date,
         *,
         persist: bool = True,
+        source_name: str = "aviationweather-metar",
+    ) -> dict[str, Any] | None:
+        with self._metar_state_lock:
+            return self._accumulate_metar_daily_extremes_unlocked(
+                station,
+                observations,
+                target_date,
+                persist=persist,
+                source_name=source_name,
+            )
+
+    def _accumulate_metar_daily_extremes_unlocked(
+        self,
+        station: StationMeta,
+        observations: list[tuple[datetime, float]],
+        target_date: date,
+        *,
+        persist: bool = True,
+        source_name: str = "aviationweather-metar",
     ) -> dict[str, Any] | None:
         stations = self._metar_daily_extremes_state.setdefault("stations", {})
-        station_state = stations.setdefault(
-            station.station_id,
-            {"days": {}, "last_local_date": "", "last_observed_at": ""},
+        state_key = (
+            station.station_id
+            if source_name == "aviationweather-metar"
+            else f"{station.station_id}|{source_name}"
         )
+        station_state = stations.get(state_key)
+        if not isinstance(station_state, dict):
+            station_state = {
+                "days": {},
+                "last_local_date": "",
+                "last_observed_at": "",
+            }
+            stations[state_key] = station_state
         days = station_state.setdefault("days", {})
+        if not isinstance(days, dict):
+            days = {}
+            station_state["days"] = days
+        else:
+            days = {
+                str(local_date): day
+                for local_date, day in days.items()
+                if isinstance(day, dict)
+            }
+            station_state["days"] = days
         zone = _zone(station.timezone)
         last_observed_at = _parse_observation_time(station_state.get("last_observed_at"))
         last_local_date_text = str(station_state.get("last_local_date") or "")
@@ -978,13 +1109,13 @@ class AviationWeatherMetarNowcastProvider:
             )
 
     def _observation_lock_for(self, station: StationMeta) -> threading.RLock:
-        if self.wunderground_api_key and station.nowcast_source_type == "metar":
+        if self.supports_parallel_station_refresh and station.nowcast_source_type == "metar":
             station_id = station.station_id.upper()
-            with self._wunderground_station_locks_guard:
-                lock = self._wunderground_station_locks.get(station_id)
+            with self._metar_station_locks_guard:
+                lock = self._metar_station_locks.get(station_id)
                 if lock is None:
                     lock = threading.RLock()
-                    self._wunderground_station_locks[station_id] = lock
+                    self._metar_station_locks[station_id] = lock
                 return lock
         if station.nowcast_source_type == "hko_maxmin_since_midnight":
             return self._hko_observation_lock
@@ -1053,9 +1184,9 @@ class AviationWeatherMetarNowcastProvider:
                 ):
                     self._awc_metar_bulk_cache = None
 
-        selected_wunderground_locks = []
-        if self.wunderground_api_key:
-            selected_wunderground_locks = [
+        selected_metar_locks = []
+        if self.supports_parallel_station_refresh:
+            selected_metar_locks = [
                 self._observation_lock_for(source_station)
                 for source in selected_sources
                 if source.source == "aviationweather-metar"
@@ -1063,7 +1194,7 @@ class AviationWeatherMetarNowcastProvider:
                 if source_station.station_id.upper() == source.station_id.upper()
             ]
         with ExitStack() as lock_stack:
-            for lock in selected_wunderground_locks:
+            for lock in selected_metar_locks:
                 lock_stack.enter_context(lock)
             if include_metar:
                 lock_stack.enter_context(self._observation_lock)
@@ -1118,6 +1249,20 @@ class AviationWeatherMetarNowcastProvider:
         effective_cache_ttl_seconds = max(self.cache_ttl_seconds, provider_floor_seconds)
         if cached is not None and self.cache_ttl_seconds > 0:
             cached_at, observation = cached
+            if (
+                observation.source == "aviationweather-metar"
+                and self.awc_current_cache_enabled
+                and self._awc_current_cache_next_request_at is not None
+            ):
+                effective_cache_ttl_seconds = min(
+                    effective_cache_ttl_seconds,
+                    max(
+                        0.0,
+                        (
+                            self._awc_current_cache_next_request_at - cached_at
+                        ).total_seconds(),
+                    ),
+                )
             if observation.source == "wunderground-history-direct":
                 if not observation.usable:
                     effective_cache_ttl_seconds = max(
@@ -2104,9 +2249,41 @@ class AviationWeatherMetarNowcastProvider:
         *,
         cache_miss_reason: str,
     ) -> StationNowcastObservation:
+        current_entry: _MetarBulkCacheEntry | None = None
         kma_fetch: _KmaMetarFetch | None = None
-        awc_observation: StationNowcastObservation | None = None
-        if self._kma_metar_enabled(station):
+        kma_enabled = self._kma_metar_enabled(station)
+        if self.awc_current_cache_enabled and kma_enabled:
+            # These are independent official endpoints.  Overlap their bounded
+            # waits so a slow AWC response does not delay the KMA request start.
+            with ThreadPoolExecutor(
+                max_workers=2,
+                thread_name_prefix=f"station-source-{station.station_id.lower()}",
+            ) as executor:
+                awc_future = executor.submit(
+                    self._fetch_awc_current_cache,
+                    now,
+                    trigger_station=station,
+                    target_date=target_date,
+                    cache_miss_reason=cache_miss_reason,
+                )
+                kma_future = executor.submit(
+                    self._request_kma_metar,
+                    station,
+                    target_date,
+                    now,
+                    source,
+                    cache_miss_reason=cache_miss_reason,
+                )
+                current_entry = awc_future.result()
+                kma_fetch = kma_future.result()
+        elif self.awc_current_cache_enabled:
+            current_entry = self._fetch_awc_current_cache(
+                now,
+                trigger_station=station,
+                target_date=target_date,
+                cache_miss_reason=cache_miss_reason,
+            )
+        elif kma_enabled:
             kma_fetch = self._request_kma_metar(
                 station,
                 target_date,
@@ -2114,39 +2291,130 @@ class AviationWeatherMetarNowcastProvider:
                 source,
                 cache_miss_reason=cache_miss_reason,
             )
-            if kma_fetch.rows and self._kma_recovery_required(station, target_date, kma_fetch.rows):
-                bulk_entry = self._fetch_awc_metar_bulk_cache(
+
+        awc_observation: StationNowcastObservation | None = None
+        if current_entry is not None:
+            if not current_entry.unavailable_reason:
+                current_source = replace(
+                    source,
+                    source_url=AVIATIONWEATHER_METAR_CURRENT_CACHE_URL,
+                    update_cadence=(
+                        "AWC official full METAR cache; fetched once per published minute."
+                    ),
+                )
+                current_observation = self._parse_payload(
+                    current_entry.payload,
                     station,
                     target_date,
-                    now,
-                    source,
-                    cache_miss_reason="kma-history-recovery",
+                    _response_bounded_now(now, current_entry.received_at),
+                    current_source,
+                    request_started_at=current_entry.requested_at,
+                    bot_received_at=current_entry.received_at,
                 )
-                if not bulk_entry.unavailable_reason:
-                    awc_observation = self._parse_payload(
-                        bulk_entry.payload,
+                if current_observation.usable:
+                    awc_observation = current_observation
+
+        kma_observation: StationNowcastObservation | None = None
+        if kma_fetch is not None:
+            if kma_fetch.rows:
+                if (
+                    not self.awc_current_cache_enabled
+                    and awc_observation is None
+                    and self._kma_recovery_required(
+                        station,
+                        target_date,
+                        kma_fetch.rows,
+                        source_name=kma_fetch.source.source,
+                    )
+                ):
+                    bulk_entry = self._fetch_awc_metar_bulk_cache(
                         station,
                         target_date,
                         now,
                         source,
-                        request_started_at=bulk_entry.requested_at or bulk_entry.cached_at,
-                        bot_received_at=bulk_entry.received_at,
+                        cache_miss_reason="kma-history-recovery",
                     )
-
-            if kma_fetch.rows:
-                kma_observation = self._parse_payload(
+                    if not bulk_entry.unavailable_reason:
+                        parsed_awc = self._parse_payload(
+                            bulk_entry.payload,
+                            station,
+                            target_date,
+                            _response_bounded_now(now, bulk_entry.received_at),
+                            source,
+                            request_started_at=(
+                                bulk_entry.requested_at or bulk_entry.cached_at
+                            ),
+                            bot_received_at=bulk_entry.received_at,
+                        )
+                        if parsed_awc.usable:
+                            awc_observation = parsed_awc
+                parsed_kma = self._parse_payload(
                     kma_fetch.rows,
                     station,
                     target_date,
-                    now,
+                    _response_bounded_now(now, kma_fetch.received_at),
                     kma_fetch.source,
                     request_started_at=kma_fetch.requested_at,
                     bot_received_at=kma_fetch.received_at,
                 )
-                if kma_observation.usable:
-                    return kma_observation
-                if awc_observation is not None and awc_observation.usable:
-                    return awc_observation
+                if parsed_kma.usable:
+                    kma_observation = parsed_kma
+
+        awc_complete = bool(
+            awc_observation is not None
+            and awc_observation.daily_extremes_complete
+            and not awc_observation.data_block_reason
+        )
+        kma_complete = bool(
+            kma_observation is not None
+            and kma_observation.daily_extremes_complete
+            and not kma_observation.data_block_reason
+        )
+        if (
+            self.awc_current_cache_enabled
+            and not awc_complete
+            and not kma_complete
+        ):
+            recovery_entry = self._fetch_awc_metar_bulk_cache(
+                station,
+                target_date,
+                now,
+                source,
+                cache_miss_reason="current-cache-incomplete-history-recovery",
+            )
+            if not recovery_entry.unavailable_reason:
+                recovered_awc = self._parse_payload(
+                    recovery_entry.payload,
+                    station,
+                    target_date,
+                    _response_bounded_now(now, recovery_entry.received_at),
+                    source,
+                    request_started_at=(
+                        recovery_entry.requested_at or recovery_entry.cached_at
+                    ),
+                    bot_received_at=recovery_entry.received_at,
+                )
+                if recovered_awc.usable:
+                    awc_observation = recovered_awc
+
+        if kma_observation is not None and awc_observation is not None:
+            awc_complete = bool(
+                awc_observation.daily_extremes_complete
+                and not awc_observation.data_block_reason
+            )
+            kma_complete = bool(
+                kma_observation.daily_extremes_complete
+                and not kma_observation.data_block_reason
+            )
+            if awc_complete != kma_complete:
+                return awc_observation if awc_complete else kma_observation
+            if awc_observation.observed_at > kma_observation.observed_at:
+                return awc_observation
+            return kma_observation
+        if kma_observation is not None:
+            return kma_observation
+        if awc_observation is not None:
+            return awc_observation
 
         bulk_entry = self._fetch_awc_metar_bulk_cache(
             station,
@@ -2162,7 +2430,7 @@ class AviationWeatherMetarNowcastProvider:
             bulk_entry.payload,
             station,
             target_date,
-            now,
+            _response_bounded_now(now, bulk_entry.received_at),
             source,
             request_started_at=bulk_entry.requested_at or bulk_entry.cached_at,
             bot_received_at=bulk_entry.received_at,
@@ -2175,7 +2443,7 @@ class AviationWeatherMetarNowcastProvider:
         )
         checked_at = _as_utc(self.clock())
         return bool(
-            self.kma_metar_service_key
+            (self.kma_metar_service_key or self.kma_public_html_enabled)
             and station.station_id.upper() in self.kma_metar_station_ids
             and (
                 unavailable_until is None
@@ -2192,8 +2460,15 @@ class AviationWeatherMetarNowcastProvider:
         station: StationMeta,
         target_date: date,
         rows: list[dict[str, Any]],
+        *,
+        source_name: str = "kma-aviation-metar",
     ) -> bool:
-        station_state = self._metar_daily_extremes_state.get("stations", {}).get(station.station_id)
+        with self._metar_state_lock:
+            station_state = copy.deepcopy(
+                self._metar_daily_extremes_state.get("stations", {}).get(
+                    f"{station.station_id}|{source_name}"
+                )
+            )
         if not isinstance(station_state, dict):
             return True
         day = station_state.get("days", {}).get(target_date.isoformat())
@@ -2224,6 +2499,14 @@ class AviationWeatherMetarNowcastProvider:
         *,
         cache_miss_reason: str,
     ) -> _KmaMetarFetch:
+        if not self.kma_metar_service_key:
+            return self._request_kma_public_metar(
+                station,
+                target_date,
+                now,
+                fallback_source,
+                cache_miss_reason=cache_miss_reason,
+            )
         source = StationNowcastSource(
             station_id=station.station_id,
             source="kma-aviation-metar",
@@ -2321,7 +2604,703 @@ class AviationWeatherMetarNowcastProvider:
                 f"nowcast-fetch-error:{type(exc).__name__}",
             )
 
+    def _request_kma_public_metar(
+        self,
+        station: StationMeta,
+        target_date: date,
+        now: datetime,
+        fallback_source: StationNowcastSource,
+        *,
+        cache_miss_reason: str,
+    ) -> _KmaMetarFetch:
+        source = StationNowcastSource(
+            station_id=station.station_id,
+            source="kma-official-public-metars",
+            source_url=KMA_PUBLIC_METAR_SOURCE_URL,
+            settlement_source_url=fallback_source.settlement_source_url,
+            update_cadence="KMA official public METAR table; polled every configured fast interval.",
+            note="Official Korean Aviation Meteorological Office public METAR table.",
+        )
+        response: Any | None = None
+        received_at: datetime | None = None
+        requested_at = _as_utc(self.clock())
+        try:
+            response = self.http_get(
+                source.source_url,
+                params={
+                    "stnCd": station.station_id.upper(),
+                },
+                timeout=min(self.timeout, self.kma_metar_timeout_seconds),
+                headers={
+                    "User-Agent": (
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/126.0 Safari/537.36"
+                    ),
+                    "Referer": (
+                        f"{KMA_PUBLIC_METAR_SOURCE_URL}?stnCd={station.station_id.upper()}"
+                    ),
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                },
+            )
+            received_at = _as_utc(self.clock())
+            response.raise_for_status()
+            rows = parse_kma_public_metar_html(
+                str(getattr(response, "text", "")),
+                station_id=station.station_id,
+                reference=now,
+            )
+            status = "success" if rows else "malformed_response"
+            unavailable_reason = "" if rows else "malformed-observation-payload"
+            if rows:
+                self._kma_unavailable_until = None
+                self._kma_station_unavailable_until.pop(station.station_id.upper(), None)
+            else:
+                self._kma_station_unavailable_until[station.station_id.upper()] = (
+                    received_at + timedelta(seconds=self.kma_metar_poll_seconds)
+                )
+            self._append_request_log(
+                self._request_log_row(
+                    requested_at=requested_at,
+                    response_received_at=received_at,
+                    request_mode="kma_public_html_fast",
+                    station=station,
+                    target_date=target_date,
+                    source=source,
+                    cache_miss_reason=cache_miss_reason,
+                    status=status,
+                    status_code=getattr(response, "status_code", None),
+                    unavailable_reason=unavailable_reason,
+                )
+            )
+            return _KmaMetarFetch(
+                source,
+                rows,
+                requested_at,
+                received_at,
+                unavailable_reason,
+            )
+        except Exception as exc:  # noqa: BLE001
+            received_at = received_at or _as_utc(self.clock())
+            self._kma_station_unavailable_until[station.station_id.upper()] = (
+                received_at + timedelta(seconds=self.kma_metar_poll_seconds)
+            )
+            self._append_request_log(
+                self._request_log_row(
+                    requested_at=requested_at,
+                    response_received_at=received_at,
+                    request_mode="kma_public_html_fast",
+                    station=station,
+                    target_date=target_date,
+                    source=source,
+                    cache_miss_reason=cache_miss_reason,
+                    status="error",
+                    status_code=getattr(response, "status_code", None),
+                    error=type(exc).__name__,
+                )
+            )
+            return _KmaMetarFetch(
+                source,
+                [],
+                requested_at,
+                received_at,
+                f"nowcast-fetch-error:{type(exc).__name__}",
+            )
+
+    def _fetch_awc_current_cache(
+        self,
+        now: datetime,
+        *,
+        trigger_station: StationMeta | None = None,
+        target_date: date | None = None,
+        cache_miss_reason: str = "",
+    ) -> _MetarBulkCacheEntry:
+        with self._awc_current_cache_lock:
+            return self._fetch_awc_current_cache_locked(
+                now,
+                trigger_station=trigger_station,
+                target_date=target_date,
+                cache_miss_reason=cache_miss_reason,
+            )
+
+    def _fetch_awc_current_cache_locked(
+        self,
+        now: datetime,
+        *,
+        trigger_station: StationMeta | None = None,
+        target_date: date | None = None,
+        cache_miss_reason: str = "",
+    ) -> _MetarBulkCacheEntry:
+        checked_at = _as_utc(self.clock())
+        if (
+            self._awc_current_cache_entry is not None
+            and self._awc_current_cache_next_request_at is not None
+            and checked_at < self._awc_current_cache_next_request_at
+        ):
+            return self._awc_current_cache_entry
+
+        requested_at = checked_at
+        response: Any | None = None
+        try:
+            response = self.http_get(
+                AVIATIONWEATHER_METAR_CURRENT_CACHE_URL,
+                timeout=min(self.timeout, 3.0),
+                headers={"User-Agent": "polymarket-weather-bot/nowcast"},
+            )
+            received_at = _as_utc(self.clock())
+            response.raise_for_status()
+            rows = parse_awc_current_metars(
+                bytes(getattr(response, "content", b"")),
+                station_ids=set(self._awc_metar_bulk_station_ids()),
+            )
+            if not rows:
+                raise ValueError("malformed AWC current METAR cache")
+
+            last_modified: datetime | None = None
+            try:
+                last_modified = _as_utc(
+                    parsedate_to_datetime(
+                        str(getattr(response, "headers", {}).get("Last-Modified") or "")
+                    )
+                )
+            except (TypeError, ValueError):
+                pass
+            if last_modified is not None and not (
+                received_at
+                - timedelta(seconds=AWC_CURRENT_CACHE_LAST_MODIFIED_MAX_AGE_SECONDS)
+                <= last_modified
+                <= received_at
+                + timedelta(seconds=AWC_CURRENT_CACHE_LAST_MODIFIED_MAX_FUTURE_SECONDS)
+            ):
+                last_modified = None
+
+            is_new_generation = (
+                last_modified is not None
+                and last_modified != self._awc_current_cache_last_modified
+            )
+            if is_new_generation:
+                next_request_at = last_modified + timedelta(
+                    seconds=AWC_METAR_MIN_REAL_REQUEST_INTERVAL_SECONDS
+                    + AWC_CURRENT_CACHE_PHASE_CUSHION_SECONDS
+                )
+                if next_request_at <= received_at:
+                    missed_intervals = (
+                        math.floor(
+                            (received_at - next_request_at).total_seconds()
+                            / AWC_METAR_MIN_REAL_REQUEST_INTERVAL_SECONDS
+                        )
+                        + 1
+                    )
+                    next_request_at += timedelta(
+                        seconds=(
+                            missed_intervals
+                            * AWC_METAR_MIN_REAL_REQUEST_INTERVAL_SECONDS
+                        )
+                    )
+            else:
+                next_request_at = received_at + timedelta(
+                    seconds=AWC_CURRENT_CACHE_UNCHANGED_RETRY_SECONDS
+                )
+
+            entry = _MetarBulkCacheEntry(
+                cached_at=received_at,
+                payload=rows,
+                requested_at=requested_at,
+                received_at=received_at,
+            )
+            self._awc_current_cache_entry = entry
+            self._awc_current_cache_next_request_at = next_request_at
+            if is_new_generation:
+                self._awc_current_cache_last_modified = last_modified
+                with self._cache_lock:
+                    stale_keys = [
+                        key
+                        for key in self._cache
+                        if (
+                            (mapped_source := self.sources.get(key[0])) is not None
+                            and mapped_source.source == "aviationweather-metar"
+                        )
+                    ]
+                    for key in stale_keys:
+                        self._cache.pop(key, None)
+            if trigger_station is not None and target_date is not None:
+                current_source = replace(
+                    self.sources[trigger_station.station_id],
+                    source_url=AVIATIONWEATHER_METAR_CURRENT_CACHE_URL,
+                )
+                self._append_request_log(
+                    self._request_log_bulk_row(
+                        requested_at=requested_at,
+                        response_received_at=received_at,
+                        request_mode="awc_metar_current_cache",
+                        trigger_station=trigger_station,
+                        target_date=target_date,
+                        source=current_source,
+                        station_ids=self._awc_metar_bulk_station_ids(),
+                        cache_miss_reason=cache_miss_reason,
+                        status="success",
+                        status_code=getattr(response, "status_code", None),
+                        hours_before_now=0,
+                    )
+                )
+            return entry
+        except Exception as exc:  # noqa: BLE001
+            received_at = _as_utc(self.clock())
+            self._awc_current_cache_next_request_at = received_at + timedelta(
+                seconds=AWC_CURRENT_CACHE_ERROR_RETRY_SECONDS
+            )
+            entry = _MetarBulkCacheEntry(
+                cached_at=received_at,
+                payload=None,
+                unavailable_reason=f"nowcast-fetch-error:{type(exc).__name__}",
+                requested_at=requested_at,
+                received_at=received_at,
+            )
+            self._awc_current_cache_entry = entry
+            if trigger_station is not None and target_date is not None:
+                current_source = replace(
+                    self.sources[trigger_station.station_id],
+                    source_url=AVIATIONWEATHER_METAR_CURRENT_CACHE_URL,
+                )
+                self._append_request_log(
+                    self._request_log_bulk_row(
+                        requested_at=requested_at,
+                        response_received_at=received_at,
+                        request_mode="awc_metar_current_cache",
+                        trigger_station=trigger_station,
+                        target_date=target_date,
+                        source=current_source,
+                        station_ids=self._awc_metar_bulk_station_ids(),
+                        cache_miss_reason=cache_miss_reason,
+                        status="error",
+                        status_code=getattr(response, "status_code", None),
+                        error=type(exc).__name__,
+                        unavailable_reason=entry.unavailable_reason,
+                        hours_before_now=0,
+                    )
+                )
+            return entry
+
     def _fetch_awc_metar_bulk_cache(
+        self,
+        station: StationMeta,
+        target_date: date,
+        now: datetime,
+        source: StationNowcastSource,
+        *,
+        cache_miss_reason: str,
+    ) -> _MetarBulkCacheEntry:
+        if self._awc_bootstrap_wave_active.is_set():
+            all_station_ids = self._awc_metar_bulk_station_ids()
+            station_id = station.station_id.upper()
+            try:
+                station_index = all_station_ids.index(station_id)
+            except ValueError:
+                group_station_ids = [station_id]
+            else:
+                group_start = (
+                    station_index
+                    - station_index % AWC_METAR_BOOTSTRAP_GROUP_SIZE
+                )
+                group_station_ids = all_station_ids[
+                    group_start : group_start + AWC_METAR_BOOTSTRAP_GROUP_SIZE
+                ]
+            group_key = (tuple(group_station_ids), target_date.isoformat())
+            singleton_key = (station_id, target_date.isoformat())
+            with self._cache_lock:
+                ready_singleton = self._awc_metar_bootstrap_singleton_attempts.get(
+                    singleton_key
+                )
+                ready_entry = self._awc_metar_bootstrap_attempts.get(group_key)
+            if ready_singleton is not None:
+                return ready_singleton
+            if ready_entry is not None:
+                return ready_entry
+            return _MetarBulkCacheEntry(
+                cached_at=now,
+                payload=None,
+                unavailable_reason="awc-metar-bootstrap-in-progress",
+                hours_before_now=AWC_METAR_BOOTSTRAP_LOOKBACK_HOURS,
+            )
+        with self._awc_history_lock:
+            return self._fetch_awc_metar_bulk_cache_locked(
+                station,
+                target_date,
+                now,
+                source,
+                cache_miss_reason=cache_miss_reason,
+            )
+
+    def prepare_daily_extremes(
+        self,
+        *,
+        now: datetime,
+        station_ids: set[str] | None = None,
+    ) -> None:
+        """Start missing AWC day-history recovery without blocking city reads.
+
+        A normal four-station history request remains limited to once per
+        minute.  A process cold start is different: up to twelve disjoint
+        groups each make exactly one request on their own worker thread, which
+        keeps every response below AWC's 400-row ceiling without leaving the
+        last cities eleven minutes behind the first city.
+        """
+
+        if self.wunderground_api_key:
+            return
+        current = _as_utc(now)
+        allowed_station_ids = (
+            None
+            if station_ids is None
+            else {str(station_id).strip().upper() for station_id in station_ids}
+        )
+        with self._awc_bootstrap_wave_guard:
+            active_thread = self._awc_bootstrap_wave_thread
+            if active_thread is not None and active_thread.is_alive():
+                return
+            self._awc_bootstrap_wave_active.set()
+            worker = threading.Thread(
+                target=self._run_awc_metar_daily_extremes_preparation,
+                kwargs={
+                    "now": current,
+                    "allowed_station_ids": allowed_station_ids,
+                },
+                name="awc-history-bootstrap-wave",
+                daemon=True,
+            )
+            self._awc_bootstrap_wave_thread = worker
+            try:
+                worker.start()
+            except Exception:
+                self._awc_bootstrap_wave_active.clear()
+                raise
+
+    def wait_for_daily_extremes_preparation(
+        self,
+        *,
+        timeout: float | None = None,
+    ) -> bool:
+        with self._awc_bootstrap_wave_guard:
+            worker = self._awc_bootstrap_wave_thread
+        if worker is None:
+            return True
+        worker.join(timeout=timeout)
+        return not worker.is_alive()
+
+    def _run_awc_metar_daily_extremes_preparation(
+        self,
+        *,
+        now: datetime,
+        allowed_station_ids: set[str] | None,
+    ) -> None:
+        try:
+            with self._awc_history_lock:
+                self._prepare_awc_metar_daily_extremes_parallel(
+                    now,
+                    allowed_station_ids=allowed_station_ids,
+                )
+        finally:
+            self._awc_bootstrap_wave_active.clear()
+
+    def _prepare_awc_metar_daily_extremes_parallel(
+        self,
+        now: datetime,
+        *,
+        allowed_station_ids: set[str] | None,
+    ) -> None:
+        all_station_ids = self._awc_metar_bulk_station_ids()
+        if not all_station_ids:
+            return
+
+        request_check_at = _as_utc(self.clock())
+        last_request_at = self._awc_metar_last_real_request_at
+        if (
+            last_request_at is not None
+            and (request_check_at - last_request_at).total_seconds()
+            < AWC_METAR_MIN_REAL_REQUEST_INTERVAL_SECONDS
+        ):
+            return
+
+        station_meta_by_id = {
+            candidate.station_id.upper(): candidate for candidate in STATION_MAP.values()
+        }
+        eligible_by_id: dict[str, tuple[StationMeta, date]] = {}
+        with self._metar_state_lock:
+            stations_state = self._metar_daily_extremes_state.get("stations", {})
+            for station_id in all_station_ids:
+                if allowed_station_ids is not None and station_id not in allowed_station_ids:
+                    continue
+                station = station_meta_by_id.get(station_id)
+                if station is None:
+                    continue
+                local_now = now.astimezone(_zone(station.timezone))
+                target_date = local_now.date()
+                station_state = (
+                    stations_state.get(station_id)
+                    if isinstance(stations_state, dict)
+                    else None
+                )
+                day = (
+                    station_state.get("days", {}).get(target_date.isoformat())
+                    if isinstance(station_state, dict)
+                    else None
+                )
+                if isinstance(day, dict) and bool(day.get("complete")):
+                    continue
+                eligible_by_id[station_id] = (station, target_date)
+
+        singleton_fallbacks: dict[
+            str,
+            tuple[StationMeta, StationNowcastSource, date],
+        ] = {}
+        with self._cache_lock:
+            for station_id, (station, target_date) in eligible_by_id.items():
+                singleton_entry = self._awc_metar_bootstrap_singleton_attempts.get(
+                    (station_id, target_date.isoformat())
+                )
+                if (
+                    singleton_entry is None
+                    or singleton_entry.unavailable_reason == "metar-response-row-limit"
+                    or (
+                        request_check_at - singleton_entry.cached_at
+                    ).total_seconds()
+                    < AWC_METAR_MIN_REAL_REQUEST_INTERVAL_SECONDS
+                ):
+                    continue
+                singleton_source = self.sources.get(station_id)
+                if (
+                    singleton_source is not None
+                    and singleton_source.source == "aviationweather-metar"
+                ):
+                    singleton_fallbacks[station_id] = (
+                        station,
+                        singleton_source,
+                        target_date,
+                    )
+
+        group_specs: list[
+            tuple[
+                StationMeta,
+                StationNowcastSource,
+                list[str],
+                list[tuple[tuple[str, ...], str]],
+            ]
+        ] = []
+        for start in range(0, len(all_station_ids), AWC_METAR_BOOTSTRAP_GROUP_SIZE):
+            group_station_ids = all_station_ids[
+                start : start + AWC_METAR_BOOTSTRAP_GROUP_SIZE
+            ]
+            eligible_group = [
+                eligible_by_id[station_id]
+                for station_id in group_station_ids
+                if station_id in eligible_by_id
+            ]
+            if not eligible_group:
+                continue
+            group_tuple = tuple(group_station_ids)
+            attempt_keys = sorted(
+                {
+                    (group_tuple, target_date.isoformat())
+                    for _station, target_date in eligible_group
+                },
+                key=lambda item: item[1],
+            )
+            with self._cache_lock:
+                attempt_entries = [
+                    self._awc_metar_bootstrap_attempts.get(attempt_key)
+                    for attempt_key in attempt_keys
+                ]
+                if all(entry is not None for entry in attempt_entries):
+                    retryable = bool(
+                        any(
+                            entry is not None
+                            and bool(entry.unavailable_reason)
+                            and entry.unavailable_reason != "metar-response-row-limit"
+                            and (
+                                request_check_at - entry.cached_at
+                            ).total_seconds()
+                            >= AWC_METAR_MIN_REAL_REQUEST_INTERVAL_SECONDS
+                            for entry in attempt_entries
+                        )
+                    )
+                    if not retryable:
+                        continue
+            trigger_station = eligible_group[0][0]
+            source = self.sources.get(trigger_station.station_id)
+            if source is None or source.source != "aviationweather-metar":
+                continue
+            group_specs.append(
+                (trigger_station, source, group_station_ids, attempt_keys)
+            )
+
+        if not group_specs and not singleton_fallbacks:
+            return
+
+        with self._metar_state_lock:
+            self._metar_daily_extremes_state[
+                "awc_parallel_bootstrap_started_at"
+            ] = _iso_or_empty(request_check_at)
+            self._write_metar_daily_extremes_state()
+        self._awc_metar_last_real_request_at = request_check_at
+
+        submitted_singletons: set[tuple[str, str]] = set()
+        singleton_executor = ThreadPoolExecutor(
+            max_workers=AWC_METAR_BOOTSTRAP_MAX_PARALLEL_GROUPS,
+            thread_name_prefix="awc-history-singleton",
+        )
+
+        def store_singleton_result(
+            future: Any,
+            station_id: str,
+            target_date: date,
+        ) -> None:
+            try:
+                entry, _truncated = future.result()
+            except Exception:  # noqa: BLE001
+                return
+            with self._cache_lock:
+                self._awc_metar_bootstrap_singleton_attempts[
+                    (station_id, target_date.isoformat())
+                ] = entry
+            if entry.payload is not None:
+                self._accumulate_awc_metar_bootstrap_payload(
+                    entry.payload,
+                    [station_id],
+                    _response_bounded_now(
+                        entry.requested_at or now,
+                        entry.received_at,
+                    ),
+                )
+
+        def submit_singleton_batch(
+            candidates: dict[
+                str,
+                tuple[StationMeta, StationNowcastSource, date],
+            ],
+        ) -> None:
+            for station_id, (
+                station,
+                fallback_source,
+                target_date,
+            ) in candidates.items():
+                singleton_key = (station_id, target_date.isoformat())
+                if singleton_key in submitted_singletons:
+                    continue
+                submitted_singletons.add(singleton_key)
+                future = singleton_executor.submit(
+                    self._request_awc_metar_bootstrap_payload,
+                    station,
+                    target_date,
+                    now,
+                    fallback_source,
+                    [station_id],
+                    cache_miss_reason=(
+                        "daily-extremes-bootstrap-parallel-singleton-fallback"
+                    ),
+                    persist_request_floor=True,
+                )
+                future.add_done_callback(
+                    lambda done,
+                    selected_station_id=station_id,
+                    selected_target_date=target_date: store_singleton_result(
+                        done,
+                        selected_station_id,
+                        selected_target_date,
+                    )
+                )
+
+        try:
+            submit_singleton_batch(singleton_fallbacks)
+            if group_specs:
+                with ThreadPoolExecutor(
+                    max_workers=min(
+                        AWC_METAR_BOOTSTRAP_MAX_PARALLEL_GROUPS,
+                        len(group_specs),
+                    ),
+                    thread_name_prefix="awc-history-bootstrap",
+                ) as executor:
+                    futures = {
+                        executor.submit(
+                            self._request_awc_metar_bootstrap_payload,
+                            trigger_station,
+                            now.astimezone(_zone(trigger_station.timezone)).date(),
+                            now,
+                            source,
+                            group_station_ids,
+                            cache_miss_reason=(
+                                "daily-extremes-bootstrap-parallel-cold-start"
+                            ),
+                        ): (group_station_ids, attempt_keys)
+                        for trigger_station, source, group_station_ids, attempt_keys in group_specs
+                    }
+                    for future in as_completed(futures):
+                        group_station_ids, attempt_keys = futures[future]
+                        entry, _truncated = future.result()
+                        with self._cache_lock:
+                            for attempt_key in attempt_keys:
+                                self._awc_metar_bootstrap_attempts[attempt_key] = entry
+                        bounded_now = _response_bounded_now(
+                            entry.requested_at or now,
+                            entry.received_at,
+                        )
+                        if entry.payload is not None:
+                            self._accumulate_awc_metar_bootstrap_payload(
+                                entry.payload,
+                                group_station_ids,
+                                bounded_now,
+                            )
+                        if entry.unavailable_reason not in {
+                            "",
+                            "metar-response-row-limit",
+                        }:
+                            continue
+                        newly_incomplete: dict[
+                            str,
+                            tuple[StationMeta, StationNowcastSource, date],
+                        ] = {}
+                        with self._metar_state_lock:
+                            stations_state = self._metar_daily_extremes_state.get(
+                                "stations",
+                                {},
+                            )
+                            for station_id in group_station_ids:
+                                eligible = eligible_by_id.get(station_id)
+                                if eligible is None:
+                                    continue
+                                station, target_date = eligible
+                                station_state = (
+                                    stations_state.get(station_id)
+                                    if isinstance(stations_state, dict)
+                                    else None
+                                )
+                                days = (
+                                    station_state.get("days")
+                                    if isinstance(station_state, dict)
+                                    else None
+                                )
+                                day = (
+                                    days.get(target_date.isoformat())
+                                    if isinstance(days, dict)
+                                    else None
+                                )
+                                if isinstance(day, dict) and bool(day.get("complete")):
+                                    continue
+                                fallback_source = self.sources.get(station_id)
+                                if (
+                                    fallback_source is not None
+                                    and fallback_source.source
+                                    == "aviationweather-metar"
+                                ):
+                                    newly_incomplete[station_id] = (
+                                        station,
+                                        fallback_source,
+                                        target_date,
+                                    )
+                        submit_singleton_batch(newly_incomplete)
+        finally:
+            singleton_executor.shutdown(wait=True)
+
+    def _fetch_awc_metar_bulk_cache_locked(
         self,
         station: StationMeta,
         target_date: date,
@@ -2343,10 +3322,11 @@ class AviationWeatherMetarNowcastProvider:
         cached = self._fresh_awc_metar_bulk_cache(now, min_hours_before_now=hours_before_now)
         if cached is not None:
             return cached
+        requested_at = _as_utc(self.clock())
         last_request_at = self._awc_metar_last_real_request_at
         if (
             last_request_at is not None
-            and (now - last_request_at).total_seconds()
+            and (requested_at - last_request_at).total_seconds()
             < AWC_METAR_MIN_REAL_REQUEST_INTERVAL_SECONDS
         ):
             return _MetarBulkCacheEntry(
@@ -2358,8 +3338,7 @@ class AviationWeatherMetarNowcastProvider:
 
         response: Any | None = None
         response_received_at: datetime | None = None
-        requested_at = _as_utc(self.clock())
-        self._awc_metar_last_real_request_at = now
+        self._awc_metar_last_real_request_at = requested_at
         try:
             response = self.http_get(
                 source.source_url,
@@ -2374,7 +3353,7 @@ class AviationWeatherMetarNowcastProvider:
             response_received_at = _as_utc(self.clock())
             if getattr(response, "status_code", 200) == 204:
                 entry = _MetarBulkCacheEntry(
-                    cached_at=now,
+                    cached_at=response_received_at,
                     payload=None,
                     unavailable_reason="no-observations-returned",
                     hours_before_now=hours_before_now,
@@ -2400,7 +3379,7 @@ class AviationWeatherMetarNowcastProvider:
             payload = response.json()
             if isinstance(payload, list) and len(payload) >= AWC_METAR_MAX_RESPONSE_ROWS:
                 entry = _MetarBulkCacheEntry(
-                    cached_at=now,
+                    cached_at=response_received_at,
                     payload=None,
                     unavailable_reason="metar-response-row-limit",
                     hours_before_now=hours_before_now,
@@ -2424,7 +3403,7 @@ class AviationWeatherMetarNowcastProvider:
                 )
                 return entry
             entry = _MetarBulkCacheEntry(
-                cached_at=now,
+                cached_at=response_received_at,
                 payload=payload,
                 hours_before_now=hours_before_now,
                 requested_at=requested_at,
@@ -2448,7 +3427,7 @@ class AviationWeatherMetarNowcastProvider:
         except Exception as exc:  # noqa: BLE001
             response_received_at = response_received_at or _as_utc(self.clock())
             entry = _MetarBulkCacheEntry(
-                cached_at=now,
+                cached_at=response_received_at,
                 payload=None,
                 unavailable_reason=f"nowcast-fetch-error:{type(exc).__name__}",
                 hours_before_now=hours_before_now,
@@ -2519,10 +3498,11 @@ class AviationWeatherMetarNowcastProvider:
         if fresh(group_entry):
             return group_entry
 
+        request_check_at = _as_utc(self.clock())
         last_request_at = self._awc_metar_last_real_request_at
         if (
             last_request_at is not None
-            and (now - last_request_at).total_seconds()
+            and (request_check_at - last_request_at).total_seconds()
             < AWC_METAR_MIN_REAL_REQUEST_INTERVAL_SECONDS
         ):
             cached = self._fresh_awc_metar_bulk_cache(
@@ -2567,8 +3547,11 @@ class AviationWeatherMetarNowcastProvider:
                 self._accumulate_awc_metar_bootstrap_payload(
                     entry.payload,
                     [station.station_id.upper()],
-                    now,
-            )
+                    _response_bounded_now(
+                        entry.requested_at or now,
+                        entry.received_at,
+                    ),
+                )
             return entry
 
         if (
@@ -2595,7 +3578,10 @@ class AviationWeatherMetarNowcastProvider:
                 self._accumulate_awc_metar_bootstrap_payload(
                     entry.payload,
                     [station.station_id.upper()],
-                    now,
+                    _response_bounded_now(
+                        entry.requested_at or now,
+                        entry.received_at,
+                    ),
                 )
             return entry
         if group_entry is not None and not group_entry.unavailable_reason:
@@ -2619,7 +3605,10 @@ class AviationWeatherMetarNowcastProvider:
             self._accumulate_awc_metar_bootstrap_payload(
                 entry.payload,
                 group_station_ids,
-                now,
+                _response_bounded_now(
+                    entry.requested_at or now,
+                    entry.received_at,
+                ),
             )
         return entry
 
@@ -2632,11 +3621,40 @@ class AviationWeatherMetarNowcastProvider:
         station_ids: list[str],
         *,
         cache_miss_reason: str,
+        persist_request_floor: bool = False,
+    ) -> tuple[_MetarBulkCacheEntry, bool]:
+        with self._awc_bootstrap_request_slots:
+            return self._request_awc_metar_bootstrap_payload_unthrottled(
+                trigger_station,
+                target_date,
+                now,
+                source,
+                station_ids,
+                cache_miss_reason=cache_miss_reason,
+                persist_request_floor=persist_request_floor,
+            )
+
+    def _request_awc_metar_bootstrap_payload_unthrottled(
+        self,
+        trigger_station: StationMeta,
+        target_date: date,
+        now: datetime,
+        source: StationNowcastSource,
+        station_ids: list[str],
+        *,
+        cache_miss_reason: str,
+        persist_request_floor: bool = False,
     ) -> tuple[_MetarBulkCacheEntry, bool]:
         response: Any | None = None
         response_received_at: datetime | None = None
         requested_at = _as_utc(self.clock())
-        self._awc_metar_last_real_request_at = now
+        self._awc_metar_last_real_request_at = requested_at
+        if persist_request_floor:
+            with self._metar_state_lock:
+                self._metar_daily_extremes_state[
+                    "awc_parallel_bootstrap_started_at"
+                ] = _iso_or_empty(requested_at)
+                self._write_metar_daily_extremes_state()
         try:
             response = self.http_get(
                 source.source_url,
@@ -2670,7 +3688,7 @@ class AviationWeatherMetarNowcastProvider:
                 unavailable_reason = "metar-response-row-limit"
                 payload = None
             entry = _MetarBulkCacheEntry(
-                cached_at=now,
+                cached_at=response_received_at,
                 payload=payload,
                 unavailable_reason=unavailable_reason,
                 hours_before_now=AWC_METAR_BOOTSTRAP_LOOKBACK_HOURS,
@@ -2697,7 +3715,7 @@ class AviationWeatherMetarNowcastProvider:
         except Exception as exc:  # noqa: BLE001
             response_received_at = response_received_at or _as_utc(self.clock())
             entry = _MetarBulkCacheEntry(
-                cached_at=now,
+                cached_at=response_received_at,
                 payload=None,
                 unavailable_reason=f"nowcast-fetch-error:{type(exc).__name__}",
                 hours_before_now=AWC_METAR_BOOTSTRAP_LOOKBACK_HOURS,
@@ -2724,6 +3742,19 @@ class AviationWeatherMetarNowcastProvider:
             return entry, False
 
     def _accumulate_awc_metar_bootstrap_payload(
+        self,
+        payload: list[Any],
+        station_ids: list[str],
+        now: datetime,
+    ) -> None:
+        with self._metar_state_lock:
+            self._accumulate_awc_metar_bootstrap_payload_unlocked(
+                payload,
+                station_ids,
+                now,
+            )
+
+    def _accumulate_awc_metar_bootstrap_payload_unlocked(
         self,
         payload: list[Any],
         station_ids: list[str],
@@ -2808,8 +3839,13 @@ class AviationWeatherMetarNowcastProvider:
     def _source_min_real_request_interval_seconds(self, source: StationNowcastSource) -> int:
         if self.wunderground_api_key and source.source == "aviationweather-metar":
             return 0
-        if self.kma_metar_service_key and source.station_id.upper() in self.kma_metar_station_ids:
+        if (
+            (self.kma_metar_service_key or self.kma_public_html_enabled)
+            and source.station_id.upper() in self.kma_metar_station_ids
+        ):
             return self.kma_metar_poll_seconds
+        if self.awc_current_cache_enabled and source.source == "aviationweather-metar":
+            return 0
         if source.source == "aviationweather-metar":
             return AWC_METAR_MIN_REAL_REQUEST_INTERVAL_SECONDS
         if source.source == "hko-maxmin-since-midnight":
@@ -3063,10 +4099,25 @@ class AviationWeatherMetarNowcastProvider:
         if any(observed_at > now for observed_at, _temp in daily_extreme_observations):
             return self._unavailable(station, "future-observation", source, raw_count=len(observations))
 
+        # The one-minute cache contains only the latest row.  If that row was
+        # seen before a cold-start history fetch, rebuild an incomplete AWC day
+        # from the older multi-row payload instead of discarding those rows as
+        # "older than ledger" forever.
+        if (
+            source.source == "aviationweather-metar"
+            and len(daily_extreme_observations) > 1
+        ):
+            self._accumulate_awc_metar_bootstrap_payload(
+                payload,
+                [station.station_id.upper()],
+                now,
+            )
+
         day = self._accumulate_metar_daily_extremes(
             station,
             daily_extreme_observations,
             target_date,
+            source_name=source.source,
         )
         if day is None:
             return self._unavailable(
