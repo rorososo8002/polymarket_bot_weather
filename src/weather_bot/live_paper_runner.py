@@ -31,7 +31,7 @@ from .exit_policy import conservative_settlement_value, model_fair_price, target
 from .market_rules import (
     market_rule_mismatch_reason,
 )
-from .models import EdgeResult, MarketDecision, MarketTradability, OrderBook, PaperPosition, RawMarket, WeatherSignal
+from .models import EdgeResult, MarketDecision, MarketTradability, OrderBook, OrderLevel, PaperPosition, RawMarket, WeatherSignal
 from .nowcast import AviationWeatherMetarNowcastProvider
 from .paper import PaperBroker, maybe_close_positions, maybe_settle_resolved_positions
 from .polymarket_client import PolymarketClient
@@ -671,6 +671,7 @@ class StreamBackedPolymarketClient(PolymarketClient):
         self._final_prefetch_generation: dict[str, int] = {}
         self._failed_prefetch_conditions: set[str] = set()
         self._failed_prefetch_tokens: set[str] = set()
+        self._candidate_book_prefetch_audit: dict[str, dict[str, Any]] = {}
 
     def get_clob_market_tradability(self, condition_id: str) -> MarketTradability:
         condition = str(condition_id)
@@ -685,6 +686,10 @@ class StreamBackedPolymarketClient(PolymarketClient):
 
     def get_candidate_order_book(self, token_id: str) -> OrderBook:
         return self.stream.cache.get_order_book(token_id)
+
+    def get_candidate_order_book_audit(self, token_id: str) -> dict[str, Any]:
+        with self._final_prefetch_lock:
+            return dict(self._candidate_book_prefetch_audit.get(str(token_id), {}))
 
     def refresh_order_book(self, token_id: str) -> OrderBook:
         token = str(token_id)
@@ -708,40 +713,125 @@ class StreamBackedPolymarketClient(PolymarketClient):
         return self.stream.refresh_order_book(token_id)
 
     def prefetch_candidate_order_books(self, token_ids: list[str]) -> dict[str, int]:
-        """Fetch candidate books in one official CLOB batch request."""
+        """Fetch candidate books quickly, then isolate only failed batch members."""
         unique_tokens = list(dict.fromkeys(str(token_id) for token_id in token_ids if str(token_id)))
         if not unique_tokens:
             return {"requested": 0, "book_ready": 0, "failed": 0, "deferred": 0}
 
-        try:
-            books = self.get_order_books(
-                unique_tokens,
-                timeout=REALTIME_FINAL_PREFETCH_DEADLINE_SECONDS,
-            )
-        except Exception:
-            return {
-                "requested": len(unique_tokens),
-                "book_ready": 0,
-                "failed": len(unique_tokens),
-                "deferred": 0,
+        started = time.monotonic()
+        deadline = started + REALTIME_FINAL_PREFETCH_DEADLINE_SECONDS
+        requested_at = utc_now_iso()
+        audits = {
+            token_id: {
+                "requested_at": requested_at,
+                "received_at": "",
+                "checked_at": "",
+                "status": "not_observed",
+                "best_bid": None,
+                "best_ask": None,
             }
-
+            for token_id in unique_tokens
+        }
         ready_tokens: set[str] = set()
-        requested_tokens = set(unique_tokens)
-        for book in books:
-            token_id = str(book.token_id)
-            if token_id not in requested_tokens or token_id in ready_tokens:
-                continue
+
+        def error_status(exc: Exception) -> str:
+            error_name = exc.__class__.__name__.lower()
+            if "timeout" in error_name:
+                return "timeout"
+            if getattr(getattr(exc, "response", None), "status_code", None) is not None:
+                return "http_error"
+            return "request_error"
+
+        def fetch_batch(batch: list[str], timeout: float) -> tuple[list[OrderBook], str, Exception | None]:
             try:
-                self.stream.apply_rest_snapshot(book, notify=False)
-            except Exception:
-                continue
-            ready_tokens.add(token_id)
+                return self.get_order_books(batch, timeout=timeout), utc_now_iso(), None
+            except Exception as exc:  # noqa: BLE001
+                return [], "", exc
+
+        def apply_batch(
+            batch: list[str],
+            books: list[OrderBook],
+            received_at: str,
+            exc: Exception | None,
+        ) -> set[str]:
+            retry_tokens = set(batch)
+            if exc is not None:
+                status = error_status(exc)
+                for token_id in batch:
+                    audits[token_id]["status"] = status
+                return retry_tokens
+            returned: set[str] = set()
+            for book in books:
+                token_id = str(book.token_id)
+                if token_id not in retry_tokens or token_id in returned:
+                    continue
+                returned.add(token_id)
+                audits[token_id].update(
+                    received_at=received_at,
+                    checked_at=utc_now_iso(),
+                    best_bid=book.best_bid,
+                    best_ask=book.best_ask,
+                )
+                if _book_is_crossed(book):
+                    audits[token_id]["status"] = "crossed"
+                    continue
+                try:
+                    self.stream.apply_rest_snapshot(book, notify=False)
+                except Exception:  # noqa: BLE001
+                    audits[token_id]["status"] = "apply_error"
+                    continue
+                audits[token_id]["status"] = "ready"
+                ready_tokens.add(token_id)
+                retry_tokens.discard(token_id)
+            for token_id in retry_tokens - returned:
+                audits[token_id].update(received_at=received_at, status="missing_response")
+            return retry_tokens
+
+        primary_timeout = min(0.75, REALTIME_FINAL_PREFETCH_DEADLINE_SECONDS)
+        primary_books, primary_received_at, primary_error = fetch_batch(
+            unique_tokens,
+            primary_timeout,
+        )
+        retry_tokens = apply_batch(
+            unique_tokens,
+            primary_books,
+            primary_received_at,
+            primary_error,
+        )
+
+        remaining = deadline - time.monotonic()
+        if retry_tokens and remaining > 0:
+            batches = [
+                sorted(retry_tokens)[index:index + 4]
+                for index in range(0, len(retry_tokens), 4)
+            ]
+            executor = ThreadPoolExecutor(
+                max_workers=min(8, len(batches)),
+                thread_name_prefix="candidate-book-retry",
+            )
+            futures = {
+                executor.submit(fetch_batch, batch, max(0.05, remaining)): batch
+                for batch in batches
+            }
+            completed, unfinished = wait(futures, timeout=max(0.0, deadline - time.monotonic()))
+            for future in completed:
+                batch = futures[future]
+                books, received_at, exc = future.result()
+                apply_batch(batch, books, received_at, exc)
+            for future in unfinished:
+                for token_id in futures[future]:
+                    audits[token_id]["status"] = "deadline"
+                future.cancel()
+            executor.shutdown(wait=False, cancel_futures=True)
+
+        with self._final_prefetch_lock:
+            self._candidate_book_prefetch_audit.update(audits)
+        deferred = sum(1 for audit in audits.values() if audit["status"] == "deadline")
         return {
             "requested": len(unique_tokens),
             "book_ready": len(ready_tokens),
-            "failed": len(unique_tokens) - len(ready_tokens),
-            "deferred": 0,
+            "failed": len(unique_tokens) - len(ready_tokens) - deferred,
+            "deferred": deferred,
         }
 
     def prefetch_final_entry_checks(self, checks: list[tuple[str, str]]) -> dict[str, int]:
@@ -791,23 +881,27 @@ class StreamBackedPolymarketClient(PolymarketClient):
                 "deferred": 0,
             }
 
-        def prefetch_one(check: tuple[str, str, int]) -> bool:
+        def prefetch_one(check: tuple[str, str, int]) -> tuple[bool, bool]:
             condition_id, token_id, generation = check
             try:
                 tradability = self._fetch_clob_market_tradability_uncached(condition_id)
-                book = self.stream.fetch_order_book_snapshot(token_id)
             except Exception:  # The final serialized check retries and records the exact skip reason.
-                return False
+                return False, False
+            with self._final_prefetch_lock:
+                self._tradability_cache[condition_id] = (time.monotonic(), tradability)
+            try:
+                book = self.stream.fetch_order_book_snapshot(token_id)
+            except Exception:
+                return True, False
             with self._final_prefetch_lock:
                 if self._final_prefetch_generation.get(token_id) != generation:
-                    return False
+                    return True, False
                 try:
                     self.stream.apply_rest_snapshot(book, notify=False)
                 except Exception:
-                    return False
-                self._tradability_cache[condition_id] = (time.monotonic(), tradability)
+                    return True, False
                 self._final_book_prefetched_at[token_id] = time.monotonic()
-            return True
+            return True, True
 
         max_workers = min(REALTIME_FINAL_CHECK_MAX_WORKERS, len(unique_checks))
         executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="final-entry-check")
@@ -822,21 +916,30 @@ class StreamBackedPolymarketClient(PolymarketClient):
         )
         ready = cached_ready
         scheduled_ready = 0
+        successful_conditions: set[str] = set()
+        failed_conditions: set[str] = set()
         with self._final_prefetch_lock:
             for future in completed:
                 condition_id, token_id, _generation = future_context[future]
-                if future.result():
+                tradability_ready, book_ready = future.result()
+                if tradability_ready:
+                    successful_conditions.add(condition_id)
+                else:
+                    failed_conditions.add(condition_id)
+                if book_ready:
                     ready += 1
                     scheduled_ready += 1
                 else:
-                    self._failed_prefetch_conditions.add(condition_id)
                     self._failed_prefetch_tokens.add(token_id)
             for future in unfinished:
                 condition_id, token_id, generation = future_context[future]
                 if self._final_prefetch_generation.get(token_id) == generation:
                     self._final_prefetch_generation[token_id] = generation + 1
-                self._failed_prefetch_conditions.add(condition_id)
+                failed_conditions.add(condition_id)
                 self._failed_prefetch_tokens.add(token_id)
+            self._failed_prefetch_conditions.update(
+                failed_conditions - successful_conditions
+            )
         for future in unfinished:
             future.cancel()
         executor.shutdown(wait=False, cancel_futures=True)
@@ -1195,6 +1298,40 @@ def _enqueue_realtime_update(
     return evaluator_worker.enqueue_tokens(updated_token_ids, urgent=urgent)
 
 
+def _enqueue_due_candidate_book_retries(
+    evaluator_worker: RealtimeEvaluationCoalescer | None,
+    retries_by_token: dict[str, tuple[float, str, bool]],
+    *,
+    now_monotonic: float | None = None,
+) -> int:
+    """Recheck quiet candidate books without waiting forever for WebSocket traffic."""
+    current = time.monotonic() if now_monotonic is None else now_monotonic
+    due = sorted(
+        (
+            (token_id, status, urgent)
+            for token_id, (due_at, status, urgent) in retries_by_token.items()
+            if due_at <= current
+        ),
+        key=lambda item: (not item[2], item[0]),
+    )[:64]
+    enqueued = 0
+    for urgent in (True, False):
+        selected = {token_id for token_id, _status, is_urgent in due if is_urgent == urgent}
+        if not selected:
+            continue
+        for token_id, status, is_urgent in due:
+            if token_id in selected:
+                delay = 5.0 if status == "empty_ask" else 2.0
+                retries_by_token[token_id] = (current + delay, status, is_urgent)
+        accepted = _enqueue_realtime_update(evaluator_worker, selected, urgent=urgent)
+        enqueued += accepted
+        if accepted == 0:
+            for token_id in selected:
+                _due_at, status, is_urgent = retries_by_token[token_id]
+                retries_by_token[token_id] = (current + 1.0, status, is_urgent)
+    return enqueued
+
+
 def _datetime_state_text(value: Any) -> str:
     if isinstance(value, datetime):
         return _iso_datetime(value)
@@ -1325,7 +1462,10 @@ def _realtime_evaluation_trigger_tokens(
         except Exception:  # noqa: BLE001
             continue
         if _is_realtime_no_candidate(parsed) and market.no_token_id:
-            trigger_tokens[str(market.no_token_id)] = _market_event_key(market)
+            event_key = _market_event_key(market)
+            trigger_tokens[str(market.no_token_id)] = event_key
+            if market.yes_token_id:
+                trigger_tokens[str(market.yes_token_id)] = event_key
     market_by_id = {market.market_id: market for market in stream_markets}
     for pos in broker.state.positions:
         if not pos.token_id:
@@ -1363,6 +1503,8 @@ def _realtime_price_watch_token_ids(
         if signal is None or not _realtime_signal_allows_new_entry(signal, settings, market):
             continue
         watched.add(str(market.no_token_id))
+        if market.yes_token_id:
+            watched.add(str(market.yes_token_id))
     return watched
 
 
@@ -1680,6 +1822,109 @@ def _book_is_crossed(book: OrderBook) -> bool:
     )
 
 
+def _opposite_side(side: str) -> str:
+    return "NO" if side == "YES" else "YES"
+
+
+def _market_token_for_side(market: RawMarket, side: str) -> str | None:
+    return market.yes_token_id if side == "YES" else market.no_token_id
+
+
+def _combined_side_order_book(
+    market: RawMarket,
+    side: str,
+    source_books: dict[str, OrderBook],
+) -> OrderBook | None:
+    """Combine direct depth with the executable 1-opposite complementary route."""
+    direct = source_books.get(side)
+    if side != "NO":
+        return direct
+    opposite_side = _opposite_side(side)
+    complement = source_books.get(opposite_side)
+    token_id = _market_token_for_side(market, side)
+    if not token_id or (direct is None and complement is None):
+        return None
+
+    direct_crossed = direct is not None and _book_is_crossed(direct)
+    complement_crossed = complement is not None and _book_is_crossed(complement)
+    ask_entries: list[tuple[OrderLevel, str]] = []
+    bid_entries: list[tuple[OrderLevel, str]] = []
+    ignored_routes: list[str] = []
+
+    if direct is not None and not direct_crossed:
+        ask_entries.extend(
+            (level, f"direct:{side}_ask")
+            for level in direct.asks
+            if level.size > 0
+        )
+        bid_entries.extend(
+            (level, f"direct:{side}_bid")
+            for level in direct.bids
+            if level.size > 0
+        )
+    elif direct_crossed:
+        ignored_routes.append(f"direct:{side}_crossed")
+
+    direct_best_bid = direct.best_bid if direct is not None and not direct_crossed else None
+    direct_best_ask = direct.best_ask if direct is not None and not direct_crossed else None
+    if complement is not None and not complement_crossed:
+        for level in complement.bids:
+            price = round(1.0 - level.price, 12)
+            if level.size <= 0 or not 0.0 < price < 1.0:
+                continue
+            if direct_best_bid is not None and price <= direct_best_bid + 1e-12:
+                ignored_routes.append(f"complement:{opposite_side}_bid_crossed")
+                continue
+            ask_entries.append(
+                (OrderLevel(price, level.size), f"complement:{opposite_side}_bid")
+            )
+        for level in complement.asks:
+            price = round(1.0 - level.price, 12)
+            if level.size <= 0 or not 0.0 < price < 1.0:
+                continue
+            if direct_best_ask is not None and price >= direct_best_ask - 1e-12:
+                ignored_routes.append(f"complement:{opposite_side}_ask_crossed")
+                continue
+            bid_entries.append(
+                (OrderLevel(price, level.size), f"complement:{opposite_side}_ask")
+            )
+    elif complement_crossed:
+        ignored_routes.append(f"complement:{opposite_side}_crossed")
+
+    ask_entries.sort(key=lambda item: item[0].price)
+    bid_entries.sort(key=lambda item: item[0].price, reverse=True)
+    route_payload = {
+        "side": side,
+        "direct_token_id": _market_token_for_side(market, side),
+        "complement_token_id": _market_token_for_side(market, opposite_side),
+        "ask_routes": [route for _level, route in ask_entries],
+        "bid_routes": [route for _level, route in bid_entries],
+        "ignored_routes": ignored_routes,
+        "direct_available": direct is not None,
+        "complement_available": complement is not None,
+    }
+    return OrderBook(
+        str(token_id),
+        bids=[level for level, _route in bid_entries],
+        asks=[level for level, _route in ask_entries],
+        market=(direct.market if direct is not None else complement.market),
+        timestamp=(direct.timestamp if direct is not None else complement.timestamp),
+        min_order_size=(direct.min_order_size if direct is not None else complement.min_order_size),
+        tick_size=(direct.tick_size if direct is not None else complement.tick_size),
+        neg_risk=(direct.neg_risk if direct is not None else complement.neg_risk),
+        raw={"complementary_liquidity": route_payload},
+    )
+
+
+def _book_ask_routes(book: OrderBook) -> list[str]:
+    raw = book.raw if isinstance(book.raw, dict) else {}
+    payload = raw.get("complementary_liquidity")
+    if not isinstance(payload, dict):
+        return []
+    routes = payload.get("ask_routes")
+    return [str(route) for route in routes] if isinstance(routes, list) else []
+
+
 def _preferred_entry_side(signal: WeatherSignal) -> str | None:
     yes_probability = (
         signal.conservative_yes_probability
@@ -1704,28 +1949,45 @@ def _fetch_books(
     allowed_sides: set[str] | None = None,
 ) -> tuple[dict[str, OrderBook], str | None]:
     books: dict[str, OrderBook] = {}
+    source_books: dict[str, OrderBook] = {}
     errors: list[str] = []
     fetch_book = getattr(client, "get_candidate_order_book", None)
     if not callable(fetch_book):
         fetch_book = client.get_order_book
     refresh_book = getattr(client, "refresh_order_book", None)
+    requested_sides = allowed_sides or {"YES", "NO"}
+    source_sides = requested_sides | {_opposite_side(side) for side in requested_sides}
     for side, token_id in (("YES", market.yes_token_id), ("NO", market.no_token_id)):
-        if not token_id or (allowed_sides is not None and side not in allowed_sides):
+        if not token_id or side not in source_sides:
             continue
-        book: OrderBook | None = None
         try:
-            book = fetch_book(token_id)
+            source_books[side] = fetch_book(token_id)
         except Exception as exc:  # noqa: BLE001
             errors.append(f"{side}: {exc}")
-        if (
-            side == preferred_side
-            and callable(refresh_book)
-            and (book is None or _book_is_crossed(book))
-        ):
+
+    preferred_book = (
+        _combined_side_order_book(market, preferred_side, source_books)
+        if preferred_side in requested_sides
+        else None
+    )
+    if callable(refresh_book) and preferred_side in requested_sides and (
+        preferred_book is None
+        or preferred_book.best_ask is None
+        or _book_is_crossed(preferred_book)
+    ):
+        for side in (preferred_side, _opposite_side(preferred_side)):
+            token_id = _market_token_for_side(market, side)
+            if not token_id:
+                continue
             try:
-                book = refresh_book(token_id)
+                source_books[side] = refresh_book(token_id)
             except Exception as exc:  # noqa: BLE001
                 errors.append(f"{side} REST refresh: {exc}")
+
+    for side in ("YES", "NO"):
+        if side not in requested_sides:
+            continue
+        book = _combined_side_order_book(market, side, source_books)
         if book is not None:
             books[side] = book
     if not books and errors:
@@ -1936,11 +2198,12 @@ def _entry_ask_depth_top5_json(
     entry_shares: float,
     fee_rate: float,
 ) -> str:
-    levels: list[dict[str, float]] = []
+    levels: list[dict[str, Any]] = []
+    ask_routes = _book_ask_routes(book)
     cumulative_shares = 0.0
     cumulative_notional = 0.0
     cumulative_all_in = 0.0
-    for level in book.asks:
+    for index, level in enumerate(book.asks):
         if level.size <= 0:
             continue
         cumulative_shares += level.size
@@ -1948,8 +2211,7 @@ def _entry_ask_depth_top5_json(
         all_in = level.size * (level.price + polymarket_taker_fee_per_share(level.price, fee_rate))
         cumulative_notional += notional
         cumulative_all_in += all_in
-        levels.append(
-            {
+        level_payload: dict[str, Any] = {
                 "price": round(level.price, 6),
                 "size": round(level.size, 6),
                 "notional_usd": round(notional, 6),
@@ -1957,8 +2219,10 @@ def _entry_ask_depth_top5_json(
                 "cumulative_size": round(cumulative_shares, 6),
                 "cumulative_notional_usd": round(cumulative_notional, 6),
                 "cumulative_all_in_usd": round(cumulative_all_in, 6),
-            }
-        )
+        }
+        if index < len(ask_routes):
+            level_payload["route"] = ask_routes[index]
+        levels.append(level_payload)
         if len(levels) >= 5:
             break
     target_vwap, target_shares, target_slip = executable_buy_price(
@@ -1975,6 +2239,11 @@ def _entry_ask_depth_top5_json(
         "target_vwap": None if target_vwap is None else round(target_vwap, 6),
         "target_shares": round(target_shares, 6),
         "target_slippage": round(target_slip, 6),
+        "routes": list(dict.fromkeys(
+            str(level["route"])
+            for level in levels
+            if "route" in level
+        )),
         "levels": levels,
     }
     return json.dumps(payload, separators=(",", ":"), sort_keys=True)
@@ -1982,24 +2251,46 @@ def _entry_ask_depth_top5_json(
 
 def _refresh_selected_order_book_before_entry(
     client: PolymarketClient,
+    market: RawMarket,
     token_id: str,
     side: str,
     signal: WeatherSignal,
     market_type: str,
 ) -> tuple[OrderBook | None, str | None, str]:
     refresh = getattr(client, "refresh_order_book", None)
-    if not callable(refresh):
-        return None, None, "stream"
-    try:
-        return refresh(token_id), None, "rest_helper"
-    except Exception as exc:  # noqa: BLE001
+    fetch = refresh if callable(refresh) else client.get_order_book
+    source = "rest_helper" if callable(refresh) else "stream"
+    source_books: dict[str, OrderBook] = {}
+    errors: list[str] = []
+    source_sides = (side, _opposite_side(side)) if side == "NO" else (side,)
+    for source_side in source_sides:
+        source_token = (
+            token_id
+            if source_side == side
+            else _market_token_for_side(market, source_side)
+        )
+        if not source_token:
+            continue
+        try:
+            source_books[source_side] = fetch(source_token)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"{source_side}: {exc.__class__.__name__}: {exc}")
+    book = _combined_side_order_book(market, side, source_books)
+    if book is None:
         return (
             None,
-            "SKIP_TRADABILITY_UNKNOWN: pre-trade REST helper book refresh "
-            f"failed for selected {side}: {exc.__class__.__name__}: {exc} "
+            "SKIP_TRADABILITY_UNKNOWN: pre-trade order book refresh "
+            f"failed for selected {side}: {'; '.join(errors) or 'no token book returned'} "
             f"[{market_type}]",
-            "rest_helper_failed",
+            f"{source}_failed",
         )
+    routes = list(dict.fromkeys(_book_ask_routes(book)))
+    route_source = "direct"
+    if routes and all(route.startswith("complement:") for route in routes):
+        route_source = "complement"
+    elif any(route.startswith("complement:") for route in routes):
+        route_source = "direct+complement"
+    return book, None, f"{source}:{route_source}"
 
 
 def _side_result(
@@ -2293,6 +2584,10 @@ def _side_result(
             f", intraday_observation_edge=true, entry_size_reason={signal.entry_size_reason}, "
             f"entry_size_fraction_override={(signal.entry_size_fraction_override or 0.0):.4f}"
         )
+    ask_routes = list(dict.fromkeys(_book_ask_routes(book)))
+    liquidity_route_note = (
+        f", liquidity_routes={'+'.join(ask_routes)}" if ask_routes else ""
+    )
     reason = (
         f"{side} edge={edge:.4f}, p_exec_vwap={p_exec:.4f}, route={return_estimate.route}, "
         f"expected_exit={return_estimate.expected_exit_price:.4f}, "
@@ -2305,7 +2600,7 @@ def _side_result(
         f"best_bid={(book.best_bid or 0.0):.4f}, best_ask={(book.best_ask or 0.0):.4f}, "
         f"spread_audit={spread:.4f}, slip_audit={slip:.4f}, "
         f"confidence_size_multiplier={confidence_multiplier:.3f}"
-        f"{official_lock_note}{partial_fill_reason}{rejection} [{market_type}]"
+        f"{official_lock_note}{liquidity_route_note}{partial_fill_reason}{rejection} [{market_type}]"
     )
     return EdgeResult(
         side=side if is_trade else "SKIP",
@@ -2392,6 +2687,7 @@ def _final_pre_trade_entry_result(
             return _skip_entry_result(result, strategy_reason)
     refreshed_book, refresh_error, final_book_source = _refresh_selected_order_book_before_entry(
         client,
+        market,
         token_id,
         result.side,
         signal,
@@ -2572,6 +2868,7 @@ def _final_pre_trade_entry_result(
         f"best_bid={(book.best_bid or 0.0):.4f}, best_ask={(book.best_ask or 0.0):.4f}, "
         f"spread_audit={spread:.4f}, slip_audit={checked_slip:.4f}, "
         f"final_book_source={final_book_source}, "
+        f"liquidity_routes={'+'.join(dict.fromkeys(_book_ask_routes(book))) or 'none'}, "
         f"price_anomaly={str(price_anomaly).lower()}, strategy_mode={settings.strategy_mode}, "
         f"signal_family={signal_family}{final_size_note}"
     )
@@ -3871,6 +4168,7 @@ def _record_realtime_prefilter_skip(
     *,
     signal: WeatherSignal | None = None,
     prefilter_skip_state_by_market: dict[str, str] | None = None,
+    orderbook_audit: dict[str, Any] | None = None,
 ) -> None:
     reason_code = reason.split(":", 1)[0]
     if signal is None:
@@ -3901,7 +4199,17 @@ def _record_realtime_prefilter_skip(
             return
         prefilter_skip_state_by_market[market.market_id] = state_key
     result = EdgeResult("SKIP", signal.p_true, None, -999.0, 0.0, 0.0, reason)
-    broker.log_decision(market, result, signal.note, market_type, signal=signal)
+    broker.log_decision(
+        market,
+        result,
+        signal.note,
+        market_type,
+        signal=signal,
+        token_id_override=(
+            market.no_token_id if _is_exact_no_lock("NO", signal) else None
+        ),
+        orderbook_audit=orderbook_audit,
+    )
 
 
 def _record_fast_shadow_order_book_probes(
@@ -3973,6 +4281,7 @@ def _evaluate_realtime_update(
     residual_profile_store: ResidualProfileStore | None = None,
     now: datetime | None = None,
     wake_when_book_returns: set[str] | None = None,
+    candidate_book_retry_by_token: dict[str, tuple[float, str, bool]] | None = None,
     prefilter_skip_state_by_market: dict[str, str] | None = None,
     fast_shadow_book_state_by_market: dict[str, str] | None = None,
 ) -> dict[str, object]:
@@ -4026,58 +4335,98 @@ def _evaluate_realtime_update(
     prefetch = getattr(client, "prefetch_final_entry_checks", None)
     prefetch_candidate_books = getattr(client, "prefetch_candidate_order_books", None)
     candidate_book = getattr(client, "get_candidate_order_book", None)
+    candidate_book_audit = getattr(client, "get_candidate_order_book_audit", None)
+
+    def candidate_source_books(market: RawMarket) -> dict[str, OrderBook]:
+        source_books: dict[str, OrderBook] = {}
+        if not callable(candidate_book):
+            return source_books
+        for side in ("YES", "NO"):
+            token_id = _market_token_for_side(market, side)
+            if not token_id:
+                continue
+            try:
+                source_books[side] = candidate_book(token_id)
+            except Exception:  # noqa: BLE001
+                continue
+        return source_books
+
     if callable(prefetch_candidate_books) and callable(candidate_book):
         candidate_token_ids: list[str] = []
         for market in markets_to_prefetch:
-            token_by_side = {
-                "YES": market.yes_token_id,
-                "NO": market.no_token_id,
-            }
-            for side in allowed_sides_by_market[market.market_id]:
-                token_id = token_by_side.get(side)
+            source_books = candidate_source_books(market)
+            effective_books = [
+                _combined_side_order_book(market, side, source_books)
+                for side in allowed_sides_by_market[market.market_id]
+            ]
+            effective_depth_missing = not any(
+                book is not None
+                and book.best_ask is not None
+                and not _book_is_crossed(book)
+                for book in effective_books
+            )
+            for side in ("YES", "NO"):
+                token_id = _market_token_for_side(market, side)
                 if not token_id:
                     continue
-                try:
-                    book = candidate_book(token_id)
-                except Exception:  # noqa: BLE001
+                book = source_books.get(side)
+                if book is None or _book_is_crossed(book) or effective_depth_missing:
                     candidate_token_ids.append(token_id)
-                else:
-                    if _book_is_crossed(book) or book.best_ask is None:
-                        candidate_token_ids.append(token_id)
-        candidate_prefetch_status = prefetch_candidate_books(candidate_token_ids)
+        candidate_prefetch_status = prefetch_candidate_books(
+            list(dict.fromkeys(candidate_token_ids))
+        )
     candidate_prefetch_duration_seconds = time.monotonic() - candidate_prefetch_started_at
 
     ready_market_ids: set[str] = set()
     book_unavailable_market_ids: set[str] = set()
     missing_book_tokens: set[str] = set()
+    book_statuses_by_market: dict[str, dict[str, str]] = {}
     for market in markets_to_prefetch:
         if market.market_id in held_market_ids or not callable(candidate_book):
             ready_market_ids.add(market.market_id)
             continue
-        token_by_side = {
-            "YES": market.yes_token_id,
-            "NO": market.no_token_id,
-        }
-        entry_tokens = {
-            str(token_by_side[side])
+        source_books = candidate_source_books(market)
+        token_statuses: dict[str, str] = {}
+        for side in ("YES", "NO"):
+            token_id = _market_token_for_side(market, side)
+            if not token_id:
+                continue
+            source_book = source_books.get(side)
+            prefetched_audit = (
+                candidate_book_audit(str(token_id))
+                if callable(candidate_book_audit)
+                else {}
+            )
+            if source_book is None:
+                token_statuses[str(token_id)] = str(
+                    prefetched_audit.get("status") or "missing_response"
+                )
+            elif _book_is_crossed(source_book):
+                token_statuses[str(token_id)] = "crossed"
+            else:
+                token_statuses[str(token_id)] = "ready"
+            if token_id and (source_book is None or _book_is_crossed(source_book)):
+                missing_book_tokens.add(str(token_id))
+        executable_ask_found = any(
+            book is not None
+            and book.best_ask is not None
+            and not _book_is_crossed(book)
             for side in allowed_sides_by_market[market.market_id]
-            if token_by_side.get(side)
-        }
-        executable_ask_found = False
-        for token_id in entry_tokens:
-            try:
-                book = candidate_book(token_id)
-            except Exception:  # noqa: BLE001
-                missing_book_tokens.add(token_id)
-                continue
-            if _book_is_crossed(book) or book.best_ask is None:
-                missing_book_tokens.add(token_id)
-                continue
-            executable_ask_found = True
+            if (book := _combined_side_order_book(market, side, source_books)) is not None
+        )
         if executable_ask_found:
             ready_market_ids.add(market.market_id)
         else:
             book_unavailable_market_ids.add(market.market_id)
+            for token_id, status in list(token_statuses.items()):
+                if status == "ready":
+                    token_statuses[token_id] = "empty_ask"
+            missing_book_tokens.update(
+                str(token_id)
+                for token_id in (market.yes_token_id, market.no_token_id)
+                if token_id
+            )
+        book_statuses_by_market[market.market_id] = token_statuses
 
     book_unavailable_markets = [
         market
@@ -4106,14 +4455,69 @@ def _evaluate_realtime_update(
             candidate_signal = signals_by_market.get(market.market_id)
             if candidate_signal is not None and _is_exact_no_lock("NO", candidate_signal):
                 signal = candidate_signal
+        source_books = candidate_source_books(market)
+        statuses = book_statuses_by_market.get(market.market_id, {})
+        direct_book = source_books.get("NO")
+        complement_book = source_books.get("YES")
+        source_audits = [
+            candidate_book_audit(str(token_id))
+            for token_id in (market.no_token_id, market.yes_token_id)
+            if token_id and callable(candidate_book_audit)
+        ]
+        requested_times = [
+            str(audit.get("requested_at"))
+            for audit in source_audits
+            if audit.get("requested_at")
+        ]
+        received_times = [
+            str(audit.get("received_at"))
+            for audit in source_audits
+            if audit.get("received_at")
+        ]
+        status_values = set(statuses.values())
+        if status_values & {"timeout", "deadline"}:
+            reason_code = "SKIP_BOOK_TIMEOUT"
+        elif "http_error" in status_values:
+            reason_code = "SKIP_BOOK_HTTP_ERROR"
+        elif status_values & {"request_error", "missing_response", "apply_error", "not_observed"}:
+            reason_code = "SKIP_BOOK_MISSING_RESPONSE"
+        elif "crossed" in status_values:
+            reason_code = "SKIP_CROSSED_BOOK"
+        else:
+            reason_code = "SKIP_NO_EXECUTABLE_ASK"
+        orderbook_audit = {
+            "book_request_started_at": min(requested_times) if requested_times else "",
+            "book_received_at": max(received_times) if received_times else "",
+            "book_checked_at": utc_now_iso(),
+            "book_status_detail": ";".join(
+                f"{token_id}={status}" for token_id, status in sorted(statuses.items())
+            ),
+            "book_route": "none",
+            "direct_best_bid": direct_book.best_bid if direct_book is not None else None,
+            "direct_best_ask": direct_book.best_ask if direct_book is not None else None,
+            "complement_best_bid": complement_book.best_bid if complement_book is not None else None,
+            "complement_best_ask": complement_book.best_ask if complement_book is not None else None,
+        }
         _record_realtime_prefilter_skip(
             broker,
             market,
             market_types.get(market.market_id, "temperature"),
-            "SKIP_NO_EXECUTABLE_DEPTH: realtime candidate book unavailable; new NO entry deferred",
+            f"{reason_code}: realtime NO entry has no executable direct or complementary ask",
             signal=signal,
             prefilter_skip_state_by_market=prefilter_skip_state_by_market,
+            orderbook_audit=orderbook_audit,
         )
+        if candidate_book_retry_by_token is not None:
+            retry_now = time.monotonic()
+            urgent = signal is not None and _is_exact_no_lock("NO", signal)
+            for token_id, status in statuses.items():
+                delay = 5.0 if status == "empty_ask" else 2.0
+                existing = candidate_book_retry_by_token.get(token_id)
+                due_at = retry_now + delay
+                if existing is not None:
+                    due_at = min(due_at, existing[0])
+                    urgent = urgent or existing[2]
+                candidate_book_retry_by_token[token_id] = (due_at, status, urgent)
 
     touched_candidate_tokens = {
         str(token_id)
@@ -4124,6 +4528,13 @@ def _evaluate_realtime_update(
     if wake_when_book_returns is not None:
         wake_when_book_returns.difference_update(touched_candidate_tokens)
         wake_when_book_returns.update(missing_book_tokens)
+    if candidate_book_retry_by_token is not None:
+        for market in markets_to_prefetch:
+            if market.market_id not in ready_market_ids:
+                continue
+            for token_id in (market.yes_token_id, market.no_token_id):
+                if token_id:
+                    candidate_book_retry_by_token.pop(str(token_id), None)
     markets_ready_for_evaluation = [
         market for market in markets_to_prefetch if market.market_id in ready_market_ids
     ]
@@ -4327,6 +4738,15 @@ def _evaluate_realtime_update(
             )
             if candidate.market.condition_id and token_id:
                 final_checks.append((candidate.market.condition_id, token_id))
+                complement_token_id = (
+                    _market_token_for_side(candidate.market, "YES")
+                    if candidate.result.side == "NO"
+                    else None
+                )
+                if complement_token_id:
+                    final_checks.append(
+                        (candidate.market.condition_id, complement_token_id)
+                    )
     prefetch_status = (
         prefetch(final_checks)
         if callable(prefetch)
@@ -4886,6 +5306,7 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
                 settings,
             )
             wake_when_book_returns: set[str] = set()
+            candidate_book_retry_by_token: dict[str, tuple[float, str, bool]] = {}
             prefilter_skip_state_by_market: dict[str, str] = {}
             fast_shadow_book_state_by_market: dict[str, str] = {}
             event_priorities = _realtime_event_priorities(
@@ -4916,6 +5337,7 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
                             observation_provider=observation_provider,
                             residual_profile_store=residual_profile_store,
                             wake_when_book_returns=wake_when_book_returns,
+                            candidate_book_retry_by_token=candidate_book_retry_by_token,
                             prefilter_skip_state_by_market=prefilter_skip_state_by_market,
                             fast_shadow_book_state_by_market=fast_shadow_book_state_by_market,
                         )
@@ -5015,6 +5437,11 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
                     elapsed = (now - refresh_started_at).total_seconds()
                     if elapsed >= settings.stream_cycle_interval_seconds:
                         break
+                    with update_lock:
+                        _enqueue_due_candidate_book_retries(
+                            evaluator_worker,
+                            candidate_book_retry_by_token,
+                        )
                     websocket_health = stream.health_snapshot()
                     if _stream_should_rebuild(websocket_health, token_count=len(market_by_token)):
                         failed_phase = "runner_status_update"

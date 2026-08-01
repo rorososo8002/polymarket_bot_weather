@@ -178,6 +178,13 @@ notes only when they prevent a repeated mistake.
   and fresh complete station evidence.
 - Entry price = executable ask-side VWAP.
 - Exit price = executable bid-side VWAP.
+- For a binary entry, official CLOB complementary matching is executable depth:
+  an opposite-outcome resting BUY at price `p` can fund a selected-outcome BUY
+  at `1-p`. Therefore a direct NO ask and the complementary YES bid are merged
+  into one NO entry ladder before VWAP. Both token books must be fresh, belong
+  to the same condition, and be REST-rechecked immediately before the paper
+  fill. The ledger must identify direct versus complementary depth. A blank
+  direct NO ask alone is not a liquidity rejection.
 - No bid depth = HOLD. Partial depth = partial close or HOLD. Never fake a zero
   close or midpoint fill.
 - WebSocket market stream is primary. REST `/book` is bounded seed/resync helper.

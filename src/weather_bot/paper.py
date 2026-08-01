@@ -335,6 +335,15 @@ DECISION_CSV_FIELDNAMES = [
     "best_ask",
     "spread",
     "orderbook_status",
+    "book_request_started_at",
+    "book_received_at",
+    "book_checked_at",
+    "book_status_detail",
+    "book_route",
+    "direct_best_bid",
+    "direct_best_ask",
+    "complement_best_bid",
+    "complement_best_ask",
     "reason_code",
     "raw_selected_side_probability",
     "selected_side_probability",
@@ -1978,11 +1987,22 @@ class PaperBroker:
         market_type: str = "temperature",
         *,
         signal: Any | None = None,
+        token_id_override: str | None = None,
+        orderbook_audit: dict[str, Any] | None = None,
     ) -> str:
         ts = utc_now_iso()
         if result.side == "SKIP":
             try:
-                self._log_skip_diagnostic(ts, market, result, note, market_type, signal=signal)
+                self._log_skip_diagnostic(
+                    ts,
+                    market,
+                    result,
+                    note,
+                    market_type,
+                    signal=signal,
+                    token_id_override=token_id_override,
+                    orderbook_audit=orderbook_audit,
+                )
             except Exception as exc:  # noqa: BLE001
                 self._record_skip_diagnostic_error(exc)
         # Suppress SKIP rows by default — they are 95%+ of all writes and carry
@@ -2007,11 +2027,13 @@ class PaperBroker:
         signal_replay = _signal_replay_metadata(signal)
         result_replay = _result_replay_metadata(result)
         strategy_replay = _strategy_replay_metadata(signal_replay, result_replay)
-        token_id = ""
-        if result.side == "YES":
-            token_id = market.yes_token_id or ""
-        elif result.side == "NO":
-            token_id = market.no_token_id or ""
+        book_audit = orderbook_audit or {}
+        token_id = str(token_id_override or "") if token_id_override is not None else ""
+        if token_id_override is None:
+            if result.side == "YES":
+                token_id = market.yes_token_id or ""
+            elif result.side == "NO":
+                token_id = market.no_token_id or ""
         with self.decisions_csv_path.open("a", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(
                 f,
@@ -2066,6 +2088,31 @@ class PaperBroker:
                 "best_ask": result_replay["best_ask"],
                 "spread": result_replay["spread"],
                 "orderbook_status": result_replay["orderbook_status"],
+                "book_request_started_at": _format_optional_text(
+                    book_audit.get("book_request_started_at")
+                ),
+                "book_received_at": _format_optional_text(
+                    book_audit.get("book_received_at")
+                ),
+                "book_checked_at": _format_optional_text(
+                    book_audit.get("book_checked_at")
+                ),
+                "book_status_detail": _format_optional_text(
+                    book_audit.get("book_status_detail")
+                ),
+                "book_route": _format_optional_text(book_audit.get("book_route")),
+                "direct_best_bid": _format_optional_csv_float(
+                    book_audit.get("direct_best_bid")
+                ),
+                "direct_best_ask": _format_optional_csv_float(
+                    book_audit.get("direct_best_ask")
+                ),
+                "complement_best_bid": _format_optional_csv_float(
+                    book_audit.get("complement_best_bid")
+                ),
+                "complement_best_ask": _format_optional_csv_float(
+                    book_audit.get("complement_best_ask")
+                ),
                 "reason_code": result_replay["reason_code"],
                 "raw_selected_side_probability": strategy_replay["raw_selected_side_probability"],
                 "selected_side_probability": strategy_replay["selected_side_probability"],
@@ -2136,6 +2183,8 @@ class PaperBroker:
         market_type: str,
         *,
         signal: Any | None = None,
+        token_id_override: str | None = None,
+        orderbook_audit: dict[str, Any] | None = None,
     ) -> None:
         if not self.settings.skip_diagnostics_enabled:
             return
@@ -2144,6 +2193,7 @@ class PaperBroker:
         signal_replay = _signal_replay_metadata(signal)
         result_replay = _result_replay_metadata(result)
         strategy_replay = _strategy_replay_metadata(signal_replay, result_replay)
+        book_audit = orderbook_audit or {}
         row = {
             "ts": ts,
             "market_id": market.market_id,
@@ -2152,6 +2202,15 @@ class PaperBroker:
             "question": _compact_text(market.question, DECISION_QUESTION_MAX_CHARS),
             "market_type": market_type,
             "side": result.side,
+            "token_id": (
+                str(token_id_override or "")
+                if token_id_override is not None
+                else market.yes_token_id
+                if result.side == "YES"
+                else market.no_token_id
+                if result.side == "NO"
+                else ""
+            ),
             "reason_code": result_replay["reason_code"],
             "reason": _compact_text(result.reason, DECISION_REASON_MAX_CHARS),
             "note": _compact_text(note, DECISION_NOTE_MAX_CHARS),
@@ -2176,6 +2235,15 @@ class PaperBroker:
             "best_ask": result_replay["best_ask"],
             "spread": result_replay["spread"],
             "orderbook_status": result_replay["orderbook_status"],
+            "book_request_started_at": book_audit.get("book_request_started_at"),
+            "book_received_at": book_audit.get("book_received_at"),
+            "book_checked_at": book_audit.get("book_checked_at"),
+            "book_status_detail": book_audit.get("book_status_detail"),
+            "book_route": book_audit.get("book_route"),
+            "direct_best_bid": book_audit.get("direct_best_bid"),
+            "direct_best_ask": book_audit.get("direct_best_ask"),
+            "complement_best_bid": book_audit.get("complement_best_bid"),
+            "complement_best_ask": book_audit.get("complement_best_ask"),
             "raw_selected_side_probability": strategy_replay["raw_selected_side_probability"],
             "selected_side_probability": strategy_replay["selected_side_probability"],
             "probability_tier": strategy_replay["probability_tier"],

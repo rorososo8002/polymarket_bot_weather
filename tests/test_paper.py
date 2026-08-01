@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import json
 from dataclasses import replace
 
 import pytest
@@ -370,6 +371,61 @@ def test_decision_records_structured_probability_and_sizing_audit_fields(tmp_pat
     assert row["fee_rate"] == "0.000000"
     assert row["entry_fee_usdc"] == "1.000000"
     assert row["expected_net_profit_usd"] == "28.000000"
+
+
+def test_exact_no_skip_can_record_the_probed_no_token_for_runtime_audit(tmp_path):
+    broker = PaperBroker(
+        _settings(tmp_path, strategy_mode="upstream_lock_paper")
+    )
+    market = _direct_exact_no_market("seoul-runtime-audit", 29)
+    signal = _upstream_exact_no_signal(market)
+    result = replace(
+        _upstream_exact_no_result(size_usd=0.0),
+        side="SKIP",
+        p_exec=None,
+        reason=(
+            "SKIP_NO_EXECUTABLE_DEPTH: candidate NO book has no executable ask"
+        ),
+    )
+
+    broker.log_decision(
+        market,
+        result,
+        signal.note,
+        signal=signal,
+        token_id_override=market.no_token_id,
+        orderbook_audit={
+            "book_request_started_at": "2026-07-21T19:30:49+00:00",
+            "book_received_at": "2026-07-21T19:30:50+00:00",
+            "book_checked_at": "2026-07-21T19:30:50+00:00",
+            "book_status_detail": "empty_direct_ask_and_complement_bid",
+            "book_route": "none",
+            "direct_best_bid": 0.84,
+            "direct_best_ask": None,
+            "complement_best_bid": 0.02,
+            "complement_best_ask": 0.03,
+        },
+    )
+
+    with (tmp_path / "decisions.csv").open(newline="", encoding="utf-8") as handle:
+        row = next(csv.DictReader(handle))
+    assert row["side"] == "SKIP"
+    assert row["token_id"] == market.no_token_id
+    assert row["book_request_started_at"] == "2026-07-21T19:30:49+00:00"
+    assert row["book_received_at"] == "2026-07-21T19:30:50+00:00"
+    assert row["book_checked_at"] == "2026-07-21T19:30:50+00:00"
+    assert row["book_status_detail"] == "empty_direct_ask_and_complement_bid"
+    assert row["book_route"] == "none"
+    assert row["direct_best_bid"] == "0.840000"
+    assert row["direct_best_ask"] == ""
+    assert row["complement_best_bid"] == "0.020000"
+    assert row["complement_best_ask"] == "0.030000"
+
+    diagnostic = json.loads(
+        (tmp_path / "paper_skip_diagnostics.jsonl").read_text(encoding="utf-8").splitlines()[-1]
+    )
+    assert diagnostic["token_id"] == market.no_token_id
+    assert diagnostic["book_status_detail"] == "empty_direct_ask_and_complement_bid"
 
 
 def test_decision_records_station_formation_audit_without_relying_on_truncated_note(tmp_path):

@@ -129,6 +129,55 @@ def test_stream_backed_client_prefetches_final_books_concurrently_and_reuses_the
     assert sorted(stream.refresh_calls) == ["token-a", "token-b"]
 
 
+def test_final_prefetch_complement_failure_does_not_poison_direct_route():
+    class Cache:
+        def __init__(self) -> None:
+            self.books: dict[str, OrderBook] = {}
+
+        def get_order_book(self, token_id: str) -> OrderBook:
+            return self.books[token_id]
+
+    class PartialStream:
+        def __init__(self) -> None:
+            self.cache = Cache()
+
+        def fetch_order_book_snapshot(self, token_id: str) -> OrderBook:
+            if token_id == "yes-complement":
+                raise RuntimeError("complement unavailable")
+            return OrderBook(
+                token_id,
+                bids=[OrderLevel(0.83, 100.0)],
+                asks=[OrderLevel(0.84, 100.0)],
+            )
+
+        def apply_rest_snapshot(self, book: OrderBook, *, notify: bool = True) -> None:
+            self.cache.books[str(book.token_id)] = book
+
+        def refresh_order_book(self, token_id: str) -> OrderBook:
+            book = self.fetch_order_book_snapshot(token_id)
+            self.apply_rest_snapshot(book)
+            return book
+
+    client = StreamBackedPolymarketClient(
+        "https://gamma.example",
+        "https://clob.example",
+        PartialStream(),
+    )
+    client._fetch_clob_market_tradability_uncached = (  # type: ignore[method-assign]
+        lambda condition_id: condition_id
+    )
+
+    status = client.prefetch_final_entry_checks(
+        [("condition-a", "no-direct"), ("condition-a", "yes-complement")]
+    )
+
+    assert status == {"requested": 2, "book_ready": 1, "failed": 1, "deferred": 0}
+    assert client.get_clob_market_tradability("condition-a") == "condition-a"
+    assert client.refresh_order_book("no-direct").best_ask == pytest.approx(0.84)
+    with pytest.raises(RuntimeError, match="concurrent final check exceeded"):
+        client.refresh_order_book("yes-complement")
+
+
 def test_stream_backed_client_prefetches_candidate_books_without_tradability_lookup():
     class Cache:
         def __init__(self) -> None:
@@ -172,9 +221,74 @@ def test_stream_backed_client_prefetches_candidate_books_without_tradability_loo
 
     assert status == {"requested": 2, "book_ready": 2, "failed": 0, "deferred": 0}
     assert batch_calls == [
-        (["token-a", "token-b"], runner_module.REALTIME_FINAL_PREFETCH_DEADLINE_SECONDS)
+        (["token-a", "token-b"], min(0.75, runner_module.REALTIME_FINAL_PREFETCH_DEADLINE_SECONDS))
     ]
     assert stream.cache.get_order_book("token-a").best_ask == pytest.approx(0.80)
+
+
+def test_candidate_prefetch_retries_only_token_missing_from_batch():
+    class Cache:
+        def __init__(self) -> None:
+            self.books: dict[str, OrderBook] = {}
+
+        def get_order_book(self, token_id: str) -> OrderBook:
+            return self.books[token_id]
+
+    class CandidateStream:
+        def __init__(self) -> None:
+            self.cache = Cache()
+
+        def apply_rest_snapshot(self, book: OrderBook, *, notify: bool = True) -> None:
+            self.cache.books[str(book.token_id)] = book
+
+    stream = CandidateStream()
+    client = StreamBackedPolymarketClient(
+        "https://gamma.example",
+        "https://clob.example",
+        stream,
+    )
+    calls: list[list[str]] = []
+
+    def get_order_books(token_ids: list[str], *, timeout: float | None = None) -> list[OrderBook]:
+        calls.append(list(token_ids))
+        returned = ["token-a"] if len(calls) == 1 else token_ids
+        return [
+            OrderBook(token, bids=[OrderLevel(0.79, 100.0)], asks=[OrderLevel(0.80, 100.0)])
+            for token in returned
+        ]
+
+    client.get_order_books = get_order_books  # type: ignore[method-assign]
+
+    status = client.prefetch_candidate_order_books(["token-a", "token-b"])
+
+    assert calls == [["token-a", "token-b"], ["token-b"]]
+    assert status == {"requested": 2, "book_ready": 2, "failed": 0, "deferred": 0}
+    assert stream.cache.get_order_book("token-a").best_ask == pytest.approx(0.80)
+    assert stream.cache.get_order_book("token-b").best_ask == pytest.approx(0.80)
+    assert client.get_candidate_order_book_audit("token-b")["status"] == "ready"
+
+
+def test_due_candidate_book_retry_runs_without_websocket_update():
+    class Worker:
+        def __init__(self) -> None:
+            self.calls: list[tuple[set[str], bool]] = []
+
+        def enqueue_tokens(self, token_ids: set[str], *, urgent: bool = False) -> int:
+            self.calls.append((set(token_ids), urgent))
+            return len(token_ids)
+
+    worker = Worker()
+    retries = {
+        "urgent-token": (10.0, "missing_response", True),
+        "quiet-token": (10.0, "empty_ask", False),
+    }
+
+    assert runner_module._enqueue_due_candidate_book_retries(worker, retries, now_monotonic=9.999) == 0
+    assert runner_module._enqueue_due_candidate_book_retries(worker, retries, now_monotonic=10.0) == 2
+
+    assert worker.calls == [({"urgent-token"}, True), ({"quiet-token"}, False)]
+    assert retries["urgent-token"][0] == pytest.approx(12.0)
+    assert retries["quiet-token"][0] == pytest.approx(15.0)
 
 
 def test_stream_backed_client_does_not_wait_for_one_slow_final_prefetch(monkeypatch):
@@ -362,6 +476,50 @@ def test_fetch_books_keeps_available_side_when_other_side_snapshot_missing():
     assert error is None
     assert set(books) == {"NO"}
     assert books["NO"].best_ask == 0.72
+
+
+def test_fetch_books_combines_direct_no_depth_with_complementary_yes_depth():
+    class ComplementaryClient:
+        def get_order_book(self, token_id: str) -> OrderBook:
+            if token_id == "yes-token":
+                return OrderBook(
+                    token_id,
+                    bids=[OrderLevel(0.20, 10.0)],
+                    asks=[OrderLevel(0.21, 30.0)],
+                )
+            return OrderBook(
+                token_id,
+                bids=[OrderLevel(0.78, 20.0)],
+                asks=[OrderLevel(0.81, 5.0)],
+            )
+
+    market = RawMarket(
+        market_id="m-complement",
+        question="Will the highest temperature in Seoul be 29C on July 22?",
+        slug="seoul-high-complement",
+        active=True,
+        closed=False,
+        yes_token_id="yes-token",
+        no_token_id="no-token",
+    )
+
+    books, error = runner_module._fetch_books(
+        market,
+        ComplementaryClient(),
+        allowed_sides={"NO"},
+    )
+
+    assert error is None
+    assert set(books) == {"NO"}
+    assert [(level.price, level.size) for level in books["NO"].asks] == [
+        (0.80, 10.0),
+        (0.81, 5.0),
+    ]
+    assert books["NO"].best_bid == pytest.approx(0.79)
+    assert books["NO"].raw["complementary_liquidity"]["ask_routes"] == [
+        "complement:YES_bid",
+        "direct:NO_ask",
+    ]
 
 
 def test_side_liquidity_rejects_crossed_order_book():
@@ -1001,8 +1159,11 @@ def test_realtime_evaluation_trigger_tokens_include_high_and_low_exact_no_and_he
         runner_module._market_from_position(broker.state.positions[0])
     )
     assert trigger_tokens == {
+        "high-29-yes": "seoul-high-event",
         "high-29-no": "seoul-high-event",
+        "high-30-yes": "seoul-high-event",
         "high-30-no": "seoul-high-event",
+        "low-22-yes": "seoul-low-event",
         "low-22-no": "seoul-low-event",
         "held-no": held_event_key,
     }
@@ -1030,7 +1191,10 @@ def test_realtime_evaluation_trigger_includes_upper_tail_high_no():
 
     trigger_tokens = runner_module._realtime_evaluation_trigger_tokens([upper_tail], broker)
 
-    assert trigger_tokens == {"upper-tail-no": "kuala-lumpur-high-event"}
+    assert trigger_tokens == {
+        "upper-tail-yes": "kuala-lumpur-high-event",
+        "upper-tail-no": "kuala-lumpur-high-event",
+    }
 
 
 def test_realtime_price_watch_ignores_ineligible_signals_but_keeps_strong_no_and_held():
@@ -1114,7 +1278,7 @@ def test_realtime_price_watch_ignores_ineligible_signals_but_keeps_strong_no_and
         settings,
     )
 
-    assert watched == {"strong-no-no", "held-yes"}
+    assert watched == {"strong-no-yes", "strong-no-no", "held-yes"}
 
 
 def test_empty_changed_station_set_enqueues_no_fallback_probe():
@@ -2237,7 +2401,7 @@ def test_realtime_update_without_signal_fails_closed_without_order_book_lookup(t
     assert broker.state.positions == []
 
 
-def test_realtime_no_only_evaluation_does_not_read_yes_book(tmp_path):
+def test_realtime_no_only_evaluation_reads_yes_book_for_complementary_no_depth(tmp_path):
     question = "Will the highest temperature in Seoul be 27C today?"
     market = RawMarket(
         "seoul-no-only",
@@ -2292,7 +2456,7 @@ def test_realtime_no_only_evaluation_does_not_read_yes_book(tmp_path):
         {},
     )
 
-    assert client.book_calls == ["no-token"]
+    assert client.book_calls == ["yes-token", "no-token"]
 
 
 def test_realtime_update_prefetches_missing_no_book_before_evaluation(tmp_path):
@@ -2375,14 +2539,86 @@ def test_realtime_update_prefetches_missing_no_book_before_evaluation(tmp_path):
         {},
     )
 
-    assert client.candidate_prefetch_calls == [["no-token"]]
+    assert client.candidate_prefetch_calls == [["yes-token", "no-token"]]
     assert client.final_prefetch_calls == [[]]
     assert breakdown["candidate_book_prefetch"] == {
-        "requested": 1,
-        "book_ready": 1,
+        "requested": 2,
+        "book_ready": 2,
         "failed": 0,
         "deferred": 0,
     }
+
+
+def test_realtime_prefilter_accepts_complementary_no_ask_when_direct_no_ask_is_missing(tmp_path):
+    question = "Will the highest temperature in Seoul be 27C today?"
+    market = RawMarket(
+        "seoul-complement-only",
+        question,
+        "seoul-complement-only",
+        True,
+        False,
+        "yes-token",
+        "no-token",
+        condition_id="condition-no",
+        event_id="seoul-today",
+    )
+
+    class ComplementOnlyClient:
+        def get_candidate_order_book(self, token_id: str) -> OrderBook:
+            if token_id == "yes-token":
+                return OrderBook(
+                    token_id,
+                    bids=[OrderLevel(0.16, 100.0)],
+                    asks=[OrderLevel(0.18, 100.0)],
+                )
+            return OrderBook(
+                token_id,
+                bids=[OrderLevel(0.82, 100.0)],
+                asks=[],
+            )
+
+        def prefetch_candidate_order_books(self, token_ids: list[str]) -> dict[str, int]:
+            return {
+                "requested": len(token_ids),
+                "book_ready": len(token_ids),
+                "failed": 0,
+                "deferred": 0,
+            }
+
+        def prefetch_final_entry_checks(self, checks: list[tuple[str, str]]) -> dict[str, int]:
+            return {"requested": 0, "book_ready": 0, "failed": 0, "deferred": 0}
+
+    settings = Settings(
+        state_path=str(tmp_path / "state.json"),
+        trades_csv_path=str(tmp_path / "trades.csv"),
+        decisions_csv_path=str(tmp_path / "decisions.csv"),
+        raw_snapshots_path=str(tmp_path / "raw.jsonl"),
+        portfolio_decisions_jsonl_path=str(tmp_path / "portfolio.jsonl"),
+        no_only_new_entries=True,
+        min_net_edge=0.99,
+    )
+    broker = runner_module.PaperBroker(settings)
+    signal = WeatherSignal(
+        0.05,
+        1.0,
+        "official-station-lock-test",
+        "official_nowcast_lock=test",
+        parse_weather_question(question),
+    )
+
+    breakdown = runner_module._evaluate_realtime_update(
+        {"no-token"},
+        ComplementOnlyClient(),
+        broker,
+        settings,
+        {"yes-token": market, "no-token": market},
+        {market.market_id: signal},
+        {market.market_id: "temperature"},
+        {},
+    )
+
+    assert breakdown["market_count"] == 1
+    assert breakdown["book_unavailable_market_count"] == 0
 
 
 def test_realtime_update_defers_no_ask_market_until_book_becomes_executable(tmp_path):
@@ -2401,7 +2637,8 @@ def test_realtime_update_defers_no_ask_market_until_book_becomes_executable(tmp_
 
     class BidOnlyClient:
         def get_candidate_order_book(self, token_id: str) -> OrderBook:
-            return OrderBook(token_id, bids=[OrderLevel(0.20, 100.0)], asks=[])
+            bids = [OrderLevel(0.20, 100.0)] if token_id == "no-token" else []
+            return OrderBook(token_id, bids=bids, asks=[])
 
         def prefetch_candidate_order_books(self, token_ids: list[str]) -> dict[str, int]:
             return {
@@ -2444,7 +2681,7 @@ def test_realtime_update_defers_no_ask_market_until_book_becomes_executable(tmp_
             prefilter_skip_state_by_market=prefilter_skip_state,
         )
 
-    assert wake_when_book_returns == {"no-token"}
+    assert wake_when_book_returns == {"yes-token", "no-token"}
     assert breakdown["market_count"] == 0
     assert breakdown["book_unavailable_market_count"] == 1
     diagnostic_rows = [
@@ -2453,8 +2690,8 @@ def test_realtime_update_defers_no_ask_market_until_book_becomes_executable(tmp_
     ]
     assert len(diagnostic_rows) == 1
     assert diagnostic_rows[-1]["market_id"] == market.market_id
-    assert diagnostic_rows[-1]["reason_code"] == "SKIP_NO_EXECUTABLE_DEPTH"
-    assert "realtime candidate book unavailable" in diagnostic_rows[-1]["reason"]
+    assert diagnostic_rows[-1]["reason_code"] == "SKIP_NO_EXECUTABLE_ASK"
+    assert "no executable direct or complementary ask" in diagnostic_rows[-1]["reason"]
 
 
 def test_realtime_exact_no_without_depth_keeps_each_new_observation_in_ledger(tmp_path):
@@ -2463,7 +2700,8 @@ def test_realtime_exact_no_without_depth_keeps_each_new_observation_in_ledger(tm
 
     class BidOnlyClient:
         def get_candidate_order_book(self, token_id: str) -> OrderBook:
-            return OrderBook(token_id, bids=[OrderLevel(0.20, 100.0)], asks=[])
+            bids = [OrderLevel(0.20, 100.0)] if token_id == market.no_token_id else []
+            return OrderBook(token_id, bids=bids, asks=[])
 
         def prefetch_candidate_order_books(self, token_ids: list[str]) -> dict[str, int]:
             return {
@@ -2525,9 +2763,11 @@ def test_realtime_exact_no_without_depth_keeps_each_new_observation_in_ledger(tm
     with Path(settings.decisions_csv_path).open(encoding="utf-8", newline="") as handle:
         rows = list(csv.DictReader(handle))
     assert [row["reason_code"] for row in rows] == [
-        "SKIP_NO_EXECUTABLE_DEPTH",
-        "SKIP_NO_EXECUTABLE_DEPTH",
+        "SKIP_NO_EXECUTABLE_ASK",
+        "SKIP_NO_EXECUTABLE_ASK",
     ]
+    assert [row["token_id"] for row in rows] == [market.no_token_id, market.no_token_id]
+    assert all("empty_ask" in row["book_status_detail"] for row in rows)
     assert [row["station_observed_at"] for row in rows] == [
         "2026-07-21T04:00:00+00:00",
         "2026-07-21T04:01:00+00:00",
@@ -2659,7 +2899,8 @@ def test_fast_shadow_wake_records_contemporaneous_no_book_without_trading(tmp_pa
 
     class CachedAskClient:
         def get_candidate_order_book(self, token_id: str) -> OrderBook:
-            assert token_id == "no-token"
+            if token_id == "yes-token":
+                raise KeyError(token_id)
             return OrderBook(
                 token_id,
                 bids=[OrderLevel(0.84, 75.0)],
@@ -2668,8 +2909,8 @@ def test_fast_shadow_wake_records_contemporaneous_no_book_without_trading(tmp_pa
             )
 
         def prefetch_candidate_order_books(self, token_ids: list[str]) -> dict[str, int]:
-            assert token_ids == []
-            return {"requested": 0, "book_ready": 0, "failed": 0, "deferred": 0}
+            assert token_ids == ["yes-token"]
+            return {"requested": 1, "book_ready": 0, "failed": 1, "deferred": 0}
 
     settings = Settings(
         state_path=str(tmp_path / "state.json"),
@@ -3500,6 +3741,75 @@ def _upstream_exact_no_signal(question: str, **overrides) -> WeatherSignal:
         selected_side_probability=0.96,
         **overrides,
     )
+
+
+def test_realtime_final_prefetch_includes_direct_no_and_complementary_yes(
+    tmp_path,
+    monkeypatch,
+):
+    question = "Will the highest temperature in Seoul be 29C on July 21?"
+    market = _wunderground_exact_market(
+        question,
+        market_id="upstream-prefetch-complement",
+    )
+
+    class PrefetchRecordingClient:
+        def __init__(self) -> None:
+            self.final_checks: list[list[tuple[str, str]]] = []
+
+        def get_candidate_order_book(self, token_id: str) -> OrderBook:
+            if token_id == market.yes_token_id:
+                return OrderBook(
+                    token_id,
+                    bids=[OrderLevel(0.10, 1000.0)],
+                    asks=[OrderLevel(0.12, 1000.0)],
+                )
+            return OrderBook(
+                token_id,
+                bids=[OrderLevel(0.83, 1000.0)],
+                asks=[OrderLevel(0.84, 1000.0)],
+            )
+
+        def prefetch_candidate_order_books(self, token_ids: list[str]) -> dict[str, int]:
+            return {
+                "requested": len(token_ids),
+                "book_ready": len(token_ids),
+                "failed": 0,
+                "deferred": 0,
+            }
+
+        def prefetch_final_entry_checks(self, checks: list[tuple[str, str]]) -> dict[str, int]:
+            self.final_checks.append(list(checks))
+            return {
+                "requested": len(checks),
+                "book_ready": len(checks),
+                "failed": 0,
+                "deferred": 0,
+            }
+
+    client = PrefetchRecordingClient()
+    settings = _upstream_lock_settings(tmp_path)
+    broker = runner_module.PaperBroker(settings)
+    monkeypatch.setattr(runner_module, "_apply_event_portfolio", lambda *_args, **_kwargs: None)
+
+    runner_module._evaluate_realtime_update(
+        {market.no_token_id or ""},
+        client,
+        broker,
+        settings,
+        {
+            market.yes_token_id or "": market,
+            market.no_token_id or "": market,
+        },
+        {market.market_id: _upstream_exact_no_signal(question)},
+        {market.market_id: "temperature"},
+        {},
+    )
+
+    assert client.final_checks == [[
+        (market.condition_id, market.no_token_id),
+        (market.condition_id, market.yes_token_id),
+    ]]
 
 
 def test_recent_direct_observation_can_reuse_same_fresh_response_for_final_check():
@@ -4723,10 +5033,69 @@ def test_final_pre_trade_refreshes_lock_only_no_book_with_rest_helper(tmp_path):
         "temperature",
     )
 
-    assert client.refresh_calls == ["no"]
+    assert client.refresh_calls == ["no", "yes"]
     assert result.side == "NO"
     assert result.p_exec == pytest.approx(0.88)
     assert "final_book_source=rest_helper" in result.reason
+
+
+def test_final_pre_trade_uses_fresh_complementary_yes_bid_for_no_entry(tmp_path):
+    question = "Will the highest temperature in Seoul be 29C on July 21?"
+    market = _wunderground_exact_market(
+        question,
+        market_id="upstream-final-complement",
+    )
+    signal = _upstream_exact_no_signal(question)
+    selected = runner_module.EdgeResult(
+        "NO",
+        0.0,
+        0.84,
+        0.10,
+        10.0,
+        11.9,
+        "selected upstream exact no",
+        signal_family="upstream_lock_paper",
+        requested_size_usd=10.0,
+        executable_size_usd=10.0,
+    )
+
+    class ComplementRefreshClient(_FinalGateClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.refresh_calls: list[str] = []
+
+        def refresh_order_book(self, token_id: str) -> OrderBook:
+            self.refresh_calls.append(token_id)
+            if token_id == market.yes_token_id:
+                return OrderBook(
+                    token_id,
+                    bids=[OrderLevel(0.16, 100.0)],
+                    asks=[OrderLevel(0.18, 100.0)],
+                )
+            return OrderBook(
+                token_id,
+                bids=[OrderLevel(0.82, 100.0)],
+                asks=[],
+            )
+
+    client = ComplementRefreshClient()
+    result = runner_module._final_pre_trade_entry_result(
+        market,
+        signal,
+        selected,
+        market.no_token_id or "",
+        client,
+        _upstream_lock_settings(tmp_path),
+        "temperature",
+    )
+
+    assert client.refresh_calls == [market.no_token_id, market.yes_token_id]
+    assert result.side == "NO"
+    assert result.p_exec == pytest.approx(0.84)
+    depth = json.loads(result.entry_ask_depth_top5_json)
+    assert depth["levels"][0]["route"] == "complement:YES_bid"
+    assert depth["routes"] == ["complement:YES_bid"]
+    assert "final_book_source=rest_helper:complement" in result.reason
 
 
 def test_final_pre_trade_direct_exact_no_shrinks_to_safe_fresh_book_budget(tmp_path):
@@ -4775,7 +5144,7 @@ def test_final_pre_trade_direct_exact_no_shrinks_to_safe_fresh_book_budget(tmp_p
         "temperature",
     )
 
-    assert client.refresh_calls == [market.no_token_id]
+    assert client.refresh_calls == [market.no_token_id, market.yes_token_id]
     assert result.side == "NO"
     assert 62.0 < result.size_usd < 64.0
     assert result.size_usd < selected.size_usd
@@ -5195,7 +5564,7 @@ def test_candidate_book_scan_uses_cache_only_without_rest_fallback():
     assert client.rest_fallback_calls == []
 
 
-def test_candidate_book_scan_refreshes_only_preferred_missing_side():
+def test_candidate_book_scan_refreshes_preferred_and_its_complement():
     market = _entry_gate_market(
         market_id="paris-34c",
         question="Will the highest temperature in Paris be 34C on July 14?",
@@ -5218,8 +5587,8 @@ def test_candidate_book_scan_refreshes_only_preferred_missing_side():
     books, error = runner_module._fetch_books(market, client, preferred_side="NO")
 
     assert error is None
-    assert set(books) == {"NO"}
-    assert client.refresh_calls == ["no"]
+    assert set(books) == {"YES", "NO"}
+    assert client.refresh_calls == ["no", "yes"]
 
 
 def test_candidate_book_scan_refreshes_crossed_preferred_side():
@@ -5249,7 +5618,7 @@ def test_candidate_book_scan_refreshes_crossed_preferred_side():
     assert error is None
     assert books["NO"].best_bid == pytest.approx(0.80)
     assert books["NO"].best_ask == pytest.approx(0.82)
-    assert client.refresh_calls == ["no"]
+    assert client.refresh_calls == ["no", "yes"]
 
 
 def test_final_pre_trade_revalidates_station_signal_and_blocks_probability_drop(tmp_path):
