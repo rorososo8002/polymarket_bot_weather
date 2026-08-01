@@ -591,6 +591,12 @@ class AviationWeatherMetarNowcastProvider:
         self._request_log_last_success_at: datetime | None = None
         self._kma_unavailable_until: datetime | None = None
         self._kma_station_unavailable_until: dict[str, datetime] = {}
+        # Keep the last successful precise KMA payload independently from the
+        # combined observation cache.  AWC can publish a new shared generation
+        # every minute and invalidate that outer cache, but it must not turn a
+        # 30-second KMA poll floor into one HTTP request per candidate market.
+        self._kma_station_fetch_cache: dict[str, _KmaMetarFetch] = {}
+        self._kma_station_fetch_cache_lock = threading.RLock()
         self.sources = sources or PILOT_NOWCAST_SOURCES
         self._cache: dict[tuple[str, str], tuple[datetime, StationNowcastObservation]] = {}
         self._awc_metar_bulk_cache: _MetarBulkCacheEntry | None = None
@@ -2499,6 +2505,16 @@ class AviationWeatherMetarNowcastProvider:
         *,
         cache_miss_reason: str,
     ) -> _KmaMetarFetch:
+        station_id = station.station_id.upper()
+        checked_at = _as_utc(self.clock())
+        with self._kma_station_fetch_cache_lock:
+            cached_fetch = self._kma_station_fetch_cache.get(station_id)
+        if cached_fetch is not None and cached_fetch.received_at is not None:
+            cache_age_seconds = (
+                checked_at - _as_utc(cached_fetch.received_at)
+            ).total_seconds()
+            if 0.0 <= cache_age_seconds < self.kma_metar_poll_seconds:
+                return cached_fetch
         if not self.kma_metar_service_key:
             return self._request_kma_public_metar(
                 station,
@@ -2576,7 +2592,15 @@ class AviationWeatherMetarNowcastProvider:
                     status_code=getattr(response, "status_code", None),
                 )
             )
-            return _KmaMetarFetch(source, rows, requested_at, response_received_at)
+            successful_fetch = _KmaMetarFetch(
+                source,
+                rows,
+                requested_at,
+                response_received_at,
+            )
+            with self._kma_station_fetch_cache_lock:
+                self._kma_station_fetch_cache[station.station_id.upper()] = successful_fetch
+            return successful_fetch
         except Exception as exc:  # noqa: BLE001
             response_received_at = response_received_at or _as_utc(self.clock())
             self._kma_unavailable_until = response_received_at + timedelta(
@@ -2673,13 +2697,17 @@ class AviationWeatherMetarNowcastProvider:
                     unavailable_reason=unavailable_reason,
                 )
             )
-            return _KmaMetarFetch(
+            successful_fetch = _KmaMetarFetch(
                 source,
                 rows,
                 requested_at,
                 received_at,
                 unavailable_reason,
             )
+            if rows:
+                with self._kma_station_fetch_cache_lock:
+                    self._kma_station_fetch_cache[station.station_id.upper()] = successful_fetch
+            return successful_fetch
         except Exception as exc:  # noqa: BLE001
             received_at = received_at or _as_utc(self.clock())
             self._kma_station_unavailable_until[station.station_id.upper()] = (

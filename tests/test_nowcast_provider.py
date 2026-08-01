@@ -3016,6 +3016,7 @@ def test_aviationweather_bootstrap_request_floor_uses_actual_clock_when_now_is_s
 
 def test_kma_metar_is_primary_for_configured_korean_station(tmp_path):
     calls: list[str] = []
+    actual_clock = [datetime(2026, 7, 17, 4, 30, 21, tzinfo=timezone.utc)]
 
     def fake_get(url, *, params, timeout, headers):
         calls.append(url)
@@ -3046,7 +3047,7 @@ def test_kma_metar_is_primary_for_configured_korean_station(tmp_path):
         kma_metar_service_key="test-key",
         kma_metar_poll_seconds=30,
         kma_metar_station_ids={"RKSI", "RKPK"},
-        clock=lambda: datetime(2026, 7, 17, 4, 30, 21, tzinfo=timezone.utc),
+        clock=lambda: actual_clock[0],
     )
     seed_complete_metar_day(
         provider,
@@ -3073,6 +3074,31 @@ def test_kma_metar_is_primary_for_configured_korean_station(tmp_path):
     rows = read_jsonl(tmp_path / "requests.jsonl")
     assert [row["request_mode"] for row in rows] == ["kma_metar_fast", "observation_delivery"]
     assert rows[-1]["request_started_at"] == "2026-07-17T04:30:21+00:00"
+
+    provider._cache.clear()
+    actual_clock[0] += timedelta(seconds=1)
+    repeated = provider.observed_high_so_far(
+        STATION_MAP["seoul"],
+        target_date=date(2026, 7, 17),
+        now=actual_clock[0],
+    )
+
+    assert calls == [nowcast_module.KMA_METAR_SOURCE_URL]
+    assert repeated.source == "kma-aviation-metar"
+    assert repeated.latest_temp_c == 31.0
+
+    provider._cache.clear()
+    actual_clock[0] += timedelta(seconds=30, microseconds=1_000)
+    provider.observed_high_so_far(
+        STATION_MAP["seoul"],
+        target_date=date(2026, 7, 17),
+        now=actual_clock[0],
+    )
+
+    assert calls == [
+        nowcast_module.KMA_METAR_SOURCE_URL,
+        nowcast_module.KMA_METAR_SOURCE_URL,
+    ]
 
 
 def test_kma_metar_failure_falls_back_to_awc(tmp_path):

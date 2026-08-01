@@ -1,5 +1,5 @@
 import gzip
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from weather_bot.kma_public import parse_kma_public_metar_html
 from weather_bot.nowcast import AviationWeatherMetarNowcastProvider
@@ -196,6 +196,7 @@ def test_provider_uses_keyless_official_kma_page_before_awc():
     </tbody></table>
     """
     now = datetime(2026, 7, 21, 15, 30, 20, tzinfo=timezone.utc)
+    actual_clock = [now]
     gets: list[tuple[str, dict[str, str], float, dict[str, str]]] = []
 
     def fake_get(url, *, params, timeout, headers):
@@ -208,7 +209,7 @@ def test_provider_uses_keyless_official_kma_page_before_awc():
         kma_public_html_enabled=True,
         kma_metar_poll_seconds=30,
         kma_metar_station_ids={"RKSI", "RKPK"},
-        clock=lambda: now,
+        clock=lambda: actual_clock[0],
     )
     station = STATION_MAP["seoul"]
     provider._accumulate_metar_daily_extremes(
@@ -238,6 +239,31 @@ def test_provider_uses_keyless_official_kma_page_before_awc():
     assert observation.bot_detection_latency_seconds == 20
     assert observation.daily_extremes_complete is True
     assert observation.data_block_reason == ""
+
+    # A fresh AWC generation can invalidate the combined station cache after
+    # one second.  The precise KMA payload still has a 30-second real-request
+    # floor and must remain available without another HTTP GET.
+    provider._cache.clear()
+    actual_clock[0] = now + timedelta(seconds=1)
+    repeated = provider.observed_high_so_far(
+        station,
+        target_date=date(2026, 7, 22),
+        now=actual_clock[0],
+    )
+
+    assert len(gets) == 1
+    assert repeated.source == "kma-official-public-metars"
+    assert repeated.latest_temp_c == 22.8
+
+    provider._cache.clear()
+    actual_clock[0] = now + timedelta(seconds=30, microseconds=1_000)
+    provider.observed_high_so_far(
+        station,
+        target_date=date(2026, 7, 22),
+        now=actual_clock[0],
+    )
+
+    assert len(gets) == 2
 
 
 def test_provider_falls_back_to_awc_when_public_kma_returns_block_page():
