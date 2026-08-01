@@ -164,6 +164,7 @@ class Settings:
     station_nowcast_cache_ttl_seconds: int = 60  # 1 min: matches AWC METAR documented API cadence
     station_refresh_poll_seconds: int = 5
     awc_current_cache_enabled: bool = False
+    awc_direct_current_enabled: bool = False
     kma_metar_service_key: str = ""
     kma_public_html_enabled: bool = False
     kma_metar_poll_seconds: int = 30
@@ -560,6 +561,10 @@ def load_settings() -> Settings:
         awc_current_cache_enabled=_bool_env(
             "AWC_CURRENT_CACHE_ENABLED",
             Settings.awc_current_cache_enabled,
+        ),
+        awc_direct_current_enabled=_bool_env(
+            "AWC_DIRECT_CURRENT_ENABLED",
+            Settings.awc_direct_current_enabled,
         ),
         kma_metar_service_key=os.getenv(
             "KMA_METAR_SERVICE_KEY",

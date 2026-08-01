@@ -1528,6 +1528,39 @@ def _realtime_signal_allows_new_entry(
     return True
 
 
+def _frontier_exact_no_market_ids(
+    markets: list[RawMarket],
+    signals_by_market: dict[str, WeatherSignal],
+    settings: Settings,
+) -> set[str]:
+    selected: dict[tuple[str, str, str, str], tuple[float, str]] = {}
+    for market in markets:
+        signal = signals_by_market.get(market.market_id)
+        parsed = signal.parsed if signal is not None else None
+        if (
+            signal is None
+            or parsed is None
+            or parsed.temperature_bucket != "exact"
+            or parsed.threshold_original is None
+            or not _realtime_signal_allows_new_entry(signal, settings, market)
+        ):
+            continue
+        score = float(parsed.threshold_original)
+        if parsed.temperature_metric == "min":
+            score = -score
+        nowcast = signal.nowcast if isinstance(signal.nowcast, dict) else {}
+        key = (
+            str(parsed.city or "unknown-city").casefold(),
+            str(nowcast.get("target_date_local") or parsed.date_hint or "unknown-date"),
+            parsed.variable,
+            parsed.temperature_metric,
+        )
+        previous = selected.get(key)
+        if previous is None or score > previous[0]:
+            selected[key] = (score, market.market_id)
+    return {market_id for _score, market_id in selected.values()}
+
+
 def _enqueue_station_refresh_high_exact_no_probes(
     evaluator_worker: RealtimeEvaluationCoalescer | None,
     markets: list[RawMarket],
@@ -4319,6 +4352,52 @@ def _evaluate_realtime_update(
             or market.market_id in held_market_ids
         )
     ]
+    signal_prefetch_duration_seconds = 0.0
+    early_signal_prefetch_errors: dict[str, Exception] = {}
+    frontier_market_ids: set[str] = set()
+    frontier_excluded_market_ids: set[str] = set()
+    if settings.strategy_mode in LOCK_EXACT_NO_STRATEGY_MODES:
+        frontier_candidates = [
+            market
+            for event_key in sorted(touched_events)
+            for market in event_groups[event_key]
+            if market.market_id not in held_market_ids
+        ]
+        signal_prefetch_started_at = time.monotonic()
+        early_signal_prefetch_errors = _prefetch_realtime_signals(
+            frontier_candidates,
+            settings,
+            signals_by_market,
+            signal_refreshed_at_by_market,
+            probability_estimator=probability_estimator,
+            observation_provider=observation_provider,
+            residual_profile_store=residual_profile_store,
+            now=current,
+        )
+        signal_prefetch_duration_seconds += time.monotonic() - signal_prefetch_started_at
+        frontier_market_ids = _frontier_exact_no_market_ids(
+            frontier_candidates,
+            signals_by_market,
+            settings,
+        )
+        frontier_eligible_market_ids = {
+            market.market_id
+            for market in frontier_candidates
+            if (
+                (signal := signals_by_market.get(market.market_id)) is not None
+                and signal.parsed is not None
+                and signal.parsed.temperature_bucket == "exact"
+                and signal.parsed.threshold_original is not None
+                and _realtime_signal_allows_new_entry(signal, settings, market)
+            )
+        }
+        frontier_excluded_market_ids = frontier_eligible_market_ids - frontier_market_ids
+        markets_to_prefetch = [
+            market
+            for market in markets_to_prefetch
+            if market.market_id in held_market_ids
+            or market.market_id in frontier_market_ids
+        ]
     allowed_sides_by_market: dict[str, set[str]] = {}
     for market in markets_to_prefetch:
         allowed_sides = {"NO"} if settings.no_only_new_entries else {"YES", "NO"}
@@ -4550,7 +4629,8 @@ def _evaluate_realtime_update(
         residual_profile_store=residual_profile_store,
         now=current,
     )
-    signal_prefetch_duration_seconds = time.monotonic() - signal_prefetch_started_at
+    signal_prefetch_errors.update(early_signal_prefetch_errors)
+    signal_prefetch_duration_seconds += time.monotonic() - signal_prefetch_started_at
     _record_fast_shadow_order_book_probes(
         broker,
         markets_ready_for_evaluation,
@@ -4782,6 +4862,13 @@ def _evaluate_realtime_update(
         "book_unavailable_market_ids_sample": sorted(book_unavailable_market_ids)[:10],
         "signal_ineligible_market_count": len(signal_ineligible_market_ids),
         "signal_ineligible_market_ids_sample": sorted(signal_ineligible_market_ids)[:10],
+        "signal_prefetch_error_count": len(signal_prefetch_errors),
+        "signal_prefetch_error_market_ids_sample": sorted(signal_prefetch_errors)[:10],
+        "frontier_selected_market_count": len(frontier_market_ids),
+        "frontier_selected_market_ids_sample": sorted(frontier_market_ids)[:10],
+        "frontier_excluded_eligible_market_count": len(frontier_excluded_market_ids),
+        "frontier_excluded_market_ids_sample": sorted(frontier_excluded_market_ids)[:10],
+        "frontier_exclusion_reason": "farther exact-NO sibling; nearest eligible unheld bucket is evaluated",
         "candidate_book_prefetch": candidate_prefetch_status,
         "candidate_book_prefetch_seconds": round(candidate_prefetch_duration_seconds, 3),
         "signal_prefetch_seconds": round(signal_prefetch_duration_seconds, 3),
@@ -5417,6 +5504,9 @@ def run_realtime_forever(settings: Settings | None = None) -> None:
                     strategy={
                         "mode": settings.strategy_mode,
                         "no_only_new_entries": settings.no_only_new_entries,
+                        "awc_direct_current_enabled": settings.awc_direct_current_enabled,
+                        "awc_current_cache_enabled": settings.awc_current_cache_enabled,
+                        "kma_public_html_enabled": settings.kma_public_html_enabled,
                     },
                     discovery=discovery_status,
                     **_market_error_status_fields(market_error_count, last_market_error),

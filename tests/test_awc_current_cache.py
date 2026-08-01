@@ -1,4 +1,5 @@
 import gzip
+import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
@@ -98,6 +99,131 @@ def test_parse_awc_current_metars_rejects_oversized_expansion(monkeypatch):
         gzip.compress(b"x" * 64),
         station_ids={"RKSI"},
     ) == []
+
+
+def test_direct_current_groups_all_stations_and_respects_one_minute_floor(tmp_path):
+    clock = [datetime(2026, 8, 1, 17, 0, 5, tzinfo=timezone.utc)]
+    calls = []
+
+    def fake_get(url, *, params, timeout, headers):
+        calls.append((url, params, timeout, headers))
+        return _JsonResponse(
+            [
+                {
+                    "icaoId": "RJTT",
+                    "obsTime": 1785603600,
+                    "temp": 29,
+                    "rawOb": "METAR RJTT 011700Z 20003KT CAVOK 29/27 Q1003",
+                },
+                {
+                    "icaoId": "ZSPD",
+                    "obsTime": 1785603600,
+                    "temp": 30,
+                    "rawOb": "METAR ZSPD 011700Z 11002MPS CAVOK 30/26 Q1007",
+                },
+            ]
+        )
+
+    provider = AviationWeatherMetarNowcastProvider(
+        http_get=fake_get,
+        awc_direct_current_enabled=True,
+        request_log_path=tmp_path / "requests.jsonl",
+        clock=lambda: clock[0],
+    )
+
+    def fetch_current(_index):
+        return provider._fetch_awc_direct_current(
+            clock[0],
+            trigger_station=STATION_MAP["tokyo"],
+            target_date=date(2026, 8, 2),
+        )
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        concurrent_entries = list(executor.map(fetch_current, range(4)))
+    first = concurrent_entries[0]
+    clock[0] += timedelta(seconds=59)
+    second = provider._fetch_awc_direct_current(clock[0])
+
+    assert all(entry is first for entry in concurrent_entries)
+    assert first is second
+    assert len(calls) == 1
+    assert calls[0][0].endswith("/api/data/metar")
+    assert calls[0][1]["format"] == "json"
+    assert calls[0][1]["hours"] == 1
+    assert "RJTT" in calls[0][1]["ids"]
+    assert "ZSPD" in calls[0][1]["ids"]
+    assert first.payload[1]["temp"] == 30
+    assert provider._awc_direct_current_next_request_at == datetime(
+        2026, 8, 1, 17, 1, 5, tzinfo=timezone.utc
+    )
+
+    clock[0] += timedelta(seconds=1)
+    third = provider._fetch_awc_direct_current(clock[0])
+
+    assert third is not first
+    assert len(calls) == 2
+    request_row = json.loads(
+        (tmp_path / "requests.jsonl").read_text(encoding="utf-8").splitlines()[0]
+    )
+    assert request_row["returned_station_count"] == 2
+    assert request_row["returned_station_ids"] == ["RJTT", "ZSPD"]
+    assert "RKSI" in request_row["missing_station_ids"]
+
+
+def test_direct_current_failure_or_missing_station_falls_back_to_current_cache():
+    csv_text = """raw_text,station_id,observation_time,temp_c,dewpoint_c,wx_string
+"METAR RJTT 211530Z 18009KT CAVOK 28/26 Q1008",RJTT,2026-07-21T15:30:00Z,28,26,
+"""
+    compressed = gzip.compress(csv_text.encode("utf-8"))
+    now = datetime(2026, 7, 21, 15, 31, tzinfo=timezone.utc)
+
+    for direct_result in ("error", "missing-station"):
+        calls: list[str] = []
+
+        def fake_get(url, **kwargs):
+            del kwargs
+            if url.endswith("/api/data/metar"):
+                calls.append("direct")
+                if direct_result == "error":
+                    raise TimeoutError("direct current timeout")
+                return _JsonResponse(
+                    [{"icaoId": "ZSPD", "obsTime": "2026-07-21T15:30:00Z", "temp": 30.0}]
+                )
+            if url.endswith("/data/cache/metars.cache.csv.gz"):
+                calls.append("cache")
+                return _CacheResponse(
+                    compressed,
+                    last_modified="Tue, 21 Jul 2026 15:30:30 GMT",
+                )
+            raise AssertionError(f"unexpected history request: {url}")
+
+        provider = AviationWeatherMetarNowcastProvider(
+            http_get=fake_get,
+            awc_direct_current_enabled=True,
+            awc_current_cache_enabled=True,
+            clock=lambda: now,
+        )
+        station = STATION_MAP["tokyo"]
+        provider._accumulate_metar_daily_extremes(
+            station,
+            [
+                (datetime(2026, 7, 21, 14, 30, tzinfo=timezone.utc), 27.0),
+                (datetime(2026, 7, 21, 15, 0, tzinfo=timezone.utc), 27.0),
+            ],
+            date(2026, 7, 22),
+            persist=False,
+        )
+
+        observation = provider.observed_high_so_far(
+            station,
+            target_date=date(2026, 7, 22),
+            now=now,
+        )
+        provider._fetch_awc_direct_current(now + timedelta(seconds=59))
+
+        assert observation.usable is True
+        assert observation.latest_temp_c == 28.0
+        assert calls == ["direct", "cache"]
 
 
 def test_provider_uses_phase_aligned_current_cache_before_history_api():

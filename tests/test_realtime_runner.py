@@ -3743,6 +3743,191 @@ def _upstream_exact_no_signal(question: str, **overrides) -> WeatherSignal:
     )
 
 
+def test_frontier_exact_no_keeps_only_nearest_new_lock_per_high_and_low_event(tmp_path):
+    high_markets = [
+        _wunderground_exact_market(
+            f"Will the highest temperature in Seoul be {threshold}C on July 21?",
+            market_id=f"high-{threshold}",
+        )
+        for threshold in (28, 29, 30)
+    ]
+    low_markets = [
+        replace(
+            _wunderground_exact_market(
+                f"Will the lowest temperature in Seoul be {threshold}C on July 21?",
+                market_id=f"low-{threshold}",
+            ),
+            event_id="seoul-low-event",
+        )
+        for threshold in (21, 22, 23)
+    ]
+    high_markets = [replace(market, event_id="seoul-high-event") for market in high_markets]
+    signals = {}
+    for market, distance in zip(high_markets, (3.0, 2.0, 1.0), strict=True):
+        signals[market.market_id] = _upstream_exact_no_signal(
+            market.question,
+            nowcast={"upstream_bucket_distance_c": distance},
+        )
+    for market, distance in zip(low_markets, (1.0, 2.0, 3.0), strict=True):
+        signals[market.market_id] = _upstream_exact_no_signal(
+            market.question,
+            nowcast={"upstream_bucket_distance_c": distance},
+        )
+
+    selected = runner_module._frontier_exact_no_market_ids(
+        high_markets + low_markets,
+        signals,
+        _upstream_lock_settings(tmp_path),
+    )
+
+    assert selected == {"high-29", "low-22"}
+
+    next_date_market = replace(
+        _wunderground_exact_market(
+            "Will the highest temperature in Seoul be 29C on July 22?",
+            market_id="high-29-next-date",
+        ),
+        event_id="seoul-high-event",
+    )
+    next_date_signal = _upstream_exact_no_signal(
+        next_date_market.question,
+        nowcast={
+            "station_local_date": "2026-07-22",
+            "target_date_local": "2026-07-22",
+            "upstream_bucket_distance_c": 2.0,
+        },
+    )
+
+    selected = runner_module._frontier_exact_no_market_ids(
+        high_markets + [next_date_market],
+        {**signals, next_date_market.market_id: next_date_signal},
+        _upstream_lock_settings(tmp_path),
+    )
+
+    assert selected == {"high-29", "high-29-next-date"}
+
+
+def test_realtime_frontier_prefetch_keeps_nearest_new_lock_and_held_sibling(
+    tmp_path,
+    monkeypatch,
+):
+    markets = [
+        replace(
+            _wunderground_exact_market(
+                f"Will the highest temperature in Seoul be {threshold}C on July 21?",
+                market_id=f"high-{threshold}",
+            ),
+            event_id="seoul-high-event",
+        )
+        for threshold in (28, 29, 30)
+    ]
+    signals = {
+        market.market_id: _upstream_exact_no_signal(
+            market.question,
+            nowcast={"upstream_bucket_distance_c": distance},
+        )
+        for market, distance in zip(markets, (3.0, 2.0, 1.0), strict=True)
+    }
+
+    class PrefetchRecordingClient:
+        def __init__(self) -> None:
+            self.books: dict[str, OrderBook] = {}
+            self.candidate_prefetch_calls: list[list[str]] = []
+
+        def get_candidate_order_book(self, token_id: str) -> OrderBook:
+            return self.books[token_id]
+
+        def get_order_book(self, token_id: str) -> OrderBook:
+            return self.books[token_id]
+
+        def prefetch_candidate_order_books(self, token_ids: list[str]) -> dict[str, int]:
+            self.candidate_prefetch_calls.append(list(token_ids))
+            for token_id in token_ids:
+                self.books[token_id] = OrderBook(
+                    token_id,
+                    bids=[OrderLevel(0.10, 1000.0)],
+                    asks=[OrderLevel(0.84, 1000.0)],
+                )
+            return {
+                "requested": len(token_ids),
+                "book_ready": len(token_ids),
+                "failed": 0,
+                "deferred": 0,
+            }
+
+        def prefetch_final_entry_checks(self, checks: list[tuple[str, str]]) -> dict[str, int]:
+            return {
+                "requested": len(checks),
+                "book_ready": len(checks),
+                "failed": 0,
+                "deferred": 0,
+            }
+
+    settings = replace(_upstream_lock_settings(tmp_path), max_holding_hours=999999)
+    broker = runner_module.PaperBroker(settings)
+    held = markets[1]
+    broker.state.positions = [
+        PaperPosition(
+            position_id="held-high-29",
+            market_id=held.market_id,
+            question=held.question,
+            token_id=held.no_token_id or "",
+            side="NO",
+            entry_price=0.80,
+            shares=10.0,
+            cost_usd=8.0,
+            opened_at="2026-07-21T00:00:00+00:00",
+        )
+    ]
+    market_by_token = {
+        token_id: market
+        for market in markets
+        for token_id in (market.yes_token_id, market.no_token_id)
+        if token_id
+    }
+    client = PrefetchRecordingClient()
+    monkeypatch.setattr(runner_module, "_apply_event_portfolio", lambda *_args, **_kwargs: None)
+
+    breakdown = runner_module._evaluate_realtime_update(
+        {market.no_token_id or "" for market in markets},
+        client,
+        broker,
+        settings,
+        market_by_token,
+        signals,
+        {market.market_id: "temperature" for market in markets},
+        {},
+        now=datetime(2026, 7, 21, 0, 1, tzinfo=timezone.utc),
+    )
+
+    assert client.candidate_prefetch_calls == [[
+        markets[0].yes_token_id,
+        markets[0].no_token_id,
+        held.yes_token_id,
+        held.no_token_id,
+    ]]
+    assert breakdown["frontier_selected_market_ids_sample"] == ["high-28"]
+    assert breakdown["frontier_excluded_market_ids_sample"] == []
+
+    far_only_client = PrefetchRecordingClient()
+    broker.state.positions = []
+    far_only_breakdown = runner_module._evaluate_realtime_update(
+        {markets[0].no_token_id or ""},
+        far_only_client,
+        broker,
+        settings,
+        market_by_token,
+        signals,
+        {market.market_id: "temperature" for market in markets},
+        {},
+        now=datetime(2026, 7, 21, 0, 1, tzinfo=timezone.utc),
+    )
+
+    assert far_only_client.candidate_prefetch_calls == [[]]
+    assert far_only_breakdown["frontier_selected_market_ids_sample"] == ["high-29"]
+    assert far_only_breakdown["frontier_excluded_market_ids_sample"] == ["high-28"]
+
+
 def test_realtime_final_prefetch_includes_direct_no_and_complementary_yes(
     tmp_path,
     monkeypatch,

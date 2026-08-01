@@ -457,6 +457,7 @@ def test_load_settings_reads_station_nowcast_controls(monkeypatch):
     monkeypatch.setenv("STATION_NOWCAST_REQUEST_LOG_PATH", "data/custom_station_nowcast_request_log.jsonl")
     monkeypatch.setenv("STATION_REFRESH_POLL_SECONDS", "7")
     monkeypatch.setenv("AWC_CURRENT_CACHE_ENABLED", "true")
+    monkeypatch.setenv("AWC_DIRECT_CURRENT_ENABLED", "true")
     monkeypatch.setenv("KMA_METAR_SERVICE_KEY", "secret-value")
     monkeypatch.setenv("KMA_PUBLIC_HTML_ENABLED", "true")
     monkeypatch.setenv("KMA_METAR_POLL_SECONDS", "25")
@@ -474,6 +475,7 @@ def test_load_settings_reads_station_nowcast_controls(monkeypatch):
     assert settings.station_nowcast_request_log_path == "data/custom_station_nowcast_request_log.jsonl"
     assert settings.station_refresh_poll_seconds == 7
     assert settings.awc_current_cache_enabled is True
+    assert settings.awc_direct_current_enabled is True
     assert settings.kma_metar_service_key == "secret-value"
     assert settings.kma_public_html_enabled is True
     assert settings.kma_metar_poll_seconds == 25

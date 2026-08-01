@@ -63,7 +63,7 @@ notes only when they prevent a repeated mistake.
     freshness; malformed or blocked HTML fails closed.
   - Do not assume the KMA page is faster. In the 2026-07-22 RKSI probe, AWC first
     showed the 16:00Z report by 16:05:00Z while the KMA page still lacked it at
-    16:08:50Z. Fetch the shared AWC current cache and compare report timestamps;
+    16:08:50Z. Fetch the grouped AWC direct-current API and compare report timestamps;
     a complete local-day source beats an incomplete source, newer complete AWC
     wins, and equal complete timestamps prefer precise KMA.
   - Keep AWC integer and KMA decimal daily-extreme ledgers separate. A rounded
@@ -77,14 +77,15 @@ notes only when they prevent a repeated mistake.
   - Keep AWC as recovery and network-failure fallback. A missing, malformed, or
     wrong-station KMA report never becomes trade evidence by itself.
 - AWC METAR:
-  - Background monitoring downloads the official current-cache file once per
-    published minute; one response covers all supported ICAO stations. Follow
-    `Last-Modified`, retry the same phase after three seconds when the CDN still
-    serves the previous file, and invalidate every affected city cache together.
-    Station consumers run concurrently behind that one shared download; Seoul
-    and Busan KMA requests do not put later cities in a serial queue. If a report
-    crosses into the next minute while the HTTP request is in flight, compare it
-    with the actual response time rather than the stale loop-start timestamp.
+  - Background monitoring requests the official direct METAR API once per minute
+    with all supported ICAO stations in one query. One response releases every
+    newly published station report together and invalidates all affected city
+    caches; station consumers run concurrently behind that shared request. The
+    official one-minute current-cache file remains the network/missing-station
+    fallback. Its `Last-Modified` phase and three-second unchanged-file retry do
+    not relax the direct API's one-request-per-minute floor. If a report crosses
+    into the next minute while an HTTP request is in flight, compare it with the
+    actual response time rather than the stale loop-start timestamp.
   - The history bulk API remains the restart/recovery fallback. Ordinary
     recovery is requested at most once per minute. When the persisted day
     ledger is missing or incomplete at process start, split the supported
