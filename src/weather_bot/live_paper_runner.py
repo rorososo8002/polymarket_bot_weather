@@ -44,7 +44,6 @@ from .portfolio import (
     UPSTREAM_LOCK_PAPER_MODE,
     UPSTREAM_LOCK_PAPER_MAX_ENTRY_PRICE,
     UPSTREAM_LOCK_PAPER_NOWCAST_SOURCES,
-    UPSTREAM_LOCK_PAPER_SETTLEMENT_UNCERTAINTY_FLOOR,
     UPSTREAM_LOCK_PAPER_SIGNAL_FAMILY,
     required_upstream_bucket_distance_c,
     EntryBankrollSnapshot,
@@ -231,12 +230,8 @@ def _is_upstream_lock_paper_exact_no(side: str, signal: WeatherSignal) -> bool:
         and 0.0 <= p_true <= 1e-12
         and conservative_yes_probability is not None
         and conservative_no_probability is not None
-        and UPSTREAM_LOCK_PAPER_SETTLEMENT_UNCERTAINTY_FLOOR
-        <= conservative_yes_probability
-        < 0.5
-        and 0.5
-        < conservative_no_probability
-        <= 1.0 - UPSTREAM_LOCK_PAPER_SETTLEMENT_UNCERTAINTY_FLOOR
+        and abs(conservative_yes_probability) <= 1e-9
+        and abs(conservative_no_probability - 1.0) <= 1e-9
         and abs(conservative_yes_probability + conservative_no_probability - 1.0) <= 1e-9
         and signal.settlement_precision_confidence == "verified"
         and nowcast.get("source") in UPSTREAM_LOCK_PAPER_NOWCAST_SOURCES
@@ -248,8 +243,8 @@ def _is_upstream_lock_paper_exact_no(side: str, signal: WeatherSignal) -> bool:
         and nowcast.get("settlement_source_verified") is False
         and upstream_distance_c is not None
         and upstream_required_c is not None
-        and abs(upstream_required_c - expected_required_c) <= 1e-12
-        and upstream_distance_c >= expected_required_c - 1e-12
+        and upstream_required_c >= expected_required_c - 1e-12
+        and upstream_distance_c >= upstream_required_c - 1e-12
         and bool(target_date)
         and target_date == station_date
         and not str(nowcast.get("data_block_reason") or "")
@@ -345,7 +340,7 @@ def _upstream_lock_paper_probability_tier(signal: WeatherSignal) -> str:
 
 
 def _entry_min_return_pct(side: str, signal: WeatherSignal, settings: Settings) -> float:
-    if _is_exact_no_lock(side, signal):
+    if _is_lock_only_exact_no(side, signal):
         return max(settings.entry_min_expected_net_return_pct, LOCK_ONLY_EXACT_NO_MIN_NET_RETURN_PCT)
     return settings.entry_min_expected_net_return_pct
 

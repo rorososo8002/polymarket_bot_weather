@@ -1554,10 +1554,12 @@ class PaperBroker:
                     if result.size_usd > 0
                     else -1.0
                 )
-                required_return_pct = max(
-                    self.settings.entry_min_expected_net_return_pct,
-                    LOCK_ONLY_EXACT_NO_MIN_NET_RETURN_PCT,
-                )
+                required_return_pct = self.settings.entry_min_expected_net_return_pct
+                if self.settings.strategy_mode == "lock_only":
+                    required_return_pct = max(
+                        required_return_pct,
+                        LOCK_ONLY_EXACT_NO_MIN_NET_RETURN_PCT,
+                    )
                 if settlement_return_pct < required_return_pct - 1e-12:
                     block_reason = "exact_no_settlement_return_below_required_floor"
             if block_reason is not None:

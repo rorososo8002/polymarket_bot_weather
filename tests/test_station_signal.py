@@ -12,6 +12,27 @@ from weather_bot.residual_probability import ResidualProbabilityEstimate
 from weather_bot.settlement_precision import settlement_precision_profile_for_station
 from weather_bot.station_signal import estimate_station_signal
 from weather_bot.stations import TRADING_READY_STATION_MAP
+from weather_bot.upstream_lock_policy import (
+    UPSTREAM_LOCK_PAPER_EVENT_CAP_FRACTION,
+    UPSTREAM_LOCK_PAPER_MAX_ENTRY_PRICE,
+    UPSTREAM_LOCK_PAPER_SETTLEMENT_UNCERTAINTY_FLOOR,
+    required_upstream_bucket_distance_c,
+    upstream_settlement_probabilities,
+)
+
+
+def test_upstream_lock_policy_matches_adjacent_exact_no_strategy() -> None:
+    assert UPSTREAM_LOCK_PAPER_MAX_ENTRY_PRICE == pytest.approx(0.92)
+    assert UPSTREAM_LOCK_PAPER_EVENT_CAP_FRACTION == pytest.approx(1.0)
+    assert UPSTREAM_LOCK_PAPER_SETTLEMENT_UNCERTAINTY_FLOOR == pytest.approx(0.0)
+    assert upstream_settlement_probabilities(Settings()) == pytest.approx((0.0, 1.0))
+    assert required_upstream_bucket_distance_c(
+        source="aviationweather-metar",
+        station_id="RJTT",
+        temperature_metric="max",
+        temperature_bucket="exact",
+        threshold_unit="C",
+    ) == pytest.approx(1.0)
 
 
 def _residual_estimate(
@@ -242,7 +263,7 @@ def test_lock_only_mode_does_not_call_lower_tail_a_certain_exact_no() -> None:
         ("Will the highest temperature in Seoul be 29C today?", 31.0, None, "kma-aviation-metar"),
     ],
 )
-def test_upstream_lock_paper_requires_two_celsius_steps_and_labels_unverified_source(
+def test_upstream_lock_paper_accepts_crossed_exact_no_and_labels_unverified_source(
     question,
     observed_high_c,
     observed_low_c,
@@ -261,17 +282,17 @@ def test_upstream_lock_paper_requires_two_celsius_steps_and_labels_unverified_so
 
     assert signal.p_true == pytest.approx(0.0)
     assert signal.raw_probability == pytest.approx(0.0)
-    assert signal.conservative_yes_probability == pytest.approx(0.04)
-    assert signal.conservative_no_probability == pytest.approx(0.96)
+    assert signal.conservative_yes_probability == pytest.approx(0.0)
+    assert signal.conservative_no_probability == pytest.approx(1.0)
     assert signal.raw_selected_side_probability == pytest.approx(1.0)
-    assert signal.selected_side_probability == pytest.approx(0.96)
+    assert signal.selected_side_probability == pytest.approx(1.0)
     assert signal.source == "official-station-lock-strong_no"
     assert signal.strategy_mode == "upstream_lock_paper"
     assert signal.signal_family == "upstream_lock_paper"
     assert signal.nowcast["entry_evidence_mode"] == "upstream_same_station_paper"
     assert signal.nowcast["settlement_source_verified"] is False
-    assert signal.nowcast["upstream_bucket_distance_c"] >= 2.0
-    assert signal.nowcast["upstream_min_bucket_distance_c"] == pytest.approx(2.0)
+    assert signal.nowcast["upstream_bucket_distance_c"] >= 1.0
+    assert signal.nowcast["upstream_min_bucket_distance_c"] == pytest.approx(1.0)
     assert signal.nowcast["target_date_local"] == "2026-06-19"
     assert signal.nowcast["station_local_date"] == "2026-06-19"
 
@@ -283,7 +304,7 @@ def test_upstream_lock_paper_requires_two_celsius_steps_and_labels_unverified_so
         ("Will the lowest temperature in Seoul be 22C today?", None, 21.0),
     ],
 )
-def test_upstream_lock_paper_rejects_adjacent_bucket_after_real_wu_mismatch(
+def test_upstream_lock_paper_accepts_adjacent_crossed_bucket(
     question,
     observed_high_c,
     observed_low_c,
@@ -299,9 +320,35 @@ def test_upstream_lock_paper_rejects_adjacent_bucket_after_real_wu_mismatch(
         now=datetime(2026, 6, 19, 14, 30, tzinfo=timezone.utc),
     )
 
-    assert signal.source != "official-station-lock-strong_no"
-    assert signal.p_true != pytest.approx(0.0)
-    assert signal.nowcast["data_block_reason"] == "upstream-two-celsius-step-required"
+    assert signal.source == "official-station-lock-strong_no"
+    assert signal.p_true == pytest.approx(0.0)
+    assert signal.nowcast["upstream_bucket_distance_c"] == pytest.approx(1.0)
+    assert signal.nowcast["upstream_min_bucket_distance_c"] == pytest.approx(1.0)
+
+
+def test_upstream_lock_paper_finalized_high_marks_other_exact_bucket_no() -> None:
+    provider = ExactTemperatureProvider(
+        observed_high_c=30.0,
+        source="aviationweather-metar",
+    )
+
+    final_other = estimate_station_signal(
+        "Will the highest temperature in Seoul be 31C on June 18?",
+        settings=Settings(strategy_mode="upstream_lock_paper"),
+        observation_provider=provider,
+        now=datetime(2026, 6, 19, 14, 30, tzinfo=timezone.utc),
+    )
+    final_value = estimate_station_signal(
+        "Will the highest temperature in Seoul be 30C on June 18?",
+        settings=Settings(strategy_mode="upstream_lock_paper"),
+        observation_provider=provider,
+        now=datetime(2026, 6, 19, 14, 30, tzinfo=timezone.utc),
+    )
+
+    assert final_other.source == "official-station-lock-strong_no"
+    assert final_other.p_true == pytest.approx(0.0)
+    assert final_other.nowcast["official_local_day_finalized"] is True
+    assert final_value.source != "official-station-lock-strong_no"
 
 
 @pytest.mark.parametrize(
@@ -333,7 +380,7 @@ def test_upstream_lock_paper_allows_calibrated_kma_public_one_degree_break(
 
     assert signal.source == "official-station-lock-strong_no"
     assert signal.p_true == pytest.approx(0.0)
-    assert signal.conservative_yes_probability == pytest.approx(0.04)
+    assert signal.conservative_yes_probability == pytest.approx(0.0)
     assert signal.nowcast["settlement_source_verified"] is False
     assert signal.nowcast["upstream_bucket_distance_c"] == pytest.approx(1.0)
     assert signal.nowcast["upstream_min_bucket_distance_c"] == pytest.approx(1.0)
@@ -344,7 +391,6 @@ def test_upstream_lock_paper_allows_calibrated_kma_public_one_degree_break(
     [
         ("Will the highest temperature in Seoul be 29C today?", "RKSI", 29.99, None),
         ("Will the lowest temperature in Seoul be 23C today?", "RKSI", None, 22.9),
-        ("Will the highest temperature in Tokyo be 29C today?", "RJTT", 30.0, None),
     ],
 )
 def test_upstream_lock_paper_kma_one_degree_rule_fails_closed_outside_full_domestic_break(
@@ -366,7 +412,7 @@ def test_upstream_lock_paper_kma_one_degree_rule_fails_closed_outside_full_domes
     )
 
     assert signal.source != "official-station-lock-strong_no"
-    assert signal.nowcast["data_block_reason"] == "upstream-two-celsius-step-required"
+    assert signal.nowcast["data_block_reason"] == "upstream-one-celsius-boundary-required"
 
 
 def test_upstream_lock_paper_rejects_fahrenheit_bucket_until_separately_calibrated() -> None:

@@ -166,17 +166,17 @@ def _upstream_exact_no_signal(market: RawMarket, **nowcast_overrides) -> Weather
             "data_block_reason": "",
             "entry_evidence_mode": "upstream_same_station_paper",
             "settlement_source_verified": False,
-            "upstream_bucket_distance_c": 2.0,
-            "upstream_min_bucket_distance_c": 2.0,
+            "upstream_bucket_distance_c": 1.0,
+            "upstream_min_bucket_distance_c": 1.0,
             **nowcast_overrides,
         },
         strategy_mode="upstream_lock_paper",
         signal_family="upstream_lock_paper",
         raw_probability=0.0,
-        conservative_yes_probability=0.04,
-        conservative_no_probability=0.96,
+        conservative_yes_probability=0.0,
+        conservative_no_probability=1.0,
         raw_selected_side_probability=1.0,
-        selected_side_probability=0.96,
+        selected_side_probability=1.0,
     )
 
 
@@ -186,13 +186,13 @@ def _upstream_exact_no_result(*, size_usd: float = 500.0, price: float = 0.85) -
         p_exec=price,
         size_shares=size_usd / price,
         signal_family="upstream_lock_paper",
-        probability_tier="upstream_2c_exact_no",
+        probability_tier="upstream_1c_exact_no",
         event_cap_override_fraction=None,
         raw_probability=0.0,
-        conservative_yes_probability=0.04,
-        conservative_no_probability=0.96,
+        conservative_yes_probability=0.0,
+        conservative_no_probability=1.0,
         raw_selected_side_probability=1.0,
-        selected_side_probability=0.96,
+        selected_side_probability=1.0,
     )
 
 
@@ -781,36 +781,36 @@ def test_broker_lock_only_final_gate_keeps_fahrenheit_exact_no_supported(tmp_pat
 @pytest.mark.parametrize(
     ("nowcast_overrides", "price", "allowed"),
     [
-        ({}, 0.85, True),
+        ({}, 0.92, True),
         (
             {
                 "source": "kma-official-public-metars",
                 "upstream_bucket_distance_c": 1.0,
                 "upstream_min_bucket_distance_c": 1.0,
             },
-            0.85,
+            0.92,
             True,
         ),
-        ({"daily_extremes_complete": False}, 0.85, False),
-        ({"station_id": "HKO"}, 0.85, False),
-        ({"station_id": "WRONG"}, 0.85, False),
-        ({"station_local_date": "2026-05-24"}, 0.85, False),
-        ({"freshness_seconds": 5401}, 0.85, False),
-        ({"source": "official-station-fixture"}, 0.85, False),
-        ({"entry_evidence_mode": "forged"}, 0.85, False),
-        ({"settlement_source_verified": True}, 0.85, False),
-        ({"upstream_bucket_distance_c": 1.0}, 0.85, False),
-        ({"upstream_min_bucket_distance_c": 1.0}, 0.85, False),
+        ({"daily_extremes_complete": False}, 0.92, False),
+        ({"station_id": "HKO"}, 0.92, False),
+        ({"station_id": "WRONG"}, 0.92, False),
+        ({"station_local_date": "2026-05-24"}, 0.92, False),
+        ({"freshness_seconds": 5401}, 0.92, False),
+        ({"source": "official-station-fixture"}, 0.92, False),
+        ({"entry_evidence_mode": "forged"}, 0.92, False),
+        ({"settlement_source_verified": True}, 0.92, False),
+        ({"upstream_bucket_distance_c": 0.99}, 0.92, False),
+        ({"upstream_min_bucket_distance_c": 0.5}, 0.92, False),
         (
             {
                 "source": "kma-official-public-metars",
                 "upstream_bucket_distance_c": 0.1,
                 "upstream_min_bucket_distance_c": 1.0,
             },
-            0.85,
+            0.92,
             False,
         ),
-        ({}, 0.8501, False),
+        ({}, 0.9201, False),
     ],
 )
 def test_broker_upstream_lock_paper_final_gate_is_fail_closed(
@@ -890,7 +890,7 @@ def test_broker_upstream_final_gate_rejects_forged_certainty_markers(
         assert list(csv.DictReader(handle))[-1]["action"] == "SKIP_UPSTREAM_LOCK_PAPER_EXACT_NO"
 
 
-def test_broker_upstream_pair_keeps_one_fixed_fifty_dollar_city_date_budget(tmp_path):
+def test_broker_upstream_adds_are_not_blocked_by_old_five_percent_event_cap(tmp_path):
     broker = PaperBroker(
         _settings(
             tmp_path,
@@ -933,9 +933,9 @@ def test_broker_upstream_pair_keeps_one_fixed_fifty_dollar_city_date_budget(tmp_
 
     assert first is not None
     assert second is not None
-    assert third is None
-    assert broker.event_date_exposure("seoul", "may 25") == pytest.approx(50.0)
-    assert broker.state.cash_usd == pytest.approx(950.0)
+    assert third is not None
+    assert broker.event_date_exposure("seoul", "may 25") == pytest.approx(60.0)
+    assert broker.state.cash_usd == pytest.approx(940.0)
 
 
 def test_broker_rejects_unstructured_95_tier_above_ordinary_event_cap(tmp_path):

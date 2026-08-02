@@ -28,7 +28,6 @@ from .upstream_lock_policy import (
     UPSTREAM_LOCK_PAPER_MODE,
     UPSTREAM_LOCK_PAPER_NOWCAST_SOURCES,
     UPSTREAM_LOCK_PAPER_PRECISE_EXACT_NO_TIER,
-    UPSTREAM_LOCK_PAPER_SETTLEMENT_UNCERTAINTY_FLOOR,
     UPSTREAM_LOCK_PAPER_SIGNAL_FAMILY,
     required_upstream_bucket_distance_c,
 )
@@ -221,12 +220,8 @@ def upstream_exact_no_entry_block_reason(
     if (
         not isfinite(conservative_yes_probability)
         or not isfinite(conservative_no_probability)
-        or not UPSTREAM_LOCK_PAPER_SETTLEMENT_UNCERTAINTY_FLOOR
-        <= conservative_yes_probability
-        < 0.5
-        or not 0.5
-        < conservative_no_probability
-        <= 1.0 - UPSTREAM_LOCK_PAPER_SETTLEMENT_UNCERTAINTY_FLOOR
+        or abs(conservative_yes_probability) > 1e-9
+        or abs(conservative_no_probability - 1.0) > 1e-9
         or abs(conservative_yes_probability + conservative_no_probability - 1.0) > 1e-9
     ):
         return "conservative_upstream_settlement_probability_required"
@@ -244,7 +239,7 @@ def upstream_exact_no_entry_block_reason(
         upstream_distance_c = float(nowcast.get("upstream_bucket_distance_c"))
         upstream_required_c = float(nowcast.get("upstream_min_bucket_distance_c"))
     except (TypeError, ValueError):
-        return "upstream_two_celsius_step_evidence_required"
+        return "upstream_exact_no_boundary_evidence_required"
     expected_required_c = required_upstream_bucket_distance_c(
         source=str(nowcast.get("source") or ""),
         station_id=station_id,
@@ -255,10 +250,10 @@ def upstream_exact_no_entry_block_reason(
     if (
         not isfinite(upstream_distance_c)
         or not isfinite(upstream_required_c)
-        or abs(upstream_required_c - expected_required_c) > 1e-9
-        or upstream_distance_c + 1e-9 < expected_required_c
+        or upstream_required_c + 1e-9 < expected_required_c
+        or upstream_distance_c + 1e-9 < upstream_required_c
     ):
-        return "upstream_two_celsius_step_evidence_required"
+        return "upstream_exact_no_boundary_evidence_required"
     target_date = str(nowcast.get("target_date_local") or "")
     station_date = str(nowcast.get("station_local_date") or "")
     if not target_date or not station_date or target_date != station_date:
@@ -399,7 +394,7 @@ def lock_exact_no_position_metric(position: PaperPosition) -> str | None:
     if not (
         position.side == "NO"
         and 0.0 <= entry_p_true <= 1e-12
-        and 0.5 < entry_side_probability < 1.0
+        and 0.5 < entry_side_probability <= 1.0
         and metadata.get("strategy_mode") == UPSTREAM_LOCK_PAPER_MODE
         and metadata.get("signal_family") == UPSTREAM_LOCK_PAPER_SIGNAL_FAMILY
         and metadata.get("probability_tier") in UPSTREAM_LOCK_PAPER_EXACT_NO_TIERS
@@ -411,8 +406,8 @@ def lock_exact_no_position_metric(position: PaperPosition) -> str | None:
         and metadata.get("wunderground_settlement_source") == "true"
         and station_audit.get("entry_evidence_mode") == "upstream_same_station_paper"
         and station_audit.get("settlement_source_verified") is False
-        and upstream_distance_c + 1e-9 >= expected_required_c
-        and abs(upstream_required_c - expected_required_c) <= 1e-9
+        and upstream_required_c + 1e-9 >= expected_required_c
+        and upstream_distance_c + 1e-9 >= upstream_required_c
         and station_audit.get("daily_extremes_complete") is True
         and not str(station_audit.get("data_block_reason") or "").strip()
         and parsed.variable == "temperature"
@@ -584,9 +579,8 @@ def ordinary_event_cap_for_strategy(
 ) -> tuple[float, float]:
     """Return the ordinary city-date cap fraction and dollar limit.
 
-    The personal upstream experiment always shares 5% of cost-basis bankroll.
-    A temporary executable mark below $1,000 must never switch that experiment
-    back to the ordinary small-account 10% tier.
+    The upstream experiment does not impose a separate city-date cap. Candidate
+    sizing and the two-leg compatibility rule still bound actual exposure.
     """
     if strategy_mode == UPSTREAM_LOCK_PAPER_MODE:
         fraction = UPSTREAM_LOCK_PAPER_EVENT_CAP_FRACTION

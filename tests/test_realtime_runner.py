@@ -3723,8 +3723,8 @@ def _upstream_exact_no_signal(question: str, **overrides) -> WeatherSignal:
         "daily_extremes_complete": True,
         "entry_evidence_mode": "upstream_same_station_paper",
         "settlement_source_verified": False,
-        "upstream_bucket_distance_c": 2.0,
-        "upstream_min_bucket_distance_c": 2.0,
+        "upstream_bucket_distance_c": 1.0,
+        "upstream_min_bucket_distance_c": 1.0,
     }
     nowcast.update(overrides.pop("nowcast", {}))
     return replace(
@@ -3735,10 +3735,10 @@ def _upstream_exact_no_signal(question: str, **overrides) -> WeatherSignal:
         signal_family="upstream_lock_paper",
         entry_size_fraction_override=0.10,
         raw_probability=0.0,
-        conservative_yes_probability=0.04,
-        conservative_no_probability=0.96,
+        conservative_yes_probability=0.0,
+        conservative_no_probability=1.0,
         raw_selected_side_probability=1.0,
-        selected_side_probability=0.96,
+        selected_side_probability=1.0,
         **overrides,
     )
 
@@ -3780,7 +3780,7 @@ def test_frontier_exact_no_keeps_only_nearest_new_lock_per_high_and_low_event(tm
         _upstream_lock_settings(tmp_path),
     )
 
-    assert selected == {"high-29", "low-22"}
+    assert selected == {"high-30", "low-21"}
 
     next_date_market = replace(
         _wunderground_exact_market(
@@ -3804,7 +3804,7 @@ def test_frontier_exact_no_keeps_only_nearest_new_lock_per_high_and_low_event(tm
         _upstream_lock_settings(tmp_path),
     )
 
-    assert selected == {"high-29", "high-29-next-date"}
+    assert selected == {"high-30", "high-29-next-date"}
 
 
 def test_realtime_frontier_prefetch_keeps_nearest_new_lock_and_held_sibling(
@@ -3901,13 +3901,13 @@ def test_realtime_frontier_prefetch_keeps_nearest_new_lock_and_held_sibling(
     )
 
     assert client.candidate_prefetch_calls == [[
-        markets[0].yes_token_id,
-        markets[0].no_token_id,
         held.yes_token_id,
         held.no_token_id,
+        markets[2].yes_token_id,
+        markets[2].no_token_id,
     ]]
-    assert breakdown["frontier_selected_market_ids_sample"] == ["high-28"]
-    assert breakdown["frontier_excluded_market_ids_sample"] == []
+    assert breakdown["frontier_selected_market_ids_sample"] == ["high-30"]
+    assert breakdown["frontier_excluded_market_ids_sample"] == ["high-28"]
 
     far_only_client = PrefetchRecordingClient()
     broker.state.positions = []
@@ -3924,8 +3924,8 @@ def test_realtime_frontier_prefetch_keeps_nearest_new_lock_and_held_sibling(
     )
 
     assert far_only_client.candidate_prefetch_calls == [[]]
-    assert far_only_breakdown["frontier_selected_market_ids_sample"] == ["high-29"]
-    assert far_only_breakdown["frontier_excluded_market_ids_sample"] == ["high-28"]
+    assert far_only_breakdown["frontier_selected_market_ids_sample"] == ["high-30"]
+    assert far_only_breakdown["frontier_excluded_market_ids_sample"] == ["high-28", "high-29"]
 
 
 def test_realtime_final_prefetch_includes_direct_no_and_complementary_yes(
@@ -4057,7 +4057,7 @@ def test_lock_only_direct_exact_no_is_symmetric_and_can_size_to_full_bankroll(
         allowed_sides={"NO"},
     )
 
-    assert result.side == "NO"
+    assert result.side == "NO", result.reason
     assert per_side["NO"].p_exec == pytest.approx(0.90)
     assert per_side["NO"].size_usd == pytest.approx(200.0)
     assert per_side["NO"].event_cap_override_fraction == pytest.approx(1.0)
@@ -4070,7 +4070,7 @@ def test_lock_only_direct_exact_no_is_symmetric_and_can_size_to_full_bankroll(
         "Will the lowest temperature in Seoul be 22°C on July 21?",
     ],
 )
-def test_upstream_lock_paper_exact_no_is_symmetric_small_and_capped_at_eighty_five(
+def test_upstream_lock_paper_exact_no_is_symmetric_and_capped_at_ninety_two(
     tmp_path,
     question,
 ):
@@ -4078,8 +4078,8 @@ def test_upstream_lock_paper_exact_no_is_symmetric_small_and_capped_at_eighty_fi
     signal = _upstream_exact_no_signal(question)
     no_book = OrderBook(
         market.no_token_id or "",
-        bids=[OrderLevel(0.84, 2000.0)],
-        asks=[OrderLevel(0.85, 2000.0)],
+        bids=[OrderLevel(0.91, 2000.0)],
+        asks=[OrderLevel(0.92, 2000.0)],
     )
     client = _AbnormalPriceClient(
         OrderBook(market.yes_token_id or "", bids=[], asks=[]),
@@ -4100,9 +4100,9 @@ def test_upstream_lock_paper_exact_no_is_symmetric_small_and_capped_at_eighty_fi
         allowed_sides={"NO"},
     )
 
-    assert result.side == "NO"
-    assert per_side["NO"].p_exec == pytest.approx(0.85)
-    assert per_side["NO"].size_usd == pytest.approx(10.0)
+    assert result.side == "NO", result.reason
+    assert per_side["NO"].p_exec == pytest.approx(0.92)
+    assert per_side["NO"].size_usd == pytest.approx(20.0)
     assert per_side["NO"].signal_family == "upstream_lock_paper"
     assert per_side["NO"].event_cap_override_fraction is None
 
@@ -4118,7 +4118,7 @@ def test_upstream_lock_paper_exact_no_is_symmetric_small_and_capped_at_eighty_fi
             },
             True,
         ),
-        ({"upstream_min_bucket_distance_c": 1.0}, False),
+        ({"upstream_min_bucket_distance_c": 1.0}, True),
         (
             {
                 "source": "kma-official-public-metars",
@@ -4189,7 +4189,7 @@ def test_precise_kma_one_c_exact_no_is_labeled_separately(tmp_path):
     assert per_side["NO"].probability_tier == "upstream_1c_exact_no"
 
 
-def test_upstream_lock_paper_prices_only_the_fifty_dollar_city_budget(tmp_path):
+def test_upstream_lock_paper_prices_the_single_market_budget(tmp_path):
     question = "Will the highest temperature in Seoul be 29C on July 21?"
     market = _wunderground_exact_market(question, market_id="upstream-city-budget-vwap")
     signal = _upstream_exact_no_signal(question)
@@ -4218,8 +4218,8 @@ def test_upstream_lock_paper_prices_only_the_fifty_dollar_city_budget(tmp_path):
     )
 
     assert result.side == "NO"
-    assert per_side["NO"].p_exec == pytest.approx(0.84)
-    assert per_side["NO"].size_usd == pytest.approx(50.0)
+    assert per_side["NO"].p_exec == pytest.approx(0.8687258687)
+    assert per_side["NO"].size_usd == pytest.approx(100.0)
 
 
 def test_upstream_lock_paper_keeps_smaller_fill_when_full_city_budget_breaks_cap(
@@ -4231,7 +4231,7 @@ def test_upstream_lock_paper_keeps_smaller_fill_when_full_city_budget_breaks_cap
     no_book = OrderBook(
         market.no_token_id or "",
         bids=[OrderLevel(0.83, 2000.0)],
-        asks=[OrderLevel(0.84, 30.0), OrderLevel(0.90, 2000.0)],
+        asks=[OrderLevel(0.84, 30.0), OrderLevel(1.00, 2000.0)],
     )
     client = _AbnormalPriceClient(
         OrderBook(market.yes_token_id or "", bids=[], asks=[]),
@@ -4253,9 +4253,9 @@ def test_upstream_lock_paper_keeps_smaller_fill_when_full_city_budget_breaks_cap
     )
 
     assert result.side == "NO"
-    assert per_side["NO"].requested_size_usd == pytest.approx(50.0)
-    assert 10.0 <= per_side["NO"].size_usd < 50.0
-    assert per_side["NO"].p_exec <= 0.85 + 1e-12
+    assert per_side["NO"].requested_size_usd == pytest.approx(100.0)
+    assert 10.0 <= per_side["NO"].size_usd < 100.0
+    assert per_side["NO"].p_exec <= 0.92 + 1e-12
     assert "price_capped_fill=" in per_side["NO"].reason
 
 
@@ -4320,8 +4320,8 @@ def test_upstream_lock_paper_skip_above_cap_keeps_orderbook_depth_for_replay(tmp
     signal = _upstream_exact_no_signal(question)
     no_book = OrderBook(
         market.no_token_id or "",
-        bids=[OrderLevel(0.85, 100.0)],
-        asks=[OrderLevel(0.86, 12.0), OrderLevel(0.87, 20.0)],
+        bids=[OrderLevel(0.92, 100.0)],
+        asks=[OrderLevel(0.93, 12.0), OrderLevel(0.94, 20.0)],
     )
     client = _AbnormalPriceClient(
         OrderBook(market.yes_token_id or "", bids=[], asks=[]),
@@ -4345,7 +4345,7 @@ def test_upstream_lock_paper_skip_above_cap_keeps_orderbook_depth_for_replay(tmp
     assert result.side == "SKIP"
     assert "SKIP_ENTRY_PRICE_TOO_HIGH" in per_side["NO"].reason
     depth = json.loads(per_side["NO"].entry_ask_depth_top5_json)
-    assert depth["levels"][0]["price"] == pytest.approx(0.86)
+    assert depth["levels"][0]["price"] == pytest.approx(0.93)
     assert depth["levels"][0]["size"] == pytest.approx(12.0)
 
 
@@ -5362,7 +5362,7 @@ def test_final_pre_trade_upstream_exact_no_keeps_smaller_fresh_book_fill(tmp_pat
             return OrderBook(
                 token_id,
                 bids=[OrderLevel(0.83, 1000.0)],
-                asks=[OrderLevel(0.84, 25.0), OrderLevel(0.90, 1000.0)],
+                asks=[OrderLevel(0.84, 25.0), OrderLevel(1.00, 1000.0)],
             )
 
     result = runner_module._final_pre_trade_entry_result(
@@ -5377,7 +5377,7 @@ def test_final_pre_trade_upstream_exact_no_keeps_smaller_fresh_book_fill(tmp_pat
 
     assert result.side == "NO"
     assert 10.0 <= result.size_usd < selected.size_usd
-    assert result.p_exec <= 0.85 + 1e-12
+    assert result.p_exec <= 0.92 + 1e-12
     assert "final_size_reduced=" in result.reason
 
 
@@ -5407,8 +5407,8 @@ def test_final_upstream_exact_no_rejection_is_kept_in_decision_ledger(tmp_path):
         strategy_mode="upstream_lock_paper",
         signal_family="upstream_lock_paper",
         probability_tier="upstream_2c_exact_no",
-        conservative_yes_probability=0.04,
-        conservative_no_probability=0.96,
+        conservative_yes_probability=0.0,
+        conservative_no_probability=1.0,
         requested_size_usd=50.0,
         executable_size_usd=50.0,
     )
@@ -5417,8 +5417,8 @@ def test_final_upstream_exact_no_rejection_is_kept_in_decision_ledger(tmp_path):
         def get_order_book(self, token_id: str) -> OrderBook:
             return OrderBook(
                 token_id,
-                bids=[OrderLevel(0.89, 1000.0)],
-                asks=[OrderLevel(0.90, 1000.0)],
+                bids=[OrderLevel(0.92, 1000.0)],
+                asks=[OrderLevel(0.93, 1000.0)],
             )
 
     result = runner_module._open_position_if_needed(
@@ -5466,8 +5466,8 @@ def test_final_station_recheck_failure_keeps_original_exact_no_audit_once(tmp_pa
         strategy_mode="upstream_lock_paper",
         signal_family="upstream_lock_paper",
         probability_tier="upstream_2c_exact_no",
-        conservative_yes_probability=0.04,
-        conservative_no_probability=0.96,
+        conservative_yes_probability=0.0,
+        conservative_no_probability=1.0,
         requested_size_usd=50.0,
         executable_size_usd=50.0,
     )
@@ -5534,8 +5534,8 @@ def test_paper_ledger_rejection_returns_skip_and_keeps_exact_no_reason(tmp_path)
         strategy_mode="upstream_lock_paper",
         signal_family="upstream_lock_paper",
         probability_tier="upstream_2c_exact_no",
-        conservative_yes_probability=0.04,
-        conservative_no_probability=0.96,
+        conservative_yes_probability=0.0,
+        conservative_no_probability=1.0,
         requested_size_usd=50.0,
         executable_size_usd=50.0,
     )

@@ -191,13 +191,7 @@ def _upstream_exact_no_bucket_distance_c(
     parsed: ParsedWeatherQuestion,
     observed_value_c: float | None,
 ) -> float | None:
-    """Return whole-C distance from the exact bucket for the paper proxy.
-
-    WU settled Seoul 26C YES while AWC reported 27C at the same RKSI time.
-    Therefore the adjacent one-degree bucket is not treated as a lock here.
-    Fahrenheit markets remain excluded until their source/display mapping has
-    its own settlement audit.
-    """
+    """Return the crossed whole-C distance from an exact Celsius bucket."""
     if (
         observed_value_c is None
         or not math.isfinite(observed_value_c)
@@ -1129,6 +1123,7 @@ def estimate_station_signal(
     )
     base_note = f"{base_note}; {formation_note}"
 
+    finalized_exact_no = False
     if (
         settings.strategy_mode == "upstream_lock_paper"
         and parsed.temperature_bucket == "exact"
@@ -1137,7 +1132,7 @@ def estimate_station_signal(
         if parsed.threshold_unit != "C":
             payload["data_block_reason"] = "upstream-celsius-exact-only"
             payload["strategy_allowed_reason"] = (
-                "upstream paper evidence is calibrated only as a Celsius two-step experiment"
+                "upstream paper evidence is limited to crossed exact-C boundaries"
             )
             return replace(
                 _neutral_signal(
@@ -1160,15 +1155,33 @@ def estimate_station_signal(
             temperature_bucket=parsed.temperature_bucket,
             threshold_unit=parsed.threshold_unit,
         )
+        bucket = _whole_exact_bucket(parsed)
+        station_today = current.astimezone(ZoneInfo(station.timezone)).date()
+        local_day_finalized = (
+            target < station_today
+            and observation.daily_extremes_complete
+            and observation.station_local_date == target.isoformat()
+        )
+        payload["official_local_day_finalized"] = local_day_finalized
+        finalized_exact_no = bool(
+            local_day_finalized
+            and bucket is not None
+            and not (float(bucket) <= observed_value_c < float(bucket + 1))
+        )
+        if finalized_exact_no:
+            upstream_distance_c = max(
+                upstream_required_c,
+                abs(observed_value_c - float(bucket)),
+            )
         payload["upstream_bucket_distance_c"] = upstream_distance_c
         payload["upstream_min_bucket_distance_c"] = upstream_required_c
         if (
             upstream_distance_c is None
             or upstream_distance_c + 1e-9 < upstream_required_c
         ):
-            payload["data_block_reason"] = "upstream-two-celsius-step-required"
+            payload["data_block_reason"] = "upstream-one-celsius-boundary-required"
             payload["strategy_allowed_reason"] = (
-                "the calibrated source-specific whole-Celsius break was not fully crossed"
+                "the whole-Celsius exact boundary was not fully crossed"
             )
             return replace(
                 _neutral_signal(
@@ -1184,8 +1197,18 @@ def estimate_station_signal(
                 settlement_precision_confidence=precision_profile.confidence,
             )
 
-    lock = None
-    if settings.strategy_mode in {
+    lock = (
+        _OfficialStationLock(
+            p_true=0.0,
+            lock_name="strong_no",
+            adjustment="official-lock-finalized-local-day-other-exact-bucket",
+            entry_fraction=settings.official_nowcast_lock_strong_entry_fraction,
+            size_reason="official_nowcast_lock=strong_no; finalized local-day exact bucket differs",
+        )
+        if finalized_exact_no
+        else None
+    )
+    if lock is None and settings.strategy_mode in {
         "lock_only",
         "upstream_lock_paper",
         "intraday_observation_edge",
