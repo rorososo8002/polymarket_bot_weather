@@ -84,6 +84,7 @@ REALTIME_FINAL_BOOK_PREFETCH_MAX_AGE_SECONDS = 5.0
 FINAL_DIRECT_OBSERVATION_MAX_AGE_SECONDS = 5.0
 REALTIME_LAST_EVALUATION_SIDE = "_LAST_EVALUATION"
 REALTIME_STATION_REFRESH_PROBE_MAX_EVENTS = 4
+REALTIME_CANDIDATE_BOOK_RETRY_MAX_EVENTS = 4
 NO_ONLY_NEW_ENTRY_REASON = (
     "SKIP_NO_ONLY_NEW_ENTRY: 신규 YES 진입 중단 정책; 기존 YES 포지션 청산은 계속 허용"
 )
@@ -1308,7 +1309,7 @@ def _enqueue_due_candidate_book_retries(
             if due_at <= current
         ),
         key=lambda item: (not item[2], item[0]),
-    )[:64]
+    )[:REALTIME_CANDIDATE_BOOK_RETRY_MAX_EVENTS]
     enqueued = 0
     for urgent in (True, False):
         selected = {token_id for token_id, _status, is_urgent in due if is_urgent == urgent}

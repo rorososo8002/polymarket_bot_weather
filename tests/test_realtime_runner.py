@@ -291,6 +291,34 @@ def test_due_candidate_book_retry_runs_without_websocket_update():
     assert retries["quiet-token"][0] == pytest.approx(15.0)
 
 
+def test_due_candidate_book_retries_cannot_fill_the_fresh_station_signal_lane():
+    class Worker:
+        def __init__(self) -> None:
+            self.calls: list[tuple[set[str], bool]] = []
+
+        def enqueue_tokens(self, token_ids: set[str], *, urgent: bool = False) -> int:
+            self.calls.append((set(token_ids), urgent))
+            return len(token_ids)
+
+    worker = Worker()
+    retries = {
+        f"token-{index}": (10.0, "missing_response", True)
+        for index in range(10)
+    }
+
+    accepted = runner_module._enqueue_due_candidate_book_retries(
+        worker,
+        retries,
+        now_monotonic=10.0,
+    )
+
+    assert runner_module.REALTIME_CANDIDATE_BOOK_RETRY_MAX_EVENTS == 4
+    assert accepted == 4
+    assert worker.calls == [({f"token-{index}" for index in range(4)}, True)]
+    assert all(retries[f"token-{index}"][0] == pytest.approx(12.0) for index in range(4))
+    assert all(retries[f"token-{index}"][0] == pytest.approx(10.0) for index in range(4, 10))
+
+
 def test_stream_backed_client_does_not_wait_for_one_slow_final_prefetch(monkeypatch):
     class Cache:
         def __init__(self) -> None:
