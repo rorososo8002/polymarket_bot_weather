@@ -123,42 +123,44 @@ def test_known_good_commands_include_local_test_and_oracle_first_steps():
     assert "sudo -u polymarket .venv/bin/python -m pytest -q" in text
 
 
-def test_fresh_chat_uses_active_task_card_not_process_diary():
+def test_fresh_chat_uses_one_strategy_source():
     agents_text = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
-    active_readme = (ROOT / "docs" / "active" / "README.md").read_text(encoding="utf-8")
     current_task = (ROOT / "docs" / "active" / "current-task.md").read_text(encoding="utf-8")
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
 
-    assert "Mandatory Fresh-Task Read Set" in agents_text
     assert "docs/active/current-task.md" in agents_text
-    assert "docs/production-decisions.md" in agents_text
-    assert "docs/strategy-validation-roadmap.md" in agents_text
+    assert "STRATEGY.md" in agents_text
+    assert "STRATEGY.md" in current_task
+    assert "STRATEGY.md" in readme
     assert "Status: none" in current_task or "Status: active" in current_task
     assert "## New Chat Prompt" in current_task
-    assert "Mandatory Fresh-Task Read Set" in active_readme
-    assert "docs/active/current-task.md" in active_readme
 
 
-def test_handoff_docs_stay_compact_and_avoid_chronological_ledgers():
+def test_active_docs_stay_compact():
     line_limits = {
         "docs/active/current-task.md": 80,
-        "docs/production-decisions.md": 600,
+        "STRATEGY.md": 180,
     }
     for relative_path, max_lines in line_limits.items():
         text = (ROOT / relative_path).read_text(encoding="utf-8")
         assert len(text.splitlines()) <= max_lines, f"{relative_path} should stay under {max_lines} lines"
 
-    decisions = (ROOT / "docs" / "production-decisions.md").read_text(encoding="utf-8")
-
-    assert "## Compact Ledger" not in decisions
-
-
 def test_obsolete_duplicate_handoff_and_report_files_are_removed():
     obsolete_paths = [
+        "docs/active/README.md",
         "docs/active/new-chat-task-prompts.md",
+        "docs/codex/strategy-research.md",
+        "docs/live-trading-safety-plan.md",
+        "docs/paper-validation-runbook.md",
+        "docs/production-decisions.md",
         "docs/production-progress.md",
         "docs/production-implementation-plan.md",
         "docs/dashboard-build-spec.md",
+        "docs/station-registry-audit.md",
+        "docs/strategy-validation-roadmap.md",
+        "docs/solutions",
         "docs/VPS_LIVE_PAPER.md",
+        "readme2.md",
         "scripts/daily_report.py",
         "tests/test_daily_report.py",
     ]
@@ -167,28 +169,28 @@ def test_obsolete_duplicate_handoff_and_report_files_are_removed():
         assert not (ROOT / relative_path).exists(), f"{relative_path} should be removed"
 
 
-def test_paper_validation_runbook_defines_live_readiness_gates():
-    runbook_path = ROOT / "docs" / "paper-validation-runbook.md"
-    decisions = (ROOT / "docs" / "production-decisions.md").read_text(encoding="utf-8")
-    roadmap = (ROOT / "docs" / "strategy-validation-roadmap.md").read_text(encoding="utf-8")
-
-    assert runbook_path.exists()
-    runbook = runbook_path.read_text(encoding="utf-8")
-
+def test_strategy_defines_exact_no_contract():
+    strategy = (ROOT / "STRATEGY.md").read_text(encoding="utf-8")
     required_phrases = [
-        "30 days",
-        "paper-only",
-        "decision rows",
-        "open/close trades",
-        "bid/ask-depth net PnL",
-        "midpoint/reference gap",
-        "no-liquidity",
-        "core tests",
-        "new experiment version",
-        "live-trading safety project",
+        "name: 관측 경계 확정 NO 종이매매 봇",
+        "last_updated:",
+        "최고 30℃가 들어오면 29℃ NO를 즉시 확인",
+        "최저 21℃가 들어오면 22℃ NO를 즉시 확인",
+        "최종 최고가 30℃라면 29℃와 31℃ 모두 NO",
+        "0.92달러 이하",
+        "최대 2개",
+        "고정된 도시·날짜 5% 제한으로 후보",
+        "기온이 그대로라는 이유로 후보 목록에서 지우지 않는다",
     ]
     for phrase in required_phrases:
-        assert phrase in runbook
+        assert phrase in strategy
 
-    assert "docs/paper-validation-runbook.md" in decisions
-    assert "docs/paper-validation-runbook.md" in roadmap
+    forbidden_phrases = [
+        "0.85달러 이하",
+        "안전거리 2℃",
+        "NO 확률을 최대 96%",
+        "후보 판정까지 3초 이내",
+        "총원금은 최대 5%",
+    ]
+    for phrase in forbidden_phrases:
+        assert phrase not in strategy

@@ -12,8 +12,8 @@ Use the user's latest request.
 
 ## Next Action
 
-Read `AGENTS.md`, this card, and `docs/production-decisions.md`. Read extra
-docs only when `AGENTS.md` says the current task specifically needs them.
+Read `AGENTS.md`, this card, and `STRATEGY.md`. No other document may add or
+override trading rules.
 
 ## New Chat Prompt
 

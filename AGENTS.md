@@ -1,99 +1,60 @@
-# AGENTS.md
+# Codex 작업 규칙
 
-## Purpose
+이 저장소는 기온 시장만 다루는 종이매매 봇이다. 실제 돈 주문, 지갑,
+개인키, 서명 기능은 만들지 않는다.
 
-Paper-only Polymarket temperature-market validation bot. The goal is credible
-paper PnL: executable prices, fees, official settlement-station evidence, and
-auditable ledgers.
+답변은 항상 한국어로 한다. 개발 용어를 쓸 때는 바로 옆에서 초보자도
+이해할 수 있게 뜻과 역할을 설명한다.
 
-Answer in Korean. Explain developer terms in beginner language.
+## 단 하나의 매매 기준
 
-## Token Budget Rules
+- 매매전략의 유일한 기준은 루트의 `STRATEGY.md`다.
+- 다른 문서, 과거 대화, 주석, 회고가 `STRATEGY.md`와 다르면 따르지 않는다.
+- 코드, 테스트, 서버 설정이 `STRATEGY.md`와 다르면 매매를 늘리려고 임의로
+  완화하지 말고 불일치부터 고친다.
+- 새 전략 문서를 만들지 않는다. 전략 변경은 `STRATEGY.md` 한 파일만 고친다.
 
-- Do not bulk-read files. Prefer `rg`, file sizes, headers/tails, and focused
-  snippets.
-- Do not read `readme2.md`. It is an archive note, not operating context.
-- Do not bulk-read ledgers, logs, caches, raw snapshots, `.git/objects`,
-  archives, deploy bundles, downloaded packages, or `docs/solutions/`.
-- Search `docs/solutions/` only for the exact repeated bug or prevention rule.
-- Read long docs only when the task specifically needs them:
-  - `docs/live-trading-safety-plan.md`: only for live-trading safety discussion.
-  - `docs/station-registry-audit.md`: only for station registry/audit work.
-  - `docs/paper-validation-runbook.md`: only for experiment-readiness reports.
-  - `docs/strategy-validation-roadmap.md`: only for multi-day validation/reporting.
-  - `docs/codex/runtime-data.md`: only for cleanup/archive/runtime-data work.
+## 새 작업을 시작할 때
 
-## Mandatory Fresh-Task Read Set
-
-For non-trivial coding, debugging, deployment, server, or strategy work, read:
+코딩, 오류 조사, 서버 점검, 배포, 전략 작업이면 다음 세 파일만 먼저 읽는다.
 
 ```text
 AGENTS.md
 docs/active/current-task.md
-docs/production-decisions.md
+STRATEGY.md
 ```
 
-Before inventing shell, pytest, SSH, cleanup, or deployment commands, read the
-matching section of:
+명령을 새로 만들기 전에는 `docs/codex/known-good-commands.md`에서 해당 부분만
+읽는다. 서버 접속이나 자료 정리처럼 특별한 작업일 때만 `docs/codex/`의
+관련 운영 문서를 추가로 읽는다. 문서를 한꺼번에 읽지 않는다.
 
-```text
-docs/codex/known-good-commands.md
-```
+`docs/active/current-task.md`가 `Status: active`이면 그 파일의 `Next Action`부터
+계속한다. 아니면 사용자의 최신 요청을 따른다.
 
-If `docs/active/current-task.md` says `Status: active`, continue from its
-`Next Action`; otherwise follow the user’s latest request.
+## 절대 넘지 않는 선
 
-## Paper-Only Boundary
+- 종이매매만 한다. 실제 주문으로 이어지는 숨은 경로도 만들지 않는다.
+- 기온 시장 외 종목은 다루지 않는다.
+- 오래됐거나, 비었거나, 서로 충돌하거나, 도시의 지정 관측소와 맞지 않는
+  자료는 진입 근거로 쓰지 않는다.
+- 화면에 보이는 최고 매도호가, 중간값, 수량 없는 가격을 실제 체결로 꾸미지
+  않는다. 살 때는 실제 매도 물량, 팔 때는 실제 매수 물량을 사용한다.
 
-Never add wallets, private keys, signing, real orders, claims, redemption,
-copy trading, `LiveBroker`, hidden live paths, or private user-data collection.
-Temperature markets only. Unknown, stale, malformed, conflicting, unsupported,
-or unverified evidence fails closed.
+## 종이계좌 기록
 
-## Trading Contract
+- `paper_state.json`은 종이계좌 장부다. 현금, 보유 종목, 평균 진입가의 기준이다.
+- `paper_trades.csv`는 실제로 체결됐다고 인정한 종이매매 영수증이다.
+- `paper_decisions.csv`는 왜 샀고 왜 안 샀는지 남기는 판단 장부다.
 
-Source of truth: `docs/production-decisions.md`.
+옛 행에 새 칸이 없어도 읽을 수 있어야 한다. 사용자가 실험 초기화를 명확히
+승인하지 않은 한 세 파일을 삭제하거나 비우지 않는다.
 
-Allowed families:
+## 작업 방법
 
-```text
-lock_only
-intraday_observation_edge
-abnormal_official_station_mispricing
-```
-
-Invalid entries:
-
-```text
-forecast-only
-wrong-station
-endDate-only
-best-ask/midpoint/missing-depth fake fills
-```
-
-New entries require final CLOB tradability, executable ask-side VWAP, spread and
-fee gates, expected return, exposure room, and fresh same-station evidence.
-Exits require executable bid-side VWAP. No bid depth means HOLD, not fake close.
-
-## Ledgers
-
-- `paper_state.json`: 종이계좌 장부. 현금, 보유 포지션, 평균 진입가의 기준.
-- `paper_trades.csv`: 종이 체결 영수증.
-- `paper_decisions.csv`: 왜 들어갔고 왜 안 들어갔는지 남기는 판단 장부.
-
-Old rows must remain readable when newer columns are absent. Never delete or
-truncate those files unless the user explicitly approves an experiment reset.
-
-## Workflow
-
-- Preserve unrelated user changes. Never reset.
-- Write focused failing tests before behavior changes.
-- Run focused tests, then full local pytest for meaningful code changes.
-- Deploy transactionally: backup, copy, remote pytest, restart services only
-  after success.
-- Remove temporary scripts after use.
-- Stage/commit only when asked or when the user asked for completed changes to
-  be committed.
-
-After a non-trivial repeated mistake or durable workflow lesson, consider
-`ce-compound`; skip it when no new durable lesson is needed.
+- 사용자의 관계없는 변경을 보존하고 `git reset`으로 되돌리지 않는다.
+- 매매 판단을 바꾸기 전에는 틀린 동작을 재현하는 작은 테스트부터 만든다.
+- 의미 있는 코드 변경이면 관련 테스트를 먼저 돌리고 전체 테스트도 돌린다.
+- 배포는 백업, 파일 복사, 서버 테스트, 서비스 재시작 순서로 한다. 서버
+  테스트가 실패하면 새 코드로 재시작하지 않는다.
+- 임시 파일과 임시 스크립트는 작업이 끝나면 제거한다.
+- 커밋이나 배포는 사용자가 요청했을 때만 한다.
