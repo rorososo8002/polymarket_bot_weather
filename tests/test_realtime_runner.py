@@ -320,7 +320,7 @@ def test_due_candidate_book_retries_cannot_fill_the_fresh_station_signal_lane():
 
 
 def test_realtime_clob_deadline_leaves_one_second_for_fresh_station_signals():
-    assert runner_module.REALTIME_FINAL_PREFETCH_DEADLINE_SECONDS == pytest.approx(0.85)
+    assert runner_module.REALTIME_FINAL_PREFETCH_DEADLINE_SECONDS == pytest.approx(0.75)
 
 
 def test_stream_backed_client_does_not_wait_for_one_slow_final_prefetch(monkeypatch):
