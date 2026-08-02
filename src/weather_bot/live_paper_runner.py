@@ -784,10 +784,37 @@ class StreamBackedPolymarketClient(PolymarketClient):
             return retry_tokens
 
         primary_timeout = min(0.75, REALTIME_FINAL_PREFETCH_DEADLINE_SECONDS)
-        primary_books, primary_received_at, primary_error = fetch_batch(
+        primary_executor = ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="candidate-book-primary",
+        )
+        primary_future = primary_executor.submit(
+            fetch_batch,
             unique_tokens,
             primary_timeout,
         )
+        primary_completed, primary_unfinished = wait(
+            [primary_future],
+            timeout=max(0.0, deadline - time.monotonic()),
+        )
+        if primary_unfinished:
+            checked_at = utc_now_iso()
+            for token_id in unique_tokens:
+                audits[token_id].update(checked_at=checked_at, status="deadline")
+            primary_future.cancel()
+            primary_executor.shutdown(wait=False, cancel_futures=True)
+            with self._final_prefetch_lock:
+                self._candidate_book_prefetch_audit.update(audits)
+            return {
+                "requested": len(unique_tokens),
+                "book_ready": 0,
+                "failed": 0,
+                "deferred": len(unique_tokens),
+            }
+        primary_books, primary_received_at, primary_error = next(
+            iter(primary_completed)
+        ).result()
+        primary_executor.shutdown(wait=False, cancel_futures=True)
         retry_tokens = apply_batch(
             unique_tokens,
             primary_books,

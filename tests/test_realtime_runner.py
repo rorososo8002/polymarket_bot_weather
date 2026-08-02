@@ -268,6 +268,46 @@ def test_candidate_prefetch_retries_only_token_missing_from_batch():
     assert client.get_candidate_order_book_audit("token-b")["status"] == "ready"
 
 
+def test_candidate_prefetch_releases_evaluator_at_the_wall_clock_deadline(monkeypatch):
+    class Cache:
+        def get_order_book(self, token_id: str) -> OrderBook:
+            raise KeyError(token_id)
+
+    class CandidateStream:
+        def __init__(self) -> None:
+            self.cache = Cache()
+
+        def apply_rest_snapshot(self, book: OrderBook, *, notify: bool = True) -> None:
+            raise AssertionError("late candidate book must not enter the live cache")
+
+    release = threading.Event()
+    client = StreamBackedPolymarketClient(
+        "https://gamma.example",
+        "https://clob.example",
+        CandidateStream(),
+    )
+
+    def slow_order_books(
+        token_ids: list[str],
+        *,
+        timeout: float | None = None,
+    ) -> list[OrderBook]:
+        release.wait(timeout=1.0)
+        return [OrderBook(token_id, asks=[OrderLevel(0.80, 100.0)]) for token_id in token_ids]
+
+    client.get_order_books = slow_order_books  # type: ignore[method-assign]
+    monkeypatch.setattr(runner_module, "REALTIME_FINAL_PREFETCH_DEADLINE_SECONDS", 0.05)
+
+    started = time.monotonic()
+    status = client.prefetch_candidate_order_books(["token-a", "token-b"])
+    elapsed = time.monotonic() - started
+    release.set()
+
+    assert elapsed < 0.20
+    assert status == {"requested": 2, "book_ready": 0, "failed": 0, "deferred": 2}
+    assert client.get_candidate_order_book_audit("token-a")["status"] == "deadline"
+
+
 def test_due_candidate_book_retry_runs_without_websocket_update():
     class Worker:
         def __init__(self) -> None:
